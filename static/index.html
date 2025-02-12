@@ -1,15 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>FITS Viewer</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <title>Upload FITS File & View Google Drive Files</title>
     <script src="script.js" defer></script>
 </head>
 <body>
-    <h1>FITS File Viewer</h1>
-    <input type="file" id="fitsFile" accept=".fits" />
-    <button onclick="uploadFITS()">Upload & View</button>
-    <div id="plot" style="width: 100%; height: 500px;"></div>
+    <h1>Upload FITS File to Google Drive</h1>
+    <input type="file" id="fileInput" />
+    <button onclick="uploadFile()">Upload</button>
+    
+    <h2>📂 Google Drive Files</h2>
+    <button onclick="listFiles()">Show Files</button>
+    <ul id="fileList"></ul>
 </body>
 </html>
