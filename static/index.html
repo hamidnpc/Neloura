@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>FITS Viewer</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="script.js" defer></script>
+</head>
+<body>
+    <h1>FITS File Viewer</h1>
+    <input type="file" id="fitsFile" accept=".fits" />
+    <button onclick="uploadFITS()">Upload & View</button>
+    <div id="plot" style="width: 100%; height: 500px;"></div>
+</body>
+</html>
