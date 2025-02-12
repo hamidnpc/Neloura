@@ -22,3 +22,11 @@ async def upload_fits(file: UploadFile):
             data = data.tolist()  # Convert NumPy array to list for JSON
         header = dict(hdul[0].header)
     return JSONResponse({"header": header, "data": data})
+
+
+from gdrive import upload_to_drive, list_drive_files
+
+@app.get("/list-files/")
+async def list_files():
+    files = list_drive_files()
+    return {"files": files}
