@@ -9,6 +9,14 @@ CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
 CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
+def list_drive_files():
+    service = authenticate_drive()
+    # List the first 100 files
+    results = service.files().list(pageSize=100, fields="files(id, name)").execute()
+    items = results.get("files", [])
+    return items
+
+
 def authenticate_drive():
     creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
