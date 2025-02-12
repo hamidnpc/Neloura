@@ -1,15 +1,24 @@
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, UploadFile, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
+import numpy as np
 
 app = FastAPI()
 
-@app.get("/")
+# Serve static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"message": "Welcome to the FITS Viewer!"}
+    with open("static/index.html", "r") as f:
+        return f.read()
 
 @app.post("/upload/")
 async def upload_fits(file: UploadFile):
-    content = await file.read()
     with fits.open(file.file) as hdul:
-        header = hdul[0].header
-    return {"header": dict(header)}
+        data = hdul[0].data
+        if data is not None:
+            data = data.tolist()  # Convert NumPy array to list for JSON
+        header = dict(hdul[0].header)
+    return JSONResponse({"header": header, "data": data})
