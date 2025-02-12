@@ -1,5 +1,4 @@
 fastapi
 uvicorn
 astropy
-echo "python-multipart" >> requirements.txt
-
+python-multipart
