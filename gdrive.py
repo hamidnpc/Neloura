@@ -12,7 +12,7 @@ import json
 
 json_hamid = os.getenv("hamid")
 
-if CREDENTIALS_JSON:
+if json_hamid:
     CREDENTIALS_DICT = json.loads(json_hamid)
     SCOPES = ["https://www.googleapis.com/auth/drive"]
 else:
