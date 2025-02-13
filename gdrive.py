@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 import os
 import json
 
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 CREDENTIALS_DICT = {
   "type": "service_account",
