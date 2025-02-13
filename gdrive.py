@@ -5,10 +5,22 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials
 import logging
 
-# Load credentials from environment variable
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import os
+import json
+
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
-CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+if CREDENTIALS_JSON:
+    CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)
+    SCOPES = ["https://www.googleapis.com/auth/drive"]
+else:
+    raise Exception("GOOGLE_CREDENTIALS not found")
+
+def authenticate_drive():
+    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
+    return build("drive", "v3", credentials=creds)
 
 
 def list_drive_files():
@@ -23,9 +35,6 @@ def list_drive_files():
     return items
 
 
-def authenticate_drive():
-    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds)
 
 def upload_to_drive(file_path, file_name):
     service = authenticate_drive()
