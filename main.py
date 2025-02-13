@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
 import numpy as np
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
@@ -30,3 +31,4 @@ from gdrive import upload_to_drive, list_drive_files
 async def list_files():
     files = list_drive_files()
     return {"files": files}
+
