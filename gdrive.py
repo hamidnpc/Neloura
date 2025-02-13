@@ -14,9 +14,13 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 CREDENTIALS_FILE = "/data/webapp-450712-abbef95ba2d2.json"  # Path where Railway stores uploaded secrets
 
+import json
+
+with open(CREDENTIALS_FILE, 'r') as file:
+    credentials_json = json.load(file)
 
 def authenticate_drive():
-    creds = Credentials.from_service_account_info(CREDENTIALS_FILE, scopes=SCOPES)
+    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
 
