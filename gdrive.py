@@ -10,10 +10,10 @@ from googleapiclient.discovery import build
 import os
 import json
 
-CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
+json_hamid = os.getenv("hamid")
 
 if CREDENTIALS_JSON:
-    CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)
+    CREDENTIALS_DICT = json.loads(json_hamid)
     SCOPES = ["https://www.googleapis.com/auth/drive"]
 else:
     raise Exception("GOOGLE_CREDENTIALS not found")
