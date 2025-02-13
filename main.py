@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
 import numpy as np
+import logging
+
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
