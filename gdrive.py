@@ -16,7 +16,7 @@ CREDENTIALS_FILE = "/data/webapp-450712-abbef95ba2d2.json"  # Path where Railway
 
 
 def authenticate_drive():
-    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(CREDENTIALS_FILE, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
 
