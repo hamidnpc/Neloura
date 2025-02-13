@@ -3,17 +3,23 @@ import json
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials
+import logging
 
 # Load credentials from environment variable
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
 CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
+
 def list_drive_files():
     service = authenticate_drive()
-    # List the first 100 files
-    results = service.files().list(pageSize=100, fields="files(id, name)").execute()
+    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType, parents)").execute()
     items = results.get("files", [])
+    
+    # Log all files and their details
+    for item in items:
+        logging.info(f"File: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}, Parent: {item.get('parents', 'Root')}")
+
     return items
 
 
