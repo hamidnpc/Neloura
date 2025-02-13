@@ -33,3 +33,18 @@ async function uploadFile() {
     alert(result.message);
     listFiles(); // Refresh file list after upload
 }
+
+async function listFiles() {
+    const response = await fetch("/list-files/");
+    const data = await response.json();
+
+    const fileList = document.getElementById("fileList");
+    fileList.innerHTML = ""; // Clear previous list
+
+    data.files.forEach(file => {
+        const listItem = document.createElement("li");
+        listItem.innerHTML = `<a href="https://drive.google.com/file/d/${file.id}" target="_blank">${file.name}</a>`;
+        fileList.appendChild(listItem);
+    });
+}
+
