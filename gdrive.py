@@ -1,46 +1,37 @@
 import os
 import json
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
+import io
 import logging
-
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-import os
-import json
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
-CREDENTIALS_FILE = "/data/webapp-450712-abbef95ba2d2.json"  # Path where Railway stores uploaded secrets
-
-import json
-
-with open(CREDENTIALS_FILE, 'r') as file:
-    credentials_json = json.load(file)
+# Load credentials from Railway environment variable
+CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
+CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)  # Convert JSON string to dictionary
 
 def authenticate_drive():
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
-
 
 def list_drive_files():
     service = authenticate_drive()
-    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType, parents)").execute()
+    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType)").execute()
     items = results.get("files", [])
-    
-    # Log all files and their details
     for item in items:
-        logging.info(f"File: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}, Parent: {item.get('parents', 'Root')}")
-
+        logging.info(f"File: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}")
     return items
 
-
-
-def upload_to_drive(file_path, file_name):
+def download_file_from_drive(file_id):
     service = authenticate_drive()
-    file_metadata = {"name": file_name, "mimeType": "application/octet-stream"}
-    media = MediaFileUpload(file_path, resumable=True)
-    uploaded_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-
-    return f"File uploaded successfully! Google Drive ID: {uploaded_file['id']}"
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+        logging.info(f"Download {int(status.progress() * 100)}%.")
+    fh.seek(0)
+    return fh
