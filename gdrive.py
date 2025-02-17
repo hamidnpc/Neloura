@@ -20,6 +20,7 @@ def list_drive_files():
     service = authenticate_drive()
     results = service.files().list(
         pageSize=1000,
+         corpora="user",
         fields="files(id, name, mimeType, parents)",
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
