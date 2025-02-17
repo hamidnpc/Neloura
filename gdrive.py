@@ -20,25 +20,13 @@ CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)  # Convert JSON string to dictio
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+from google_auth_oauthlib.flow import Flow
+
 def authenticate_drive():
     creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            creds_data = json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS'))
-            flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
-            creds = flow.flow.run_console()
-        
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-
-    return build('drive', 'v3', credentials=creds)
-
+    creds_data = json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS'))
+    flow = Flow.from_client_config(creds_data, scopes=SCOPES)
+    flow.redirect_uri = "https://aseman-production.up.railway.app/oauth2callback"
 
 def list_drive_files():
     service = authenticate_drive()
