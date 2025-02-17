@@ -1,4 +1,8 @@
-from fastapi import FastAPI, UploadFile, Request, Response, JSONResponse, RedirectResponse
+from fastapi import FastAPI, UploadFile, Request, Response, RedirectResponse
+
+from fastapi.responses import HTMLResponse, JSONResponse
+
+
 from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
 import numpy as np
