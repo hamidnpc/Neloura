@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
 import numpy as np
 import logging
+from gdrive import upload_to_drive, list_drive_files
 
 logging.basicConfig(level=logging.INFO)
 
