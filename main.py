@@ -6,6 +6,10 @@ import numpy as np
 import logging
 from gdrive import upload_to_drive, list_drive_files
 
+import logging
+logging.basicConfig(level=logging.INFO)
+
+
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
