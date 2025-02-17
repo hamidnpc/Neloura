@@ -34,8 +34,32 @@ async def upload_fits(file: UploadFile):
 
 from gdrive import upload_to_drive, list_drive_files
 
+
+
+def authenticate_drive():
+    """Authenticate Google Drive API using credentials from Railway variable."""
+    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
+    return build("drive", "v3", credentials=creds)
+
+
 @app.get("/list-files/")
 async def list_files():
-    files = list_drive_files()
-    return {"files": files}
+    """List Google Drive files and print them in Railway logs."""
+    try:
+        service = authenticate_drive()
+        results = service.files().list(pageSize=10, fields="files(id, name)").execute()
+        items = results.get('files', [])
+
+        if items:
+            logging.info("Google Drive Files:")
+            for item in items:
+                logging.info(f"{item['name']} ({item['id']})")
+        else:
+            logging.info("No files found in Google Drive.")
+
+        return {"files": items}
+    
+    except Exception as e:
+        logging.error(f"Error fetching files: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch files from Google Drive")
 
