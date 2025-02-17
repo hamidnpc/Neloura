@@ -7,6 +7,12 @@ import logging
 from gdrive import authenticate_drive, get_flow
 import os
 
+from fastapi import Response
+import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
+from astropy.io import fits
+
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 logging.basicConfig(level=logging.INFO)
@@ -50,14 +56,6 @@ async def oauth2callback(request: Request):
     except Exception as e:
         return {"error": f"Failed to authenticate: {str(e)}"}
 
-
-
-
-from fastapi import Response
-import numpy as np
-import matplotlib.pyplot as plt
-from io import BytesIO
-from astropy.io import fits
 
 FITS_FILE_NAME = "PHANGS/Archive/JWST/v1p0p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d_anchor.fits"  # Target file name
 
