@@ -3,12 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google Drive Files</title>
+    <title>Google Drive Files and FITS Viewer</title>
+    <style>
+        canvas { width: 100%; height: 100%; }
+    </style>
 </head>
 <body>
     <h1>Google Drive Files</h1>
     <button onclick="fetchFiles()">Show Files</button>
     <ul id="file-list"></ul>
+
+    <h2>FITS File Viewer</h2>
+    <canvas id="fits-canvas"></canvas>
 
     <script>
         async function fetchFiles() {
@@ -20,10 +26,26 @@
                 data.files.forEach(file => {
                     const li = document.createElement('li');
                     li.textContent = `${file.name} (${file.id})`;
+                    li.style.cursor = 'pointer';
+                    li.onclick = () => viewFits(file.id);
                     fileList.appendChild(li);
                 });
             } catch (error) {
                 console.error('Error fetching files:', error);
+            }
+        }
+
+        async function viewFits(fileId) {
+            try {
+                const response = await fetch(`/view-fits/${fileId}`);
+                const data = await response.json();
+                const canvas = document.getElementById('fits-canvas');
+                const ctx = canvas.getContext('2d');
+                const imageData = ctx.createImageData(data.width, data.height);
+                imageData.data.set(new Uint8ClampedArray(data.pixel_data));
+                ctx.putImageData(imageData, 0, 0);
+            } catch (error) {
+                console.error('Error loading FITS file:', error);
             }
         }
     </script>
