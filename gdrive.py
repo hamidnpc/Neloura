@@ -18,7 +18,7 @@ def authenticate_drive():
 
 def list_drive_files():
     service = authenticate_drive()
-    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType)").execute()
+    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     items = results.get("files", [])
     for item in items:
         logging.info(f"File: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}")
