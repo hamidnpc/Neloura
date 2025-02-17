@@ -11,6 +11,10 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import pickle
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from fastapi import HTTPException
 
 
 # Load credentials from Railway environment variable
@@ -22,11 +26,21 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 from google_auth_oauthlib.flow import Flow
 
+
 def authenticate_drive():
     creds = None
+    if os.path.exists('/data/token.json'):  # Use persistent Railway storage
+        creds = Credentials.from_authorized_user_file('/data/token.json', SCOPES)
+
+    if not creds or not creds.valid:
+        raise HTTPException(status_code=401, detail="Authentication required. Please visit /login to authenticate.")
+
+    return build('drive', 'v3', credentials=creds)
+
+def get_flow():
     creds_data = json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS'))
-    flow = Flow.from_client_config(creds_data, scopes=SCOPES)
-    flow.redirect_uri = "https://aseman-production.up.railway.app/oauth2callback"
+    return Flow.from_client_config(creds_data, SCOPES, redirect_uri="https://aseman-production.up.railway.app/oauth2callback")
+
 
 def list_drive_files():
     service = authenticate_drive()
