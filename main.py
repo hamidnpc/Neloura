@@ -5,6 +5,8 @@ from astropy.io import fits
 import numpy as np
 import logging
 from gdrive import upload_to_drive, list_drive_files
+from fastapi import FastAPI, HTTPException  # Add HTTPException here
+
 
 import logging
 logging.basicConfig(level=logging.INFO)
