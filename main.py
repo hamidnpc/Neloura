@@ -1,4 +1,7 @@
-from fastapi import FastAPI, UploadFile, Request, Response, RedirectResponse
+# from fastapi import FastAPI, UploadFile, Request, Response
+
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 
 from fastapi.responses import HTMLResponse, JSONResponse
 
