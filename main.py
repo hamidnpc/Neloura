@@ -45,6 +45,21 @@ async def upload_fits(file: UploadFile):
 from gdrive import upload_to_drive, list_drive_files
 
 
+@app.get("/oauth2callback")
+async def oauth2callback(request: Request):
+    flow = Flow.from_client_config(json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS')), scopes=SCOPES)
+    flow.redirect_uri = "https://aseman-production.up.railway.app/oauth2callback"
+
+    authorization_response = str(request.url)
+    flow.fetch_token(authorization_response=authorization_response)
+
+    creds = flow.credentials
+    with open("/data/token.pickle", "wb") as token:
+        pickle.dump(creds, token)
+
+    return {"message": "Authentication successful!"}
+
+
 @app.get("/list-files/")
 async def list_files():
     service = authenticate_drive()
