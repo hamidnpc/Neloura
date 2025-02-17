@@ -6,7 +6,7 @@ from google.oauth2.service_account import Credentials
 import io
 import logging
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]  # Recommended for listing files
 
 # Load credentials from Railway environment variable
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
