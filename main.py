@@ -18,15 +18,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    try:
-        service = authenticate_drive()
-        results = service.files().list(pageSize=10, fields="files(id, name)").execute()
-        items = results.get('files', [])
-
-        html_content = "<h1>Google Drive Files:</h1><ul>"
-        for item in items:
-            html_content += f"<li>{item['name']} ({item['id']})</li>"
-        html_content += "</ul>"
+    with open("static/index.html", "r") as f:
+        return f.read()
 
         return html_content
     except Exception as e:
