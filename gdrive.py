@@ -44,3 +44,19 @@ def upload_to_drive(file_path, file_name):
 
     return f"File uploaded successfully! Google Drive ID: {uploaded_file['id']}"
 
+
+def list_drive_files():
+    service = authenticate_drive()
+    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType)").execute()
+    items = results.get("files", [])
+
+    # Log all files to Railway logs
+    if items:
+        logging.info("Google Drive Files:")
+        for item in items:
+            logging.info(f"Name: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}")
+    else:
+        logging.info("No files found in Google Drive.")
+        
+    return items
+
