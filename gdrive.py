@@ -27,14 +27,15 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 from google_auth_oauthlib.flow import Flow
 
 
+from google.oauth2.credentials import Credentials
+
 def authenticate_drive():
     creds = None
-    if os.path.exists('/data/token.json'):  # Use persistent Railway storage
-        creds = Credentials.from_authorized_user_file('/data/token.json', SCOPES)
-
+    token_path = "/data/token.json"
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
     if not creds or not creds.valid:
         raise HTTPException(status_code=401, detail="Authentication required. Please visit /login to authenticate.")
-
     return build('drive', 'v3', credentials=creds)
 
 def get_flow():
