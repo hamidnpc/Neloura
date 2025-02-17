@@ -43,37 +43,11 @@ async def upload_fits(file: UploadFile):
 from gdrive import upload_to_drive, list_drive_files
 
 
-
-
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-
-# Load credentials from Railway environment variable
-CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
-CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)  # Convert JSON string to dictionary
-
-def authenticate_drive():
-    creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds)
-
-
 @app.get("/list-files/")
 async def list_files():
-    """List Google Drive files and print them in Railway logs."""
-    try:
-        service = authenticate_drive()
-        results = service.files().list(pageSize=10, fields="files(id, name)").execute()
-        items = results.get('files', [])
-
-        if items:
-            logging.info("Google Drive Files:")
-            for item in items:
-                logging.info(f"{item['name']} ({item['id']})")
-        else:
-            logging.info("No files found in Google Drive.")
-
-        return {"files": items}
-    
-    except Exception as e:
-        logging.error(f"Error fetching files: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to fetch files from Google Drive")
-
+    service = authenticate_drive()
+    results = service.files().list(pageSize=10, fields="files(id, name)").execute()
+    items = results.get('files', [])
+    for item in items:
+        logging.info(f"{item['name']} ({item['id']})")
+    return {"files": items}
