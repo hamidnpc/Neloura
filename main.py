@@ -57,7 +57,7 @@ async def oauth2callback(request: Request):
         return {"error": f"Failed to authenticate: {str(e)}"}
 
 
-FITS_FILE_NAME = "PHANGS/Archive/JWST/v1p0p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d_anchor.fits"  # Target file name
+FITS_FILE_NAME = "PHANGS/Archive/JWST/v1p1p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d_anchor.fits"  # Target file name
 
 @app.get("/view-fits/")
 async def view_fits():
