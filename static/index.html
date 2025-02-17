@@ -1,16 +1,31 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Upload FITS File & View Google Drive Files</title>
-    <script src="/static/script.js" defer></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Drive Files</title>
 </head>
 <body>
-    <h1>Upload FITS File to Google Drive</h1>
-    <input type="file" id="fileInput" />
-    <button onclick="uploadFile()">Upload</button>
-    
-    <h2>📂 Google Drive Files</h2>
-    <button onclick="listFiles()">Show Files</button>
-    <ul id="fileList"></ul>
+    <h1>Google Drive Files</h1>
+    <button onclick="fetchFiles()">Show Files</button>
+    <ul id="file-list"></ul>
+
+    <script>
+        async function fetchFiles() {
+            try {
+                const response = await fetch('/list-files/');
+                const data = await response.json();
+                const fileList = document.getElementById('file-list');
+                fileList.innerHTML = '';
+                data.files.forEach(file => {
+                    const li = document.createElement('li');
+                    li.textContent = `${file.name} (${file.id})`;
+                    fileList.appendChild(li);
+                });
+            } catch (error) {
+                console.error('Error fetching files:', error);
+            }
+        }
+    </script>
 </body>
 </html>
