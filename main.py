@@ -59,16 +59,27 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from astropy.io import fits
 
-@app.get("/view-fits/{file_id}")
-async def view_fits(file_id: str):
+FITS_FILE_NAME = "PHANGS/Archive/JWST/v1p0p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d_anchor.fits"  # Target file name
+
+@app.get("/view-fits/")
+async def view_fits():
     try:
-        # Authenticate and download the FITS file from Google Drive
         service = authenticate_drive()
+
+        # Step 1: Find the file in Google Drive
+        results = service.files().list(q=f"name='{FITS_FILE_NAME}'", fields="files(id, name)").execute()
+        items = results.get('files', [])
+        if not items:
+            return JSONResponse({"error": f"File {FITS_FILE_NAME} not found in Google Drive"}, status_code=404)
+
+        file_id = items[0]['id']  # Get the file ID
+
+        # Step 2: Download the FITS file
         request = service.files().get_media(fileId=file_id)
         file_stream = BytesIO()
         request.execute(fd=file_stream)
 
-        # Read FITS file with Astropy
+        # Step 3: Read FITS file with Astropy
         file_stream.seek(0)
         with fits.open(file_stream) as hdul:
             image_data = hdul[0].data
@@ -78,7 +89,7 @@ async def view_fits(file_id: str):
         image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
         image_data = image_data.astype(np.uint8)
 
-        # Convert to PNG
+        # Step 4: Convert to PNG for web display
         fig, ax = plt.subplots()
         ax.imshow(image_data, cmap='gray', origin='lower')
         ax.axis('off')
@@ -91,4 +102,3 @@ async def view_fits(file_id: str):
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to read FITS file: {str(e)}"}, status_code=500)
-
