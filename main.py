@@ -18,6 +18,8 @@ from fastapi.responses import RedirectResponse
 from gdrive import authenticate_drive, get_flow
 import json
 import os
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 
 
 from gdrive import authenticate_drive
