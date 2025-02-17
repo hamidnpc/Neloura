@@ -38,8 +38,14 @@ from gdrive import upload_to_drive, list_drive_files
 
 
 
+
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+# Load credentials from Railway environment variable
+CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
+CREDENTIALS_DICT = json.loads(CREDENTIALS_JSON)  # Convert JSON string to dictionary
+
 def authenticate_drive():
-    """Authenticate Google Drive API using credentials from Railway variable."""
     creds = Credentials.from_service_account_info(CREDENTIALS_DICT, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
