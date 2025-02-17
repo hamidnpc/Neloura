@@ -21,9 +21,6 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
-        return html_content
-    except Exception as e:
-        return f"<h1>Error fetching files:</h1><p>{str(e)}</p>"
 
 @app.post("/upload/")
 async def upload_fits(file: UploadFile):
