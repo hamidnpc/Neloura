@@ -68,14 +68,23 @@ async def login():
 
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
-    flow = get_flow()
-    flow.fetch_token(authorization_response=str(request.url))
+    try:
+        flow = get_flow()
+        flow.fetch_token(authorization_response=str(request.url))
 
-    creds = flow.credentials
-    with open("/data/token.json", "w") as token:
-        token.write(creds.to_json())
+        creds = flow.credentials
 
-    return {"message": "Authentication successful! You can now access Google Drive files."}
+        # Ensure Railway's /data directory exists
+        os.makedirs("/data", exist_ok=True)
+
+        # Save token securely in Railway's /data storage
+        with open("/data/token.json", "w") as token_file:
+            token_file.write(creds.to_json())
+
+        return {"message": "Authentication successful! You can now access Google Drive files."}
+
+    except Exception as e:
+        return {"error": f"Failed to authenticate: {str(e)}"}
 
 @app.get("/list-files/")
 async def list_files():
