@@ -32,7 +32,7 @@ def authenticate_drive():
         else:
             creds_data = json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS'))
             flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.flow.run_console()
         
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
