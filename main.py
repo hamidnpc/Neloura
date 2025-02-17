@@ -13,6 +13,12 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
 import io
 import logging
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import RedirectResponse
+from gdrive import authenticate_drive, get_flow
+import json
+import os
+
 
 from gdrive import authenticate_drive
 
@@ -45,20 +51,31 @@ async def upload_fits(file: UploadFile):
 from gdrive import upload_to_drive, list_drive_files
 
 
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import RedirectResponse
+from gdrive import authenticate_drive, get_flow
+import json
+import os
+
+app = FastAPI()
+
+@app.get("/login")
+async def login():
+    flow = get_flow()
+    auth_url, _ = flow.authorization_url(prompt='consent')
+    return RedirectResponse(auth_url)
+
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
-    flow = Flow.from_client_config(json.loads(os.getenv('GOOGLE_OAUTH_CREDENTIALS')), scopes=SCOPES)
-    flow.redirect_uri = "https://aseman-production.up.railway.app/oauth2callback"
-
-    authorization_response = str(request.url)
-    flow.fetch_token(authorization_response=authorization_response)
+    flow = get_flow()
+    flow.fetch_token(authorization_response=str(request.url))
 
     creds = flow.credentials
-    with open("/data/token.pickle", "wb") as token:
-        pickle.dump(creds, token)
+    with open("/data/token.json", "w") as token:
+        token.write(creds.to_json())
 
-    return {"message": "Authentication successful!"}
-
+    return {"message": "Authentication successful! You can now access Google Drive files."}
 
 @app.get("/list-files/")
 async def list_files():
@@ -66,5 +83,5 @@ async def list_files():
     results = service.files().list(pageSize=10, fields="files(id, name)").execute()
     items = results.get('files', [])
     for item in items:
-        logging.info(f"{item['name']} ({item['id']})")
+        print(f"{item['name']} ({item['id']})")
     return {"files": items}
