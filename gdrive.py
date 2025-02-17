@@ -35,3 +35,12 @@ def download_file_from_drive(file_id):
         logging.info(f"Download {int(status.progress() * 100)}%.")
     fh.seek(0)
     return fh
+
+def upload_to_drive(file_path, file_name):
+    service = authenticate_drive()
+    file_metadata = {"name": file_name, "mimeType": "application/octet-stream"}
+    media = MediaFileUpload(file_path, resumable=True)
+    uploaded_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+
+    return f"File uploaded successfully! Google Drive ID: {uploaded_file['id']}"
+
