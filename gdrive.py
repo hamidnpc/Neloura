@@ -18,10 +18,21 @@ def authenticate_drive():
 
 def list_drive_files():
     service = authenticate_drive()
-    results = service.files().list(pageSize=1000, fields="files(id, name, mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    results = service.files().list(
+        pageSize=1000,
+        fields="files(id, name, mimeType, parents)",
+        q="'root' in parents and trashed=false"  # Ensures it's reading from your personal Drive root
+    ).execute()
+
     items = results.get("files", [])
-    for item in items:
-        logging.info(f"File: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}")
+
+    if items:
+        logging.info("Google Drive Files from Root:")
+        for item in items:
+            logging.info(f"Name: {item['name']}, ID: {item['id']}, Type: {item['mimeType']}")
+    else:
+        logging.info("No files found in Google Drive root.")
+        
     return items
 
 def download_file_from_drive(file_id):
