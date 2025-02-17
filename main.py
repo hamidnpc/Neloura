@@ -63,7 +63,7 @@ FITS_FILE_NAME = "PHANGS/Archive/JWST/v1p1p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d
 async def view_fits():
     try:
         service = authenticate_drive()
-        folder_name = "PHANGS/Archive"
+        folder_name = ""
 
         # Step 1: List all files inside PHANGS folder
         results = service.files().list(q=f"name contains '{folder_name}'", fields="files(id, name, mimeType, parents)").execute()
