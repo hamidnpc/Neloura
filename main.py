@@ -33,15 +33,13 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
         @app.get("/view-fits/")
-
-
         
 @app.get("/login")
 async def login():
     flow = get_flow()
     auth_url, _ = flow.authorization_url(prompt='consent')
     return RedirectResponse(auth_url)
-
+    
 @app.get("/view-fits/")
 async def view_fits():
     try:
