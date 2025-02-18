@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.widgets import Button
+import plotly.graph_objects as go
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -48,41 +49,7 @@ async def login():
 CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-def plot_with_buttons(image_data):
-    fig, ax = plt.subplots()
-    ax.imshow(image_data, cmap='gray', origin='lower', vmin=0, vmax=5)
-    ax.set_title("FITS Image Viewer")
 
-    def zoom_in(event):
-        ax.set_xlim(ax.get_xlim()[0] + 10, ax.get_xlim()[1] - 10)
-        ax.set_ylim(ax.get_ylim()[0] + 10, ax.get_ylim()[1] - 10)
-        fig.canvas.draw()
-
-    def zoom_out(event):
-        ax.set_xlim(ax.get_xlim()[0] - 10, ax.get_xlim()[1] + 10)
-        ax.set_ylim(ax.get_ylim()[0] - 10, ax.get_ylim()[1] + 10)
-        fig.canvas.draw()
-
-    def pan_left(event):
-        ax.set_xlim(ax.get_xlim()[0] - 10, ax.get_xlim()[1] - 10)
-        fig.canvas.draw()
-
-    def pan_right(event):
-        ax.set_xlim(ax.get_xlim()[0] + 10, ax.get_xlim()[1] + 10)
-        fig.canvas.draw()
-
-    zoom_in_button = Button(plt.axes([0.7, 0.05, 0.1, 0.075]), 'Zoom In')
-    zoom_out_button = Button(plt.axes([0.81, 0.05, 0.1, 0.075]), 'Zoom Out')
-    pan_left_button = Button(plt.axes([0.59, 0.05, 0.1, 0.075]), 'Left')
-    pan_right_button = Button(plt.axes([0.92, 0.05, 0.1, 0.075]), 'Right')
-
-    zoom_in_button.on_clicked(zoom_in)
-    zoom_out_button.on_clicked(zoom_out)
-    pan_left_button.on_clicked(pan_left)
-    pan_right_button.on_clicked(pan_right)
-
-    return fig
-    
 @app.get("/view-fits/")
 async def view_fits():
     try:
@@ -111,18 +78,14 @@ async def view_fits():
             image_data = hdul[1].data
 
         image_data = np.nan_to_num(image_data)
-        fig = plot_with_buttons(image_data)
 
-        canvas = FigureCanvas(fig)
-        img_io = BytesIO()
-        canvas.print_png(img_io)
-        img_io.seek(0)
+        fig = go.Figure(data=go.Heatmap(z=image_data, colorscale='gray', zmin=0, zmax=5))
+        fig.update_layout(title="FITS Image Viewer", xaxis_title="X", yaxis_title="Y")
 
-        return Response(content=img_io.getvalue(), media_type="image/png")
+        return JSONResponse(content=fig.to_json())
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
-
 
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
