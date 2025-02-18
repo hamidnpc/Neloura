@@ -29,37 +29,36 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
+
 @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Step 1: Get the folder ID for PHANGS
-        results = service.files().list(q="name='PHANGS' and mimeType='application/vnd.google-apps.folder'", 
-                                       supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        folders = results.get('files', [])
-        
-        if not folders:
+        # Get the list of top-level files and folders
+        results = service.files().list(q="'root' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
+        items = results.get('files', [])
+
+        # Find the PHANGS folder
+        phangs_folder = next((item for item in items if item['name'] == 'PHANGS' and item['mimeType'] == 'application/vnd.google-apps.folder'), None)
+
+        if not phangs_folder:
             return JSONResponse({"error": "PHANGS folder not found"}, status_code=404)
 
-        folder_id = folders[0]['id']
+        folder_id = phangs_folder['id']
 
-        # Step 2: List all files inside the PHANGS folder
-        files_result = service.files().list(q=f"'{folder_id}' in parents", 
-                                            supportsAllDrives=True, includeItemsFromAllDrives=True, 
-                                            fields="files(id, name, mimeType)").execute()
+        # List all files inside PHANGS folder
+        files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
         items = files_result.get('files', [])
 
         if not items:
             return JSONResponse({"error": "No files found in PHANGS folder"}, status_code=404)
 
-        # Log and return all files in PHANGS folder
         file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"]} for item in items]
         for item in file_list:
             logging.info(f"File: {item['name']} (ID: {item['id']}), Type: {item['type']}")
 
         return JSONResponse({"files": file_list})
-
     except Exception as e:
         return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
 
