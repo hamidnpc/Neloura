@@ -29,17 +29,6 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
-from fastapi import FastAPI, Response, JSONResponse
-from fastapi.staticfiles import StaticFiles
-import logging
-import os
-from gdrive import authenticate_drive
-
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-logging.basicConfig(level=logging.INFO)
-
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/view-fits/")
 async def view_fits():
