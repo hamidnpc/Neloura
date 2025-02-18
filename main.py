@@ -29,35 +29,34 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
-
 @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
 
-        # List all files and folders at top-level and find the PHANGS folder by its unique ID
-        results = service.files().list(q="mimeType='application/vnd.google-apps.folder' and name='PHANGS'", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name)").execute()
-        items = results.get('files', [])
+        # Find the PHANGS folder
+        results = service.files().list(q="name='PHANGS' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        folders = results.get('files', [])
 
-        if not items:
+        if not folders:
             return JSONResponse({"error": "PHANGS folder not found"}, status_code=404)
 
-        folder_id = items[0]['id']
+        folder_id = folders[0]['id']
 
-        # List contents of the PHANGS folder
+        # List all files and folders inside PHANGS
         files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
         items = files_result.get('files', [])
 
         if not items:
-            return JSONResponse({"error": "No files found in PHANGS folder"}, status_code=404)
+            return JSONResponse({"error": "No items found in PHANGS folder"}, status_code=404)
 
-        file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"]} for item in items]
-        for item in file_list:
-            logging.info(f"File: {item['name']} (ID: {item['id']}), Type: {item['type']}")
+        item_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"]} for item in items]
+        for item in item_list:
+            logging.info(f"Item: {item['name']} (ID: {item['id']}), Type: {item['type']}")
 
-        return JSONResponse({"files": file_list})
+        return JSONResponse({"items": item_list})
     except Exception as e:
-        return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to list items: {str(e)}"}, status_code=500)
 
 @app.get("/login")
 async def login():
