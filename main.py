@@ -76,7 +76,7 @@ async def view_fits():
 
         image_data = np.nan_to_num(image_data)
         plot = figure(tools="pan,wheel_zoom,box_zoom,reset,save", x_range=(0, image_data.shape[1]), y_range=(0, image_data.shape[0]))
-        plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], palette="Greys256", level="image", color_mapper={'low': 0, 'high': 5})
+        plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], palette="Greys256", level="image")
 
         html = file_html(plot, CDN, "FITS Image Viewer")
         return Response(content=html, media_type="text/html")
