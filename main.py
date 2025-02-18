@@ -51,7 +51,6 @@ async def login():
     
 CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
-
 @app.get("/view-fits/", response_class=HTMLResponse)
 async def view_fits():
     try:
@@ -84,9 +83,11 @@ async def view_fits():
 
         plot = figure(title="FITS Image Viewer", x_axis_label="X", y_axis_label="Y", tools="pan,wheel_zoom,box_zoom,reset,save")
         plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], color_mapper=color_mapper)
+        plot.add_layout(ColorBar(color_mapper=color_mapper, label_standoff=12), 'right')
 
         script, div = components(plot)
-        return HTMLResponse(content=f"{script}\n{div}")
+        html_content = f"<h1>FITS File Viewer</h1>{script}\n{div}"
+        return HTMLResponse(content=html_content)
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
