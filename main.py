@@ -68,14 +68,14 @@ async def view_fits():
         with fits.open(file_stream) as hdul:
             image_data = hdul[1].data
             heaader=hdul[1].header
-            print(repr(heaader))
+            # print(repr(heaader))
 
-        image_data = np.nan_to_num(image_data)
-        image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
-        image_data = image_data.astype(np.uint8)
+        # image_data = np.nan_to_num(image_data)
+        # image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
+        # image_data = image_data.astype(np.uint8)
 
-        fig, ax = plt.subplots()
-        ax.imshow(image_data, cmap='gray', origin='lower')
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow(image_data, cmap='gray', origin='lower',vmin=0,vmax=5)
         ax.axis('off')
         img_io = BytesIO()
         plt.savefig(img_io, format='png', bbox_inches='tight', pad_inches=0)
