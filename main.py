@@ -35,21 +35,27 @@ async def view_fits():
         service = authenticate_drive()
         folder_name = "PHANGS"
 
-        # List all files inside PHANGS folder, including shared drives
-        results = service.files().list(q=f"name contains '{folder_name}'", fields="files(id, name, mimeType, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        items = results.get('files', [])
+        # List all files inside PHANGS folder using folder name
+        results = service.files().list(q=f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        folders = results.get('files', [])
+
+        if not folders:
+            return JSONResponse({"error": "PHANGS folder not found"}, status_code=404)
+
+        folder_id = folders[0]['id']
+
+        # List all files inside the PHANGS folder
+        files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
+        items = files_result.get('files', [])
 
         if not items:
-            return JSONResponse({"error": f"No files found in folder: {folder_name}"}, status_code=404)
+            return JSONResponse({"error": "No files found in PHANGS folder"}, status_code=404)
 
-        # Log and return all files in PHANGS folder
-        file_list = []
-        for item in items:
-            file_list.append({"name": item["name"], "id": item["id"], "type": item["mimeType"]})
-            logging.info(f"File: {item['name']} (ID: {item['id']}), Type: {item['mimeType']}")
+        file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"]} for item in items]
+        for item in file_list:
+            logging.info(f"File: {item['name']} (ID: {item['id']}), Type: {item['type']}")
 
         return JSONResponse({"files": file_list})
-    
     except Exception as e:
         return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
 
