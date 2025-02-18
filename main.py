@@ -44,8 +44,17 @@ async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Find the 'aseman/ngc0628_miri_lv3_f2100w_i2d_anchor.fits' file
-        results = service.files().list(q="name='ngc0628_miri_lv3_f2100w_i2d_anchor.fits' and 'aseman' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        # Find the 'aseman' folder
+        folder_results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        folders = folder_results.get('files', [])
+
+        if not folders:
+            return JSONResponse({"error": "aseman folder not found"}, status_code=404)
+
+        folder_id = folders[0]['id']
+
+        # Find the FITS file inside the aseman folder
+        results = service.files().list(q=f"name='ngc0628_miri_lv3_f2100w_i2d_anchor.fits' and '{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         files = results.get('files', [])
 
         if not files:
@@ -76,7 +85,7 @@ async def view_fits():
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
-
+        
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
     try:
