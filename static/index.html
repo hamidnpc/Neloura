@@ -4,12 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Drive Files and FITS Viewer</title>
-    <style>
-        canvas { width: 100%; height: 100%; }
-    </style>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
     <h1>FITS File Viewer</h1>
-    <img src="/view-fits/" alt="FITS File Display" style="width:100%; height:auto;" />
+    <div id="fits-viewer"></div>
+
+    <script>
+        fetch('/view-fits/')
+            .then(response => response.json())
+            .then(data => {
+                Plotly.newPlot('fits-viewer', data);
+            })
+            .catch(error => console.error('Error:', error));
+    </script>
 </body>
 </html>
