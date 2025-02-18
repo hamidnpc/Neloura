@@ -34,39 +34,27 @@ async def view_fits():
     try:
         service = authenticate_drive()
 
-        # List all shared drives
-        drives = service.drives().list().execute()
-        logging.info(f"Shared Drives: {drives}")
-
-        # Find PHANGS folder across all drives
-        results = service.files().list(q="name='PHANGS' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        folders = results.get('files', [])
-
-        if not folders:
-            return JSONResponse({"error": "PHANGS folder not found"}, status_code=404)
-
-        folder_id = folders[0]['id']
-
         items = []
         page_token = None
 
+        # List all folders in the Google Drive root
         while True:
-            files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents, driveId)", pageToken=page_token).execute()
-            items.extend(files_result.get('files', []))
-            page_token = files_result.get('nextPageToken')
+            results = service.files().list(q="'root' in parents and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
+            items.extend(results.get('files', []))
+            page_token = results.get('nextPageToken')
             if not page_token:
                 break
 
         if not items:
-            return JSONResponse({"error": "No items found in PHANGS folder"}, status_code=404)
+            return JSONResponse({"error": "No folders found in Google Drive root"}, status_code=404)
 
-        item_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", []), "driveId": item.get("driveId", "")} for item in items]
-        for item in item_list:
-            logging.info(f"Item: {item['name']} (ID: {item['id']}), Type: {item['type']}, Parents: {item['parents']}, Drive ID: {item['driveId']}")
+        folder_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", [])} for item in items]
+        for item in folder_list:
+            logging.info(f"Folder: {item['name']} (ID: {item['id']}), Parents: {item['parents']}")
 
-        return JSONResponse({"items": item_list})
+        return JSONResponse({"folders": folder_list})
     except Exception as e:
-        return JSONResponse({"error": f"Failed to list items: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to list folders: {str(e)}"}, status_code=500)
 
 @app.get("/login")
 async def login():
