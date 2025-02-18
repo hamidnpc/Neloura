@@ -52,3 +52,31 @@ async def view_fits():
     
     except Exception as e:
         return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
+
+
+@app.get("/login")
+async def login():
+    flow = get_flow()
+    auth_url, _ = flow.authorization_url(prompt='consent')
+    return RedirectResponse(auth_url)
+
+
+@app.get("/oauth2callback")
+async def oauth2callback(request: Request):
+    try:
+        flow = get_flow()
+        flow.fetch_token(authorization_response=str(request.url))
+
+        creds = flow.credentials
+
+        # Ensure Railway's /data directory exists
+        os.makedirs("/data", exist_ok=True)
+
+        # Save token securely in Railway's /data storage
+        with open("/data/token.json", "w") as token_file:
+            token_file.write(creds.to_json())
+
+        return {"message": "Authentication successful! You can now access Google Drive files."}
+
+    except Exception as e:
+        return {"error": f"Failed to authenticate: {str(e)}"}
