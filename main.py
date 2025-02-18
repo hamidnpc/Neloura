@@ -14,6 +14,10 @@ import os
 from io import BytesIO
 import matplotlib.pyplot as plt
 from gdrive import authenticate_drive, get_flow
+from astropy.io import fits
+import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -28,42 +32,43 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def home():
     with open("static/index.html", "r") as f:
         return f.read()
-        
-@app.get("/view-fits/")
+        @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Find the 'aseman' folder
-        results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        folders = results.get('files', [])
+        # Find the 'aseman/ngc0628_miri_lv3_f2100w_i2d_anchor.fits' file
+        results = service.files().list(q="name='ngc0628_miri_lv3_f2100w_i2d_anchor.fits' and 'aseman' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        files = results.get('files', [])
 
-        if not folders:
-            return JSONResponse({"error": "aseman folder not found"}, status_code=404)
+        if not files:
+            return JSONResponse({"error": "FITS file not found in aseman folder"}, status_code=404)
 
-        folder_id = folders[0]['id']
+        file_id = files[0]['id']
 
-        items = []
-        page_token = None
+        # Download and read FITS file with astropy
+        request = service.files().get_media(fileId=file_id)
+        file_stream = BytesIO()
+        request.execute(fd=file_stream)
+        file_stream.seek(0)
+        with fits.open(file_stream) as hdul:
+            image_data = hdul[1].data  # Read HDU[1]
 
-        # List all files inside the 'aseman' folder with pagination
-        while True:
-            results = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
-            items.extend(results.get('files', []))
-            page_token = results.get('nextPageToken')
-            if not page_token:
-                break
+        image_data = np.nan_to_num(image_data)
+        image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
+        image_data = image_data.astype(np.uint8)
 
-        if not items:
-            return JSONResponse({"error": "No files found in aseman folder"}, status_code=404)
+        fig, ax = plt.subplots()
+        ax.imshow(image_data, cmap='gray', origin='lower')
+        ax.axis('off')
+        img_io = BytesIO()
+        plt.savefig(img_io, format='png', bbox_inches='tight', pad_inches=0)
+        img_io.seek(0)
 
-        file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", [])} for item in items]
-        for item in file_list:
-            logging.info(f"File: {item['name']} (ID: {item['id']}), Parents: {item['parents']}")
+        return Response(content=img_io.getvalue(), media_type="image/png")
 
-        return JSONResponse({"files": file_list})
     except Exception as e:
-        return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
 
 @app.get("/login")
 async def login():
