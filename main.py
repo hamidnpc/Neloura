@@ -50,6 +50,7 @@ async def login():
 CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+@app.get("/view-fits/", response_class=HTMLResponse)
 async def view_fits():
     try:
         cached_file = os.path.join(CACHE_DIR, "ngc0628_miri_lv3_f2100w_i2d_anchor.fits")
@@ -77,12 +78,13 @@ async def view_fits():
             image_data = hdul[1].data.astype(float)
 
         image_data = np.nan_to_num(image_data)
+        color_mapper = LinearColorMapper(palette="Greys256", low=0, high=5)
 
         plot = figure(title="FITS Image Viewer", x_axis_label="X", y_axis_label="Y", tools="pan,wheel_zoom,box_zoom,reset,save")
-        plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], palette="Greys256", level="image")
+        plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], color_mapper=color_mapper)
 
-        html = file_html(plot, CDN, "FITS Image Viewer")
-        return HTMLResponse(content=html)
+        script, div = components(plot)
+        return HTMLResponse(content=f"{script}\n{div}")
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
