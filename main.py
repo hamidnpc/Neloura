@@ -21,6 +21,7 @@ from io import BytesIO
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.widgets import Button
 import plotly.graph_objects as go
+import plotly.express as px
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -74,13 +75,8 @@ async def view_fits():
             image_data = hdul[1].data.astype(float)
 
         image_data = np.nan_to_num(image_data)
-        image_data[image_data < 0] = 0
 
-        # Ensure image data is 2D for Plotly
-        if len(image_data.shape) > 2:
-            image_data = image_data[0]
-
-        fig = go.Figure(data=go.Heatmap(z=image_data, colorscale='gray', zmin=0, zmax=5))
+        fig = px.imshow(image_data, color_continuous_scale='gray', zmin=0, zmax=5, labels={"color":"Intensity"})
         fig.update_layout(title="FITS Image Viewer", xaxis_title="X", yaxis_title="Y")
 
         return JSONResponse(content=fig.to_json())
