@@ -14,10 +14,11 @@
         fetch('/view-fits/')
             .then(response => response.json())
             .then(data => {
-                if (data.data && data.layout) {
-                    Plotly.newPlot('fits-viewer', data.data, data.layout);
-                } else {
-                    console.error('Invalid data received:', data);
+                try {
+                    const fig = JSON.parse(data);  // Parse the received JSON string
+                    Plotly.newPlot('fits-viewer', fig.data, fig.layout);
+                } catch (e) {
+                    console.error('Error parsing JSON:', e);
                     document.getElementById('fits-viewer').innerHTML = '<p>Error loading FITS image</p>';
                 }
             })
