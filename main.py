@@ -32,7 +32,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def home():
     with open("static/index.html", "r") as f:
         return f.read()
-        @app.get("/view-fits/")
         
 @app.get("/login")
 async def login():
