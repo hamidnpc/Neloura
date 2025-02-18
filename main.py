@@ -43,6 +43,10 @@ async def login():
     return RedirectResponse(auth_url)
     
     
+CACHE_DIR = "/data/cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
 @app.get("/view-fits/")
 async def view_fits():
     try:
