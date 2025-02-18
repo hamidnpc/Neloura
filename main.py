@@ -21,6 +21,8 @@ from astropy.io import fits
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.widgets import Button
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
