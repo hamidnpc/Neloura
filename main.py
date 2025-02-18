@@ -82,7 +82,7 @@ async def view_fits():
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
-        
+
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
     try:
