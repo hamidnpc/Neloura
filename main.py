@@ -29,25 +29,33 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
+from fastapi import FastAPI, Response, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import logging
+import os
+from gdrive import authenticate_drive
+
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+logging.basicConfig(level=logging.INFO)
+
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Get the list of top-level files and folders
-        results = service.files().list(q="'root' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
+        # List all files and folders at top-level and find the PHANGS folder by its unique ID
+        results = service.files().list(q="mimeType='application/vnd.google-apps.folder' and name='PHANGS'", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name)").execute()
         items = results.get('files', [])
 
-        # Find the PHANGS folder
-        phangs_folder = next((item for item in items if item['name'] == 'PHANGS' and item['mimeType'] == 'application/vnd.google-apps.folder'), None)
-
-        if not phangs_folder:
+        if not items:
             return JSONResponse({"error": "PHANGS folder not found"}, status_code=404)
 
-        folder_id = phangs_folder['id']
+        folder_id = items[0]['id']
 
-        # List all files inside PHANGS folder
+        # List contents of the PHANGS folder
         files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, fields="files(id, name, mimeType)").execute()
         items = files_result.get('files', [])
 
