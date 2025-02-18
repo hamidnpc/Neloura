@@ -34,7 +34,11 @@ async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Find PHANGS folder by navigating the drive
+        # List all shared drives
+        drives = service.drives().list().execute()
+        logging.info(f"Shared Drives: {drives}")
+
+        # Find PHANGS folder across all drives
         results = service.files().list(q="name='PHANGS' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         folders = results.get('files', [])
 
@@ -46,21 +50,19 @@ async def view_fits():
         items = []
         page_token = None
 
-        # Iterate through all pages to list all items in PHANGS folder
         while True:
-            files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
+            files_result = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents, driveId)", pageToken=page_token).execute()
             items.extend(files_result.get('files', []))
             page_token = files_result.get('nextPageToken')
-
             if not page_token:
                 break
 
         if not items:
             return JSONResponse({"error": "No items found in PHANGS folder"}, status_code=404)
 
-        item_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", [])} for item in items]
+        item_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", []), "driveId": item.get("driveId", "")} for item in items]
         for item in item_list:
-            logging.info(f"Item: {item['name']} (ID: {item['id']}), Type: {item['type']}, Parents: {item['parents']}")
+            logging.info(f"Item: {item['name']} (ID: {item['id']}), Type: {item['type']}, Parents: {item['parents']}, Drive ID: {item['driveId']}")
 
         return JSONResponse({"items": item_list})
     except Exception as e:
