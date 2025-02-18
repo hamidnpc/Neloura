@@ -25,6 +25,8 @@ import plotly.express as px
 from bokeh.plotting import figure, output_file, save
 from bokeh.resources import CDN
 from bokeh.embed import file_html
+from bokeh.embed import components
+from bokeh.models import ColorBar, LinearColorMapper
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
