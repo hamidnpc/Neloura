@@ -29,21 +29,31 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
 
-FITS_FILE_PATH = "PHANGS/Archive/JWST/v1p0p1/ngc0628/ngc0628_miri_lv3_f2100w_i2d_anchor.fits"
+FOLDER_PATH = "PHANGS/Archive/JWST/v1p0p1/ngc0628"
+FITS_FILE_NAME = "ngc0628_miri_lv3_f2100w_i2d_anchor.fits"
 
 @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
-        # Search for the specific FITS file
-        results = service.files().list(q=f"name = '{FITS_FILE_PATH.split('/')[-1]}'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+
+        # List all files in the specified folder
+        results = service.files().list(q=f"name contains 'ngc0628' and '{FOLDER_PATH}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         items = results.get('files', [])
 
         if not items:
-            return JSONResponse({"error": f"File {FITS_FILE_PATH} not found in Google Drive"}, status_code=404)
+            return JSONResponse({"error": f"No files found in {FOLDER_PATH}"}, status_code=404)
 
-        file_id = items[0]['id']
-        request = service.files().get_media(fileId=file_id)
+        file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"]} for item in items]
+        for item in file_list:
+            logging.info(f"File: {item['name']} (ID: {item['id']}), Type: {item['type']}")
+
+        # Find and display the specific FITS file
+        target_file = next((item for item in items if item['name'] == FITS_FILE_NAME), None)
+        if not target_file:
+            return JSONResponse({"error": f"File {FITS_FILE_NAME} not found"}, status_code=404)
+
+        request = service.files().get_media(fileId=target_file['id'])
         file_stream = BytesIO()
         request.execute(fd=file_stream)
 
