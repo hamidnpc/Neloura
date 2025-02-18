@@ -67,6 +67,8 @@ async def view_fits():
 
         with fits.open(file_stream) as hdul:
             image_data = hdul[1].data
+            heaader=hdul[1].header
+            print(repr(heaader))
 
         image_data = np.nan_to_num(image_data)
         image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
