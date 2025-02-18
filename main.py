@@ -33,7 +33,7 @@ async def home():
 async def view_fits():
     try:
         service = authenticate_drive()
-        folder_name = ""
+        folder_name = "PHANGS"
 
         # List all files inside PHANGS folder, including shared drives
         results = service.files().list(q=f"name contains '{folder_name}'", fields="files(id, name, mimeType, parents)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
