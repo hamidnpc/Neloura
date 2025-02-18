@@ -44,7 +44,6 @@ async def view_fits():
     try:
         service = authenticate_drive()
 
-        # Find the 'aseman' folder
         folder_results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         folders = folder_results.get('files', [])
 
@@ -53,7 +52,6 @@ async def view_fits():
 
         folder_id = folders[0]['id']
 
-        # Find the FITS file inside the aseman folder
         results = service.files().list(q=f"name='ngc0628_miri_lv3_f2100w_i2d_anchor.fits' and '{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         files = results.get('files', [])
 
@@ -62,13 +60,12 @@ async def view_fits():
 
         file_id = files[0]['id']
 
-        # Download and read FITS file with astropy
         request = service.files().get_media(fileId=file_id)
-        file_stream = BytesIO()
-        request.execute(fd=file_stream)
+        file_stream = BytesIO(request.execute())  # Corrected method
         file_stream.seek(0)
+
         with fits.open(file_stream) as hdul:
-            image_data = hdul[1].data  # Read HDU[1]
+            image_data = hdul[1].data
 
         image_data = np.nan_to_num(image_data)
         image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data)) * 255
