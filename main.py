@@ -5,9 +5,6 @@ from fastapi.responses import RedirectResponse
 
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi import Response
-from bokeh.plotting import figure
-from bokeh.resources import CDN
-from bokeh.embed import file_html
 
 from fastapi.staticfiles import StaticFiles
 from astropy.io import fits
