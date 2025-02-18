@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Drive FITS Viewer</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.bokeh.org/bokeh/release/bokeh-3.2.2.min.js"></script>
 </head>
 <body>
     <h1>FITS File Viewer</h1>
@@ -12,15 +12,9 @@
 
     <script>
         fetch('/view-fits/')
-            .then(response => response.json())
-            .then(data => {
-                try {
-                    const fig = JSON.parse(data);  // Parse the received JSON string
-                    Plotly.newPlot('fits-viewer', fig.data, fig.layout);
-                } catch (e) {
-                    console.error('Error parsing JSON:', e);
-                    document.getElementById('fits-viewer').innerHTML = '<p>Error loading FITS image</p>';
-                }
+            .then(response => response.text())
+            .then(html => {
+                document.getElementById('fits-viewer').innerHTML = html;
             })
             .catch(error => {
                 console.error('Error:', error);
