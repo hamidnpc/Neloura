@@ -33,6 +33,16 @@ async def home():
     with open("static/index.html", "r") as f:
         return f.read()
         @app.get("/view-fits/")
+
+
+        
+@app.get("/login")
+async def login():
+    flow = get_flow()
+    auth_url, _ = flow.authorization_url(prompt='consent')
+    return RedirectResponse(auth_url)
+
+@app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
@@ -69,13 +79,6 @@ async def view_fits():
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
-
-@app.get("/login")
-async def login():
-    flow = get_flow()
-    auth_url, _ = flow.authorization_url(prompt='consent')
-    return RedirectResponse(auth_url)
-
 
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
