@@ -22,6 +22,9 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.widgets import Button
 import plotly.graph_objects as go
 import plotly.express as px
+from bokeh.plotting import figure, output_file, save
+from bokeh.resources import CDN
+from bokeh.embed import file_html
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -47,7 +50,6 @@ async def login():
 CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-@app.get("/view-fits/")
 async def view_fits():
     try:
         cached_file = os.path.join(CACHE_DIR, "ngc0628_miri_lv3_f2100w_i2d_anchor.fits")
@@ -76,10 +78,11 @@ async def view_fits():
 
         image_data = np.nan_to_num(image_data)
 
-        fig = px.imshow(image_data, color_continuous_scale='gray', zmin=0, zmax=5, labels={"color":"Intensity"})
-        fig.update_layout(title="FITS Image Viewer", xaxis_title="X", yaxis_title="Y")
+        plot = figure(title="FITS Image Viewer", x_axis_label="X", y_axis_label="Y", tools="pan,wheel_zoom,box_zoom,reset,save")
+        plot.image(image=[image_data], x=0, y=0, dw=image_data.shape[1], dh=image_data.shape[0], palette="Greys256", level="image")
 
-        return JSONResponse(content=fig.to_json())
+        html = file_html(plot, CDN, "FITS Image Viewer")
+        return HTMLResponse(content=html)
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
