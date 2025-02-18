@@ -28,33 +28,42 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def home():
     with open("static/index.html", "r") as f:
         return f.read()
-
+        
 @app.get("/view-fits/")
 async def view_fits():
     try:
         service = authenticate_drive()
 
+        # Find the 'aseman' folder
+        results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        folders = results.get('files', [])
+
+        if not folders:
+            return JSONResponse({"error": "aseman folder not found"}, status_code=404)
+
+        folder_id = folders[0]['id']
+
         items = []
         page_token = None
 
-        # List all folders in the Google Drive root
+        # List all files inside the 'aseman' folder with pagination
         while True:
-            results = service.files().list(q="'root' in parents and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
+            results = service.files().list(q=f"'{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=100, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
             items.extend(results.get('files', []))
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
 
         if not items:
-            return JSONResponse({"error": "No folders found in Google Drive root"}, status_code=404)
+            return JSONResponse({"error": "No files found in aseman folder"}, status_code=404)
 
-        folder_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", [])} for item in items]
-        for item in folder_list:
-            logging.info(f"Folder: {item['name']} (ID: {item['id']}), Parents: {item['parents']}")
+        file_list = [{"name": item["name"], "id": item["id"], "type": item["mimeType"], "parents": item.get("parents", [])} for item in items]
+        for item in file_list:
+            logging.info(f"File: {item['name']} (ID: {item['id']}), Parents: {item['parents']}")
 
-        return JSONResponse({"folders": folder_list})
+        return JSONResponse({"files": file_list})
     except Exception as e:
-        return JSONResponse({"error": f"Failed to list folders: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to list files: {str(e)}"}, status_code=500)
 
 @app.get("/login")
 async def login():
