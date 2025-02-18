@@ -46,7 +46,6 @@ async def login():
 CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-
 @app.get("/view-fits/")
 async def view_fits():
     try:
@@ -72,9 +71,14 @@ async def view_fits():
                 f.write(file_data)
 
         with fits.open(cached_file) as hdul:
-            image_data = hdul[1].data
+            image_data = hdul[1].data.astype(float)
 
         image_data = np.nan_to_num(image_data)
+        image_data[image_data < 0] = 0
+
+        # Ensure image data is 2D for Plotly
+        if len(image_data.shape) > 2:
+            image_data = image_data[0]
 
         fig = go.Figure(data=go.Heatmap(z=image_data, colorscale='gray', zmin=0, zmax=5))
         fig.update_layout(title="FITS Image Viewer", xaxis_title="X", yaxis_title="Y")
