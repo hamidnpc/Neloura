@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from fastapi import HTTPException
-
+import numpy
 
 # Load credentials from Railway environment variable
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")
