@@ -88,6 +88,7 @@ async def view_fits():
         script, div = components(plot)
         html_content = f"<h1>FITS File Viewer</h1>{script}\n{div}"
         return HTMLResponse(content=html_content)
+        ####
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
