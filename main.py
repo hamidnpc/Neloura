@@ -28,6 +28,7 @@ import os
 from astropy.io import fits
 from io import BytesIO
 import base64
+from fastapi.responses import HTMLResponse, FileResponse
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
