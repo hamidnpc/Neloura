@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interactive FITS Viewer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script>
-    <script defer src="/static/index.js"></script>
+    <script defer src="/static/script.js"></script>
     <style>
         #openseadragon {
             width: 80vw;
@@ -13,10 +13,29 @@
             border: 1px solid black;
             margin: auto;
         }
+        .toolbar {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .toolbar button {
+            padding: 10px;
+            font-size: 16px;
+            margin: 5px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
-    <h1>Interactive FITS Viewer</h1>
+    <h1 style="text-align: center;">Interactive FITS Viewer</h1>
+
+    <!-- Zoom Controls -->
+    <div class="toolbar">
+        <button onclick="zoomIn()">Zoom In (+)</button>
+        <button onclick="zoomOut()">Zoom Out (-)</button>
+        <button onclick="resetView()">Reset (R)</button>
+    </div>
+
+    <!-- Image Viewer -->
     <div id="openseadragon"></div>
 </body>
 </html>
