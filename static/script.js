@@ -1,50 +1,15 @@
-async function listFiles() {
-    const response = await fetch("/list-files/");
-    const data = await response.json();
-
-    const fileList = document.getElementById("fileList");
-    fileList.innerHTML = ""; // Clear previous list
-
-    data.files.forEach(file => {
-        const listItem = document.createElement("li");
-        listItem.innerHTML = `<a href="https://drive.google.com/file/d/${file.id}" target="_blank">${file.name}</a>`;
-        fileList.appendChild(listItem);
+document.addEventListener("DOMContentLoaded", function () {
+    var viewer = OpenSeadragon({
+        id: "openseadragon",
+        tileSources: {
+            type: "image",
+            url: "/view-fits/"
+        },
+        prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
+        showNavigator: true,
+        zoomPerScroll: 1.2,
+        minZoomLevel: 1,
+        defaultZoomLevel: 1,
+        maxZoomLevel: 10
     });
-}
-
-async function uploadFile() {
-    const fileInput = document.getElementById('fileInput');
-    const file = fileInput.files[0];
-
-    if (!file) {
-        alert("Please select a file to upload.");
-        return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await fetch("/upload/", {
-        method: "POST",
-        body: formData
-    });
-
-    const result = await response.json();
-    alert(result.message);
-    listFiles(); // Refresh file list after upload
-}
-
-async function listFiles() {
-    const response = await fetch("/list-files/");
-    const data = await response.json();
-
-    const fileList = document.getElementById("fileList");
-    fileList.innerHTML = ""; // Clear previous list
-
-    data.files.forEach(file => {
-        const listItem = document.createElement("li");
-        listItem.innerHTML = `<a href="https://drive.google.com/file/d/${file.id}" target="_blank">${file.name}</a>`;
-        fileList.appendChild(listItem);
-    });
-}
-
+});

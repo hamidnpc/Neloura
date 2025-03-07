@@ -3,22 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google Drive FITS Viewer</title>
+    <title>Interactive FITS Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script>
+    <script defer src="/static/index.js"></script>
+    <style>
+        #openseadragon {
+            width: 80vw;
+            height: 80vh;
+            border: 1px solid black;
+            margin: auto;
+        }
+    </style>
 </head>
 <body>
-    <h1>FITS File Viewer</h1>
-    <div id="fits-viewer"></div>
-
-    <script>
-        fetch('/view-fits/')
-            .then(response => response.text())
-            .then(html => {
-                document.getElementById('fits-viewer').innerHTML = html;
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById('fits-viewer').innerHTML = '<p>Failed to load FITS image</p>';
-            });
-    </script>
+    <h1>Interactive FITS Viewer</h1>
+    <div id="openseadragon"></div>
 </body>
 </html>

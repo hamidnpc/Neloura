@@ -2,8 +2,6 @@ fastapi
 uvicorn
 astropy
 python-multipart
-fastapi
-uvicorn
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
