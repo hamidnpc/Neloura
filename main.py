@@ -20,13 +20,6 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.widgets import Button
-import plotly.graph_objects as go
-import plotly.express as px
-from bokeh.plotting import figure, output_file, save
-from bokeh.resources import CDN
-from bokeh.embed import file_html
-from bokeh.embed import components
-from bokeh.models import ColorBar, LinearColorMapper
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
