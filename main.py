@@ -28,13 +28,6 @@ import os
 from astropy.io import fits
 from io import BytesIO
 import base64
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, FileResponse
-import matplotlib.pyplot as plt
-import numpy as np
-import os
-from astropy.io import fits
-from io import BytesIO
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -61,15 +54,30 @@ CACHE_DIR = "/data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-@app.get("/view-fits/")
+@app.get("/view-fits/", response_class=HTMLResponse)
 async def view_fits():
     try:
         cached_file = os.path.join(CACHE_DIR, "ngc0628_miri_lv3_f2100w_i2d_anchor.fits")
 
         if not os.path.exists(cached_file):
-            return {"error": "FITS file not found in cache"}
+            service = authenticate_drive()
+            folder_results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+            folders = folder_results.get('files', [])
+            if not folders:
+                return JSONResponse({"error": "aseman folder not found"}, status_code=404)
 
-        # Open FITS file and extract data
+            folder_id = folders[0]['id']
+            results = service.files().list(q=f"name='ngc0628_miri_lv3_f2100w_i2d_anchor.fits' and '{folder_id}' in parents", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+            files = results.get('files', [])
+            if not files:
+                return JSONResponse({"error": "FITS file not found in aseman folder"}, status_code=404)
+
+            file_id = files[0]['id']
+            request = service.files().get_media(fileId=file_id)
+            file_data = request.execute()
+            with open(cached_file, 'wb') as f:
+                f.write(file_data)
+
         with fits.open(cached_file) as hdul:
             image_data = hdul[1].data.astype(float)
 
@@ -86,10 +94,11 @@ async def view_fits():
         plt.savefig(image_path, format="png", bbox_inches="tight", dpi=300)
 
         return FileResponse(image_path, media_type="image/png")
+        ####
 
     except Exception as e:
-        return {"error": f"Failed to display FITS file: {str(e)}"}
-        
+        return JSONResponse({"error": f"Failed to display FITS file: {str(e)}"}, status_code=500)
+
 @app.get("/oauth2callback")
 async def oauth2callback(request: Request):
     try:
