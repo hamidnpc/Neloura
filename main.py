@@ -87,7 +87,7 @@ async def view_fits():
 
         # Create Matplotlib figure
         fig, ax = plt.subplots(figsize=(10, 10))  # Larger image for better zooming
-        im = ax.imshow(image_data, cmap="gray", origin="lower")
+        im = ax.imshow(image_data, cmap="gray", origin="lower",vmin=0,vmax=10)
         plt.axis("off")  # Hide axes for better viewing
 
         # Save image as high-resolution PNG
