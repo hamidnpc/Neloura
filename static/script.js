@@ -1,15 +1,52 @@
+var viewer;
+
+// Initialize OpenSeadragon on page load
 document.addEventListener("DOMContentLoaded", function () {
-    var viewer = OpenSeadragon({
+    viewer = OpenSeadragon({
         id: "openseadragon",
         tileSources: {
             type: "image",
             url: "/view-fits/"
         },
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-        showNavigator: true,
-        zoomPerScroll: 1.2,
-        minZoomLevel: 1,
+        showNavigator: true,  // Mini map for easier navigation
+        showZoomControl: true,
+        showFullPageControl: true,
         defaultZoomLevel: 1,
-        maxZoomLevel: 10
+        minZoomLevel: 0.5,
+        maxZoomLevel: 10,
+        zoomPerScroll: 1.2
+    });
+
+    // Add keyboard shortcuts
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "+") {
+            zoomIn();
+        } else if (event.key === "-") {
+            zoomOut();
+        } else if (event.key.toLowerCase() === "r") {
+            resetView();
+        }
     });
 });
+
+// ✅ Define functions in the global scope so they work with `onclick` attributes
+function zoomIn() {
+    if (viewer) {
+        viewer.viewport.zoomBy(1.2);
+        viewer.viewport.applyConstraints();
+    }
+}
+
+function zoomOut() {
+    if (viewer) {
+        viewer.viewport.zoomBy(0.8);
+        viewer.viewport.applyConstraints();
+    }
+}
+
+function resetView() {
+    if (viewer) {
+        viewer.viewport.goHome();
+    }
+}
