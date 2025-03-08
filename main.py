@@ -97,7 +97,7 @@ async def view_fits():
 
         region_pix = CirclePixelRegion(center=PixCoord(x=897, y=1300),
                                radius=5)
-        region_pix.plot(ax=ax,color='red')
+        region_pix.plot(ax=ax,color='red',lw=1)
 
 
         plt.axis("off")  # Hide axes for better viewing
