@@ -36,13 +36,19 @@ FITS_FILE_ID = None  # Cache the file ID for efficiency
 # ------------------------------
 def get_drive_service():
     """Retrieve an authenticated Google Drive API service."""
-    return authenticate_drive()
+    service = authenticate_drive()
+    if service is None:
+        return None
+    return service
 
 def get_fits_file_id():
     """Get the Google Drive file ID (cached for better performance)."""
     global FITS_FILE_ID
     if FITS_FILE_ID is None:
         service = get_drive_service()
+        if service is None:
+            return None  # Prevent errors if authentication is not completed
+        
         folder_results = service.files().list(q="name='aseman' and mimeType='application/vnd.google-apps.folder'",
                                               supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         folders = folder_results.get('files', [])
@@ -65,14 +71,12 @@ async def cache_fits_file():
     global cached_fits_data, cached_fits_file
     cached_fits_file = os.path.join(CACHE_DIR, "ngc0628_miri_lv3_f2100w_i2d_anchor.fits")
 
-    # If already cached, load it
-    if os.path.exists(cached_fits_file):
-        with fits.open(cached_fits_file) as hdul:
-            cached_fits_data = hdul[1].data.astype(float)
+    # Ensure authentication before downloading
+    service = get_drive_service()
+    if service is None:
+        logging.warning("Google Drive authentication is required before caching FITS file.")
         return
 
-    # Otherwise, download the file from Google Drive
-    service = get_drive_service()
     file_id = get_fits_file_id()
     if not file_id:
         logging.error("FITS file ID not found!")
@@ -93,11 +97,6 @@ async def cache_fits_file():
 
     with fits.open(cached_fits_file) as hdul:
         cached_fits_data = hdul[1].data.astype(float)
-
-@app.on_event("startup")
-async def load_fits_cache():
-    """Preload FITS file into memory when the server starts."""
-    await cache_fits_file()
 
 # ------------------------------
 # Routes
@@ -138,6 +137,11 @@ async def view_fits(background_tasks: BackgroundTasks):
     """Display the FITS file as an image."""
     global cached_fits_data
 
+    # If authentication is not done, prevent errors
+    service = get_drive_service()
+    if service is None:
+        return JSONResponse({"error": "Authentication required. Please visit /login to authenticate."}, status_code=401)
+
     if cached_fits_data is None:
         # Trigger background task to fetch data if not cached
         background_tasks.add_task(cache_fits_file)
@@ -167,4 +171,3 @@ async def update_fits_cache(background_tasks: BackgroundTasks):
     """Manually update the FITS cache."""
     background_tasks.add_task(cache_fits_file)
     return {"message": "FITS file is being updated in the background."}
-
