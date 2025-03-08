@@ -29,6 +29,12 @@ from astropy.io import fits
 from io import BytesIO
 import base64
 from fastapi.responses import HTMLResponse, FileResponse
+from astropy.coordinates import SkyCoord
+from astropy import units as u
+from regions import PixCoord
+from regions import CircleSkyRegion, CirclePixelRegion
+
+
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -88,6 +94,12 @@ async def view_fits():
         # Create Matplotlib figure
         fig, ax = plt.subplots(figsize=(10, 10))  # Larger image for better zooming
         im = ax.imshow(image_data, cmap="gray", origin="lower",vmin=0,vmax=10)
+
+        region_pix = CirclePixelRegion(center=PixCoord(x=897, y=1300),
+                               radius=5)
+        region_pix.plot(ax=ax,color='red')
+
+
         plt.axis("off")  # Hide axes for better viewing
 
         # Save image as high-resolution PNG
