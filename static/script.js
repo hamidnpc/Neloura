@@ -1,6 +1,5 @@
 var viewer;
 
-// Initialize OpenSeadragon on page load
 document.addEventListener("DOMContentLoaded", function () {
     viewer = OpenSeadragon({
         id: "openseadragon",
@@ -9,11 +8,12 @@ document.addEventListener("DOMContentLoaded", function () {
             url: "/view-fits/"
         },
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-        showNavigator: false,  
-        showZoomControl: false,
-        showHomeControl: false,
-        showFullPageControl: false, 
-        showRotationControl: false, 
+        showNavigator: false,   // Hide mini-map
+        showZoomControl: false, // Hide built-in zoom
+        showHomeControl: false, // Hide built-in reset
+        showFullPageControl: false, // Hide built-in fullscreen
+        showRotationControl: false, // Hide rotation
+        defaultZoomLevel: 1,
         minZoomLevel: 0.5,
         maxZoomLevel: 10,
         zoomPerScroll: 1.2
