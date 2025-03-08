@@ -9,8 +9,11 @@ document.addEventListener("DOMContentLoaded", function () {
             url: "/view-fits/"
         },
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-        showRotationControl: true,
-        defaultZoomLevel: 1,
+        showNavigator: false,  
+        showZoomControl: false,
+        showHomeControl: false,
+        showFullPageControl: false, 
+        showRotationControl: false, 
         minZoomLevel: 0.5,
         maxZoomLevel: 10,
         zoomPerScroll: 1.2
@@ -28,7 +31,6 @@ document.addEventListener("DOMContentLoaded", function () {
     });
 });
 
-// ✅ Define functions in the global scope so they work with `onclick` attributes
 function zoomIn() {
     if (viewer) {
         viewer.viewport.zoomBy(1.2);

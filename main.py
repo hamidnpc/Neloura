@@ -104,7 +104,7 @@ async def view_fits():
 
         # Save image as high-resolution PNG
         image_path = os.path.join(CACHE_DIR, "fits_image.png")
-        plt.savefig(image_path, format="png", bbox_inches="tight", dpi=300)
+        plt.savefig(image_path, format="png", bbox_inches="tight", dpi=1000)
 
         return FileResponse(image_path, media_type="image/png")
         ####
