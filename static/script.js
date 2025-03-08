@@ -9,9 +9,7 @@ document.addEventListener("DOMContentLoaded", function () {
             url: "/view-fits/"
         },
         prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-        showNavigator: true,  // Mini map for easier navigation
-        showZoomControl: true,
-        showFullPageControl: true,
+        showRotationControl: True,
         defaultZoomLevel: 1,
         minZoomLevel: 0.5,
         maxZoomLevel: 10,
