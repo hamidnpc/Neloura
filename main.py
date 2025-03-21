@@ -6,6 +6,9 @@ from fastapi import FastAPI, Response, Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtCore import QUrl
 import numpy as np
 import io
 from astropy.io import fits
@@ -3307,6 +3310,27 @@ def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
 
     return imageData
 
+# ---------------------------
+# PyQt WebView for macOS App
+# ---------------------------
+class WebApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Neloura")
+        self.setGeometry(100, 100, 1200, 800)
+
+        # Create a central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Layout
+        layout = QVBoxLayout()
+        central_widget.setLayout(layout)
+
+        # Add WebView
+        self.web_view = QWebEngineView()
+        self.web_view.setUrl(QUrl("http://localhost:8000"))  # Load FastAPI page
+        layout.addWidget(self.web_view)
 
 # ---------------------------
 # Run FastAPI Server in a Thread
@@ -3315,6 +3339,12 @@ def run_server():
     """Run FastAPI in a separate thread."""
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
+def run_mac_app():
+    """Start the macOS app with a built-in browser."""
+    app = QApplication(sys.argv)
+    window = WebApp()
+    window.show()
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     if RUNNING_ON_SERVER:
