@@ -6,8 +6,6 @@ from fastapi import FastAPI, Response, Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
-
-from PyQt6.QtCore import QUrl
 import numpy as np
 import io
 from astropy.io import fits
