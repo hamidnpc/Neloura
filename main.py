@@ -843,7 +843,7 @@ async def list_files(path: str = ""):
     """
     try:
         # Base directory is "files"
-        base_dir = Path("/files")
+        base_dir = Path("files/")
         
         # Construct the full directory path
         current_dir = base_dir / path if path else base_dir
