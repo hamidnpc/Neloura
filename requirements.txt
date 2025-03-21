@@ -13,3 +13,4 @@ matplotlib
 Pillow  
 scikit-image  
 numpy  
+aiohttp
