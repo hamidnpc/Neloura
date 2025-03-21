@@ -1948,6 +1948,14 @@ import json
 from fastapi import Form
 from fastapi.responses import JSONResponse
 
+# Add this to your main.py file
+import subprocess
+import sys
+import os
+import json
+from fastapi import Form
+from fastapi.responses import JSONResponse
+
 @app.post("/run-peak-finder/")
 async def run_peak_finder(
     fits_file: str = Form(...),
@@ -1985,13 +1993,18 @@ async def run_peak_finder(
             str(minval_rms)
         ]
         
+        # Debug: Log the exact command being run
+        print(f"Running peak finder command: {' '.join(cmd)}")
+        
         # Run the peak finder script using subprocess
         try:
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
                 text=True,
-                timeout=120  # 2-minute timeout
+                check=False,  # Don't raise exception on non-zero exit
+                timeout=120,  # 2-minute timeout
+                cwd=os.path.dirname(os.path.abspath(__file__))  # Set working directory
             )
         except subprocess.TimeoutExpired:
             return JSONResponse(
@@ -2004,32 +2017,50 @@ async def run_peak_finder(
                 }
             )
         
+        # Debug: Log the full output
+        print("Peak Finder Script Output:")
+        print("STDOUT:", result.stdout)
+        print("STDERR:", result.stderr)
+        print(f"Return code: {result.returncode}")
+        
         # Check for errors in subprocess execution
         if result.returncode != 0:
-            # Log the full error output
-            print("Peak Finder Script Error:")
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            
             return JSONResponse(
                 status_code=500,
                 content={
-                    "error": f"Peak finder script failed: {result.stderr or result.stdout}",
+                    "error": f"Peak finder script failed with return code {result.returncode}: {result.stderr or result.stdout}",
                     "ra": [],
                     "dec": [],
                     "source_count": 0
                 }
             )
         
-        # Parse the output
+        # Parse the output, handling potential mixed content
         try:
-            output_data = json.loads(result.stdout.strip())
+            # Look for JSON pattern in the output (starting with { and ending with })
+            import re
+            json_match = re.search(r'({.*"source_count":\s*\d+})', result.stdout, re.DOTALL)
             
-            # Validate the output
-            if not isinstance(output_data, dict):
-                raise ValueError("Invalid output format")
-            
-            return JSONResponse(content=output_data)
+            if json_match:
+                # Extract the JSON part
+                json_str = json_match.group(1)
+                output_data = json.loads(json_str)
+                
+                # Validate the output structure
+                if not isinstance(output_data, dict):
+                    raise ValueError("Invalid output format: expected JSON object")
+                
+                # Ensure output has expected fields
+                if "ra" not in output_data or "dec" not in output_data or "source_count" not in output_data:
+                    raise ValueError("Missing required fields in output")
+                
+                # Add debug info about the found sources
+                print(f"Successfully found {output_data['source_count']} sources")
+                
+                return JSONResponse(content=output_data)
+            else:
+                # No JSON found in the output
+                raise ValueError("No valid JSON data found in peak finder output")
         
         except (json.JSONDecodeError, ValueError) as e:
             # Log the problematic output
@@ -2040,7 +2071,7 @@ async def run_peak_finder(
                 status_code=500,
                 content={
                     "error": f"Invalid output from peak finder script: {str(e)}",
-                    "raw_output": result.stdout,
+                    "raw_output": result.stdout[:1000],  # Include part of the raw output for debugging
                     "ra": [],
                     "dec": [],
                     "source_count": 0
@@ -2062,6 +2093,8 @@ async def run_peak_finder(
                 "source_count": 0
             }
         )
+
+
 
 
 @app.post("/register-fits-data/")
