@@ -6,6 +6,8 @@ from fastapi import FastAPI, Response, Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+
+from PyQt6.QtCore import QUrl
 import numpy as np
 import io
 from astropy.io import fits
@@ -288,7 +290,7 @@ async def upload_fits_file(file: UploadFile = File(...)):
     """Upload a FITS file to the server."""
     try:
         # Create the 'uploads' directory if it doesn't exist
-        uploads_dir = Path("/files/uploads")
+        uploads_dir = Path("files/uploads")
         uploads_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate a safe filename
@@ -843,7 +845,7 @@ async def list_files(path: str = ""):
     """
     try:
         # Base directory is "files"
-        base_dir = Path("/files")
+        base_dir = Path("files")
         
         # Construct the full directory path
         current_dir = base_dir / path if path else base_dir
@@ -865,7 +867,7 @@ async def list_files(path: str = ""):
         items = []
         
         # Add directories first
-        for dir_path in current_dir.glob("/files/*/"):
+        for dir_path in current_dir.glob("*/"):
             if dir_path.is_dir():
                 rel_path = str(dir_path.relative_to(base_dir))
                 items.append({
@@ -1962,7 +1964,7 @@ async def run_peak_finder(
     """
     try:
         # Verify the file exists and is a valid FITS file
-        full_file_path = os.path.join('/files', fits_file)
+        full_file_path = os.path.join('files', fits_file)
         
         if not os.path.exists(full_file_path):
             return JSONResponse(
@@ -3306,6 +3308,7 @@ def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
     imageData[indices1] = np.arcsinh((imageData[indices1] - scale_min)/non_linear)/factor
 
     return imageData
+
 
 # ---------------------------
 # Run FastAPI Server in a Thread
