@@ -10,8 +10,6 @@ regions
 reproject  
 spectral-cube  
 matplotlib  
-PyQt6  
-PyQt6-WebEngine  
 Pillow  
 scikit-image  
 numpy  
