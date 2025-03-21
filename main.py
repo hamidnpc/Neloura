@@ -794,7 +794,7 @@ async def load_file(filepath: str):
     """Set the active FITS file and initialize tile generator."""
     try:
         # Base directory is "files"
-        base_dir = Path("/")
+        base_dir = Path("files")
         
         # Construct the full path
         file_path = base_dir / filepath
