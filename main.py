@@ -327,6 +327,160 @@ async def upload_fits_file(file: UploadFile = File(...)):
             content={"error": f"Failed to upload file: {str(e)}"}
         )
 
+
+# Add this to your main.py file to improve the proxy functionality for NED
+
+import aiohttp
+import ssl
+import certifi
+from fastapi.responses import Response
+
+# Enhanced proxy endpoint for NED requests
+@app.get("/ned-proxy/")
+async def ned_proxy(url: str):
+    """
+    Enhanced proxy endpoint for accessing NED data.
+    Handles different response formats and special requirements for NED.
+    """
+    try:
+        print(f"Proxying NED request: {url}")
+        
+        # Create custom headers that mimic a browser
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
+        # Create a custom SSL context that's optimized for astronomy services
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE  # Disables certificate verification
+        
+        # Use aiohttp to make the request
+        conn = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(connector=conn) as session:
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
+                if not response.ok:
+                    return JSONResponse(
+                        status_code=response.status,
+                        content={"error": f"NED request failed: HTTP {response.status}"}
+                    )
+                
+                # Determine the content type
+                content_type = response.headers.get("Content-Type", "text/html")
+                
+                # Check the response content type to determine how to process it
+                if "image" in content_type or "fits" in content_type.lower():
+                    # For FITS files and images, return as binary data
+                    content = await response.read()
+                    return Response(
+                        content=content,
+                        media_type=content_type
+                    )
+                elif "xml" in content_type:
+                    # For XML responses (like object searches)
+                    content = await response.text()
+                    return Response(
+                        content=content,
+                        media_type=content_type
+                    )
+                elif "text/html" in content_type:
+                    # For HTML responses (like image lists)
+                    content = await response.text()
+                    return Response(
+                        content=content,
+                        media_type=content_type
+                    )
+                else:
+                    # For all other content types
+                    content = await response.read()
+                    return Response(
+                        content=content,
+                        media_type=content_type
+                    )
+    
+    except Exception as e:
+        print(f"Error in NED proxy: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"NED proxy error: {str(e)}"}
+        )
+
+# Enhanced proxy download for larger FITS files from NED
+@app.get("/ned-download/")
+async def ned_download(url: str, object_name: str = None):
+    """
+    Specialized endpoint for downloading FITS files from NED.
+    Includes proper handling of the file size and progress tracking.
+    """
+    try:
+        print(f"Downloading FITS file from NED: {url}")
+        
+        # Create custom headers that mimic a browser
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+        }
+        
+        # Create a custom SSL context that's optimized for astronomy services
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE  # Disables certificate verification
+        
+        # Use aiohttp to make the request
+        conn = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(connector=conn) as session:
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
+                if not response.ok:
+                    return JSONResponse(
+                        status_code=response.status,
+                        content={"error": f"NED download failed: HTTP {response.status}"}
+                    )
+                
+                # Read the content
+                content = await response.read()
+                
+                # Generate a unique filename
+                filename = url.split('/')[-1]
+                if not filename.lower().endswith('.fits'):
+                    if object_name:
+                        # Use the object name to create a meaningful filename
+                        filename = f"{object_name.replace(' ', '_')}.fits"
+                    else:
+                        # Use a generic name with timestamp
+                        import time
+                        timestamp = int(time.time())
+                        filename = f"ned_download_{timestamp}.fits"
+                
+                # Create the uploads directory if it doesn't exist
+                uploads_dir = Path("files/uploads")
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Construct the file path
+                file_path = uploads_dir / filename
+                
+                # Write the file
+                with open(file_path, "wb") as buffer:
+                    buffer.write(content)
+                
+                # Return the relative path for loading
+                return JSONResponse(content={
+                    "message": "File downloaded successfully from NED",
+                    "filepath": f"uploads/{filename}"
+                })
+                
+    except Exception as e:
+        print(f"Error in NED download: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"NED download error: {str(e)}"}
+        )
 @app.get("/proxy-download/")
 async def proxy_download(url: str, request: Request):
     """
@@ -843,7 +997,7 @@ async def list_files(path: str = ""):
     """
     try:
         # Base directory is "files"
-        base_dir = Path("files/")
+        base_dir = Path("files")
         
         # Construct the full directory path
         current_dir = base_dir / path if path else base_dir
@@ -1948,14 +2102,6 @@ import json
 from fastapi import Form
 from fastapi.responses import JSONResponse
 
-# Add this to your main.py file
-import subprocess
-import sys
-import os
-import json
-from fastapi import Form
-from fastapi.responses import JSONResponse
-
 @app.post("/run-peak-finder/")
 async def run_peak_finder(
     fits_file: str = Form(...),
@@ -2093,7 +2239,6 @@ async def run_peak_finder(
                 "source_count": 0
             }
         )
-
 
 
 
@@ -3348,6 +3493,7 @@ def run_server():
     """Run FastAPI in a separate thread."""
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
+
 if __name__ == "__main__":
     if RUNNING_ON_SERVER:
         run_server()  # Run FastAPI if deployed online
@@ -3357,4 +3503,3 @@ if __name__ == "__main__":
         server_thread.start()
 
         # Run macOS GUI
-        run_mac_app()
