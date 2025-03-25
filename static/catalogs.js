@@ -175,6 +175,7 @@ function loadCatalog(catalogName) {
     });
 }
 
+
 // Add catalog overlay to the viewer
 function addCatalogOverlay(catalogData) {
     console.log("Adding catalog overlay");
@@ -193,6 +194,9 @@ function addCatalogOverlay(catalogData) {
     }
     
     console.log(`Adding overlay with ${catalogData.length} objects`);
+    
+    // Initialize WCS transformation
+    initializeWCSTransformation();
     
     // Store catalog data for later use
     window.catalogDataForOverlay = catalogData;
@@ -222,6 +226,18 @@ function addCatalogOverlay(catalogData) {
     for (let i = 0; i < catalogData.length; i++) {
         const obj = catalogData[i];
         
+        // Convert RA/DEC to pixel coordinates if we have WCS
+        if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
+            const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
+            obj.x = pixelCoords.x;
+            obj.y = pixelCoords.y;
+            
+            // Log the first few conversions for debugging
+            if (i < 5) {
+                console.log(`Catalog object ${i}: RA=${obj.ra.toFixed(6)}, DEC=${obj.dec.toFixed(6)} -> X=${obj.x.toFixed(2)}, Y=${obj.y.toFixed(2)}`);
+            }
+        }
+        
         // Create a dot element
         const dot = document.createElement('div');
         dot.className = 'catalog-dot';
@@ -230,7 +246,7 @@ function addCatalogOverlay(catalogData) {
         dot.style.height = `${FIXED_RADIUS * 2}px`;
         dot.style.borderRadius = '50%';
         dot.style.backgroundColor = 'transparent';
-        dot.style.border = '1px solid rgba(255, 0, 0, 0.7)';  // Use 1px line width
+        dot.style.border = '1px solid rgba(255, 165, 0, 0.7)';  // Orange border
         dot.style.boxSizing = 'border-box';
         dot.style.transform = 'translate(-50%, -50%)';
         dot.style.pointerEvents = 'auto';  // Make dots clickable
@@ -275,8 +291,8 @@ function addCatalogOverlay(catalogData) {
     viewer.addHandler('zoom', debouncedZoomUpdate);
     
     // No notification about loaded catalog objects
+    return dots;
 }
-
 
 // Create a new info popup element
 function createInfoPopup(dotIndex) {
@@ -523,7 +539,7 @@ function updateOverlay() {
         }
     }
     
-    console.log(`Updated overlay: ${visibleCount} visible objects out of ${window.catalogDots.length}`);
+    // console.log(`Updated overlay: ${visibleCount} visible objects out of ${window.catalogDots.length}`);
 }
 
 
