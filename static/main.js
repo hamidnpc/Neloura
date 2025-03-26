@@ -29,6 +29,17 @@ const ENV_DESCRIPTIONS = {
 
 
 
+function loadCatalogs() {
+    fetch('/list-catalogs/')
+    .then(response => response.json())
+    .then(data => {
+        updateCatalogDropdown(data.catalogs);
+    })
+    .catch(error => {
+        console.error('Error loading catalogs:', error);
+    });
+}
+
 document.addEventListener("DOMContentLoaded", function () {
     // Create a circular progress indicator
     createProgressIndicator();
@@ -725,7 +736,7 @@ function processBinaryData(arrayBuffer, filepath) {
                         filename: filepath
                     };
                     
-                    console.timeEnd('parseBinaryData');
+                    // console.timeEnd('parseBinaryData');
                     
                     // Apply 99% percentile for better initial display
                     try {
@@ -4435,3 +4446,604 @@ function dumpWCSInfo() {
       return { ra: 0, dec: 0 };
     }
   }
+
+
+
+  
+
+
+
+
+  
+
+
+  
+
+
+
+
+  // Function to create HDU selection popup
+function createHduSelectorPopup(hduList, filepath) {
+    // Create container for the popup
+    const popup = document.createElement('div');
+    popup.id = 'hdu-selector-popup';
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333';
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '15px';
+    popup.style.zIndex = '2000';
+    popup.style.width = '500px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
+    
+    // Create title
+    const title = document.createElement('h3');
+    title.textContent = 'Select HDU to Display';
+    title.style.margin = '0 0 15px 0';
+    title.style.color = '#fff';
+    title.style.fontFamily = 'Arial, sans-serif';
+    title.style.fontSize = '18px';
+    title.style.fontWeight = 'bold';
+    title.style.borderBottom = '1px solid #555';
+    title.style.paddingBottom = '10px';
+    
+    // Create description
+    const description = document.createElement('p');
+    description.textContent = 'This FITS file contains multiple data units (HDUs). Please select which one to open:';
+    description.style.color = '#ddd';
+    description.style.marginBottom = '15px';
+    description.style.fontFamily = 'Arial, sans-serif';
+    
+    // Create selection container
+    const selectionContainer = document.createElement('div');
+    selectionContainer.style.display = 'flex';
+    selectionContainer.style.flexDirection = 'column';
+    selectionContainer.style.gap = '10px';
+    selectionContainer.style.marginBottom = '15px';
+    
+    // Add each HDU as an option
+    hduList.forEach((hdu, index) => {
+        const option = document.createElement('div');
+        option.className = 'hdu-option';
+        option.style.padding = '10px';
+        option.style.backgroundColor = '#444';
+        option.style.borderRadius = '4px';
+        option.style.cursor = 'pointer';
+        option.style.transition = 'background-color 0.2s';
+        
+        // Hover effect
+        option.addEventListener('mouseover', function() {
+            this.style.backgroundColor = '#555';
+        });
+        option.addEventListener('mouseout', function() {
+            this.style.backgroundColor = '#444';
+        });
+        
+        // Create header for the option
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.alignItems = 'center';
+        header.style.marginBottom = '5px';
+        
+        // Title for the option
+        const optionTitle = document.createElement('div');
+        optionTitle.style.fontWeight = 'bold';
+        optionTitle.style.color = '#fff';
+        optionTitle.textContent = `HDU ${index}: ${hdu.type}`;
+        if (hdu.name && hdu.name !== '') {
+            optionTitle.textContent += ` (${hdu.name})`;
+        }
+        
+        // Add recommended badge if this is likely the best HDU
+        if (hdu.isRecommended) {
+            const badge = document.createElement('span');
+            badge.textContent = 'Recommended';
+            badge.style.backgroundColor = '#4CAF50';
+            badge.style.color = 'white';
+            badge.style.padding = '2px 6px';
+            badge.style.borderRadius = '3px';
+            badge.style.fontSize = '12px';
+            badge.style.marginLeft = '10px';
+            optionTitle.appendChild(badge);
+        }
+        
+        header.appendChild(optionTitle);
+        
+        // Details container
+        const details = document.createElement('div');
+        details.style.fontSize = '13px';
+        details.style.color = '#ccc';
+        details.style.marginTop = '5px';
+        
+        // Display appropriate details based on HDU type
+        if (hdu.type === 'Image' && hdu.dimensions) {
+            details.innerHTML = `
+                <div>Dimensions: ${hdu.dimensions.join(' x ')}</div>
+                ${hdu.bitpix ? `<div>Data type: ${getBitpixDescription(hdu.bitpix)}</div>` : ''}
+                ${hdu.hasWCS ? '<div>WCS: Available</div>' : ''}
+            `;
+        } else if (hdu.type === 'Table' && hdu.rows !== undefined) {
+            details.innerHTML = `
+                <div>Rows: ${hdu.rows}</div>
+                ${hdu.columns ? `<div>Columns: ${hdu.columns}</div>` : ''}
+            `;
+        } else {
+            details.innerHTML = '<div>No additional information available</div>';
+        }
+        
+        // Append header and details to option
+        option.appendChild(header);
+        option.appendChild(details);
+        
+        // Add click handler to select this HDU
+        option.addEventListener('click', function() {
+            selectHdu(index, filepath);
+            document.body.removeChild(popup);
+        });
+        
+        selectionContainer.appendChild(option);
+    });
+    
+    // Create button container
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'space-between';
+    
+    // Cancel button
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = 'Cancel';
+    cancelButton.style.flex = '1';
+    cancelButton.style.marginRight = '10px';
+    cancelButton.style.padding = '8px 0';
+    cancelButton.style.backgroundColor = '#f44336';
+    cancelButton.style.color = '#fff';
+    cancelButton.style.border = 'none';
+    cancelButton.style.borderRadius = '3px';
+    cancelButton.style.cursor = 'pointer';
+    cancelButton.style.fontFamily = 'Arial, sans-serif';
+    cancelButton.style.fontSize = '14px';
+    
+    cancelButton.addEventListener('mouseover', () => {
+        cancelButton.style.backgroundColor = '#d32f2f';
+    });
+    cancelButton.addEventListener('mouseout', () => {
+        cancelButton.style.backgroundColor = '#f44336';
+    });
+    cancelButton.addEventListener('click', () => {
+        document.body.removeChild(popup);
+    });
+    
+    // Auto-select primary HDU button
+    const autoSelectButton = document.createElement('button');
+    autoSelectButton.textContent = 'Use Recommended HDU';
+    autoSelectButton.style.flex = '1';
+    autoSelectButton.style.padding = '8px 0';
+    autoSelectButton.style.backgroundColor = '#4CAF50';
+    autoSelectButton.style.color = '#fff';
+    autoSelectButton.style.border = 'none';
+    autoSelectButton.style.borderRadius = '3px';
+    autoSelectButton.style.cursor = 'pointer';
+    autoSelectButton.style.fontFamily = 'Arial, sans-serif';
+    autoSelectButton.style.fontSize = '14px';
+    
+    autoSelectButton.addEventListener('mouseover', () => {
+        autoSelectButton.style.backgroundColor = '#45a049';
+    });
+    autoSelectButton.addEventListener('mouseout', () => {
+        autoSelectButton.style.backgroundColor = '#4CAF50';
+    });
+    autoSelectButton.addEventListener('click', () => {
+        // Find the recommended HDU index
+        const recommendedIndex = hduList.findIndex(hdu => hdu.isRecommended);
+        if (recommendedIndex >= 0) {
+            selectHdu(recommendedIndex, filepath);
+        } else {
+            // If no recommended HDU, use the first one
+            selectHdu(0, filepath);
+        }
+        document.body.removeChild(popup);
+    });
+    
+    // Add buttons to container
+    buttonContainer.appendChild(cancelButton);
+    buttonContainer.appendChild(autoSelectButton);
+    
+    // Add all elements to popup
+    popup.appendChild(title);
+    popup.appendChild(description);
+    popup.appendChild(selectionContainer);
+    popup.appendChild(buttonContainer);
+    
+    // Add popup to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable
+    makeDraggable(popup, title);
+}
+
+// Helper function to convert BITPIX to a human-readable description
+function getBitpixDescription(bitpix) {
+    switch(bitpix) {
+        case 8: return '8-bit unsigned integer';
+        case 16: return '16-bit signed integer';
+        case 32: return '32-bit signed integer';
+        case -32: return '32-bit floating point';
+        case -64: return '64-bit floating point';
+        default: return `Unknown (${bitpix})`;
+    }
+}
+
+// Function to select a specific HDU
+function selectHdu(hduIndex, filepath) {
+    console.log(`Selected HDU ${hduIndex} from ${filepath}`);
+    
+    // Show loading progress
+    showProgress(true, `Loading HDU ${hduIndex}...`);
+    
+    // Call a modified version of the load-file endpoint that supports HDU selection
+    fetch(`/load-file/${encodeURIComponent(filepath)}?hdu=${hduIndex}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Failed to load file: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                showNotification(`Error: ${data.error}`, 3000);
+                showProgress(false);
+                return;
+            }
+            
+            // Clear any existing error messages
+            window.loadingError = null;
+            
+            // Clear any existing catalog
+            if (typeof clearCatalog === 'function') {
+                clearCatalog();
+            }
+            
+            // Get file size to determine loading method
+            return checkFileSize(filepath)
+                .then(fileSize => {
+                    // Use fast loading for files larger than 100MB
+                    const useFastLoading = fileSize > 100 * 1024 * 1024;
+                    
+                    if (useFastLoading) {
+                        console.log(`Large file detected (${formatFileSize(fileSize)}). Using fast loading.`);
+                        
+                        // Use JSON endpoint for fast loading mode with HDU parameter
+                        return fetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.error) {
+                                    throw new Error(data.error);
+                                }
+                                
+                                if (data.fast_loading) {
+                                    // Handle fast loading response
+                                    if (typeof handleFastLoadingResponse === 'function') {
+                                        return handleFastLoadingResponse(data, filepath);
+                                    } else {
+                                        throw new Error('Fast loading handler not available');
+                                    }
+                                } else {
+                                    // Fall back to binary processing
+                                    return fetchBinaryWithProgress(`/fits-binary/?fast_loading=false&hdu=${hduIndex}`)
+                                        .then(arrayBuffer => processBinaryData(arrayBuffer, filepath));
+                                }
+                            });
+                    } else {
+                        console.log(`Regular file (${formatFileSize(fileSize)}). Using standard loading.`);
+                        // For smaller files, use the regular viewer
+                        return fetchBinaryWithProgress(`/fits-binary/?fast_loading=false&hdu=${hduIndex}`)
+                            .then(arrayBuffer => {
+                                if (!arrayBuffer) {
+                                    throw new Error('Failed to load FITS data');
+                                }
+                                
+                                // Process binary data and initialize viewer
+                                console.time('parseBinaryData');
+                                return processBinaryData(arrayBuffer, filepath);
+                            });
+                    }
+                });
+        })
+        .catch(error => {
+            console.error('Error loading FITS file:', error);
+            showProgress(false);
+            showNotification(`Error: ${error.message || 'Failed to load FITS file'}`, 5000);
+        });
+}
+
+// Function to analyze the FITS file and get HDU information
+function getFitsHduInfo(filepath) {
+    return fetch(`/fits-hdu-info/${encodeURIComponent(filepath)}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Failed to get HDU info: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            return data.hduList;
+        });
+}
+
+// Modify the original loadFitsFile function to check for multiple HDUs
+function loadFitsFileWithHduSelection(filepath) {
+    // Hide welcome elements if they exist
+    const welcomeScreen = document.querySelector('.welcome-screen');
+    if (welcomeScreen && welcomeScreen.parentNode) {
+        welcomeScreen.parentNode.removeChild(welcomeScreen);
+    }
+    
+    const welcomePointer = document.querySelector('.welcome-pointer');
+    if (welcomePointer && welcomePointer.parentNode) {
+        welcomePointer.parentNode.removeChild(welcomePointer);
+    }
+    
+    showProgress(true, `Analyzing ${filepath}...`);
+    
+    // First check how many HDUs this file has
+    getFitsHduInfo(filepath)
+        .then(hduList => {
+            showProgress(false);
+            
+            // If the file has multiple HDUs, show the selection popup
+            if (hduList && hduList.length > 1) {
+                console.log(`FITS file has ${hduList.length} HDUs. Showing selection popup.`);
+                createHduSelectorPopup(hduList, filepath);
+            } else {
+                // If there's only one HDU, load it directly
+                console.log('FITS file has only one HDU. Loading directly.');
+                // Use the original loading function with HDU 0
+                selectHdu(0, filepath);
+            }
+        })
+        .catch(error => {
+            console.error('Error analyzing FITS file:', error);
+            showProgress(false);
+            showNotification(`Error: ${error.message || 'Failed to analyze FITS file'}`, 5000);
+            
+            // If analysis fails, fall back to loading the primary HDU
+            console.log('Falling back to loading primary HDU');
+            selectHdu(0, filepath);
+        });
+}
+
+
+
+
+
+// Define a global variable to track the current flag filtering state
+let flagFilterEnabled = false;
+let currentFlagColumn = null; // Will store the name of the current boolean column being used for filtering
+
+let flagFilterButton = null;
+
+function createFlagFilterButton() {
+    // Check if button already exists
+    const existingButton = document.querySelector('.flag-filter-container');
+    if (existingButton) {
+        return existingButton;
+    }
+    
+    // Create a button container
+    const flagFilterContainer = document.createElement('div');
+    flagFilterContainer.className = 'flag-filter-container';
+    flagFilterContainer.style.display = 'inline-block'; // Make sure it's visible
+    
+    // Create the main button with just an icon
+    flagFilterButton = document.createElement('button');
+    flagFilterButton.className = 'flag-filter-button';
+    flagFilterButton.style.display = 'none'; // Hide by default
+
+    // Use a filter icon
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.style.fill = "currentColor";
+    
+    // Create the filter icon paths
+    const path = document.createElementNS(svgNS, "path");
+    path.setAttribute("d", "M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z");
+    svg.appendChild(path);
+    
+    flagFilterButton.appendChild(svg);
+    flagFilterButton.title = 'Filter regions by catalog flags';
+    
+    // Find the histogram button to copy styles
+    const histogramButton = document.querySelector('.dynamic-range-button');
+    
+    // Copy all styles from histogram button if it exists
+    if (histogramButton) {
+        // Get computed style of histogram button
+        const histoStyle = window.getComputedStyle(histogramButton);
+        
+        // Apply the same styles to our filter button
+        flagFilterButton.style.padding = histoStyle.padding;
+        flagFilterButton.style.backgroundColor = histoStyle.backgroundColor;
+        flagFilterButton.style.color = histoStyle.color;
+        flagFilterButton.style.border = histoStyle.border;
+        flagFilterButton.style.borderRadius = histoStyle.borderRadius;
+        flagFilterButton.style.width = histoStyle.width;
+        flagFilterButton.style.height = histoStyle.height;
+        flagFilterButton.style.cursor = 'pointer';
+        flagFilterButton.style.display = 'flex';
+        flagFilterButton.style.alignItems = 'center';
+        flagFilterButton.style.justifyContent = 'center';
+        flagFilterButton.style.marginRight = '5px';
+    } else {
+        // Fallback styles if histogram button is not found
+        flagFilterButton.style.padding = '6px';
+        flagFilterButton.style.backgroundColor = '#444';
+        flagFilterButton.style.color = '#fff';
+        flagFilterButton.style.border = 'none';
+        flagFilterButton.style.borderRadius = '4px';
+        flagFilterButton.style.cursor = 'pointer';
+        flagFilterButton.style.width = '32px';
+        flagFilterButton.style.height = '32px';
+        flagFilterButton.style.display = 'flex';
+        flagFilterButton.style.alignItems = 'center';
+        flagFilterButton.style.justifyContent = 'center';
+        flagFilterButton.style.marginRight = '5px';
+    }
+    
+    // Add event listener
+    flagFilterButton.addEventListener('click', function() {
+        // Create dropdown content if it doesn't exist yet
+        if (!flagFilterContainer.querySelector('.flag-dropdown-content')) {
+            const dropdownContent = document.createElement('div');
+            dropdownContent.className = 'flag-dropdown-content';
+            dropdownContent.style.display = 'none';
+            dropdownContent.style.position = 'absolute';
+            dropdownContent.style.backgroundColor = '#222';
+            dropdownContent.style.minWidth = '200px';
+            dropdownContent.style.boxShadow = '0px 8px 16px 0px rgba(0,0,0,0.4)';
+            dropdownContent.style.zIndex = '1000';
+            dropdownContent.style.borderRadius = '4px';
+            dropdownContent.style.top = '100%';
+            dropdownContent.style.right = '0';
+            dropdownContent.style.marginTop = '5px';
+            
+            // Add a loading message initially
+            const loadingItem = document.createElement('div');
+            loadingItem.style.padding = '10px';
+            loadingItem.style.color = '#aaa';
+            loadingItem.textContent = 'Loading flag options...';
+            dropdownContent.appendChild(loadingItem);
+            
+            flagFilterContainer.appendChild(dropdownContent);
+        }
+        
+        const dropdownContent = flagFilterContainer.querySelector('.flag-dropdown-content');
+        if (dropdownContent.style.display === 'none') {
+            dropdownContent.style.display = 'block';
+            
+            // If a catalog is loaded, populate the dropdown with boolean columns
+            if (activeCatalog) {
+                populateFlagDropdown(dropdownContent);
+            }
+        } else {
+            dropdownContent.style.display = 'none';
+        }
+    });
+    
+    // Add the button to the container
+    flagFilterContainer.appendChild(flagFilterButton);
+    
+    // Find the toolbar
+    const toolbar = document.querySelector('.toolbar');
+        
+    // Find the histogram button or any other reference element in the toolbar
+    const existingHistogramButton = toolbar.querySelector('.dynamic-range-button');
+    const zoomInButton = toolbar.querySelector('button:first-child'); // Fallback reference
+
+    // Insert the flag filter button in the appropriate position
+  // Insert the flag filter button in the appropriate position
+    if (existingHistogramButton) {
+        // Insert before the histogram button
+        toolbar.insertBefore(flagFilterContainer, existingHistogramButton);
+        console.log("Inserted flag filter button before histogram button");
+    } else if (zoomInButton) {
+        // Fallback: Insert before the first button (likely zoom in)
+        toolbar.insertBefore(flagFilterContainer, zoomInButton);
+        console.log("Inserted flag filter button before first button");
+    } else {
+        // Last resort: Add to beginning of toolbar
+        toolbar.prepend(flagFilterContainer);
+        console.log("Prepended flag filter button to toolbar");
+    }
+        
+    console.log("Flag filter button created and added to toolbar");
+    return flagFilterContainer;
+}
+
+// Update this function to make the button white when filter is applied
+function updateFlagFilterUI(dropdownContent) {
+    // Check if the button exists first
+    if (flagFilterButton) {
+        if (flagFilterEnabled) {
+            // Make the button white when filter is applied
+            flagFilterButton.style.color = '#ffffff'; // Bright white color
+        } else {
+            // Reset to default color (likely white already, but ensuring consistency)
+            flagFilterButton.style.color = '#ffffff';
+        }
+    }
+    
+    // Update dropdown items
+    const flagItems = dropdownContent.querySelectorAll('.flag-item');
+    flagItems.forEach(item => {
+        if ((item.textContent === 'No Filter (Show All)' && !flagFilterEnabled) ||
+            (item.textContent === currentFlagColumn && flagFilterEnabled)) {
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+
+        } else {
+            item.style.backgroundColor = 'transparent';
+        }
+    });
+}
+
+
+
+// New endpoint to get all catalog data with flags in a single request
+function loadCatalogWithFlags(catalogName) {
+    showProgress(true, 'Loading catalog with flag data...');
+    
+    fetch(`/catalog-with-flags/${catalogName}`)
+        .then(response => response.json())
+        .then(data => {
+            // Store the complete catalog data with flags in a global variable
+            window.catalogDataWithFlags = data;
+            
+            // Add environment column if it doesn't exist
+            console.log("Adding or verifying env column to catalog data");
+            const envExists = data.length > 0 && 'env' in data[0];
+            
+            if (!envExists) {
+                console.log("env column not found in data. Adding simulated environment values.");
+                
+                // Add env column with values 1-10 based on position in catalog
+                // This distributes objects across all environment types for testing
+                window.catalogDataWithFlags.forEach((obj, index) => {
+                    // Determine environment value (1-10) based on object's position or other attributes
+                    // This is just a demonstration - you'd replace this with your actual environment determination logic
+                    const envValue = (index % 10) + 1; // Values from 1 to 10
+                    obj.env = envValue; // Add the env property to each object
+                });
+                
+                console.log("Added env column to catalog data. First few objects:");
+                for (let i = 0; i < 5 && i < window.catalogDataWithFlags.length; i++) {
+                    console.log(`  Object ${i} env value: ${window.catalogDataWithFlags[i].env}`);
+                }
+            } else {
+                console.log("env column already exists in data");
+            }
+            
+            // Apply any active filters without making additional requests
+            if (flagFilterEnabled && currentFlagColumn) {
+                applyLocalFilter(currentFlagColumn);
+            }
+            
+            showProgress(false);
+        })
+        .catch(error => {
+            console.error('Error loading catalog with flags:', error);
+            showProgress(false);
+            showNotification('Error loading catalog data', 3000);
+        });
+}
