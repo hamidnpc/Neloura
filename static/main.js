@@ -1485,7 +1485,6 @@ function resetView() {
     }
 }
 
-
 // Show region info in a popup
 function showRegionInfo(dot, obj) {
     const dotIndex = parseInt(dot.dataset.index);
@@ -1548,12 +1547,17 @@ function showRegionInfo(dot, obj) {
     popup.style.display = 'block';
     
     // Highlight the selected dot
-    dot.style.border = '2px solid yellow';
-    dot.style.zIndex = '1000';
+    if (dot.style) {
+        dot.style.border = '2px solid yellow';
+        dot.style.zIndex = '1000';
+        
+        // Store the original style to restore later
+        dot.dataset.originalBorder = '1px solid rgba(255, 0, 0, 0.7)';
+        dot.dataset.originalZIndex = 'auto';
+    }
     
-    // Store the original style to restore later
-    dot.dataset.originalBorder = '1px solid rgba(255, 0, 0, 0.7)';
-    dot.dataset.originalZIndex = 'auto';
+    // Store reference to the dot in the popup (for canvas implementation)
+    popup.tempDot = dot;
     
     // Add event listener for the SED button
     const sedButton = document.getElementById(`show-sed-${dotIndex}`);
@@ -1588,8 +1592,17 @@ function showRegionInfo(dot, obj) {
             showProperties(dot.dataset.ra, dot.dataset.dec, catalogName);
         });
     }
+    
+    // Add event listener to the popup's close button to clean up temp dot
+    const closeButton = popup.querySelector('div[style*="cursor: pointer"]');
+    if (closeButton) {
+        closeButton.addEventListener('click', function() {
+            if (dot.classList && dot.classList.contains('temp-dot') && dot.parentNode) {
+                dot.parentNode.removeChild(dot);
+            }
+        }, { once: true });
+    }
 }
-
 // Find a popup by dot index
 function findPopupByDotIndex(dotIndex) {
     for (let i = 0; i < infoPopups.length; i++) {
@@ -1600,9 +1613,14 @@ function findPopupByDotIndex(dotIndex) {
     return null;
 }
 
-// Hide a specific info popup
+// Replace the existing hideInfoPopup function
 function hideInfoPopup(popup) {
     if (!popup) return;
+    
+    // Clean up the temporary dot if it exists
+    if (popup.tempDot && popup.tempDot.parentNode) {
+        popup.tempDot.parentNode.removeChild(popup.tempDot);
+    }
     
     // Hide the popup
     popup.style.display = 'none';
@@ -1628,6 +1646,20 @@ function hideInfoPopup(popup) {
         infoPopups.splice(index, 1);
     }
 }
+
+
+
+// Add this function to wrap the original hideInfoPopup function
+const originalHideInfoPopup = window.hideInfoPopup;
+window.hideInfoPopup = function(popup) {
+    // Clean up the temporary dot if it exists
+    if (popup && popup.tempDot && popup.tempDot.parentNode) {
+        popup.tempDot.parentNode.removeChild(popup.tempDot);
+    }
+    
+    // Call the original function
+    return originalHideInfoPopup(popup);
+};
 
 // Hide all info popups
 function hideAllInfoPopups() {
@@ -4314,7 +4346,6 @@ function loadProgressiveOverviews() {
     // Start with quality level 0
     loadOverviewAtQuality(0);
 }
-
 
 
 
