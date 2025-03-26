@@ -2,16 +2,6 @@
 
 
 
-function loadCatalogs() {
-    fetch('/list-catalogs/')
-    .then(response => response.json())
-    .then(data => {
-        updateCatalogDropdown(data.catalogs);
-    })
-    .catch(error => {
-        console.error('Error loading catalogs:', error);
-    });
-}
 
 // Update the catalog dropdown menu
 function updateCatalogDropdown(catalogs) {
@@ -179,7 +169,6 @@ function loadCatalog(catalogName) {
 }
 
 
-
 function addCatalogOverlay(catalogData) {
     console.log("Adding catalog overlay with canvas rendering");
     
@@ -272,9 +261,191 @@ function addCatalogOverlay(catalogData) {
     return catalogData.length; // Return the number of objects added
 }
 
+// Make sure this function is added/updated
+function updateCanvasOverlay() {
+    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) return;
+
+    const canvas = window.catalogCanvas;
+    const ctx = canvas.getContext('2d');
+    
+    // Clear the canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Get viewport bounds with margin for panning
+    const bounds = viewer.viewport.getBounds();
+    const viewportBounds = {
+        left: bounds.x - 0.2,
+        top: bounds.y - 0.2,
+        right: bounds.x + bounds.width + 0.2,
+        bottom: bounds.y + bounds.height + 0.2
+    };
+    
+    // Clear the source map for click detection
+    window.catalogSourceMap = [];
+    
+    // Count visible objects
+    let visibleCount = 0;
+    
+    // Set dot styling based on current styles
+    const FIXED_RADIUS = 5; // Default radius in pixels
+    const dotBorderWidth = regionStyles.borderWidth || 1;
+    const dotBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
+    const dotFillColor = regionStyles.backgroundColor || 'transparent';
+    const dotOpacity = regionStyles.opacity || 0.7;
+    
+    // Set global alpha for transparency
+    ctx.globalAlpha = dotOpacity;
+    
+    // Process each catalog object
+    for (let i = 0; i < window.catalogDataForOverlay.length; i++) {
+        const obj = window.catalogDataForOverlay[i];
+        
+        // Skip dots that should be hidden by filter
+        if (flagFilterEnabled && obj.dataset && obj.dataset.passesFilter === 'false') {
+            continue;
+        }
+        
+        // Get coordinates, preserving original values
+        let x = obj.x;
+        let y = obj.y;
+        
+        // Convert RA/DEC to pixel coordinates if we have WCS
+        if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
+            const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
+            x = pixelCoords.x;
+            y = pixelCoords.y;
+        }
+        
+        // Convert image coordinates to viewport coordinates
+        const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
+        
+        // Check if the point is within the viewport bounds
+        if (viewportPoint.x >= viewportBounds.left && 
+            viewportPoint.x <= viewportBounds.right && 
+            viewportPoint.y >= viewportBounds.top && 
+            viewportPoint.y <= viewportBounds.bottom) {
+            
+            // Convert viewport coordinates to canvas coordinates
+            const pagePoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+            
+            // Get the radius in pixels (use the object's radius if available)
+            const radius = (obj.radius_pixels || FIXED_RADIUS);
+            
+            // Draw the dot
+            ctx.beginPath();
+            ctx.arc(pagePoint.x, pagePoint.y, radius, 0, 2 * Math.PI, false);
+            
+            // Set border style
+            ctx.lineWidth = dotBorderWidth;
+            ctx.strokeStyle = dotBorderColor;
+            
+            // Fill if not transparent
+            if (dotFillColor !== 'transparent') {
+                ctx.fillStyle = dotFillColor;
+                ctx.fill();
+            }
+            
+            // Draw border
+            ctx.stroke();
+            
+            // Store the source location for click detection
+            window.catalogSourceMap.push({
+                x: pagePoint.x,
+                y: pagePoint.y,
+                radius: radius,
+                sourceIndex: i,
+                imageX: x,
+                imageY: y,
+                ra: obj.ra,
+                dec: obj.dec
+            });
+            
+            visibleCount++;
+        }
+    }
+    
+    // Optionally log the number of visible objects
+    // console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
+}
 
 
 
+// tion handles click detection for the canvas overlay
+function handleCanvasClick(event) {
+    if (!window.catalogSourceMap || !window.catalogDataForOverlay) return;
+    
+    // Get click coordinates relative to the viewer
+    const viewerElement = document.getElementById('openseadragon');
+    const rect = viewerElement.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+    
+    // Find the closest source to the click point
+    let closestSource = null;
+    let closestDistance = Infinity;
+    const hitRadius = 10; // Click tolerance in pixels
+    
+    for (const source of window.catalogSourceMap) {
+        const dx = source.x - clickX;
+        const dy = source.y - clickY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Check if click is within hit radius
+        if (distance <= Math.max(hitRadius, source.radius) && distance < closestDistance) {
+            closestDistance = distance;
+            closestSource = source;
+        }
+    }
+    
+    // If we found a source, show info about it
+    if (closestSource) {
+        const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
+        
+        // Create a temporary dot-like object to pass to the existing showRegionInfo function
+        const tempDot = {
+            dataset: {
+                x: closestSource.imageX,
+                y: closestSource.imageY,
+                ra: closestSource.ra,
+                dec: closestSource.dec,
+                radius: sourceObj.radius_pixels || 5,
+                index: closestSource.sourceIndex
+            }
+        };
+        
+        // Highlight the selected source
+        highlightSelectedSource(closestSource.sourceIndex);
+        
+        // Show the info popup
+        showRegionInfo(tempDot, sourceObj);
+    }
+}
+
+// Function to highlight a selected source
+function highlightSelectedSource(selectedIndex) {
+    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) return;
+    
+    // Get the canvas context
+    const canvas = window.catalogCanvas;
+    const ctx = canvas.getContext('2d');
+    
+    // Find the source in our source map
+    const source = window.catalogSourceMap.find(s => s.sourceIndex === selectedIndex);
+    if (!source) return;
+    
+    // Draw highlight
+    ctx.globalAlpha = 1.0; // Full opacity for highlight
+    
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(source.x, source.y, source.radius + 3, 0, 2 * Math.PI, false);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'yellow';
+    ctx.stroke();
+    
+    // Reset opacity
+    ctx.globalAlpha = regionStyles.opacity || 0.7;
+}
 
 // Update the clearCatalogOverlay function as well
 function clearCatalogOverlay() {
@@ -299,7 +470,6 @@ function clearCatalogOverlay() {
     
     console.log("Cleared catalog overlay");
 }
-
 // Refresh the catalog list
 function refreshCatalogs() {
     console.log("Refreshing catalog list");
@@ -558,178 +728,7 @@ function updateOverlay() {
 
 
 
-// Define a global variable to track the current flag filtering state
-let flagFilterEnabled = false;
-let currentFlagColumn = null; // Will store the name of the current boolean column being used for filtering
 
-let flagFilterButton = null;
-
-function createFlagFilterButton() {
-    // Check if button already exists
-    const existingButton = document.querySelector('.flag-filter-container');
-    if (existingButton) {
-        return existingButton;
-    }
-    
-    // Create a button container
-    const flagFilterContainer = document.createElement('div');
-    flagFilterContainer.className = 'flag-filter-container';
-    flagFilterContainer.style.display = 'inline-block'; // Make sure it's visible
-    
-    // Create the main button with just an icon
-    flagFilterButton = document.createElement('button');
-    flagFilterButton.className = 'flag-filter-button';
-    flagFilterButton.style.display = 'none'; // Hide by default
-
-    // Use a filter icon
-    const svgNS = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(svgNS, "svg");
-    svg.setAttribute("width", "16");
-    svg.setAttribute("height", "16");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.style.fill = "currentColor";
-    
-    // Create the filter icon paths
-    const path = document.createElementNS(svgNS, "path");
-    path.setAttribute("d", "M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z");
-    svg.appendChild(path);
-    
-    flagFilterButton.appendChild(svg);
-    flagFilterButton.title = 'Filter regions by catalog flags';
-    
-    // Find the histogram button to copy styles
-    const histogramButton = document.querySelector('.dynamic-range-button');
-    
-    // Copy all styles from histogram button if it exists
-    if (histogramButton) {
-        // Get computed style of histogram button
-        const histoStyle = window.getComputedStyle(histogramButton);
-        
-        // Apply the same styles to our filter button
-        flagFilterButton.style.padding = histoStyle.padding;
-        flagFilterButton.style.backgroundColor = histoStyle.backgroundColor;
-        flagFilterButton.style.color = histoStyle.color;
-        flagFilterButton.style.border = histoStyle.border;
-        flagFilterButton.style.borderRadius = histoStyle.borderRadius;
-        flagFilterButton.style.width = histoStyle.width;
-        flagFilterButton.style.height = histoStyle.height;
-        flagFilterButton.style.cursor = 'pointer';
-        flagFilterButton.style.display = 'flex';
-        flagFilterButton.style.alignItems = 'center';
-        flagFilterButton.style.justifyContent = 'center';
-        flagFilterButton.style.marginRight = '5px';
-    } else {
-        // Fallback styles if histogram button is not found
-        flagFilterButton.style.padding = '6px';
-        flagFilterButton.style.backgroundColor = '#444';
-        flagFilterButton.style.color = '#fff';
-        flagFilterButton.style.border = 'none';
-        flagFilterButton.style.borderRadius = '4px';
-        flagFilterButton.style.cursor = 'pointer';
-        flagFilterButton.style.width = '32px';
-        flagFilterButton.style.height = '32px';
-        flagFilterButton.style.display = 'flex';
-        flagFilterButton.style.alignItems = 'center';
-        flagFilterButton.style.justifyContent = 'center';
-        flagFilterButton.style.marginRight = '5px';
-    }
-    
-    // Add event listener
-    flagFilterButton.addEventListener('click', function() {
-        // Create dropdown content if it doesn't exist yet
-        if (!flagFilterContainer.querySelector('.flag-dropdown-content')) {
-            const dropdownContent = document.createElement('div');
-            dropdownContent.className = 'flag-dropdown-content';
-            dropdownContent.style.display = 'none';
-            dropdownContent.style.position = 'absolute';
-            dropdownContent.style.backgroundColor = '#222';
-            dropdownContent.style.minWidth = '200px';
-            dropdownContent.style.boxShadow = '0px 8px 16px 0px rgba(0,0,0,0.4)';
-            dropdownContent.style.zIndex = '1000';
-            dropdownContent.style.borderRadius = '4px';
-            dropdownContent.style.top = '100%';
-            dropdownContent.style.right = '0';
-            dropdownContent.style.marginTop = '5px';
-            
-            // Add a loading message initially
-            const loadingItem = document.createElement('div');
-            loadingItem.style.padding = '10px';
-            loadingItem.style.color = '#aaa';
-            loadingItem.textContent = 'Loading flag options...';
-            dropdownContent.appendChild(loadingItem);
-            
-            flagFilterContainer.appendChild(dropdownContent);
-        }
-        
-        const dropdownContent = flagFilterContainer.querySelector('.flag-dropdown-content');
-        if (dropdownContent.style.display === 'none') {
-            dropdownContent.style.display = 'block';
-            
-            // If a catalog is loaded, populate the dropdown with boolean columns
-            if (activeCatalog) {
-                populateFlagDropdown(dropdownContent);
-            }
-        } else {
-            dropdownContent.style.display = 'none';
-        }
-    });
-    
-    // Add the button to the container
-    flagFilterContainer.appendChild(flagFilterButton);
-    
-    // Find the toolbar
-    const toolbar = document.querySelector('.toolbar');
-        
-    // Find the histogram button or any other reference element in the toolbar
-    const existingHistogramButton = toolbar.querySelector('.dynamic-range-button');
-    const zoomInButton = toolbar.querySelector('button:first-child'); // Fallback reference
-
-    // Insert the flag filter button in the appropriate position
-  // Insert the flag filter button in the appropriate position
-    if (existingHistogramButton) {
-        // Insert before the histogram button
-        toolbar.insertBefore(flagFilterContainer, existingHistogramButton);
-        console.log("Inserted flag filter button before histogram button");
-    } else if (zoomInButton) {
-        // Fallback: Insert before the first button (likely zoom in)
-        toolbar.insertBefore(flagFilterContainer, zoomInButton);
-        console.log("Inserted flag filter button before first button");
-    } else {
-        // Last resort: Add to beginning of toolbar
-        toolbar.prepend(flagFilterContainer);
-        console.log("Prepended flag filter button to toolbar");
-    }
-        
-    console.log("Flag filter button created and added to toolbar");
-    return flagFilterContainer;
-}
-
-// Update this function to make the button white when filter is applied
-function updateFlagFilterUI(dropdownContent) {
-    // Check if the button exists first
-    if (flagFilterButton) {
-        if (flagFilterEnabled) {
-            // Make the button white when filter is applied
-            flagFilterButton.style.color = '#ffffff'; // Bright white color
-        } else {
-            // Reset to default color (likely white already, but ensuring consistency)
-            flagFilterButton.style.color = '#ffffff';
-        }
-    }
-    
-    // Update dropdown items
-    const flagItems = dropdownContent.querySelectorAll('.flag-item');
-    flagItems.forEach(item => {
-        if ((item.textContent === 'No Filter (Show All)' && !flagFilterEnabled) ||
-            (item.textContent === currentFlagColumn && flagFilterEnabled)) {
-            item.style.backgroundColor = 'white';
-            item.style.color = 'black';
-
-        } else {
-            item.style.backgroundColor = 'transparent';
-        }
-    });
-}
 
 
 // Keep a reference to the original loadCatalog function
@@ -1278,53 +1277,6 @@ function extendCatalogOverlay() {
 extendCatalogOverlay();
 
 
-// New endpoint to get all catalog data with flags in a single request
-function loadCatalogWithFlags(catalogName) {
-    showProgress(true, 'Loading catalog with flag data...');
-    
-    fetch(`/catalog-with-flags/${catalogName}`)
-        .then(response => response.json())
-        .then(data => {
-            // Store the complete catalog data with flags in a global variable
-            window.catalogDataWithFlags = data;
-            
-            // Add environment column if it doesn't exist
-            console.log("Adding or verifying env column to catalog data");
-            const envExists = data.length > 0 && 'env' in data[0];
-            
-            if (!envExists) {
-                console.log("env column not found in data. Adding simulated environment values.");
-                
-                // Add env column with values 1-10 based on position in catalog
-                // This distributes objects across all environment types for testing
-                window.catalogDataWithFlags.forEach((obj, index) => {
-                    // Determine environment value (1-10) based on object's position or other attributes
-                    // This is just a demonstration - you'd replace this with your actual environment determination logic
-                    const envValue = (index % 10) + 1; // Values from 1 to 10
-                    obj.env = envValue; // Add the env property to each object
-                });
-                
-                console.log("Added env column to catalog data. First few objects:");
-                for (let i = 0; i < 5 && i < window.catalogDataWithFlags.length; i++) {
-                    console.log(`  Object ${i} env value: ${window.catalogDataWithFlags[i].env}`);
-                }
-            } else {
-                console.log("env column already exists in data");
-            }
-            
-            // Apply any active filters without making additional requests
-            if (flagFilterEnabled && currentFlagColumn) {
-                applyLocalFilter(currentFlagColumn);
-            }
-            
-            showProgress(false);
-        })
-        .catch(error => {
-            console.error('Error loading catalog with flags:', error);
-            showProgress(false);
-            showNotification('Error loading catalog data', 3000);
-        });
-}
 
 
 
