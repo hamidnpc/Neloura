@@ -553,17 +553,149 @@ from urllib.parse import quote_plus
 
 
 
+import numpy as np
+import io
+import base64
+import threading
+import queue
+from PIL import Image
+import multiprocessing as mp
+from functools import partial
+import os
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
+
 class FitsTileGenerator:
-    def __init__(self, fits_data, min_value=None, max_value=None):
-        self.fits_data = fits_data
-        self.width = fits_data.width
-        self.height = fits_data.height
-        self.min_value = min_value if min_value is not None else fits_data.min_value
-        self.max_value = max_value if max_value is not None else fits_data.max_value
-        self.wcs = fits_data.wcs
+    def __init__(self, fits_data, min_value=None, max_value=None, num_processes=None):
+        """
+        Initialize with memory mapping when possible, or use the provided data.
+        
+        Args:
+            fits_data: Path to the FITS file, or a FITS HDU object, or a dict with 'data', 'header'
+            min_value: Optional minimum value for normalization
+            max_value: Optional maximum value for normalization
+            num_processes: Number of processes to use (defaults to CPU count)
+        """
+        from astropy.io import fits
+        
+        # Determine the type of input and extract data appropriately
+        if isinstance(fits_data, str):
+            # It's a file path
+            self.fits_file_path = fits_data
+            self.use_memmap = True
+            
+            # Open the file and get dimensions, but don't load all data
+            with fits.open(fits_data, memmap=True) as hdul:
+                self.width = hdul[0].header.get('NAXIS1', 0)
+                self.height = hdul[0].header.get('NAXIS2', 0)
+                self.wcs = fits.utils.WCS(hdul[0].header) if 'CRVAL1' in hdul[0].header else None
+                
+                # Sample the data to determine min/max if not provided
+                if min_value is None or max_value is None:
+                    # Sample a subset of the data for min/max calculation
+                    sample_size = min(1000, self.width * self.height)
+                    step = max(1, (self.width * self.height) // sample_size)
+                    
+                    flat_indices = np.arange(0, self.width * self.height, step)
+                    y_indices = flat_indices // self.width
+                    x_indices = flat_indices % self.width
+                    
+                    # Get sample values
+                    sample_values = hdul[0].data[y_indices, x_indices]
+                    valid_values = sample_values[np.isfinite(sample_values)]
+                    
+                    self.min_value = min_value if min_value is not None else np.min(valid_values)
+                    self.max_value = max_value if max_value is not None else np.max(valid_values)
+                else:
+                    self.min_value = min_value
+                    self.max_value = max_value
+        
+        elif hasattr(fits_data, 'data') and hasattr(fits_data, 'header'):
+            # It's an HDU object
+            self.use_memmap = False
+            self.fits_data = fits_data.data
+            
+            # Extract dimensions from the HDU
+            self.width = fits_data.header.get('NAXIS1', fits_data.data.shape[1] if len(fits_data.data.shape) >= 2 else 0)
+            self.height = fits_data.header.get('NAXIS2', fits_data.data.shape[0] if len(fits_data.data.shape) >= 2 else 0)
+            self.wcs = fits.utils.WCS(fits_data.header) if 'CRVAL1' in fits_data.header else None
+            
+            # Determine min/max values if not provided
+            if min_value is None or max_value is None:
+                # Use a sampling approach for large arrays
+                if self.width * self.height > 1_000_000:
+                    sample_size = min(1000, self.width * self.height)
+                    step = max(1, (self.width * self.height) // sample_size)
+                    
+                    flat_indices = np.arange(0, self.width * self.height, step)
+                    y_indices = flat_indices // self.width
+                    x_indices = flat_indices % self.width
+                    
+                    # Get sample values
+                    sample_values = self.fits_data[y_indices, x_indices]
+                    valid_values = sample_values[np.isfinite(sample_values)]
+                else:
+                    # For smaller arrays, use the full data
+                    valid_values = self.fits_data[np.isfinite(self.fits_data)]
+                
+                self.min_value = min_value if min_value is not None else np.min(valid_values)
+                self.max_value = max_value if max_value is not None else np.max(valid_values)
+            else:
+                self.min_value = min_value
+                self.max_value = max_value
+                
+        elif isinstance(fits_data, dict) and 'data' in fits_data:
+            # It's a dictionary with data and possibly header
+            self.use_memmap = False
+            self.fits_data = fits_data['data']
+            
+            # Extract dimensions from the data or header
+            if 'header' in fits_data and fits_data['header'] is not None:
+                header = fits_data['header']
+                self.width = header.get('NAXIS1', self.fits_data.shape[1] if len(self.fits_data.shape) >= 2 else 0)
+                self.height = header.get('NAXIS2', self.fits_data.shape[0] if len(self.fits_data.shape) >= 2 else 0)
+                self.wcs = fits.utils.WCS(header) if 'CRVAL1' in header else None
+            else:
+                self.width = self.fits_data.shape[1] if len(self.fits_data.shape) >= 2 else 0
+                self.height = self.fits_data.shape[0] if len(self.fits_data.shape) >= 2 else 0
+                self.wcs = None
+                
+            # Determine min/max values if not provided
+            if min_value is None or max_value is None:
+                # Use a sampling approach for large arrays
+                if self.width * self.height > 1_000_000:
+                    sample_size = min(1000, self.width * self.height)
+                    step = max(1, (self.width * self.height) // sample_size)
+                    
+                    flat_indices = np.arange(0, self.width * self.height, step)
+                    y_indices = flat_indices // self.width
+                    x_indices = flat_indices % self.width
+                    
+                    # Get sample values
+                    sample_values = self.fits_data[y_indices, x_indices]
+                    valid_values = sample_values[np.isfinite(sample_values)]
+                else:
+                    # For smaller arrays, use the full data
+                    valid_values = self.fits_data[np.isfinite(self.fits_data)]
+                
+                self.min_value = min_value if min_value is not None else np.min(valid_values)
+                self.max_value = max_value if max_value is not None else np.max(valid_values)
+            else:
+                self.min_value = min_value
+                self.max_value = max_value
+        else:
+            raise ValueError("Unsupported fits_data type. Must be a file path, HDU object, or dict with 'data' key.")
         
         # Calculate the number of zoom levels
         self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / 256))))
+        
+        # Set up multiprocessing
+        self.num_processes = num_processes if num_processes else mp.cpu_count()
+        self.pool = ProcessPoolExecutor(max_workers=self.num_processes)
+        
+        # Create tile cache directory
+        self.cache_dir = tempfile.mkdtemp(prefix="fits_tiles_")
+        self.memory_cache = {}
         
         # Generate overview image immediately using fast downsampling
         self.overview = self._generate_quick_overview()
@@ -571,15 +703,28 @@ class FitsTileGenerator:
         # Create a queue for progressive loading
         self.progressive_queue = queue.Queue()
         
+        # Create a cache for pre-rendered overview levels
+        self.overview_cache = {}
+        
         # Start a worker thread for progressive loading
         self.worker_thread = threading.Thread(target=self._progressive_worker, daemon=True)
         self.worker_thread.start()
         
-        # Create a cache for pre-rendered overview levels
-        self.overview_cache = {}
-        
         # Signal that higher-quality overviews should be generated
         self.progressive_queue.put(('generate_better_overview', None))
+        
+        print(f"Initialized memory-mapped FITS Tile Generator with {self.num_processes} processes")
+        print(f"Image dimensions: {self.width}x{self.height}, Zoom levels: {self.max_level+1}")
+    
+    def _get_memmap(self):
+        """Get data either from memory-map or from loaded array"""
+        if hasattr(self, 'use_memmap') and self.use_memmap:
+            from astropy.io import fits
+            with fits.open(self.fits_file_path, memmap=True) as hdul:
+                return np.copy(hdul[0].data)
+        else:
+            # Return the already loaded data
+            return self.fits_data
     
     def _generate_quick_overview(self):
         """Generate a very fast, low-quality overview for immediate display"""
@@ -588,33 +733,43 @@ class FitsTileGenerator:
         overview_width = int(self.width / scale)
         overview_height = int(self.height / scale)
         
-        # Use super-fast strided sampling (much faster than loops)
-        y_indices = np.linspace(0, self.height-1, overview_height, dtype=int)
-        x_indices = np.linspace(0, self.width-1, overview_width, dtype=int)
-        
-        # Extract the sampled points efficiently
         try:
-            # Use numpy's advanced indexing for dramatically faster sampling
-            sampled_data = self.fits_data.data[y_indices[:, np.newaxis], x_indices]
-            
-            # Replace NaN and infinity with 0
-            sampled_data = np.nan_to_num(sampled_data, nan=0, posinf=0, neginf=0)
-            
-            # Normalize the data to 0-1 range
-            normalized_data = np.clip((sampled_data - self.min_value) / (self.max_value - self.min_value), 0, 1)
-            
-            # Convert to RGB image
-            rgb_data = (normalized_data * 255).astype(np.uint8)
-            image = Image.fromarray(rgb_data)
-            
-            # Convert to base64 encoded PNG
-            buffer = io.BytesIO()
-            image.save(buffer, format='PNG', optimize=True, compression_level=3)  # Faster compression
-            return base64.b64encode(buffer.getvalue()).decode('utf-8')
+            # Use memory mapping to access data
+            with ProcessPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._quick_overview_worker, overview_width, overview_height, scale)
+                result = future.result(timeout=10)  # Set timeout to ensure responsiveness
+                return result
         except Exception as e:
             print(f"Error generating quick overview: {e}")
             # Fall back to a simple gray image if sampling fails
             return self._generate_fallback_overview(overview_width, overview_height)
+    
+    def _quick_overview_worker(self, overview_width, overview_height, scale):
+        """Worker function to generate overview in a separate process"""
+        # Get memory-mapped data
+        data = self._get_memmap()
+        
+        # Use super-fast strided sampling
+        y_indices = np.linspace(0, self.height-1, overview_height, dtype=int)
+        x_indices = np.linspace(0, self.width-1, overview_width, dtype=int)
+        
+        # Extract the sampled points efficiently
+        sampled_data = data[y_indices[:, np.newaxis], x_indices]
+        
+        # Replace NaN and infinity with 0
+        sampled_data = np.nan_to_num(sampled_data, nan=0, posinf=0, neginf=0)
+        
+        # Normalize the data to 0-1 range
+        normalized_data = np.clip((sampled_data - self.min_value) / (self.max_value - self.min_value), 0, 1)
+        
+        # Convert to RGB image
+        rgb_data = (normalized_data * 255).astype(np.uint8)
+        image = Image.fromarray(rgb_data)
+        
+        # Convert to base64 encoded PNG
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG', optimize=True, compression_level=3)
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
     
     def _generate_fallback_overview(self, width, height):
         """Generate a fallback overview if sampling fails"""
@@ -623,124 +778,25 @@ class FitsTileGenerator:
         image.save(buffer, format='PNG')
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
     
-    def _generate_better_overview(self):
-        """Generate a better quality overview in the background"""
-        # Create multiple resolution levels for progressive loading
-        # Level 0 (lowest res): 256x256 max
-        # Level 1: 512x512 max
-        # Level 2: 1024x1024 max
-        for level in range(3):
-            size = 256 * (2 ** level)
-            scale = max(1, max(self.width, self.height) / size)
-            overview_width = min(size, int(self.width / scale))
-            overview_height = min(size, int(self.height / scale))
-            
-            # Skip if this level is too close to the full resolution
-            if scale < 2:
-                continue
-                
-            try:
-                # Use block averaging for better quality (more expensive but in background)
-                blocks_y = int(np.ceil(self.height / scale))
-                blocks_x = int(np.ceil(self.width / scale))
-                
-                # Pre-allocate the result array
-                result = np.zeros((overview_height, overview_width), dtype=np.float32)
-                
-                # Process in small chunks to avoid memory issues
-                chunk_size = 100  # Process 100 rows at a time
-                for chunk_start in range(0, overview_height, chunk_size):
-                    chunk_end = min(chunk_start + chunk_size, overview_height)
-                    
-                    for y in range(chunk_start, chunk_end):
-                        for x in range(overview_width):
-                            # Calculate source region
-                            src_y_start = int(y * scale)
-                            src_y_end = min(self.height, int((y + 1) * scale))
-                            src_x_start = int(x * scale)
-                            src_x_end = min(self.width, int((x + 1) * scale))
-                            
-                            # Extract block
-                            block = self.fits_data.data[src_y_start:src_y_end, src_x_start:src_x_end]
-                            
-                            # Average the valid values (ignoring NaN and Inf)
-                            valid_mask = np.isfinite(block)
-                            if np.any(valid_mask):
-                                result[y, x] = np.mean(block[valid_mask])
-                            else:
-                                result[y, x] = 0
-                
-                # Normalize and convert to image
-                normalized = np.clip((result - self.min_value) / (self.max_value - self.min_value), 0, 1)
-                img_data = (normalized * 255).astype(np.uint8)
-                img = Image.fromarray(img_data)
-                
-                # Store in the overview cache
-                buffer = io.BytesIO()
-                img.save(buffer, format='PNG')
-                self.overview_cache[level] = buffer.getvalue()
-                
-                print(f"Generated better overview at level {level}: {overview_width}x{overview_height}")
-            except Exception as e:
-                print(f"Error generating better overview at level {level}: {e}")
-    
-    def _progressive_worker(self):
-        """Background worker for progressive loading tasks"""
-        while True:
-            try:
-                task, params = self.progressive_queue.get()
-                
-                if task == 'generate_better_overview':
-                    self._generate_better_overview()
-                elif task == 'generate_tiles':
-                    level, x_range, y_range = params
-                    self._prefetch_tiles(level, x_range, y_range)
-                
-                self.progressive_queue.task_done()
-            except Exception as e:
-                print(f"Error in progressive worker: {e}")
-    
-    def _prefetch_tiles(self, level, x_range, y_range):
-        """Prefetch tiles in the given range"""
-        for y in range(y_range[0], y_range[1] + 1):
-            for x in range(x_range[0], x_range[1] + 1):
-                # Only prefetch if not already in cache
-                tile_key = f"{level}/{x}/{y}"
-                if tile_cache.get(tile_key) is None:
-                    try:
-                        tile_data = self.get_tile(level, x, y)
-                        if tile_data is not None:
-                            tile_cache.put(tile_key, tile_data)
-                    except Exception as e:
-                        print(f"Error prefetching tile {tile_key}: {e}")
-    
-    def get_better_overview(self, level=0):
-        """Get a better quality overview at the specified level"""
-        if level in self.overview_cache:
-            return self.overview_cache[level]
-        return None
-    
-    def get_tile(self, level, x, y, tile_size=256):
-        """Get a tile at the specified level and coordinates"""
-        # Validate parameters
-        if level < 0 or level > self.max_level:
-            return None
-        
-        # Calculate the scale for this level
-        scale = 2 ** (self.max_level - level)
-        
-        # Calculate pixel coordinates in the original image
-        start_x = x * tile_size * scale
-        start_y = y * tile_size * scale
-        end_x = min(start_x + tile_size * scale, self.width)
-        end_y = min(start_y + tile_size * scale, self.height)
-        
-        # Check if the tile is out of bounds
-        if start_x >= self.width or start_y >= self.height:
-            return None
-        
-        # Extract the region from the FITS data
+    def _process_tile(self, level, x, y, tile_size=256):
+        """Process a single tile in a separate process"""
         try:
+            # Calculate the scale for this level
+            scale = 2 ** (self.max_level - level)
+            
+            # Calculate pixel coordinates in the original image
+            start_x = x * tile_size * scale
+            start_y = y * tile_size * scale
+            end_x = min(start_x + tile_size * scale, self.width)
+            end_y = min(start_y + tile_size * scale, self.height)
+            
+            # Check if the tile is out of bounds
+            if start_x >= self.width or start_y >= self.height:
+                return None
+            
+            # Get memory-mapped data
+            data = self._get_memmap()
+            
             # For direct sampling (faster but less accurate)
             if scale > 1:
                 # Sample points for this tile
@@ -756,15 +812,14 @@ class FitsTileGenerator:
                 x_indices = np.clip(x_indices, 0, self.width - 1)
                 
                 # Extract sampled data (much faster than loops)
-                tile_data = self.fits_data.data[y_indices[:, np.newaxis], x_indices]
+                tile_data = data[y_indices[:, np.newaxis], x_indices]
             else:
                 # Direct extraction for highest zoom level
-                region_data = self.fits_data.data[start_y:end_y, start_x:end_x]
+                region_data = data[start_y:end_y, start_x:end_x]
                 
                 # Resize if necessary to match tile_size
                 if region_data.shape[0] != tile_size or region_data.shape[1] != tile_size:
                     # Use simple nearest-neighbor resizing for speed
-                    # This avoids importing skimage which is slow
                     h_ratio = region_data.shape[0] / tile_size
                     w_ratio = region_data.shape[1] / tile_size
                     
@@ -791,9 +846,145 @@ class FitsTileGenerator:
             buffer = io.BytesIO()
             image.save(buffer, format='PNG')
             return buffer.getvalue()
-            
+                
         except Exception as e:
             print(f"Error generating tile ({level},{x},{y}): {e}")
+            return None
+    
+    def _generate_better_overview(self):
+        """Generate a better quality overview in the background using multiprocessing"""
+        futures = []
+        
+        # Create multiple resolution levels for progressive loading
+        for level in range(3):
+            size = 256 * (2 ** level)
+            scale = max(1, max(self.width, self.height) / size)
+            overview_width = min(size, int(self.width / scale))
+            overview_height = min(size, int(self.height / scale))
+            
+            # Skip if this level is too close to the full resolution
+            if scale < 2:
+                continue
+                
+            # Submit overview generation task to the process pool
+            futures.append((level, self.pool.submit(
+                self._generate_overview_level, level, overview_width, overview_height, scale)))
+        
+        # Collect results
+        for level, future in futures:
+            try:
+                result = future.result(timeout=60)  # Set timeout to prevent hanging
+                if result:
+                    self.overview_cache[level] = result
+                    print(f"Generated better overview at level {level}")
+            except Exception as e:
+                print(f"Error generating better overview at level {level}: {e}")
+    
+    def _generate_overview_level(self, level, width, height, scale):
+        """Generate a specific overview level in a separate process"""
+        try:
+            # Get memory-mapped data
+            data = self._get_memmap()
+            
+            # Pre-allocate the result array
+            result = np.zeros((height, width), dtype=np.float32)
+            
+            # Process in small chunks to avoid memory issues
+            chunk_size = 100  # Process 100 rows at a time
+            for chunk_start in range(0, height, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, height)
+                
+                for y in range(chunk_start, chunk_end):
+                    for x in range(width):
+                        # Calculate source region
+                        src_y_start = int(y * scale)
+                        src_y_end = min(self.height, int((y + 1) * scale))
+                        src_x_start = int(x * scale)
+                        src_x_end = min(self.width, int((x + 1) * scale))
+                        
+                        # Extract block
+                        block = data[src_y_start:src_y_end, src_x_start:src_x_end]
+                        
+                        # Average the valid values (ignoring NaN and Inf)
+                        valid_mask = np.isfinite(block)
+                        if np.any(valid_mask):
+                            result[y, x] = np.mean(block[valid_mask])
+                        else:
+                            result[y, x] = 0
+            
+            # Normalize and convert to image
+            normalized = np.clip((result - self.min_value) / (self.max_value - self.min_value), 0, 1)
+            img_data = (normalized * 255).astype(np.uint8)
+            img = Image.fromarray(img_data)
+            
+            # Convert to PNG
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            return buffer.getvalue()
+        except Exception as e:
+            print(f"Error in _generate_overview_level: {e}")
+            return None
+    
+    def _progressive_worker(self):
+        """Background worker for progressive loading tasks"""
+        while True:
+            try:
+                task, params = self.progressive_queue.get()
+                
+                if task == 'generate_better_overview':
+                    self._generate_better_overview()
+                elif task == 'generate_tiles':
+                    level, x_range, y_range = params
+                    self._prefetch_tiles(level, x_range, y_range)
+                
+                self.progressive_queue.task_done()
+            except Exception as e:
+                print(f"Error in progressive worker: {e}")
+    
+    def _prefetch_tiles(self, level, x_range, y_range):
+        """Prefetch tiles in the given range using multiprocessing"""
+        futures = {}
+        
+        # Submit tile generation tasks
+        for y in range(y_range[0], y_range[1] + 1):
+            for x in range(x_range[0], x_range[1] + 1):
+                # Only prefetch if not already in cache
+                tile_key = f"{level}/{x}/{y}"
+                if tile_key not in self.memory_cache:
+                    futures[tile_key] = self.pool.submit(self._process_tile, level, x, y)
+        
+        # Collect results as they complete
+        for tile_key, future in futures.items():
+            try:
+                result = future.result(timeout=30)  # Set timeout to prevent hanging
+                if result:
+                    self.memory_cache[tile_key] = result
+            except Exception as e:
+                print(f"Error prefetching tile {tile_key}: {e}")
+    
+    def get_better_overview(self, level=0):
+        """Get a better quality overview at the specified level"""
+        if level in self.overview_cache:
+            return self.overview_cache[level]
+        return None
+    
+    def get_tile(self, level, x, y, tile_size=256):
+        """Get a tile at the specified level and coordinates with caching"""
+        # Check cache first
+        tile_key = f"{level}/{x}/{y}"
+        if tile_key in self.memory_cache:
+            return self.memory_cache[tile_key]
+        
+        # Generate the tile in a separate process
+        future = self.pool.submit(self._process_tile, level, x, y, tile_size)
+        try:
+            result = future.result(timeout=10)  # Set timeout to ensure responsiveness
+            if result:
+                # Store in cache
+                self.memory_cache[tile_key] = result
+            return result
+        except Exception as e:
+            print(f"Error in get_tile for {tile_key}: {e}")
             return None
     
     def get_tile_info(self):
@@ -824,6 +1015,42 @@ class FitsTileGenerator:
         
         # Queue the prefetch task
         self.progressive_queue.put(('generate_tiles', (level, (x_min, x_max), (y_min, y_max))))
+    
+    def cleanup(self):
+        """Clean up resources and properly release all references"""
+        # Stop the worker thread
+        try:
+            # Notify worker thread to exit
+            self.progressive_queue.put(('exit', None))
+            if self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=1.0)  # Wait for thread to finish with timeout
+        except:
+            pass
+            
+        # Shutdown the process pool
+        try:
+            self.pool.shutdown(wait=False)
+        except:
+            pass
+            
+        # Clear memory caches
+        try:
+            self.memory_cache.clear()
+            self.overview_cache.clear()
+        except:
+            pass
+            
+        # Remove temporary directory
+        import shutil
+        try:
+            shutil.rmtree(self.cache_dir, ignore_errors=True)
+        except:
+            pass
+            
+        # Force garbage collection
+        import gc
+        gc.collect()
+
 
 @app.post("/request-tiles/")
 async def request_tiles(request: Request):
@@ -941,49 +1168,6 @@ async def get_fits_tile(level: int, x: int, y: int):
         )
 
 
-# Add endpoint to load a specific file
-# Update your existing load_file function to register the tile generator when a FITS file is loaded
-@app.get("/load-file/{filepath:path}")
-async def load_file(filepath: str):
-    """Set the active FITS file and initialize tile generator."""
-    try:
-        # Base directory is "files"
-        base_dir = Path("files")
-        
-        # Construct the full path
-        file_path = base_dir / filepath
-        
-        # Ensure the file exists
-        if not file_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"File not found: {filepath}"}
-            )
-        
-        # Ensure the file is within the files directory (security check)
-        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Access denied: file is outside the files directory"}
-            )
-        
-        # Set the global file path
-        app.state.current_fits_file = str(file_path)
-        print(f"Set current FITS file to: {app.state.current_fits_file}")
-        
-        # Clear the tile cache for previous files
-        tile_cache.clear()
-        
-        # Return success
-        return JSONResponse(content={"message": f"File {filepath} set as active"})
-    except Exception as e:
-        print(f"Error setting active file: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to set active file: {str(e)}"}
-        )
-
-# Add this new endpoint to list available files in the "files" directory
 
 
 # Add this new endpoint to list available files in the "files" directory
@@ -1179,14 +1363,17 @@ async def catalog_info(catalog_name: str):
         )
 
 
-# Complete implementation of load_catalog_data function
+
 def load_catalog_data(catalog_path):
     """
     Load catalog data from a file.
     Supports FITS tables and CSV/TSV formats.
     Filters objects to match the loaded FITS image galaxy.
+    Handles both decimal and sexagesimal (HH:MM:SS) coordinate formats.
     """
     try:
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
         catalog_data = []
         
         # Use the currently selected FITS file
@@ -1215,6 +1402,71 @@ def load_catalog_data(catalog_path):
                 print(f"Extracted galaxy identifier from FITS filename: {target_galaxy}")
                 break
         
+        # Function to convert coordinate strings to decimal degrees
+        def parse_coordinate(coord_str, is_ra=None):
+            """
+            Parse a coordinate string that could be in decimal or sexagesimal format.
+            Returns the coordinate value in decimal degrees.
+            
+            Parameters:
+            - coord_str: The coordinate string to parse
+            - is_ra: If True, treat as RA; if False, treat as DEC; if None, try to determine automatically
+            """
+            if coord_str is None:
+                return None
+                
+            # Convert to string if it's not already
+            coord_str = str(coord_str).strip()
+            
+            try:
+                # First, try parsing as a simple float
+                return float(coord_str)
+            except ValueError:
+                # If that fails, try parsing as a sexagesimal string
+                try:
+                    from astropy.coordinates import Angle
+                    
+                    # Check if we can determine the format
+                    has_h = 'h' in coord_str
+                    has_m = 'm' in coord_str
+                    has_s = 's' in coord_str
+                    has_d = 'd' in coord_str or '°' in coord_str
+                    has_quote = "'" in coord_str
+                    has_dquote = '"' in coord_str
+                    
+                    # Determine if it's RA or DEC if not specified
+                    if is_ra is None:
+                        if has_h:  # Hour marker usually indicates RA
+                            is_ra = True
+                        elif has_d:  # Degree marker usually indicates DEC
+                            is_ra = False
+                        else:
+                            # Default to RA for formats like "12:34:56.7"
+                            is_ra = True
+                    
+                    # Parse using the appropriate unit
+                    if is_ra:
+                        return Angle(coord_str, unit=u.hourangle).degree
+                    else:
+                        return Angle(coord_str, unit=u.deg).degree
+                        
+                except Exception as e:
+                    # If direct parsing fails, try with more explicit handling
+                    try:
+                        # For HMS format (RA): convert 01h36m43.31s to 01:36:43.31
+                        if 'h' in coord_str and 'm' in coord_str:
+                            # Replace h, m, s with :, :, ''
+                            converted = coord_str.replace('h', ':').replace('m', ':').replace('s', '')
+                            if is_ra is None or is_ra:
+                                return Angle(converted, unit=u.hourangle).degree
+                            else:
+                                return Angle(converted, unit=u.deg).degree
+                    except Exception as e2:
+                        print(f"Failed to parse with explicit handling: {coord_str}, Error: {e2}")
+                    
+                    print(f"Failed to parse coordinate: {coord_str}, Error: {e}")
+                    raise ValueError(f"Could not parse coordinate: {coord_str}")
+        
         # Check if it's a FITS file
         if catalog_path.lower().endswith(('.fits', '.fit')):
             print(f"Loading FITS catalog: {catalog_path}")
@@ -1238,8 +1490,8 @@ def load_catalog_data(catalog_path):
                 dec_col = None
                 
                 # Common names for RA and DEC columns
-                ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000']
-                dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000']
+                ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000','cen_ra']
+                dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000','cen_dec']
                 
                 # Find RA column
                 for name in ra_names:
@@ -1260,7 +1512,7 @@ def load_catalog_data(catalog_path):
                 
                 # Find galaxy column if it exists
                 galaxy_col = None
-                galaxy_col_candidates = ['GALAXY', 'galaxy', 'Galaxy', 'NAME', 'name', 'Name', 'ID', 'id', 'Id', 'SOURCE_ID', 'source_id', 'TARGET', 'target', 'OBJECT', 'object']
+                galaxy_col_candidates = ['gal_name','GALAXY', 'galaxy', 'Galaxy','TARGET', 'target', 'OBJECT', 'object']
                 
                 for col_name in galaxy_col_candidates:
                     if col_name in catalog_table.names:
@@ -1293,11 +1545,12 @@ def load_catalog_data(catalog_path):
                     # Process the filtered rows
                     for row in filtered_table:
                         try:
-                            ra = float(row[ra_col])
-                            dec = float(row[dec_col])
+                            # Use the parsing function to handle different coordinate formats
+                            ra = parse_coordinate(row[ra_col], is_ra=True)
+                            dec = parse_coordinate(row[dec_col], is_ra=False)
                             
                             # Skip if invalid coordinates
-                            if np.isnan(ra) or np.isnan(dec):
+                            if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
                                 continue
                             
                             # Create object data
@@ -1326,11 +1579,12 @@ def load_catalog_data(catalog_path):
                     # No filtering, process all rows
                     for i, row in enumerate(catalog_table):
                         try:
-                            ra = float(row[ra_col])
-                            dec = float(row[dec_col])
+                            # Use the parsing function to handle different coordinate formats
+                            ra = parse_coordinate(row[ra_col])
+                            dec = parse_coordinate(row[dec_col])
                             
                             # Skip if invalid coordinates
-                            if np.isnan(ra) or np.isnan(dec):
+                            if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
                                 continue
                             
                             # Create object data
@@ -1370,8 +1624,8 @@ def load_catalog_data(catalog_path):
             dec_col = None
             
             # Common names for RA and DEC columns
-            ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000']
-            dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000']
+            ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000','cen_ra']
+            dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000','cen_dec']
             
             # Find RA column
             for name in ra_names:
@@ -1392,7 +1646,7 @@ def load_catalog_data(catalog_path):
             
             # Find galaxy column if it exists
             galaxy_col = None
-            galaxy_col_candidates = ['GALAXY', 'galaxy', 'Galaxy', 'NAME', 'name', 'Name', 'ID', 'id', 'Id', 'SOURCE_ID', 'source_id', 'TARGET', 'target', 'OBJECT', 'object']
+            galaxy_col_candidates = ['gal_name','GALAXY', 'galaxy', 'Galaxy','TARGET', 'target', 'OBJECT', 'object']
             
             for col_name in galaxy_col_candidates:
                 if col_name in catalog_table.colnames:
@@ -1415,11 +1669,12 @@ def load_catalog_data(catalog_path):
                             continue
                         filtered_count += 1
                     
-                    ra = float(row[ra_col])
-                    dec = float(row[dec_col])
+                    # Use the parsing function to handle different coordinate formats
+                    ra = parse_coordinate(row[ra_col], is_ra=True)
+                    dec = parse_coordinate(row[dec_col], is_ra=False)
                     
                     # Skip if invalid coordinates
-                    if np.isnan(ra) or np.isnan(dec):
+                    if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
                         continue
                     
                     # Create object data
@@ -1506,11 +1761,221 @@ def load_catalog_data(catalog_path):
         print(traceback.format_exc())
         return []
 
-# Complete implementation of fits_binary endpoint
+
+
+# Corrected code to extract BUNIT from each specific HDU
+
+@app.get("/fits-hdu-info/{filepath:path}")
+async def get_fits_hdu_info(filepath: str):
+    """Get information about the HDUs in a FITS file, including BUNIT for each HDU."""
+    try:
+        # Base directory is "files"
+        base_dir = Path("files")
+        
+        # Construct the full path
+        file_path = base_dir / filepath
+        
+        # Ensure the file exists
+        if not file_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"File not found: {filepath}"}
+            )
+        
+        # Ensure the file is within the files directory
+        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Access denied: file is outside the files directory"}
+            )
+        
+        # Open the FITS file and analyze its structure
+        with fits.open(file_path) as hdul:
+            hdu_list = []
+            
+            # Look for HDUs with valid image or table data
+            for i, hdu in enumerate(hdul):
+                hdu_info = {
+                    "index": i,
+                    "name": hdu.name if hasattr(hdu, 'name') else "",
+                    "type": "Unknown"
+                }
+                
+                # Extract BUNIT from THIS HDU's header specifically
+                if hasattr(hdu, 'header'):
+                    # Print the entire header for debugging
+
+                    
+                    # Look for BUNIT in this HDU with case-insensitive search
+                    bunit = None
+                    for key in hdu.header:
+                        if key.upper() == 'BUNIT':
+                            bunit = hdu.header[key]
+                            break
+                    
+                    # If found, add to HDU info
+                    if bunit:
+                        hdu_info["bunit"] = bunit
+                    else:
+                        hdu_info["bunit"] = ""
+                else:
+                    hdu_info["bunit"] = ""
+                
+                # Check if this is an image HDU with data
+                if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)) and hasattr(hdu, 'data') and hdu.data is not None:
+                    hdu_info["type"] = "Image"
+                    # Get image dimensions
+                    if hasattr(hdu.data, 'shape'):
+                        hdu_info["dimensions"] = list(hdu.data.shape)
+                    # Get BITPIX
+                    if hasattr(hdu, 'header') and 'BITPIX' in hdu.header:
+                        hdu_info["bitpix"] = hdu.header['BITPIX']
+                    # Check for WCS
+                    try:
+                        wcs = WCS(hdu.header)
+                        hdu_info["hasWCS"] = wcs.has_celestial
+                    except:
+                        hdu_info["hasWCS"] = False
+                    
+                    # For Image HDUs, mark as recommended if it has dimensions and data
+                    has_sufficient_dimensions = (hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2)
+                    has_non_empty_data = has_sufficient_dimensions and hdu.data.size > 0
+                    
+                    hdu_info["isRecommended"] = (
+                        has_non_empty_data and 
+                        (hdu_info.get("hasWCS", False) or i == 0)
+                    )
+                
+                # Check if this is a table HDU
+                elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)) and hasattr(hdu, 'data') and hdu.data is not None:
+                    hdu_info["type"] = "Table"
+                    # Get number of rows
+                    if hasattr(hdu.data, '__len__'):
+                        hdu_info["rows"] = len(hdu.data)
+                    # Get number of columns
+                    if hasattr(hdu.data, 'names'):
+                        hdu_info["columns"] = len(hdu.data.names)
+                    
+                    # Tables are typically not recommended for display
+                    hdu_info["isRecommended"] = False
+                
+                # For other HDU types or empty HDUs
+                else:
+                    if isinstance(hdu, fits.PrimaryHDU):
+                        hdu_info["type"] = "Primary Header"
+                    elif isinstance(hdu, fits.ImageHDU):
+                        hdu_info["type"] = "Empty Image"
+                    elif isinstance(hdu, fits.BinTableHDU):
+                        hdu_info["type"] = "Binary Table"
+                    elif isinstance(hdu, fits.TableHDU):
+                        hdu_info["type"] = "ASCII Table"
+                    elif isinstance(hdu, fits.GroupsHDU):
+                        hdu_info["type"] = "Groups"
+                    
+                    # These HDUs are not recommended for display
+                    hdu_info["isRecommended"] = False
+                
+                hdu_list.append(hdu_info)
+            
+            # If no HDU has been marked as recommended yet, choose the best one
+            if not any(hdu["isRecommended"] for hdu in hdu_list):
+                # First, look for image HDUs
+                image_hdus = [hdu for hdu in hdu_list if hdu["type"] == "Image"]
+                
+                if image_hdus:
+                    # Prefer HDUs with WCS
+                    wcs_hdus = [hdu for hdu in image_hdus if hdu.get("hasWCS", False)]
+                    
+                    if wcs_hdus:
+                        # Choose the first HDU with WCS
+                        wcs_hdus[0]["isRecommended"] = True
+                    else:
+                        # Otherwise, choose the first image HDU
+                        image_hdus[0]["isRecommended"] = True
+                elif len(hdu_list) > 0:
+                    # If no image HDUs, mark the primary HDU as recommended
+                    hdu_list[0]["isRecommended"] = True
+            
+            print(f"Returning info for {len(hdu_list)} HDUs with their specific BUNIT values")
+            for i, hdu in enumerate(hdu_list):
+                bunit = hdu.get("bunit", "")
+            
+            return JSONResponse(content={"hduList": hdu_list})
+    
+    except Exception as e:
+        print(f"Error getting HDU info: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to get HDU info: {str(e)}"}
+        )
+
+
+@app.get("/load-file/{filepath:path}")
+async def load_file(filepath: str, hdu: int = Query(0)):
+    """Set the active FITS file and HDU index."""
+    try:
+        # Base directory is "files"
+        base_dir = Path("files")
+        
+        # Construct the full path
+        file_path = base_dir / filepath
+        
+        # Ensure the file exists
+        if not file_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"File not found: {filepath}"}
+            )
+        
+        # Ensure the file is within the files directory (security check)
+        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Access denied: file is outside the files directory"}
+            )
+        
+        # Verify the HDU index is valid
+        try:
+            with fits.open(file_path) as hdul:
+                if hdu < 0 or hdu >= len(hdul):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": f"Invalid HDU index: {hdu}. File has {len(hdul)} HDUs."}
+                    )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error checking HDU: {str(e)}"}
+            )
+        
+        # Set the global file path and HDU index
+        app.state.current_fits_file = str(file_path)
+        app.state.current_hdu_index = hdu
+        print(f"Set current FITS file to: {app.state.current_fits_file}, HDU: {app.state.current_hdu_index}")
+        
+        # Clear the tile cache for previous files
+        tile_cache.clear()
+        
+        # Return success
+        return JSONResponse(content={
+            "message": f"File {filepath} set as active, HDU: {hdu}",
+            "filepath": filepath,
+            "hdu": hdu
+        })
+    except Exception as e:
+        print(f"Error setting active file: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to set active file: {str(e)}"}
+        )
+
 @app.get("/fits-binary/")
 async def fits_binary(type: str = Query(None), ra: float = Query(None), 
                       dec: float = Query(None), catalog_name: str = Query(None),
-                      initialize_tiles: bool = Query(True), fast_loading: bool = Query(True)):
+                      initialize_tiles: bool = Query(True), fast_loading: bool = Query(True),
+                      hdu: int = Query(None)):
     try:
         # Choose which file to use based on request
         if type == "sed" and ra is not None and dec is not None:
@@ -1529,6 +1994,10 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
         else:
             print(f"Using selected file: {fits_file}")
         
+        # Use the specified HDU or fall back to the current HDU index
+        hdu_index = hdu if hdu is not None else getattr(app.state, "current_hdu_index", 0)
+        print(f"Using HDU index: {hdu_index}")
+        
         # Check if the file exists
         if not os.path.exists(fits_file):
             return JSONResponse(
@@ -1546,7 +2015,7 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
                 # For very large files, we'll return a basic structure instead of full data
                 
                 # First, check if we already have a tile generator
-                file_id = os.path.basename(fits_file)
+                file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
                 if file_id in active_tile_generators:
                     # We already have a tile generator, use the information from it
                     tile_generator = active_tile_generators[file_id]
@@ -1559,7 +2028,8 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
                         "min_value": float(tile_generator.min_value),
                         "max_value": float(tile_generator.max_value),
                         "overview": tile_generator.overview,
-                        "message": "Use tiled rendering for this large file"
+                        "message": "Use tiled rendering for this large file",
+                        "hdu": hdu_index
                     }
                     
                     # Add WCS info if available
@@ -1589,28 +2059,22 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
         
         # Open the FITS file
         with fits.open(fits_file) as hdul:
-            # Find the HDU with valid image data and WCS
-            hdu = None
-            for i, h in enumerate(hdul):
-                if hasattr(h, 'data') and h.data is not None and len(getattr(h, 'shape', [])) >= 2:
-                    try:
-                        wcs_test = WCS(h.header)
-                        if wcs_test.has_celestial:
-                            hdu = h
-                            print(f"Using HDU {i} with valid WCS")
-                            break
-                    except Exception as e:
-                        print(f"Error checking WCS in HDU {i}: {e}")
-                        continue
+            # Validate the HDU index
+            if hdu_index < 0 or hdu_index >= len(hdul):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs."}
+                )
             
-            # If no suitable HDU found, try using HDU 1 as default
-            if hdu is None:
-                if len(hdul) > 1 and hasattr(hdul[1], 'data') and hdul[1].data is not None:
-                    hdu = hdul[1]
-                    print("No HDU with valid WCS found, using HDU 1")
-                else:
-                    hdu = hdul[0]
-                    print("No HDU with valid WCS found, using primary HDU")
+            # Get the specified HDU
+            hdu = hdul[hdu_index]
+            
+            # Make sure the HDU has valid image data
+            if not hasattr(hdu, 'data') or hdu.data is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"HDU {hdu_index} does not contain image data"}
+                )
             
             # Handle different dimensionality
             # If data has more than 2 dimensions, take the first 2D slice
@@ -1631,7 +2095,7 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
             if image_data is None:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": "No data in FITS file"}
+                    content={"error": f"No data in HDU {hdu_index}"}
                 )
             
             # Get dimensions
@@ -1644,12 +2108,12 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
             if is_large_file and initialize_tiles:
                 print(f"Large file detected ({width}x{height} = {pixel_count} pixels), initializing tile generator")
                 # Initialize the tile generator in a background thread when needed
-                file_id = os.path.basename(fits_file)
+                file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
                 if file_id not in active_tile_generators:
                     # Prepare to initialize tile generator in background
                     threading.Thread(
                         target=initialize_tile_generator_background,
-                        args=(file_id, fits_file, image_data, header),
+                        args=(file_id, fits_file, image_data, header, hdu_index),
                         daemon=True
                     ).start()
             
@@ -1748,8 +2212,8 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
             content={"error": str(e)}
         )
 
-# Helper function to initialize tile generator in background
-def initialize_tile_generator_background(file_id, fits_file, image_data, header):
+
+def initialize_tile_generator_background(file_id, fits_file, image_data, header, hdu_index):
     try:
         print(f"Initializing tile generator for {file_id} in background")
         
@@ -1758,6 +2222,7 @@ def initialize_tile_generator_background(file_id, fits_file, image_data, header)
         fits_data.data = image_data
         fits_data.width = image_data.shape[1]
         fits_data.height = image_data.shape[0]
+        fits_data.hdu_index = hdu_index  # Store the HDU index
         
         # Calculate min and max values
         valid_data = image_data[np.isfinite(image_data)]
@@ -1782,7 +2247,6 @@ def initialize_tile_generator_background(file_id, fits_file, image_data, header)
         print(f"Error initializing tile generator: {e}")
         import traceback
         print(traceback.format_exc())
-
 
 def initialize_tile_generator(file_id, fits_data):
     try:
@@ -1844,41 +2308,6 @@ async def get_fits_overview(quality: int = 0):
             status_code=500,
             content={"error": f"Failed to get overview: {str(e)}"}
         )
-
-# Helper function to initialize tile generator in background
-def initialize_tile_generator_background(file_id, fits_file, image_data, header):
-    try:
-        print(f"Initializing tile generator for {file_id} in background")
-        
-        # Create simplified FITS data object for the tile generator
-        fits_data = SimpleNamespace()
-        fits_data.data = image_data
-        fits_data.width = image_data.shape[1]
-        fits_data.height = image_data.shape[0]
-        
-        # Calculate min and max values
-        valid_data = image_data[np.isfinite(image_data)]
-        if len(valid_data) > 0:
-            fits_data.min_value = float(np.min(valid_data))
-            fits_data.max_value = float(np.max(valid_data))
-        else:
-            fits_data.min_value = 0
-            fits_data.max_value = 1
-        
-        # Extract WCS
-        try:
-            fits_data.wcs = WCS(header)
-        except Exception as e:
-            print(f"Error extracting WCS for tile generator: {e}")
-            fits_data.wcs = None
-        
-        # Create the tile generator
-        active_tile_generators[file_id] = FitsTileGenerator(fits_data)
-        print(f"Tile generator initialized for {file_id}")
-    except Exception as e:
-        print(f"Error initializing tile generator: {e}")
-        import traceback
-        print(traceback.format_exc())
 
 
 
@@ -2375,6 +2804,68 @@ async def catalog_data(catalog_name: str):
 async def load_catalog_endpoint(catalog_name: str):
     """Return catalog data in JSON format for plotting and analysis."""
     try:
+        from astropy.coordinates import Angle
+        import astropy.units as u
+        
+        # Helper function to parse coordinates (same as in other functions)
+        def parse_coordinate(coord_str, is_ra=None):
+            """
+            Parse a coordinate string that could be in decimal or sexagesimal format.
+            Returns the coordinate value in decimal degrees.
+            """
+            if coord_str is None:
+                return None
+                
+            # Convert to string if it's not already
+            coord_str = str(coord_str).strip()
+            
+            try:
+                # First, try parsing as a simple float
+                return float(coord_str)
+            except ValueError:
+                # If that fails, try parsing as a sexagesimal string
+                try:
+                    # Check if we can determine the format
+                    has_h = 'h' in coord_str
+                    has_m = 'm' in coord_str
+                    has_s = 's' in coord_str
+                    has_d = 'd' in coord_str or '°' in coord_str
+                    has_quote = "'" in coord_str
+                    has_dquote = '"' in coord_str
+                    
+                    # Determine if it's RA or DEC if not specified
+                    if is_ra is None:
+                        if has_h:  # Hour marker usually indicates RA
+                            is_ra = True
+                        elif has_d:  # Degree marker usually indicates DEC
+                            is_ra = False
+                        else:
+                            # Default to RA for formats like "12:34:56.7"
+                            is_ra = True
+                    
+                    # Parse using the appropriate unit
+                    if is_ra:
+                        return Angle(coord_str, unit=u.hourangle).degree
+                    else:
+                        return Angle(coord_str, unit=u.deg).degree
+                        
+                except Exception as e:
+                    # If direct parsing fails, try with more explicit handling
+                    try:
+                        # For HMS format (RA): convert 01h36m43.31s to 01:36:43.31
+                        if 'h' in coord_str and 'm' in coord_str:
+                            # Replace h, m, s with :, :, ''
+                            converted = coord_str.replace('h', ':').replace('m', ':').replace('s', '')
+                            if is_ra is None or is_ra:
+                                return Angle(converted, unit=u.hourangle).degree
+                            else:
+                                return Angle(converted, unit=u.deg).degree
+                    except Exception as e2:
+                        print(f"Failed to parse with explicit handling: {coord_str}, Error: {e2}")
+                    
+                    print(f"Failed to parse coordinate: {coord_str}, Error: {e}")
+                    raise ValueError(f"Could not parse coordinate: {coord_str}")
+        
         # Find the catalog file
         catalog_path = None
         for file_pattern in ["catalogs/*.cat", "catalogs/*.fits", "catalogs/*.fit"]:
@@ -2455,43 +2946,88 @@ async def load_catalog_endpoint(catalog_name: str):
                     dec_col = None
                     
                     for col_name in catalog_table.colnames:
-                        if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+                        if col_name.lower() in ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra', 'right_ascension']:
                             ra_col = col_name
-                        elif col_name.lower() in ['dec', 'delta', 'declination']:
+                        elif col_name.lower() in ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec', 'declination']:
                             dec_col = col_name
                     
                     if ra_col and dec_col:
+                        # Check if catalog coordinates need parsing
+                        need_parsing = False
+                        try:
+                            # Try to get first coordinate value
+                            first_ra = catalog_table[ra_col][0]
+                            if not isinstance(first_ra, (int, float, np.integer, np.floating)):
+                                need_parsing = True
+                                print(f"Catalog contains non-numerical coordinates, will parse...")
+                        except:
+                            pass
+                        
+                        # Create arrays for the catalog coordinates
+                        if need_parsing:
+                            # We need to parse the coordinates in the catalog table
+                            ra_values = []
+                            dec_values = []
+                            
+                            for row_idx in range(len(catalog_table)):
+                                try:
+                                    ra_val = parse_coordinate(catalog_table[ra_col][row_idx], is_ra=True)
+                                    dec_val = parse_coordinate(catalog_table[dec_col][row_idx], is_ra=False)
+                                    ra_values.append(ra_val)
+                                    dec_values.append(dec_val)
+                                except Exception as e:
+                                    print(f"Error parsing coordinates at index {row_idx}: {e}")
+                                    # Use placeholder values that won't match
+                                    ra_values.append(float('nan'))
+                                    dec_values.append(float('nan'))
+                            
+                            ra_values = np.array(ra_values)
+                            dec_values = np.array(dec_values)
+                        else:
+                            # Coordinates are already numeric
+                            ra_values = np.array(catalog_table[ra_col], dtype=float)
+                            dec_values = np.array(catalog_table[dec_col], dtype=float)
+                        
                         # For each object in the catalog data
                         for obj in catalog_data:
                             ra = obj['ra']
                             dec = obj['dec']
                             
                             # Calculate distances to find matching object in table
-                            ra_diff = np.abs(catalog_table[ra_col] - ra)
-                            dec_diff = np.abs(catalog_table[dec_col] - dec)
+                            ra_diff = np.abs(ra_values - ra)
+                            dec_diff = np.abs(dec_values - dec)
                             distances = np.sqrt(ra_diff**2 + dec_diff**2)
-                            closest_idx = np.argmin(distances)
                             
-                            # Check if the match is close enough
-                            if distances[closest_idx] < 0.0003:  # ~1 arcsec
-                                # Add boolean properties
-                                for col_name in boolean_columns:
-                                    try:
-                                        val = catalog_table[col_name][closest_idx]
-                                        # Convert to standard boolean
-                                        if isinstance(val, (bool, np.bool_)):
-                                            obj[col_name] = bool(val)
-                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'true':
-                                            obj[col_name] = True
-                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'false':
+                            # Handle NaN values in distances
+                            valid_indices = ~np.isnan(distances)
+                            if np.any(valid_indices):
+                                # Only consider valid (non-NaN) distances
+                                valid_distances = distances[valid_indices]
+                                valid_indices_array = np.where(valid_indices)[0]
+                                min_idx = np.argmin(valid_distances)
+                                closest_idx = valid_indices_array[min_idx]
+                                min_distance = valid_distances[min_idx]
+                                
+                                # Check if the match is close enough
+                                if min_distance < 0.0003:  # ~1 arcsec
+                                    # Add boolean properties
+                                    for col_name in boolean_columns:
+                                        try:
+                                            val = catalog_table[col_name][closest_idx]
+                                            # Convert to standard boolean
+                                            if isinstance(val, (bool, np.bool_)):
+                                                obj[col_name] = bool(val)
+                                            elif isinstance(val, (str, np.str_)) and val.lower() == 'true':
+                                                obj[col_name] = True
+                                            elif isinstance(val, (str, np.str_)) and val.lower() == 'false':
+                                                obj[col_name] = False
+                                            elif isinstance(val, (int, np.integer)):
+                                                obj[col_name] = bool(val)
+                                            else:
+                                                obj[col_name] = False
+                                        except Exception as e:
+                                            print(f"Error processing boolean column {col_name}: {e}")
                                             obj[col_name] = False
-                                        elif isinstance(val, (int, np.integer)):
-                                            obj[col_name] = bool(val)
-                                        else:
-                                            obj[col_name] = False
-                                    except Exception as e:
-                                        print(f"Error processing boolean column {col_name}: {e}")
-                                        obj[col_name] = False
             
         except Exception as e:
             print(f"Error loading catalog data: {e}")
@@ -2511,7 +3047,6 @@ async def load_catalog_endpoint(catalog_name: str):
             status_code=500,
             content={"error": f"Failed to load catalog: {str(e)}"}
         )
-
 
 
 @app.get("/catalog-binary/")
@@ -2617,10 +3152,11 @@ async def generate_sed(ra: float, dec: float, catalog_name: str):
         ra_col = None
         dec_col = None
         
+
         for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+            if col_name.lower() in ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000','cen_ra']:
                 ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination']:
+            elif col_name.lower() in ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000','cen_dec']:
                 dec_col = col_name
         
         if not ra_col or not dec_col:
@@ -3167,10 +3703,84 @@ async def generate_sed(ra: float, dec: float, catalog_name: str):
             content={"error": f"Failed to save SED: {str(e)}"}
         )
 
+
 @app.get("/source-properties/")
-async def source_properties(ra: float, dec: float, catalog_name: str):
+async def source_properties(ra: str, dec: str, catalog_name: str):
     """Get all properties for a specific source based on RA and DEC coordinates."""
     try:
+        from astropy.coordinates import Angle
+        import astropy.units as u
+        
+        # Helper function to parse coordinates (similar to the one in load_catalog_data)
+        def parse_coordinate(coord_str, is_ra=None):
+            """
+            Parse a coordinate string that could be in decimal or sexagesimal format.
+            Returns the coordinate value in decimal degrees.
+            """
+            if coord_str is None:
+                return None
+                
+            # Convert to string if it's not already
+            coord_str = str(coord_str).strip()
+            
+            try:
+                # First, try parsing as a simple float
+                return float(coord_str)
+            except ValueError:
+                # If that fails, try parsing as a sexagesimal string
+                try:
+                    # Check if we can determine the format
+                    has_h = 'h' in coord_str
+                    has_m = 'm' in coord_str
+                    has_s = 's' in coord_str
+                    has_d = 'd' in coord_str or '°' in coord_str
+                    has_quote = "'" in coord_str
+                    has_dquote = '"' in coord_str
+                    
+                    # Determine if it's RA or DEC if not specified
+                    if is_ra is None:
+                        if has_h:  # Hour marker usually indicates RA
+                            is_ra = True
+                        elif has_d:  # Degree marker usually indicates DEC
+                            is_ra = False
+                        else:
+                            # Default to RA for formats like "12:34:56.7"
+                            is_ra = True
+                    
+                    # Parse using the appropriate unit
+                    if is_ra:
+                        return Angle(coord_str, unit=u.hourangle).degree
+                    else:
+                        return Angle(coord_str, unit=u.deg).degree
+                        
+                except Exception as e:
+                    # If direct parsing fails, try with more explicit handling
+                    try:
+                        # For HMS format (RA): convert 01h36m43.31s to 01:36:43.31
+                        if 'h' in coord_str and 'm' in coord_str:
+                            # Replace h, m, s with :, :, ''
+                            converted = coord_str.replace('h', ':').replace('m', ':').replace('s', '')
+                            if is_ra is None or is_ra:
+                                return Angle(converted, unit=u.hourangle).degree
+                            else:
+                                return Angle(converted, unit=u.deg).degree
+                    except Exception as e2:
+                        print(f"Failed to parse with explicit handling: {coord_str}, Error: {e2}")
+                    
+                    print(f"Failed to parse coordinate: {coord_str}, Error: {e}")
+                    raise ValueError(f"Could not parse coordinate: {coord_str}")
+        
+        # Parse the input coordinates to decimal degrees
+        try:
+            ra_decimal = parse_coordinate(ra, is_ra=True)
+            dec_decimal = parse_coordinate(dec, is_ra=False)
+            print(f"Parsed coordinates: RA={ra_decimal}, DEC={dec_decimal}")
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid coordinate format: {str(e)}"}
+            )
+        
         # Check if we have the catalog data loaded
         if catalog_name not in loaded_catalogs:
             return JSONResponse(
@@ -3187,9 +3797,9 @@ async def source_properties(ra: float, dec: float, catalog_name: str):
         dec_col = None
         
         for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+            if col_name.lower() in ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']:
                 ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination']:
+            elif col_name.lower() in ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']:
                 dec_col = col_name
         
         if not ra_col or not dec_col:
@@ -3198,9 +3808,31 @@ async def source_properties(ra: float, dec: float, catalog_name: str):
                 content={"error": "Could not find RA and DEC columns in catalog"}
             )
         
+        # Parse catalog coordinates if needed
+        # First check if any of the coordinates in the catalog might be in string format
+        need_parsing = False
+        try:
+            # Try to get first coordinate value
+            first_ra = catalog_table[ra_col][0]
+            if not isinstance(first_ra, (int, float, np.integer, np.floating)):
+                need_parsing = True
+        except:
+            pass
+        
+        # Create arrays for the coordinates
+        if need_parsing:
+            print("Catalog contains non-numerical coordinates, parsing...")
+            # We need to parse the coordinates in the catalog
+            ra_values = np.array([parse_coordinate(val, is_ra=True) for val in catalog_table[ra_col]])
+            dec_values = np.array([parse_coordinate(val, is_ra=False) for val in catalog_table[dec_col]])
+        else:
+            # Coordinates are already numeric
+            ra_values = np.array(catalog_table[ra_col], dtype=float)
+            dec_values = np.array(catalog_table[dec_col], dtype=float)
+        
         # Calculate angular distance to find closest object
-        ra_diff = np.abs(catalog_table[ra_col] - ra)
-        dec_diff = np.abs(catalog_table[dec_col] - dec)
+        ra_diff = np.abs(ra_values - ra_decimal)
+        dec_diff = np.abs(dec_values - dec_decimal)
         distances = np.sqrt(ra_diff**2 + dec_diff**2)
         closest_idx = np.argmin(distances)
         
@@ -3253,7 +3885,6 @@ async def source_properties(ra: float, dec: float, catalog_name: str):
             status_code=500,
             content={"error": f"Failed to get source properties: {str(e)}"}
         )
-
 
 @app.get("/catalog-boolean-columns/")
 async def catalog_boolean_columns(catalog_name: str):
@@ -3503,3 +4134,4 @@ if __name__ == "__main__":
         server_thread.start()
 
         # Run macOS GUI
+        run_mac_app()
