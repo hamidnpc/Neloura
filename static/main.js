@@ -4257,6 +4257,7 @@ function celestialToPixel(ra, dec, wcs) {
         // Apply X-axis reflection if needed
         if (reflectedX) {
             x = (wcs.width || 2 * crpix1) - x;
+            console.log('doing so!!!!')
         }
         
         
@@ -4268,6 +4269,7 @@ function celestialToPixel(ra, dec, wcs) {
 }
 
 function pixelToCelestial(x, y, wcs) {
+    // Early exit if WCS info is missing or invalid
     if (!wcs || !wcs.hasWCS) return { ra: 0, dec: 0 };
     
     try {
@@ -4277,13 +4279,11 @@ function pixelToCelestial(x, y, wcs) {
         const crval1 = wcs.crval1;
         const crval2 = wcs.crval2;
         
-        // Modify input coordinates if PC1_1 is negative
+        // Apply X-axis reflection if needed
         let adjustedX = x;
-        let reflectedX = false;
-        if (wcs.pc1_1 < 0) {
-            console.log("Reversing X-axis reflection");
+        if (wcs.pc1_1 !== undefined && wcs.pc1_1 < 0) {
             adjustedX = (wcs.width || 2 * crpix1) - x;
-            reflectedX = true;
+            console.log('Applying X-axis reflection in pixelToCelestial');
         }
         
         // Calculate pixel offsets from reference pixel
@@ -4297,22 +4297,29 @@ function pixelToCelestial(x, y, wcs) {
             return { ra: 0, dec: 0 };
         }
         
-        // PC Matrix information logging
-        const pcInfo = {
-            pc1_1: wcs.pc1_1 !== undefined ? wcs.pc1_1 : 'N/A',
-            pc1_2: wcs.pc1_2 !== undefined ? wcs.pc1_2 : 'N/A',
-            pc2_1: wcs.pc2_1 !== undefined ? wcs.pc2_1 : 'N/A',
-            pc2_2: wcs.pc2_2 !== undefined ? wcs.pc2_2 : 'N/A'
-        };
+        // Compute matrix determinant
+        const det = transform.m11 * transform.m22 - transform.m12 * transform.m21;
         
-        // Apply the transformation matrix directly
-        const dra = transform.m11 * dx + transform.m12 * dy;
-        const ddec = transform.m21 * dx + transform.m22 * dy;
+        if (Math.abs(det) < 1e-10) {
+            console.warn("Transformation matrix is singular");
+            return { ra: 0, dec: 0 };
+        }
         
-        // Calculate RA/DEC
-        const ra = crval1 + dra / Math.cos(crval2 * Math.PI / 180);
-        const dec = crval2 + ddec;
+        // Apply the transformation matrix to get sky coordinate offsets
+        // This is the inverse of the transformation used in celestialToPixel
+        const dra = (transform.m11 * dx + transform.m12 * dy);
+        const ddec = (transform.m21 * dx + transform.m22 * dy);
         
+        // Calculate celestial coordinates
+        // Note: We need to divide RA by cos(dec) to account for spherical projection
+        let ra = crval1 + dra / Math.cos(crval2 * Math.PI / 180);
+        let dec = crval2 + ddec;
+        
+        // Normalize RA to be in the range [0, 360)
+        ra = ((ra % 360) + 360) % 360;
+        
+        // Clamp Dec to valid range [-90, 90]
+        dec = Math.max(-90, Math.min(90, dec));
         
         return { ra, dec };
     } catch (error) {
@@ -4321,47 +4328,6 @@ function pixelToCelestial(x, y, wcs) {
     }
 }
 
-
-function testJWSTTransformation() {
-    if (!window.fitsData || !window.parsedWCS) {
-        console.log("No WCS data available for testing");
-        return;
-    }
-    
-    // Get reference values
-    const wcs = window.parsedWCS;
-    const crpix1 = wcs.crpix1;
-    const crpix2 = wcs.crpix2;
-    const crval1 = wcs.crval1;
-    const crval2 = wcs.crval2;
-    
-    console.log("Testing JWST transformation:");
-    console.log(`Reference pixel: (${crpix1}, ${crpix2})`);
-    console.log(`Reference sky: (${crval1}, ${crval2})`);
-    
-    // Test transformations at the reference point
-    const sky = pixelToCelestial(crpix1, crpix2, wcs);
-    console.log(`Pixel (${crpix1}, ${crpix2}) -> Sky (${sky.ra}, ${sky.dec})`);
-    
-    const pix = celestialToPixel(crval1, crval2, wcs);
-    console.log(`Sky (${crval1}, ${crval2}) -> Pixel (${pix.x}, ${pix.y})`);
-    
-    // Calculate error
-    const pixelError = Math.sqrt(Math.pow(pix.x - crpix1, 2) + Math.pow(pix.y - crpix2, 2));
-    console.log(`Transformation error: ${pixelError.toFixed(2)} pixels`);
-    
-    // Test with offsets
-    const offsets = [10, 100, 500];
-    for (const offset of offsets) {
-        // Test with pixel offset
-        const testPix = {x: crpix1 + offset, y: crpix2 + offset};
-        const testSky = pixelToCelestial(testPix.x, testPix.y, wcs);
-        const backPix = celestialToPixel(testSky.ra, testSky.dec, wcs);
-        
-        const error = Math.sqrt(Math.pow(backPix.x - testPix.x, 2) + Math.pow(backPix.y - testPix.y, 2));
-        console.log(`Offset test ${offset} pixels: error = ${error.toFixed(2)} pixels`);
-    }
-}
 
 
 // Add this initialization function where appropriate in your code
@@ -4399,14 +4365,7 @@ function handleFastLoadingResponse(data, filepath) {
         filename: filepath
     };
 
-    initializeWCSTransformation();
 
-    // Add the JWST test code here
-if (window.fitsData && window.fitsData.filename && 
-    (window.fitsData.filename.includes('jwst') || window.fitsData.filename.includes('miri'))) {
-    console.log("JWST image detected - running test transformation");
-    testJWSTTransformation();
-}
     
     // Add the debug function call right here
     if (window.fitsData && window.fitsData.filename && 
@@ -4475,56 +4434,6 @@ function dumpWCSInfo() {
       }
     }
   }
-
-
-
-
-  function pixelToCelestial(x, y, wcs) {
-    if (!wcs || !wcs.hasWCS) return { ra: 0, dec: 0 };
-    
-    try {
-      // Get reference points
-      const crpix1 = wcs.crpix1;
-      const crpix2 = wcs.crpix2;
-      const crval1 = wcs.crval1;
-      const crval2 = wcs.crval2;
-      
-      // Calculate pixel offsets from reference pixel
-      const dx = x - crpix1;
-      const dy = y - crpix2;
-      
-      // Get transformation matrix
-      let transform = wcs.transformInfo;
-      
-      // If transform info is not available, calculate it
-      if (!transform) {
-        const m11 = wcs.cd1_1 !== undefined ? wcs.cd1_1 : (wcs.pc1_1 * wcs.cdelt1);
-        const m12 = wcs.cd1_2 !== undefined ? wcs.cd1_2 : (wcs.pc1_2 * wcs.cdelt1);
-        const m21 = wcs.cd2_1 !== undefined ? wcs.cd2_1 : (wcs.pc2_1 * wcs.cdelt2);
-        const m22 = wcs.cd2_2 !== undefined ? wcs.cd2_2 : (wcs.pc2_2 * wcs.cdelt2);
-        transform = { m11, m12, m21, m22 };
-      }
-      
-      // Apply the transformation matrix directly
-      const dra = transform.m11 * dx + transform.m12 * dy;
-      const ddec = transform.m21 * dx + transform.m22 * dy;
-      
-      // Calculate RA/DEC
-      const ra = crval1 + dra / Math.cos(crval2 * Math.PI / 180);
-      const dec = crval2 + ddec;
-      
-      return { ra, dec };
-    } catch (error) {
-      console.error("Error in pixel to celestial conversion:", error);
-      return { ra: 0, dec: 0 };
-    }
-  }
-
-
-
-  
-
-
 
 
   
@@ -5120,3 +5029,327 @@ function loadCatalogWithFlags(catalogName) {
             showNotification('Error loading catalog data', 3000);
         });
 }
+
+
+
+// Enhanced coordinates display with animations
+(function() {
+    // Set up DOM utility functions
+    function waitForElement(selector, maxWaitTime = 10000) {
+        return new Promise((resolve, reject) => {
+            if (document.querySelector(selector)) {
+                return resolve(document.querySelector(selector));
+            }
+            
+            const observer = new MutationObserver(mutations => {
+                if (document.querySelector(selector)) {
+                    observer.disconnect();
+                    resolve(document.querySelector(selector));
+                }
+            });
+            
+            observer.observe(document.body, { childList: true, subtree: true });
+            
+            setTimeout(() => {
+                observer.disconnect();
+                resolve(document.querySelector(selector));
+            }, maxWaitTime);
+        });
+    }
+    
+    // Create the coordinates display element with enhanced styling
+    function createCoordinatesElement() {
+        // Add CSS for animations
+        const styleElement = document.createElement('style');
+        styleElement.textContent = `
+            @keyframes numberChange {
+                0% { opacity: 0.3; transform: scale(0.95); }
+                50% { opacity: 1; transform: scale(1.05); }
+                100% { opacity: 1; transform: scale(1); }
+            }
+            
+            .coord-value {
+                display: inline-block;
+                transition: all 0.2s ease-out;
+                min-width: 3.5em;
+                text-align: right;
+            }
+            
+            .coord-value.changing {
+                animation: numberChange 0.3s ease-out;
+            }
+            
+            .coords-container {
+                transition: all 0.3s ease;
+                opacity: 0;
+                transform: translateY(-5px);
+            }
+            
+            .coords-container.visible {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            
+            .coord-label {
+                color: #8899aa;
+                font-weight: normal;
+            }
+            
+            .coord-unit {
+                color: #6699cc;
+                font-size: 0.9em;
+                margin-left: 4px;
+            }
+        `;
+        document.head.appendChild(styleElement);
+        
+        // Create the main container
+        const coords = document.createElement('div');
+        coords.id = 'osd-coordinates';
+        coords.style.position = 'absolute';
+        coords.style.top = '10px';
+        coords.style.left = '10px';
+        coords.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        coords.style.color = 'white';
+        coords.style.padding = '8px 10px';
+        coords.style.borderRadius = '4px';
+        coords.style.fontSize = '12px';
+        coords.style.fontFamily = 'monospace';
+        coords.style.zIndex = '1000';
+        coords.style.pointerEvents = 'none';
+        coords.style.backdropFilter = 'blur(2px)';
+        coords.style.webkitBackdropFilter = 'blur(2px)';
+        coords.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.3)';
+        coords.style.textShadow = '0 1px 2px rgba(0, 0, 0, 0.5)';
+        coords.style.width = 'auto';
+        coords.style.whiteSpace = 'nowrap';
+        
+        // Add inner container for fade-in/out animation
+        const container = document.createElement('div');
+        container.className = 'coords-container';
+        
+        // Create structured layout for coordinates
+        container.innerHTML = `
+            <div class="coord-row">
+                <span class="coord-label">X,Y:</span> 
+                <span class="coord-value" id="coord-x">-</span>,
+                <span class="coord-value" id="coord-y">-</span>
+            </div>
+            <div class="coord-row">
+                <span class="coord-label">RA,DEC:</span> 
+                <span class="coord-value" id="coord-ra">-</span>,
+                <span class="coord-value" id="coord-dec">-</span>
+            </div>
+            <div class="coord-row">
+                <span class="coord-label">Value:</span> 
+                <span class="coord-value" id="coord-value">-</span>
+                <span class="coord-unit" id="coord-unit"></span>
+            </div>
+        `;
+        
+        coords.appendChild(container);
+        
+        // Show the container with animation
+        setTimeout(() => {
+            container.classList.add('visible');
+        }, 100);
+        
+        return coords;
+    }
+    
+    // Function to update a value with animation
+    function updateValueWithAnimation(elementId, newValue) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+        
+        // Only animate if value is actually changing
+        if (element.textContent !== newValue) {
+            // Remove animation class if it exists
+            element.classList.remove('changing');
+            
+            // Trigger reflow to restart animation
+            void element.offsetWidth;
+            
+            // Update value and add animation class
+            element.textContent = newValue;
+            element.classList.add('changing');
+        }
+    }
+    
+    // Initialize the coordinates display
+    async function initCoordinates() {
+        console.log("Starting coordinates display initialization");
+        
+        // Wait for the OpenSeadragon container to be available
+        const container = await waitForElement('#openseadragon');
+        if (!container) {
+            console.warn("OpenSeadragon container not found");
+            return;
+        }
+        
+        console.log("Found OpenSeadragon container");
+        
+        // Remove any existing coordinate display
+        const existing = document.getElementById('osd-coordinates');
+        if (existing) existing.remove();
+        
+        // Create new coordinates display
+        const coordsDisplay = createCoordinatesElement();
+        container.appendChild(coordsDisplay);
+        
+        console.log("Coordinates display added to container");
+        
+        // Get the inner container for animations
+        const innerContainer = coordsDisplay.querySelector('.coords-container');
+        
+        // Set up event listeners using direct DOM events
+        container.addEventListener('mousemove', function(event) {
+            // Only execute if FITS data is available
+            if (!window.fitsData || !window.fitsData.width) return;
+            
+            // Make sure container is visible
+            innerContainer.classList.add('visible');
+            
+            // Calculate relative position in the container
+            const rect = container.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            // Convert to image coordinates using a simple ratio calculation
+            const imageX = Math.round((x / rect.width) * window.fitsData.width);
+            const imageY = Math.round((y / rect.height) * window.fitsData.height);
+            
+            // Update pixel coordinates with animation
+            updateValueWithAnimation('coord-x', imageX);
+            updateValueWithAnimation('coord-y', imageY);
+            
+            // Calculate RA/DEC if WCS info is available
+            if (window.fitsData.wcs) {
+                try {
+                    const celestial = window.pixelToCelestial(imageX, imageY, parseWCS(window.fitsData.wcs));
+                    updateValueWithAnimation('coord-ra', celestial.ra.toFixed(4));
+                    updateValueWithAnimation('coord-dec', celestial.dec.toFixed(4));
+                } catch (e) {
+                    updateValueWithAnimation('coord-ra', '-');
+                    updateValueWithAnimation('coord-dec', '-');
+                }
+            } else {
+                updateValueWithAnimation('coord-ra', '-');
+                updateValueWithAnimation('coord-dec', '-');
+            }
+            
+            // Try to add pixel value if available
+            if (window.fitsData.data && 
+                imageY >= 0 && imageY < window.fitsData.height && 
+                imageX >= 0 && imageX < window.fitsData.width) {
+                try {
+                    const value = window.fitsData.data[imageY][imageX];
+                    if (typeof value === 'number' && !isNaN(value)) {
+                        updateValueWithAnimation('coord-value', value.toExponential(4));
+                        
+                        // Get BUNIT from FITS header if available
+                        const bunit = getBunit();
+                        document.getElementById('coord-unit').textContent = bunit;
+                    } else {
+                        updateValueWithAnimation('coord-value', '-');
+                        document.getElementById('coord-unit').textContent = '';
+                    }
+                } catch (e) {
+                    updateValueWithAnimation('coord-value', '-');
+                    document.getElementById('coord-unit').textContent = '';
+                }
+            } else {
+                updateValueWithAnimation('coord-value', '-');
+                document.getElementById('coord-unit').textContent = '';
+            }
+        });
+        
+        // Handle mouse leave
+        container.addEventListener('mouseleave', function() {
+            // Fade out animation
+            innerContainer.classList.remove('visible');
+            
+            // Reset values after animation completes
+            setTimeout(() => {
+                if (!innerContainer.classList.contains('visible')) {
+                    updateValueWithAnimation('coord-x', '-');
+                    updateValueWithAnimation('coord-y', '-');
+                    updateValueWithAnimation('coord-ra', '-');
+                    updateValueWithAnimation('coord-dec', '-');
+                    updateValueWithAnimation('coord-value', '-');
+                    document.getElementById('coord-unit').textContent = '';
+                }
+            }, 300);
+        });
+        
+        // Make this function available globally
+        window.updateCoordinatesDisplay = function() {
+            // This function can be called when new images are loaded
+            const coordsContainer = document.querySelector('.coords-container');
+            if (coordsContainer) coordsContainer.classList.remove('visible');
+        };
+        
+        return coordsDisplay;
+    }
+    
+    // Helper function to get BUNIT from FITS data
+    function getBunit() {
+        // Check if bunit is available in wcs object
+        if (window.fitsData && window.fitsData.wcs && window.fitsData.wcs.bunit) {
+            return window.fitsData.wcs.bunit;
+        }
+        
+        // Try parsedWCS if it exists
+        if (window.parsedWCS && window.parsedWCS.bunit) {
+            return window.parsedWCS.bunit;
+        }
+        
+        // Check if bunit is directly in fitsData
+        if (window.fitsData && window.fitsData.bunit) {
+            return window.fitsData.bunit;
+        }
+        
+        return '';
+    }
+    
+    // Watch for OpenSeadragon initialization
+    function watchForInitialization() {
+        // Set a flag to track if initialization has been attempted
+        if (window._coordsInitialized) return;
+        window._coordsInitialized = true;
+        
+        console.log("Watching for OpenSeadragon initialization");
+        
+        // First attempt - delayed start
+        setTimeout(initCoordinates, 2000);
+        
+        // Watch for FITS data changes which indicate a new image has been loaded
+        let previousFitsData = null;
+        
+        // Check periodically for FITS data changes
+        const dataCheckInterval = setInterval(function() {
+            if (window.fitsData && window.fitsData !== previousFitsData) {
+                console.log("FITS data changed, updating coordinates display");
+                previousFitsData = window.fitsData;
+                initCoordinates();
+            }
+        }, 2000);
+        
+        // Stop checking after 5 minutes to prevent resource waste
+        setTimeout(function() {
+            clearInterval(dataCheckInterval);
+        }, 300000);
+    }
+    
+    // Start watching for initialization
+    watchForInitialization();
+    
+    // Add a dedicated function for manual initialization
+    window.initNavigatorCoordinates = function() {
+        console.log("Manual initialization of coordinates display");
+        return initCoordinates();
+    };
+    
+    // Execute initialization when script loads
+    setTimeout(initCoordinates, 1000);
+})();

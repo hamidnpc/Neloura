@@ -622,14 +622,14 @@ function canvasUpdateOverlay() {
         let x = obj.x;
         let y = obj.y;
         
-        // // Convert RA/DEC if needed
-        // if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
-        //     if (typeof celestialToPixel === 'function') {
-        //         const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
-        //         x = pixelCoords.x;
-        //         y = pixelCoords.y;
-        //     }
-        // }
+        // Convert RA/DEC if needed
+        if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
+            if (typeof celestialToPixel === 'function') {
+                const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
+                x = pixelCoords.x;
+                y = pixelCoords.y;
+            }
+        }
         
         // Get the radius in image coordinates
         const imageRadius = obj.radius_pixels || FIXED_RADIUS;
@@ -986,10 +986,7 @@ function canvasAddCatalogOverlay(catalogData) {
     
     console.log(`Adding overlay with ${catalogData.length} objects using pure canvas rendering`);
     
-    // Initialize WCS transformation if needed
-    if (typeof initializeWCSTransformation === 'function') {
-        initializeWCSTransformation();
-    }
+
     
     // Store catalog data for later use
     window.catalogDataForOverlay = catalogData;
@@ -1143,12 +1140,10 @@ function canvasClearCatalogOverlay() {
     window.catalogDataForOverlay = null;
     window.currentHighlightedSourceIndex = -1;
     
-    console.log("PURE CANVAS VERSION: Cleared catalog overlay");
 }
 
 // Main initialization function to override existing methods with canvas versions
 function initPureCanvasImplementation() {
-    console.log("INSTALLING PURE CANVAS IMPLEMENTATION");
     
     // Store original functions (if they exist)
     const originalAddCatalogOverlay = window.addCatalogOverlay;

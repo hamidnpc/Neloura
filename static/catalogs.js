@@ -167,97 +167,6 @@ function loadCatalog(catalogName) {
 }
 
 
-function addCatalogOverlay(catalogData) {
-    console.log("Adding catalog overlay with canvas rendering");
-    
-    // Clear any existing overlay
-    clearCatalogOverlay();
-    
-    if (!viewer) {
-        console.error("No viewer available for catalog overlay");
-        return;
-    }
-    
-    if (!catalogData || catalogData.length === 0) {
-        console.error("No catalog data available");
-        return;
-    }
-    
-    console.log(`Adding overlay with ${catalogData.length} objects`);
-    
-    // Initialize WCS transformation
-    initializeWCSTransformation();
-    
-    // Store catalog data for later use
-    window.catalogDataForOverlay = catalogData;
-    
-    // Create a container for the canvas
-    const container = document.createElement('div');
-    container.className = 'catalog-overlay-container';
-    container.style.position = 'absolute';
-    container.style.top = '0';
-    container.style.left = '0';
-    container.style.width = '100%';
-    container.style.height = '100%';
-    container.style.pointerEvents = 'none';
-    
-    // Create canvas element
-    const canvas = document.createElement('canvas');
-    canvas.className = 'catalog-canvas';
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.pointerEvents = 'auto'; // Make canvas clickable
-    
-    // Set canvas size to match container
-    const viewerElement = document.getElementById('openseadragon');
-    canvas.width = viewerElement.clientWidth;
-    canvas.height = viewerElement.clientHeight;
-    
-    // Add canvas to container
-    container.appendChild(canvas);
-    
-    // Add the container to the viewer
-    viewerElement.appendChild(container);
-    
-    // Store the container and canvas for later reference
-    window.catalogOverlayContainer = container;
-    window.catalogCanvas = canvas;
-    
-    // Create a source reference map for click detection
-    window.catalogSourceMap = [];
-    
-    // Add click event listener to the canvas
-    canvas.addEventListener('click', handleCanvasClick);
-    
-    // Add window resize handler to update canvas size
-    window.addEventListener('resize', function() {
-        if (window.catalogCanvas) {
-            window.catalogCanvas.width = viewerElement.clientWidth;
-            window.catalogCanvas.height = viewerElement.clientHeight;
-            updateCanvasOverlay(); // Redraw after resize
-        }
-    });
-    
-    // Initial update
-    updateCanvasOverlay();
-    
-    // Add event handlers for viewer movement
-    viewer.addHandler('animation', updateCanvasOverlay);
-    viewer.addHandler('open', updateCanvasOverlay);
-    
-    // Use throttled update for pan events to improve performance
-    const throttledUpdate = throttle(updateCanvasOverlay, 100);
-    viewer.addHandler('pan', throttledUpdate);
-    
-    // Use debounced update for zoom to reduce flickering
-    const debouncedZoomUpdate = debounce(updateCanvasOverlay, 50);
-    viewer.addHandler('zoom', debouncedZoomUpdate);
-    
-    return catalogData.length; // Return the number of objects added
-}
 
 // Make sure this function is added/updated
 function updateCanvasOverlay() {
@@ -445,29 +354,7 @@ function highlightSelectedSource(selectedIndex) {
     ctx.globalAlpha = regionStyles.opacity || 0.7;
 }
 
-// Update the clearCatalogOverlay function as well
-function clearCatalogOverlay() {
-    // Hide all info popups
-    hideAllInfoPopups();
-    
-    // Remove the overlay container
-    if (window.catalogOverlayContainer) {
-        const viewerElement = document.getElementById('openseadragon');
-        if (viewerElement && viewerElement.contains(window.catalogOverlayContainer)) {
-            viewerElement.removeChild(window.catalogOverlayContainer);
-        }
-        window.catalogOverlayContainer = null;
-    }
-    
-    // Clear canvas references
-    window.catalogCanvas = null;
-    window.catalogSourceMap = null;
-    
-    // Clear the catalog data
-    window.catalogDataForOverlay = null;
-    
-    console.log("Cleared catalog overlay");
-}
+
 // Refresh the catalog list
 function refreshCatalogs() {
     console.log("Refreshing catalog list");
@@ -591,28 +478,6 @@ function makeDraggable(element, dragHandle) {
 }
 
 
-function clearCatalogOverlay() {
-    // Hide all info popups
-    hideAllInfoPopups();
-    
-    // Remove the overlay container
-    if (window.catalogOverlayContainer) {
-        const viewerElement = document.getElementById('openseadragon');
-        if (viewerElement && viewerElement.contains(window.catalogOverlayContainer)) {
-            viewerElement.removeChild(window.catalogOverlayContainer);
-        }
-        window.catalogOverlayContainer = null;
-    }
-    
-    // Clear canvas references
-    window.catalogCanvas = null;
-    window.catalogSourceMap = null;
-    
-    // Clear the catalog data
-    window.catalogDataForOverlay = null;
-    
-    console.log("Cleared catalog overlay");
-}
 
 
 // Display catalog information
@@ -1184,9 +1049,6 @@ function extendCatalogOverlay() {
             }
             
             console.log(`Adding overlay with ${catalogData.length} objects with canvas rendering`);
-            
-            // Initialize WCS transformation
-            initializeWCSTransformation();
             
             // Store catalog data for later use
             window.catalogDataForOverlay = catalogData;
