@@ -1433,254 +1433,166 @@ async def upload_catalog(file: UploadFile = File(...)):
         )
 
 
-# Add this function to your main.py file to enhance coordinate column detection
 
 def detect_coordinate_columns(columns, sample_data=None):
     """
-    Enhanced detection of RA and DEC columns in catalogs.
+    Simple detection of RA and DEC columns by strict name matching only.
+    No examination of column values.
     
     Args:
         columns: List of column names
-        sample_data: Optional sample data (list of rows) to examine values
+        sample_data: Not used in this version
         
     Returns:
         dict: Contains 'ra_col', 'dec_col', and 'radius_col' keys if found
     """
     result = {'ra_col': None, 'dec_col': None, 'radius_col': None}
     
-    # Convert all column names to lowercase for easier matching
-    lowercase_columns = [col.lower() for col in columns]
+    # Only use these exact column names or patterns
+    # We're making this list very specific to avoid false positives
     
-    # Exact matches for RA (must match whole word)
-    ra_exact_matches = [
-        'ra', 'right_ascension', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra', 
-        'ra_deg', 'ra_icrs', 'ra_fk5', 'ra_2000', 'ra_degrees'
+    # Columns that are definitely RA (only these will be considered)
+    ra_columns = [
+        'ra', 'RA', 'Ra',                                         # Just RA
+        'ra_deg', 'RA_deg', 'ra_degrees', 'RA_degrees',           # RA in degrees
+        'raj2000', 'RAJ2000', 'ra_j2000', 'RA_J2000',             # J2000 RA
+        'ra_icrs', 'RA_ICRS',                                     # ICRS RA
+        'right_ascension', 'RIGHT_ASCENSION',                     # Full name
+        'ra_rad', 'RA_rad', 'ra_radians', 'RA_radians',           # RA in radians
+        'alpha', 'ALPHA', 'Alpha',                                # Just Alpha
+        'cen_ra', 'CEN_RA',                                       # Central RA
+        'ra_hms', 'RA_HMS',                                       # HMS format
+        'ra_fk5', 'RA_FK5'                                        # FK5 system
     ]
     
-    # Exact matches for DEC (must match whole word)
-    dec_exact_matches = [
-        'dec', 'declination', 'delta', 'delta_j2000', 'decj2000', 'dej2000', 'cen_dec',
-        'dec_deg', 'dec_icrs', 'dec_fk5', 'dec_2000', 'dec_degrees'
+    # Columns that are definitely DEC (only these will be considered)
+    dec_columns = [
+        'dec', 'DEC', 'Dec',                                      # Just DEC
+        'dec_deg', 'DEC_deg', 'dec_degrees', 'DEC_degrees',       # DEC in degrees
+        'dej2000','decj2000', 'DECJ2000', 'dec_j2000', 'DEC_J2000',         # J2000 DEC
+        'dec_icrs', 'DEC_ICRS',                                   # ICRS DEC
+        'declination', 'DECLINATION',                             # Full name
+        'dec_rad', 'DEC_rad', 'dec_radians', 'DEC_radians',       # DEC in radians
+        'delta', 'DELTA', 'Delta',                                # Just Delta
+        'cen_dec', 'CEN_DEC',                                     # Central DEC
+        'dec_dms', 'DEC_DMS',                                     # DMS format
+        'dec_fk5', 'DEC_FK5',                                     # FK5 system
+        'de', 'DE', 'De'                                          # Short DE
     ]
     
-    # Patterns to match within names (with word boundaries)
-    ra_patterns = [
-        r'\bra\b', r'\bra_', '_ra\b', 
-        r'\bright.?asc', r'\br\.a\.',
-        r'\braj', r'\balpha\b'
+    # Columns that are definitely radius (only these will be considered)
+    radius_columns = [
+        'radius', 'RADIUS', 'Radius',                            # Just radius 
+        'rad', 'RAD', 'Rad',                                     # Abbreviated radius
+        'size', 'SIZE', 'Size',                                  # Size
+        'diameter', 'DIAMETER', 'Diameter',                      # Diameter
+        'width', 'WIDTH', 'Width',                               # Width
+        'r_eff', 'R_EFF', 'R_eff',                               # Effective radius
+        'r_50', 'R_50',                                          # Half-light radius
+        'r_kron', 'R_KRON', 'R_kron',                            # Kron radius
+        'r_petro', 'R_PETRO', 'R_petro'                          # Petrosian radius
     ]
     
-    dec_patterns = [
-        r'\bdec\b', r'\bdec_', '_dec\b',
-        r'\bdeclination', r'\bdecl\b', 
-        r'\bdelta\b', r'\bdej\b'
-    ]
-    
-    # Patterns for radius columns
-    radius_patterns = [
-        r'\bradius\b', r'\brad\b', r'\bsize\b', r'\bdiameter\b', r'\bwidth\b', 
-        r'\bextent\b', r'\br_eff\b', r'\br_50\b', r'\br_petro\b', r'\br_kron\b'
-    ]
-    
-    import re
-    
-    # First pass: Look for exact matches
-    for i, col in enumerate(lowercase_columns):
-        # Exact matches for RA
-        if result['ra_col'] is None and col in ra_exact_matches:
-            result['ra_col'] = columns[i]
+    # First pass: try to find exact column name matches (exact string match)
+    for col in columns:
+        # Check for RA
+        if col in ra_columns and result['ra_col'] is None:
+            result['ra_col'] = col
             continue
             
-        # Exact matches for DEC
-        if result['dec_col'] is None and col in dec_exact_matches:
-            result['dec_col'] = columns[i]
+        # Check for DEC    
+        if col in dec_columns and result['dec_col'] is None:
+            result['dec_col'] = col
             continue
             
-        # Exact matches for radius
-        if result['radius_col'] is None and (col == 'radius' or col == 'rad' or col == 'size'):
-            result['radius_col'] = columns[i]
+        # Check for radius
+        if col in radius_columns and result['radius_col'] is None:
+            result['radius_col'] = col
             continue
     
-    # Second pass: Look for pattern matches
-    if result['ra_col'] is None or result['dec_col'] is None or result['radius_col'] is None:
-        for i, col in enumerate(lowercase_columns):
-            # Skip columns already found
-            if columns[i] == result['ra_col'] or columns[i] == result['dec_col'] or columns[i] == result['radius_col']:
-                continue
-                
-            # Check RA patterns - only if not found yet
-            if result['ra_col'] is None:
-                for pattern in ra_patterns:
-                    if re.search(pattern, col):
-                        # Avoid false positives by checking against DEC patterns
-                        if not any(re.search(dp, col) for dp in dec_patterns):
-                            result['ra_col'] = columns[i]
-                            break
-            
-            # Check DEC patterns - only if not found yet
-            if result['dec_col'] is None:
-                for pattern in dec_patterns:
-                    if re.search(pattern, col):
-                        # Avoid false positives by checking against RA patterns
-                        if not any(re.search(rp, col) for rp in ra_patterns):
-                            result['dec_col'] = columns[i]
-                            break
-            
-            # Check radius patterns - only if not found yet
-            if result['radius_col'] is None:
-                for pattern in radius_patterns:
-                    if re.search(pattern, col):
-                        result['radius_col'] = columns[i]
-                        break
-    
-    # If still not found, look for common coordinated pairs
-    if (result['ra_col'] is None or result['dec_col'] is None) and not (result['ra_col'] and result['dec_col']):
-        ra_candidates = []
-        dec_candidates = []
+    # Second pass: check if a column starts with or ends with any of our keywords
+    # But we'll be very careful about what patterns we match
+    if result['ra_col'] is None:
+        safe_ra_prefixes = ['ra_', 'RA_', 'Ra_', 'RAJ', 'raj']
+        safe_ra_suffixes = ['_ra', '_RA', '_Ra']
         
-        # Find columns that contain 'ra' or 'dec' as complete words
-        for i, col in enumerate(lowercase_columns):
-            # Find potential RA columns with more restrictive matching
-            if re.search(r'\bra\b', col) or col.startswith('ra_') or col.endswith('_ra'):
-                ra_candidates.append((i, columns[i]))
-            
-            # Find potential DEC columns with more restrictive matching
-            if re.search(r'\bdec\b', col) or col.startswith('dec_') or col.endswith('_dec'):
-                dec_candidates.append((i, columns[i]))
-        
-        # Look for pairs with same suffix or prefix
-        if ra_candidates and dec_candidates:
-            for ra_idx, ra_col in ra_candidates:
-                ra_col_lower = ra_col.lower()
-                for dec_idx, dec_col in dec_candidates:
-                    dec_col_lower = dec_col.lower()
-                    
-                    # Extract the part after "ra_" or before "_ra"
-                    ra_suffix = ra_col_lower[3:] if ra_col_lower.startswith('ra_') else ''
-                    ra_prefix = ra_col_lower[:-3] if ra_col_lower.endswith('_ra') else ''
-                    
-                    # Extract the part after "dec_" or before "_dec"
-                    dec_suffix = dec_col_lower[4:] if dec_col_lower.startswith('dec_') else ''
-                    dec_prefix = dec_col_lower[:-4] if dec_col_lower.endswith('_dec') else ''
-                    
-                    # Check if they form a pair
-                    if (ra_suffix and ra_suffix == dec_suffix) or (ra_prefix and ra_prefix == dec_prefix):
-                        result['ra_col'] = columns[ra_idx]
-                        result['dec_col'] = columns[dec_idx]
-                        break
-                
-                if result['ra_col'] and result['dec_col']:
+        for col in columns:
+            # Check prefixes
+            if any(col.startswith(prefix) for prefix in safe_ra_prefixes):
+                # Exclude columns with keywords that indicate they're not RA
+                if not any(substr in col.lower() for substr in ['err', 'error', 'sigma', 'std', 'var', 'dust']):
+                    result['ra_col'] = col
                     break
-    
-    # Last resort: check if the column values look like coordinates
-    if (result['ra_col'] is None or result['dec_col'] is None) and sample_data:
-        # Skip coordinate value check if both are already found
-        if not (result['ra_col'] and result['dec_col']):
-            import re
-            import numpy as np
-            
-            # Function to check if a value looks like a coordinate
-            def is_coordinate_value(value, is_ra=None):
-                if value is None or str(value).strip() == '':
-                    return False
                     
-                str_value = str(value).strip()
-                
-                # Check for sexagesimal format (hours/degrees:minutes:seconds)
-                if ':' in str_value or 'h' in str_value.lower() or 'd' in str_value.lower():
-                    if is_ra is True:
-                        return 'h' in str_value.lower() or len(str_value.split(':')) == 3
-                    elif is_ra is False:
-                        return 'd' in str_value.lower() or len(str_value.split(':')) == 3
-                    else:
-                        return True
-                
-                # Check for numeric value in appropriate range
-                try:
-                    float_val = float(str_value)
-                    if is_ra is True:
-                        return 0 <= float_val < 360  # RA is 0-360 degrees
-                    elif is_ra is False:
-                        return -90 <= float_val <= 90  # DEC is -90 to +90 degrees
-                    else:
-                        # If we don't know which coordinate, check both ranges
-                        return (0 <= float_val < 360) or (-90 <= float_val <= 90)
-                except ValueError:
-                    return False
-            
-            # Check each column for coordinate-like values
-            ra_likelihood = {}
-            dec_likelihood = {}
-            
-            for i, col in enumerate(columns):
-                # Skip columns already identified
-                if col == result['ra_col'] or col == result['dec_col']:
-                    continue
-                    
-                # Skip columns that don't "look like" coordinate columns by name
-                col_lower = col.lower()
-                
-                # Skip columns with metadata indicators
-                if any(term in col_lower for term in ['error', 'uncertainty', 'flag', 'quality', 'best.', 'met_', 'metallicity']):
-                    continue
-                
-                # Check a sample of rows
-                sample_size = min(5, len(sample_data))
-                ra_score = 0
-                dec_score = 0
-                
-                for row_idx in range(sample_size):
-                    if row_idx >= len(sample_data):
-                        break
-                        
-                    try:
-                        # Get value
-                        row = sample_data[row_idx]
-                        value = None
-                        
-                        # Handle different data structures
-                        if hasattr(row, '__getitem__'):
-                            # For dict-like objects
-                            if isinstance(row, dict) and col in row:
-                                value = row[col]
-                            # For list-like objects with numeric indexing
-                            elif isinstance(row, (list, tuple)) and i < len(row):
-                                value = row[i]
-                            # For Astropy Table rows
-                            elif hasattr(row, col):
-                                value = getattr(row, col)
-                        
-                        if value is not None:
-                            # Check if the value looks like an RA
-                            if is_coordinate_value(value, is_ra=True):
-                                ra_score += 1
-                            
-                            # Check if the value looks like a DEC
-                            if is_coordinate_value(value, is_ra=False):
-                                dec_score += 1
-                    except Exception:
-                        continue
-                
-                # Store scores if significant
-                if ra_score > 0:
-                    ra_likelihood[col] = ra_score / sample_size
-                
-                if dec_score > 0:
-                    dec_likelihood[col] = dec_score / sample_size
-            
-            # Find the most likely RA and DEC columns
-            if ra_likelihood and not result['ra_col']:
-                best_ra = max(ra_likelihood.items(), key=lambda x: x[1])
-                if best_ra[1] >= 0.5:  # At least half the samples match RA pattern
-                    result['ra_col'] = best_ra[0]
-            
-            if dec_likelihood and not result['dec_col']:
-                best_dec = max(dec_likelihood.items(), key=lambda x: x[1])
-                if best_dec[1] >= 0.5:  # At least half the samples match DEC pattern
-                    result['dec_col'] = best_dec[0]
+            # Check suffixes
+            if any(col.endswith(suffix) for suffix in safe_ra_suffixes):
+                result['ra_col'] = col
+                break
     
+    # Similar for DEC
+    if result['dec_col'] is None:
+        safe_dec_prefixes = ['dec_', 'DEC_', 'Dec_', 'DECJ', 'decj', 'de_', 'DE_']
+        safe_dec_suffixes = ['_dec', '_DEC', '_Dec', '_de', '_DE']
+        
+        for col in columns:
+            # Check prefixes
+            if any(col.startswith(prefix) for prefix in safe_dec_prefixes):
+                # Exclude columns with keywords that indicate they're not DEC
+                if not any(substr in col.lower() for substr in ['err', 'error', 'sigma', 'std', 'var', 'dust', 'met_', 'scal']):
+                    result['dec_col'] = col
+                    break
+                    
+            # Check suffixes
+            if any(col.endswith(suffix) for suffix in safe_dec_suffixes):
+                result['dec_col'] = col
+                break
+    
+    # Similar for radius
+    if result['radius_col'] is None:
+        safe_radius_prefixes = ['radius_', 'RADIUS_', 'rad_', 'RAD_', 'r_', 'R_']
+        safe_radius_suffixes = ['_radius', '_RADIUS', '_rad', '_RAD', '_size', '_SIZE']
+        
+        for col in columns:
+            # Check prefixes
+            if any(col.startswith(prefix) for prefix in safe_radius_prefixes):
+                result['radius_col'] = col
+                break
+                
+            # Check suffixes
+            if any(col.endswith(suffix) for suffix in safe_radius_suffixes):
+                result['radius_col'] = col
+                break
+    
+    # Third pass: If a column is named alpha or delta but there are better candidates, avoid them
+    if result['ra_col'] == 'alpha' or result['ra_col'] == 'ALPHA' or result['ra_col'] == 'Alpha':
+        # Look for a better candidate
+        for col in columns:
+            if col in ['ra', 'RA', 'Ra', 'raj2000', 'RAJ2000', 'cen_ra']:
+                result['ra_col'] = col
+                break
+                
+    if result['dec_col'] == 'delta' or result['dec_col'] == 'DELTA' or result['dec_col'] == 'Delta':
+        # Look for a better candidate
+        for col in columns:
+            if col in ['dec', 'DEC', 'Dec', 'decj2000', 'DECJ2000', 'cen_dec']:
+                result['dec_col'] = col
+                break
+    
+    # Extra safety: never select columns with these substrings
+    dangerous_substrings = [
+        'dust', 'met_', 'metallicity', 'metal', '_scal', '_scale', 
+        'best.dust', 'param', '_err', '_error', 'ratio', 'weight'
+    ]
+    
+    # Final safety check - if our selected columns contain dangerous substrings, reject them
+    if result['ra_col'] and any(substr in result['ra_col'].lower() for substr in dangerous_substrings):
+        result['ra_col'] = None
+        
+    if result['dec_col'] and any(substr in result['dec_col'].lower() for substr in dangerous_substrings):
+        result['dec_col'] = None
+        
     return result
-    
+
 # Replace the existing catalog_columns endpoint with this enhanced version
 @app.get("/catalog-columns/")
 async def catalog_columns(catalog_name: str):
@@ -1785,7 +1697,7 @@ async def catalog_columns(catalog_name: str):
         
         # Use the enhanced detection function
         detected = detect_coordinate_columns(columns, sample_data)
-        
+        print(detected)
         return JSONResponse(content={
             "columns": columns,
             "detected": {
@@ -2618,6 +2530,10 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
                                 "cd1_2": float(header.get('CD1_2', 0)),
                                 "cd2_1": float(header.get('CD2_1', 0)),
                                 "cd2_2": float(header.get('CD2_2', header.get('CDELT2', 0))),
+                                "pc1_1": float(header.get('PC1_1', 0)),
+                                "pc1_2": float(header.get('PC1_2', 0)),
+                                "pc2_1": float(header.get('PC2_1', 0)),
+                                "pc2_2": float(header.get('PC2_2', 0)),
                                 "bunit": ""
                             }
                             basic_info["wcs"] = wcs_info
@@ -2713,7 +2629,11 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
                         "cd1_2": float(header.get('CD1_2', 0)),
                         "cd2_1": float(header.get('CD2_1', 0)),
                         "cd2_2": float(header.get('CD2_2', header.get('CDELT2', 0))),
-                        "bunit": header.get('BUNIT', '')
+                        "bunit": header.get('BUNIT', ''),
+                        "pc1_1": float(header.get('PC1_1', 0)),
+                        "pc1_2": float(header.get('PC1_2', 0)),
+                        "pc2_1": float(header.get('PC2_1', 0)),
+                        "pc2_2": float(header.get('PC2_2', 0)),
                     }
                     
                     # Store WCS info in app state for later use
@@ -4689,13 +4609,13 @@ def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
 
     return imageData
 
+
 # ---------------------------
 # Run FastAPI Server in a Thread
 # ---------------------------
 def run_server():
     """Run FastAPI in a separate thread."""
     uvicorn.run(app, host="127.0.0.1", port=8000)
-
 
 if __name__ == "__main__":
     if RUNNING_ON_SERVER:
