@@ -2017,3 +2017,1445 @@ function showDotStyleCustomizer(dot, parentPopup) {
     // Add popup to document
     document.body.appendChild(popup);
 }
+
+
+
+
+
+
+
+// Add upload catalog function to catalogs.js
+function uploadCatalog() {
+    // Create file input element
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.fits,.fit,.csv,.txt,.cat';
+    fileInput.style.display = 'none';
+    document.body.appendChild(fileInput);
+    
+    // Trigger file selection dialog
+    fileInput.click();
+    
+    // Handle file selection
+    fileInput.addEventListener('change', function() {
+        if (this.files.length === 0) return;
+        
+        // Show loading indicator
+        showProgress(true, 'Uploading catalog...');
+        
+        const file = this.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        // Upload the file
+        fetch('/upload-catalog/', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                showNotification(`Error: ${data.error}`, 3000, 'error');
+                showProgress(false);
+                return;
+            }
+            
+            showProgress(false);
+            showNotification(`Catalog uploaded successfully: ${data.filename}`, 3000, 'success');
+            
+            // Show the field mapping popup
+            showCatalogFieldMappingPopup(data.filename);
+            
+            // Refresh the catalog list
+            refreshCatalogs();
+        })
+        .catch(error => {
+            console.error('Error uploading catalog:', error);
+            showProgress(false);
+            showNotification(`Upload failed: ${error.message}`, 3000, 'error');
+        })
+        .finally(() => {
+            // Clean up
+            document.body.removeChild(fileInput);
+        });
+    });
+}
+
+// Create a popup for mapping catalog fields
+function showCatalogFieldMappingPopup(catalogName) {
+    // Check if a popup already exists and remove it
+    const existingPopup = document.getElementById('catalog-mapping-popup');
+    if (existingPopup) {
+        existingPopup.parentNode.removeChild(existingPopup);
+    }
+    
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.id = 'catalog-mapping-popup';
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333';
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '20px';
+    popup.style.zIndex = '2000';
+    popup.style.width = '600px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.5)';
+    popup.style.color = '#fff';
+    popup.style.fontFamily = 'Arial, sans-serif';
+    
+    // Create title
+    const title = document.createElement('h2');
+    title.textContent = 'Map Catalog Fields';
+    title.style.marginTop = '0';
+    title.style.marginBottom = '20px';
+    title.style.borderBottom = '1px solid #555';
+    title.style.paddingBottom = '10px';
+    
+    // Create close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '10px';
+    closeButton.style.right = '10px';
+    closeButton.style.background = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.onclick = function() {
+        document.body.removeChild(popup);
+    };
+    
+    // Create description
+    const description = document.createElement('p');
+    description.textContent = 'Please select the columns in your catalog that correspond to the following fields:';
+    description.style.marginBottom = '20px';
+    
+    // Create loading indicator
+    const loadingDiv = document.createElement('div');
+    loadingDiv.textContent = 'Loading catalog columns...';
+    loadingDiv.style.textAlign = 'center';
+    loadingDiv.style.padding = '20px';
+    loadingDiv.style.color = '#aaa';
+    
+    // Add initial elements
+    popup.appendChild(title);
+    popup.appendChild(closeButton);
+    popup.appendChild(description);
+    popup.appendChild(loadingDiv);
+    
+    // Add to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable
+    makeDraggable(popup, title);
+    
+    // Fetch column information from the catalog
+    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+        .then(response => response.json())
+        .then(data => {
+            // Remove loading indicator
+            popup.removeChild(loadingDiv);
+            
+            if (data.error) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = `Error: ${data.error}`;
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            const columns = data.columns || [];
+            if (columns.length === 0) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = 'No columns found in the catalog.';
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            // Get auto-detected columns
+            const detectedColumns = data.detected || {};
+            
+            // Create form for field mapping
+            const form = document.createElement('form');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 2fr';
+            form.style.gap = '15px';
+            form.style.alignItems = 'center';
+            
+            // Define required fields and their descriptions
+            const requiredFields = [
+                { id: 'ra', label: 'Right Ascension (RA)', description: 'Column containing right ascension coordinates' },
+                { id: 'dec', label: 'Declination (DEC)', description: 'Column containing declination coordinates' },
+                { id: 'radius', label: 'Radius (optional)', description: 'Column for region radius in pixels, or enter a fixed size below' }
+            ];
+            
+            // Create select elements for each required field
+            requiredFields.forEach(field => {
+                // Create label
+                const label = document.createElement('label');
+                label.textContent = field.label;
+                label.htmlFor = `field-${field.id}`;
+                label.title = field.description;
+                
+                // Create select element
+                const select = document.createElement('select');
+                select.id = `field-${field.id}`;
+                select.name = field.id;
+                select.style.width = '100%';
+                select.style.padding = '8px';
+                select.style.backgroundColor = '#444';
+                select.style.color = '#fff';
+                select.style.border = '1px solid #555';
+                select.style.borderRadius = '4px';
+                
+                // Add empty option
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = `-- Select ${field.label} Column --`;
+                select.appendChild(emptyOption);
+                
+                // Add options for each column
+                columns.forEach(column => {
+                    const option = document.createElement('option');
+                    option.value = column;
+                    option.textContent = column;
+                    
+                    // Check if this column was auto-detected for this field
+                    let detected = false;
+                    
+                    if (field.id === 'ra' && detectedColumns.ra_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'dec' && detectedColumns.dec_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'radius' && detectedColumns.radius_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    
+                    // Add visual cue for detected columns
+                    if (detected) {
+                        option.textContent = `${column} (detected)`;
+                        option.style.fontWeight = 'bold';
+                        option.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
+                        
+                        // Show a notification
+                        if (!window.shownDetectionNotification) {
+                            showNotification(`Auto-detected ${field.id.toUpperCase()} column: ${column}`, 3000, 'info');
+                            window.shownDetectionNotification = true;
+                        }
+                    }
+                    
+                    select.appendChild(option);
+                });
+                
+                // Add to form
+                form.appendChild(label);
+                form.appendChild(select);
+            });
+            
+            // Add fixed radius option
+            const fixedRadiusLabel = document.createElement('label');
+            fixedRadiusLabel.textContent = 'Fixed Radius (pixels)';
+            fixedRadiusLabel.htmlFor = 'fixed-radius';
+            fixedRadiusLabel.title = 'Use this value for all regions if no radius column is selected';
+            
+            const fixedRadiusInput = document.createElement('input');
+            fixedRadiusInput.type = 'number';
+            fixedRadiusInput.id = 'fixed-radius';
+            fixedRadiusInput.name = 'fixed-radius';
+            fixedRadiusInput.min = '1';
+            fixedRadiusInput.max = '100';
+            fixedRadiusInput.value = '5';
+            fixedRadiusInput.style.width = '100%';
+            fixedRadiusInput.style.padding = '8px';
+            fixedRadiusInput.style.backgroundColor = '#444';
+            fixedRadiusInput.style.color = '#fff';
+            fixedRadiusInput.style.border = '1px solid #555';
+            fixedRadiusInput.style.borderRadius = '4px';
+            
+            form.appendChild(fixedRadiusLabel);
+            form.appendChild(fixedRadiusInput);
+            
+            // Add buttons container
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.gridColumn = '1 / span 2';
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'space-between';
+            buttonsContainer.style.marginTop = '20px';
+            
+            // Add cancel button
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.type = 'button';
+            cancelButton.style.padding = '10px 20px';
+            cancelButton.style.backgroundColor = '#f44336';
+            cancelButton.style.color = '#fff';
+            cancelButton.style.border = 'none';
+            cancelButton.style.borderRadius = '4px';
+            cancelButton.style.cursor = 'pointer';
+            cancelButton.onclick = function() {
+                document.body.removeChild(popup);
+            };
+            
+            // Add submit button
+            const submitButton = document.createElement('button');
+            submitButton.textContent = 'Save Mapping';
+            submitButton.type = 'button';
+            submitButton.style.padding = '10px 20px';
+            submitButton.style.backgroundColor = '#4CAF50';
+            submitButton.style.color = '#fff';
+            submitButton.style.border = 'none';
+            submitButton.style.borderRadius = '4px';
+            submitButton.style.cursor = 'pointer';
+            submitButton.onclick = function() {
+                // Get selected values
+                const raColumn = document.getElementById('field-ra').value;
+                const decColumn = document.getElementById('field-dec').value;
+                const radiusColumn = document.getElementById('field-radius').value;
+                const fixedRadius = document.getElementById('fixed-radius').value;
+                
+                // Validate selections
+                if (!raColumn || raColumn === '') {
+                    showNotification('Please select a column for Right Ascension (RA)', 3000, 'warning');
+                    return;
+                }
+                
+                if (!decColumn || decColumn === '') {
+                    showNotification('Please select a column for Declination (DEC)', 3000, 'warning');
+                    return;
+                }
+                
+                // Prepare mapping data
+                const mappingData = {
+                    catalog_name: catalogName,
+                    ra_column: raColumn === 'auto' ? 'auto' : raColumn,
+                    dec_column: decColumn === 'auto' ? 'auto' : decColumn,
+                    radius_column: radiusColumn === 'auto' ? 'auto' : radiusColumn,
+                    fixed_radius: parseInt(fixedRadius) || 5
+                };
+                
+                // Show loading indicator
+                showProgress(true, 'Saving mapping...');
+                
+                // Send mapping to server
+                fetch('/save-catalog-mapping/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(mappingData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    showProgress(false);
+                    
+                    if (data.error) {
+                        showNotification(`Error: ${data.error}`, 3000, 'error');
+                        return;
+                    }
+                    
+                    showNotification('Catalog mapping saved successfully', 3000, 'success');
+                    document.body.removeChild(popup);
+                    
+                    // Load the catalog if requested
+                    if (data.load_catalog) {
+                        loadCatalog(catalogName);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving mapping:', error);
+                    showProgress(false);
+                    showNotification(`Error: ${error.message}`, 3000, 'error');
+                });
+            };
+            
+            // Add buttons to container
+            buttonsContainer.appendChild(cancelButton);
+            buttonsContainer.appendChild(submitButton);
+            
+            // Add container to form
+            form.appendChild(buttonsContainer);
+            
+            // Add form to popup
+            popup.appendChild(form);
+        })
+        .catch(error => {
+            console.error('Error fetching catalog columns:', error);
+            popup.removeChild(loadingDiv);
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.textContent = `Error loading catalog columns: ${error.message}`;
+            errorDiv.style.color = '#f44336';
+            errorDiv.style.padding = '10px';
+            errorDiv.style.textAlign = 'center';
+            popup.appendChild(errorDiv);
+        });
+}
+// Create a popup for mapping catalog fields
+function showCatalogFieldMappingPopup(catalogName) {
+    // Check if a popup already exists and remove it
+    const existingPopup = document.getElementById('catalog-mapping-popup');
+    if (existingPopup) {
+        existingPopup.parentNode.removeChild(existingPopup);
+    }
+    
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.id = 'catalog-mapping-popup';
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333';
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '20px';
+    popup.style.zIndex = '2000';
+    popup.style.width = '600px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.5)';
+    popup.style.color = '#fff';
+    popup.style.fontFamily = 'Arial, sans-serif';
+    
+    // Create title
+    const title = document.createElement('h2');
+    title.textContent = 'Map Catalog Fields';
+    title.style.marginTop = '0';
+    title.style.marginBottom = '20px';
+    title.style.borderBottom = '1px solid #555';
+    title.style.paddingBottom = '10px';
+    
+    // Create close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '10px';
+    closeButton.style.right = '10px';
+    closeButton.style.background = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.onclick = function() {
+        document.body.removeChild(popup);
+    };
+    
+    // Create description
+    const description = document.createElement('p');
+    description.textContent = 'Please select the columns in your catalog that correspond to the following fields:';
+    description.style.marginBottom = '20px';
+    
+    // Create loading indicator
+    const loadingDiv = document.createElement('div');
+    loadingDiv.textContent = 'Loading catalog columns...';
+    loadingDiv.style.textAlign = 'center';
+    loadingDiv.style.padding = '20px';
+    loadingDiv.style.color = '#aaa';
+    
+    // Add initial elements
+    popup.appendChild(title);
+    popup.appendChild(closeButton);
+    popup.appendChild(description);
+    popup.appendChild(loadingDiv);
+    
+    // Add to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable
+    makeDraggable(popup, title);
+    
+    // Fetch column information from the catalog
+    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+        .then(response => response.json())
+        .then(data => {
+            // Remove loading indicator
+            popup.removeChild(loadingDiv);
+            
+            if (data.error) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = `Error: ${data.error}`;
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            const columns = data.columns || [];
+            if (columns.length === 0) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = 'No columns found in the catalog.';
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            // Get auto-detected columns
+            const detectedColumns = data.detected || {};
+            
+            // Create form for field mapping
+            const form = document.createElement('form');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 2fr';
+            form.style.gap = '15px';
+            form.style.alignItems = 'center';
+            
+            // Define required fields and their descriptions
+            const requiredFields = [
+                { id: 'ra', label: 'Right Ascension (RA)', description: 'Column containing right ascension coordinates' },
+                { id: 'dec', label: 'Declination (DEC)', description: 'Column containing declination coordinates' },
+                { id: 'radius', label: 'Radius (optional)', description: 'Column for region radius in pixels, or enter a fixed size below' }
+            ];
+            
+            // Create select elements for each required field
+            requiredFields.forEach(field => {
+                // Create label
+                const label = document.createElement('label');
+                label.textContent = field.label;
+                label.htmlFor = `field-${field.id}`;
+                label.title = field.description;
+                
+                // Create select element
+                const select = document.createElement('select');
+                select.id = `field-${field.id}`;
+                select.name = field.id;
+                select.style.width = '100%';
+                select.style.padding = '8px';
+                select.style.backgroundColor = '#444';
+                select.style.color = '#fff';
+                select.style.border = '1px solid #555';
+                select.style.borderRadius = '4px';
+                
+                // Add empty option
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = `-- Select ${field.label} Column --`;
+                select.appendChild(emptyOption);
+                
+                // Add options for each column
+                columns.forEach(column => {
+                    const option = document.createElement('option');
+                    option.value = column;
+                    option.textContent = column;
+                    
+                    // Check if this column was auto-detected for this field
+                    let detected = false;
+                    
+                    if (field.id === 'ra' && detectedColumns.ra_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'dec' && detectedColumns.dec_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'radius' && detectedColumns.radius_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    
+                    // Add visual cue for detected columns
+                    if (detected) {
+                        option.textContent = `${column} (detected)`;
+                        option.style.fontWeight = 'bold';
+                        option.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
+                        
+                        // Show a notification
+                        if (!window.shownDetectionNotification) {
+                            showNotification(`Auto-detected ${field.id.toUpperCase()} column: ${column}`, 3000, 'info');
+                            window.shownDetectionNotification = true;
+                        }
+                    }
+                    
+                    select.appendChild(option);
+                });
+                
+                // Add to form
+                form.appendChild(label);
+                form.appendChild(select);
+            });
+            
+            // Add fixed radius option
+            const fixedRadiusLabel = document.createElement('label');
+            fixedRadiusLabel.textContent = 'Fixed Radius (pixels)';
+            fixedRadiusLabel.htmlFor = 'fixed-radius';
+            fixedRadiusLabel.title = 'Use this value for all regions if no radius column is selected';
+            
+            const fixedRadiusInput = document.createElement('input');
+            fixedRadiusInput.type = 'number';
+            fixedRadiusInput.id = 'fixed-radius';
+            fixedRadiusInput.name = 'fixed-radius';
+            fixedRadiusInput.min = '1';
+            fixedRadiusInput.max = '100';
+            fixedRadiusInput.value = '5';
+            fixedRadiusInput.style.width = '100%';
+            fixedRadiusInput.style.padding = '8px';
+            fixedRadiusInput.style.backgroundColor = '#444';
+            fixedRadiusInput.style.color = '#fff';
+            fixedRadiusInput.style.border = '1px solid #555';
+            fixedRadiusInput.style.borderRadius = '4px';
+            
+            form.appendChild(fixedRadiusLabel);
+            form.appendChild(fixedRadiusInput);
+            
+            // Add buttons container
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.gridColumn = '1 / span 2';
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'space-between';
+            buttonsContainer.style.marginTop = '20px';
+            
+            // Add cancel button
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.type = 'button';
+            cancelButton.style.padding = '10px 20px';
+            cancelButton.style.backgroundColor = '#f44336';
+            cancelButton.style.color = '#fff';
+            cancelButton.style.border = 'none';
+            cancelButton.style.borderRadius = '4px';
+            cancelButton.style.cursor = 'pointer';
+            cancelButton.onclick = function() {
+                document.body.removeChild(popup);
+            };
+            
+            // Add submit button
+            const submitButton = document.createElement('button');
+            submitButton.textContent = 'Save Mapping';
+            submitButton.type = 'button';
+            submitButton.style.padding = '10px 20px';
+            submitButton.style.backgroundColor = '#4CAF50';
+            submitButton.style.color = '#fff';
+            submitButton.style.border = 'none';
+            submitButton.style.borderRadius = '4px';
+            submitButton.style.cursor = 'pointer';
+            submitButton.onclick = function() {
+                // Get selected values
+                const raColumn = document.getElementById('field-ra').value;
+                const decColumn = document.getElementById('field-dec').value;
+                const radiusColumn = document.getElementById('field-radius').value;
+                const fixedRadius = document.getElementById('fixed-radius').value;
+                
+                // Validate selections
+                if (!raColumn || raColumn === '') {
+                    showNotification('Please select a column for Right Ascension (RA)', 3000, 'warning');
+                    return;
+                }
+                
+                if (!decColumn || decColumn === '') {
+                    showNotification('Please select a column for Declination (DEC)', 3000, 'warning');
+                    return;
+                }
+                
+                // Prepare mapping data
+                const mappingData = {
+                    catalog_name: catalogName,
+                    ra_column: raColumn === 'auto' ? 'auto' : raColumn,
+                    dec_column: decColumn === 'auto' ? 'auto' : decColumn,
+                    radius_column: radiusColumn === 'auto' ? 'auto' : radiusColumn,
+                    fixed_radius: parseInt(fixedRadius) || 5
+                };
+                
+                // Show loading indicator
+                showProgress(true, 'Saving mapping...');
+                
+                // Send mapping to server
+                fetch('/save-catalog-mapping/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(mappingData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    showProgress(false);
+                    
+                    if (data.error) {
+                        showNotification(`Error: ${data.error}`, 3000, 'error');
+                        return;
+                    }
+                    
+                    showNotification('Catalog mapping saved successfully', 3000, 'success');
+                    document.body.removeChild(popup);
+                    
+                    // Load the catalog if requested
+                    if (data.load_catalog) {
+                        loadCatalog(catalogName);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving mapping:', error);
+                    showProgress(false);
+                    showNotification(`Error: ${error.message}`, 3000, 'error');
+                });
+            };
+            
+            // Add buttons to container
+            buttonsContainer.appendChild(cancelButton);
+            buttonsContainer.appendChild(submitButton);
+            
+            // Add container to form
+            form.appendChild(buttonsContainer);
+            
+            // Add form to popup
+            popup.appendChild(form);
+        })
+        .catch(error => {
+            console.error('Error fetching catalog columns:', error);
+            popup.removeChild(loadingDiv);
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.textContent = `Error loading catalog columns: ${error.message}`;
+            errorDiv.style.color = '#f44336';
+            errorDiv.style.padding = '10px';
+            errorDiv.style.textAlign = 'center';
+            popup.appendChild(errorDiv);
+        });
+}
+
+// Add "Upload Catalog" button to the catalog dropdown
+
+
+// Create a popup for mapping catalog fields
+function showCatalogFieldMappingPopup(catalogName) {
+    // Check if a popup already exists and remove it
+    const existingPopup = document.getElementById('catalog-mapping-popup');
+    if (existingPopup) {
+        existingPopup.parentNode.removeChild(existingPopup);
+    }
+    
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.id = 'catalog-mapping-popup';
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333';
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '20px';
+    popup.style.zIndex = '2000';
+    popup.style.width = '600px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.5)';
+    popup.style.color = '#fff';
+    popup.style.fontFamily = 'Arial, sans-serif';
+    
+    // Create title
+    const title = document.createElement('h2');
+    title.textContent = 'Map Catalog Fields';
+    title.style.marginTop = '0';
+    title.style.marginBottom = '20px';
+    title.style.borderBottom = '1px solid #555';
+    title.style.paddingBottom = '10px';
+    
+    // Create close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '10px';
+    closeButton.style.right = '10px';
+    closeButton.style.background = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.onclick = function() {
+        document.body.removeChild(popup);
+    };
+    
+    // Create description
+    const description = document.createElement('p');
+    description.textContent = 'Please select the columns in your catalog that correspond to the following fields:';
+    description.style.marginBottom = '20px';
+    
+    // Create loading indicator
+    const loadingDiv = document.createElement('div');
+    loadingDiv.textContent = 'Loading catalog columns...';
+    loadingDiv.style.textAlign = 'center';
+    loadingDiv.style.padding = '20px';
+    loadingDiv.style.color = '#aaa';
+    
+    // Add initial elements
+    popup.appendChild(title);
+    popup.appendChild(closeButton);
+    popup.appendChild(description);
+    popup.appendChild(loadingDiv);
+    
+    // Add to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable
+    makeDraggable(popup, title);
+    
+    // Fetch column information from the catalog
+    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+        .then(response => response.json())
+        .then(data => {
+            // Remove loading indicator
+            popup.removeChild(loadingDiv);
+            
+            if (data.error) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = `Error: ${data.error}`;
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            const columns = data.columns || [];
+            if (columns.length === 0) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = 'No columns found in the catalog.';
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            // Get auto-detected columns
+            const detectedColumns = data.detected || {};
+            
+            // Create form for field mapping
+            const form = document.createElement('form');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 2fr';
+            form.style.gap = '15px';
+            form.style.alignItems = 'center';
+            
+            // Define required fields and their descriptions
+            const requiredFields = [
+                { id: 'ra', label: 'Right Ascension (RA)', description: 'Column containing right ascension coordinates' },
+                { id: 'dec', label: 'Declination (DEC)', description: 'Column containing declination coordinates' },
+                { id: 'radius', label: 'Radius (optional)', description: 'Column for region radius in pixels, or enter a fixed size below' }
+            ];
+            
+            // Create select elements for each required field
+            requiredFields.forEach(field => {
+                // Create label
+                const label = document.createElement('label');
+                label.textContent = field.label;
+                label.htmlFor = `field-${field.id}`;
+                label.title = field.description;
+                
+                // Create select element
+                const select = document.createElement('select');
+                select.id = `field-${field.id}`;
+                select.name = field.id;
+                select.style.width = '100%';
+                select.style.padding = '8px';
+                select.style.backgroundColor = '#444';
+                select.style.color = '#fff';
+                select.style.border = '1px solid #555';
+                select.style.borderRadius = '4px';
+                
+                // Add empty option
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = `-- Select ${field.label} Column --`;
+                select.appendChild(emptyOption);
+                
+                // Add auto-detect option
+                const autoOption = document.createElement('option');
+                autoOption.value = 'auto';
+                autoOption.textContent = `Auto-detect ${field.id.toUpperCase()}`;
+                select.appendChild(autoOption);
+                
+                // Add options for each column
+                columns.forEach(column => {
+                    const option = document.createElement('option');
+                    option.value = column;
+                    option.textContent = column;
+                    
+                    // Check if this column was auto-detected for this field
+                    let detected = false;
+                    
+                    if (field.id === 'ra' && detectedColumns.ra_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'dec' && detectedColumns.dec_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    else if (field.id === 'radius' && detectedColumns.radius_column === column) {
+                        option.selected = true;
+                        detected = true;
+                    }
+                    
+                    // Add visual cue for detected columns
+                    if (detected) {
+                        option.textContent = `${column} (detected)`;
+                        option.style.fontWeight = 'bold';
+                        option.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
+                        
+                        // Show a notification
+                        if (!window.shownDetectionNotification) {
+                            showNotification(`Auto-detected ${field.id.toUpperCase()} column: ${column}`, 3000, 'info');
+                            window.shownDetectionNotification = true;
+                        }
+                    }
+                    // Fall back to simple name-based detection if nothing was auto-detected
+                    else if (!detectedColumns[`${field.id}_column`]) {
+                        if (field.id === 'ra' && 
+                            (column.toLowerCase() === 'ra' || 
+                             column.toLowerCase().includes('alpha') || 
+                             column.toLowerCase().includes('right') ||
+                             column.toLowerCase() === 'cen_ra')) {
+                            option.selected = true;
+                        }
+                        else if (field.id === 'dec' && 
+                                 (column.toLowerCase() === 'dec' || 
+                                  column.toLowerCase().includes('delta') || 
+                                  column.toLowerCase().includes('decl') ||
+                                  column.toLowerCase() === 'cen_dec')) {
+                            option.selected = true;
+                        }
+                        else if (field.id === 'radius' && 
+                                 (column.toLowerCase().includes('radius') || 
+                                  column.toLowerCase().includes('size') || 
+                                  column.toLowerCase().includes('width'))) {
+                            option.selected = true;
+                        }
+                    }
+                    
+                    select.appendChild(option);
+                });
+                
+                // Add to form
+                form.appendChild(label);
+                form.appendChild(select);
+            });
+            
+            // Add fixed radius option
+            const fixedRadiusLabel = document.createElement('label');
+            fixedRadiusLabel.textContent = 'Fixed Radius (pixels)';
+            fixedRadiusLabel.htmlFor = 'fixed-radius';
+            fixedRadiusLabel.title = 'Use this value for all regions if no radius column is selected';
+            
+            const fixedRadiusInput = document.createElement('input');
+            fixedRadiusInput.type = 'number';
+            fixedRadiusInput.id = 'fixed-radius';
+            fixedRadiusInput.name = 'fixed-radius';
+            fixedRadiusInput.min = '1';
+            fixedRadiusInput.max = '100';
+            fixedRadiusInput.value = '5';
+            fixedRadiusInput.style.width = '100%';
+            fixedRadiusInput.style.padding = '8px';
+            fixedRadiusInput.style.backgroundColor = '#444';
+            fixedRadiusInput.style.color = '#fff';
+            fixedRadiusInput.style.border = '1px solid #555';
+            fixedRadiusInput.style.borderRadius = '4px';
+            
+            form.appendChild(fixedRadiusLabel);
+            form.appendChild(fixedRadiusInput);
+            
+            // Add buttons container
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.gridColumn = '1 / span 2';
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'space-between';
+            buttonsContainer.style.marginTop = '20px';
+            
+            // Add cancel button
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.type = 'button';
+            cancelButton.style.padding = '10px 20px';
+            cancelButton.style.backgroundColor = '#f44336';
+            cancelButton.style.color = '#fff';
+            cancelButton.style.border = 'none';
+            cancelButton.style.borderRadius = '4px';
+            cancelButton.style.cursor = 'pointer';
+            cancelButton.onclick = function() {
+                document.body.removeChild(popup);
+            };
+            
+            // Add submit button
+            const submitButton = document.createElement('button');
+            submitButton.textContent = 'Save Mapping';
+            submitButton.type = 'button';
+            submitButton.style.padding = '10px 20px';
+            submitButton.style.backgroundColor = '#4CAF50';
+            submitButton.style.color = '#fff';
+            submitButton.style.border = 'none';
+            submitButton.style.borderRadius = '4px';
+            submitButton.style.cursor = 'pointer';
+            submitButton.onclick = function() {
+                // Get selected values
+                const raColumn = document.getElementById('field-ra').value;
+                const decColumn = document.getElementById('field-dec').value;
+                const radiusColumn = document.getElementById('field-radius').value;
+                const fixedRadius = document.getElementById('fixed-radius').value;
+                
+                // Validate selections
+                if (!raColumn || raColumn === '') {
+                    showNotification('Please select a column for Right Ascension (RA)', 3000, 'warning');
+                    return;
+                }
+                
+                if (!decColumn || decColumn === '') {
+                    showNotification('Please select a column for Declination (DEC)', 3000, 'warning');
+                    return;
+                }
+                
+                // Prepare mapping data
+                const mappingData = {
+                    catalog_name: catalogName,
+                    ra_column: raColumn === 'auto' ? 'auto' : raColumn,
+                    dec_column: decColumn === 'auto' ? 'auto' : decColumn,
+                    radius_column: radiusColumn === 'auto' ? 'auto' : radiusColumn,
+                    fixed_radius: parseInt(fixedRadius) || 5
+                };
+                
+                // Show loading indicator
+                showProgress(true, 'Saving mapping...');
+                
+                // Send mapping to server
+                fetch('/save-catalog-mapping/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(mappingData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    showProgress(false);
+                    
+                    if (data.error) {
+                        showNotification(`Error: ${data.error}`, 3000, 'error');
+                        return;
+                    }
+                    
+                    showNotification('Catalog mapping saved successfully', 3000, 'success');
+                    document.body.removeChild(popup);
+                    
+                    // Load the catalog if requested
+                    if (data.load_catalog) {
+                        loadCatalog(catalogName);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving mapping:', error);
+                    showProgress(false);
+                    showNotification(`Error: ${error.message}`, 3000, 'error');
+                });
+            };
+            
+            // Add buttons to container
+            buttonsContainer.appendChild(cancelButton);
+            buttonsContainer.appendChild(submitButton);
+            
+            // Add container to form
+            form.appendChild(buttonsContainer);
+            
+            // Add form to popup
+            popup.appendChild(form);
+        })
+        .catch(error => {
+            console.error('Error fetching catalog columns:', error);
+            popup.removeChild(loadingDiv);
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.textContent = `Error loading catalog columns: ${error.message}`;
+            errorDiv.style.color = '#f44336';
+            errorDiv.style.padding = '10px';
+            errorDiv.style.textAlign = 'center';
+            popup.appendChild(errorDiv);
+        });
+}
+
+
+// Create a popup for mapping catalog fields
+function showCatalogFieldMappingPopup(catalogName) {
+    // Check if a popup already exists and remove it
+    const existingPopup = document.getElementById('catalog-mapping-popup');
+    if (existingPopup) {
+        existingPopup.parentNode.removeChild(existingPopup);
+    }
+    
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.id = 'catalog-mapping-popup';
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333';
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '20px';
+    popup.style.zIndex = '2000';
+    popup.style.width = '600px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.5)';
+    popup.style.color = '#fff';
+    popup.style.fontFamily = 'Arial, sans-serif';
+    
+    // Create title
+    const title = document.createElement('h2');
+    title.textContent = 'Map Catalog Fields';
+    title.style.marginTop = '0';
+    title.style.marginBottom = '20px';
+    title.style.borderBottom = '1px solid #555';
+    title.style.paddingBottom = '10px';
+    
+    // Create close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '10px';
+    closeButton.style.right = '10px';
+    closeButton.style.background = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.onclick = function() {
+        document.body.removeChild(popup);
+    };
+    
+    // Create description
+    const description = document.createElement('p');
+    description.textContent = 'Please select the columns in your catalog that correspond to the following fields:';
+    description.style.marginBottom = '20px';
+    
+    // Create loading indicator
+    const loadingDiv = document.createElement('div');
+    loadingDiv.textContent = 'Loading catalog columns...';
+    loadingDiv.style.textAlign = 'center';
+    loadingDiv.style.padding = '20px';
+    loadingDiv.style.color = '#aaa';
+    
+    // Add initial elements
+    popup.appendChild(title);
+    popup.appendChild(closeButton);
+    popup.appendChild(description);
+    popup.appendChild(loadingDiv);
+    
+    // Add to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable
+    makeDraggable(popup, title);
+    
+    // Fetch column information from the catalog
+    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+        .then(response => response.json())
+        .then(data => {
+            // Remove loading indicator
+            popup.removeChild(loadingDiv);
+            
+            if (data.error) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = `Error: ${data.error}`;
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            const columns = data.columns || [];
+            if (columns.length === 0) {
+                const errorDiv = document.createElement('div');
+                errorDiv.textContent = 'No columns found in the catalog.';
+                errorDiv.style.color = '#f44336';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.textAlign = 'center';
+                popup.appendChild(errorDiv);
+                return;
+            }
+            
+            // Create form for field mapping
+            const form = document.createElement('form');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 2fr';
+            form.style.gap = '15px';
+            form.style.alignItems = 'center';
+            
+            // Define required fields and their descriptions
+            const requiredFields = [
+                { id: 'ra', label: 'Right Ascension (RA)', description: 'Column containing right ascension coordinates' },
+                { id: 'dec', label: 'Declination (DEC)', description: 'Column containing declination coordinates' },
+                { id: 'radius', label: 'Radius (optional)', description: 'Column for region radius in pixels, or enter a fixed size below' }
+            ];
+            
+            // Create select elements for each required field
+            requiredFields.forEach(field => {
+                // Create label
+                const label = document.createElement('label');
+                label.textContent = field.label;
+                label.htmlFor = `field-${field.id}`;
+                label.title = field.description;
+                
+                // Create select element
+                const select = document.createElement('select');
+                select.id = `field-${field.id}`;
+                select.name = field.id;
+                select.style.width = '100%';
+                select.style.padding = '8px';
+                select.style.backgroundColor = '#444';
+                select.style.color = '#fff';
+                select.style.border = '1px solid #555';
+                select.style.borderRadius = '4px';
+                
+                // Add empty option
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = `-- Select ${field.label} Column --`;
+                select.appendChild(emptyOption);
+                
+                // Add auto-detect option
+                const autoOption = document.createElement('option');
+                autoOption.value = 'auto';
+                autoOption.textContent = `Auto-detect ${field.id.toUpperCase()}`;
+                select.appendChild(autoOption);
+                
+                // Add options for each column
+                columns.forEach(column => {
+                    const option = document.createElement('option');
+                    option.value = column;
+                    option.textContent = column;
+                    
+                    // Try to auto-select appropriate columns based on common names
+                    if (field.id === 'ra' && 
+                        (column.toLowerCase() === 'ra' || 
+                         column.toLowerCase().includes('alpha') || 
+                         column.toLowerCase().includes('right') ||
+                         column.toLowerCase() === 'cen_ra')) {
+                        option.selected = true;
+                    }
+                    else if (field.id === 'dec' && 
+                             (column.toLowerCase() === 'dec' || 
+                              column.toLowerCase().includes('delta') || 
+                              column.toLowerCase().includes('decl') ||
+                              column.toLowerCase() === 'cen_dec')) {
+                        option.selected = true;
+                    }
+                    else if (field.id === 'radius' && 
+                             (column.toLowerCase().includes('radius') || 
+                              column.toLowerCase().includes('size') || 
+                              column.toLowerCase().includes('width'))) {
+                        option.selected = true;
+                    }
+                    
+                    select.appendChild(option);
+                });
+                
+                // Add to form
+                form.appendChild(label);
+                form.appendChild(select);
+            });
+            
+            // Add fixed radius option
+            const fixedRadiusLabel = document.createElement('label');
+            fixedRadiusLabel.textContent = 'Fixed Radius (pixels)';
+            fixedRadiusLabel.htmlFor = 'fixed-radius';
+            fixedRadiusLabel.title = 'Use this value for all regions if no radius column is selected';
+            
+            const fixedRadiusInput = document.createElement('input');
+            fixedRadiusInput.type = 'number';
+            fixedRadiusInput.id = 'fixed-radius';
+            fixedRadiusInput.name = 'fixed-radius';
+            fixedRadiusInput.min = '1';
+            fixedRadiusInput.max = '100';
+            fixedRadiusInput.value = '5';
+            fixedRadiusInput.style.width = '100%';
+            fixedRadiusInput.style.padding = '8px';
+            fixedRadiusInput.style.backgroundColor = '#444';
+            fixedRadiusInput.style.color = '#fff';
+            fixedRadiusInput.style.border = '1px solid #555';
+            fixedRadiusInput.style.borderRadius = '4px';
+            
+            form.appendChild(fixedRadiusLabel);
+            form.appendChild(fixedRadiusInput);
+            
+            // Add buttons container
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.gridColumn = '1 / span 2';
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'space-between';
+            buttonsContainer.style.marginTop = '20px';
+            
+            // Add cancel button
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.type = 'button';
+            cancelButton.style.padding = '10px 20px';
+            cancelButton.style.backgroundColor = '#f44336';
+            cancelButton.style.color = '#fff';
+            cancelButton.style.border = 'none';
+            cancelButton.style.borderRadius = '4px';
+            cancelButton.style.cursor = 'pointer';
+            cancelButton.onclick = function() {
+                document.body.removeChild(popup);
+            };
+            
+            // Add submit button
+            const submitButton = document.createElement('button');
+            submitButton.textContent = 'Save Mapping';
+            submitButton.type = 'button';
+            submitButton.style.padding = '10px 20px';
+            submitButton.style.backgroundColor = '#4CAF50';
+            submitButton.style.color = '#fff';
+            submitButton.style.border = 'none';
+            submitButton.style.borderRadius = '4px';
+            submitButton.style.cursor = 'pointer';
+            submitButton.onclick = function() {
+                // Get selected values
+                const raColumn = document.getElementById('field-ra').value;
+                const decColumn = document.getElementById('field-dec').value;
+                const radiusColumn = document.getElementById('field-radius').value;
+                const fixedRadius = document.getElementById('fixed-radius').value;
+                
+                // Validate selections
+                if (!raColumn || raColumn === '') {
+                    showNotification('Please select a column for Right Ascension (RA)', 3000, 'warning');
+                    return;
+                }
+                
+                if (!decColumn || decColumn === '') {
+                    showNotification('Please select a column for Declination (DEC)', 3000, 'warning');
+                    return;
+                }
+                
+                // Prepare mapping data
+                const mappingData = {
+                    catalog_name: catalogName,
+                    ra_column: raColumn === 'auto' ? 'auto' : raColumn,
+                    dec_column: decColumn === 'auto' ? 'auto' : decColumn,
+                    radius_column: radiusColumn === 'auto' ? 'auto' : radiusColumn,
+                    fixed_radius: parseInt(fixedRadius) || 5
+                };
+                
+                // Show loading indicator
+                showProgress(true, 'Saving mapping...');
+                
+                // Send mapping to server
+                fetch('/save-catalog-mapping/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(mappingData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    showProgress(false);
+                    
+                    if (data.error) {
+                        showNotification(`Error: ${data.error}`, 3000, 'error');
+                        return;
+                    }
+                    
+                    showNotification('Catalog mapping saved successfully', 3000, 'success');
+                    document.body.removeChild(popup);
+                    
+                    // Load the catalog if requested
+                    if (data.load_catalog) {
+                        loadCatalog(catalogName);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving mapping:', error);
+                    showProgress(false);
+                    showNotification(`Error: ${error.message}`, 3000, 'error');
+                });
+            };
+            
+            // Add buttons to container
+            buttonsContainer.appendChild(cancelButton);
+            buttonsContainer.appendChild(submitButton);
+            
+            // Add container to form
+            form.appendChild(buttonsContainer);
+            
+            // Add form to popup
+            popup.appendChild(form);
+        })
+        .catch(error => {
+            console.error('Error fetching catalog columns:', error);
+            popup.removeChild(loadingDiv);
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.textContent = `Error loading catalog columns: ${error.message}`;
+            errorDiv.style.color = '#f44336';
+            errorDiv.style.padding = '10px';
+            errorDiv.style.textAlign = 'center';
+            popup.appendChild(errorDiv);
+        });
+}
+
+function addUploadCatalogButton() {
+    // Get the catalog dropdown
+    const catalogDropdown = document.getElementById('catalog-dropdown');
+    
+    if (!catalogDropdown) return;
+    
+    // Check if the upload button already exists
+    const existingButton = catalogDropdown.querySelector('a[onclick="uploadCatalog()"]');
+    if (existingButton) return;
+    
+    // Find the refresh button
+    const refreshButton = catalogDropdown.querySelector('a[onclick="refreshCatalogs()"]');
+    
+    // Create the upload button
+    const uploadButton = document.createElement('a');
+    uploadButton.href = "#";
+    uploadButton.textContent = "Upload Catalog";
+    uploadButton.onclick = function() {
+        uploadCatalog();
+        return false;
+    };
+    
+    // Insert the upload button before the refresh button
+    if (refreshButton) {
+        catalogDropdown.insertBefore(uploadButton, refreshButton);
+    } else {
+        // If refresh button not found, add to the beginning
+        catalogDropdown.prepend(uploadButton);
+    }
+}
+
+// Initialize the upload button when the page loads
+document.addEventListener("DOMContentLoaded", function() {
+    // Add the upload button to the catalog dropdown
+    addUploadCatalogButton();
+});
+
+// Override the updateCatalogDropdown function to add the upload button
+const originalUpdateCatalogDropdown = window.updateCatalogDropdown;
+window.updateCatalogDropdown = function(catalogs) {
+    // Call the original function
+    originalUpdateCatalogDropdown(catalogs);
+    
+    // Add the upload button
+    addUploadCatalogButton();
+};
