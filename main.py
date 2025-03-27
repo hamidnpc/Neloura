@@ -4609,7 +4609,6 @@ def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
 
     return imageData
 
-
 # ---------------------------
 # Run FastAPI Server in a Thread
 # ---------------------------
