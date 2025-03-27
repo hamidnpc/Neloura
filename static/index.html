@@ -8,12 +8,15 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script>
+    <script defer src="/static/peak.js"></script>
     <script defer src="/static/main.js"></script>
     <script defer src="/static/sed.js"></script>
     <script defer src="/static/plotter.js"></script>
     <script defer src="/static/catalogs.js"></script>
     <script defer src="/static/files.js"></script>
     <script defer src="/static/image-processing.js"></script>
+    <script defer src="/static/canvas.js"></script>
+    <script defer src="/static/view.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
 
 
@@ -28,6 +31,111 @@
             color: white;
             font-family: 'Raleway', sans-serif;
         }
+
+
+        /* Multi-view styles */
+.multi-view-grid {
+    background-color: #0a0a0a;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+.viewer-cell {
+    transition: all 0.2s ease;
+    overflow: hidden;
+    position: relative;
+}
+
+.viewer-cell.active {
+    box-shadow: 0 0 0 2px #4CAF50;
+    z-index: 5;
+}
+
+.empty-cell-overlay {
+    color: #aaa;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    text-align: center;
+    background-color: rgba(0, 0, 0, 0.7);
+    transition: all 0.2s ease;
+}
+
+.empty-cell-overlay:hover {
+    background-color: rgba(30, 30, 30, 0.7);
+    color: white;
+}
+
+.file-name-label {
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+}
+
+.viewer-cell:hover .file-name-label {
+    opacity: 1;
+}
+
+.viewer-controls {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.viewer-cell:hover .viewer-controls {
+    opacity: 1;
+}
+
+.viewer-controls button:hover {
+    background-color: rgba(70, 70, 70, 0.8) !important;
+}
+
+.active-viewer-indicator {
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+    transition: all 0.2s ease;
+}
+
+/* Multi-view toolbar buttons */
+.multi-view-button, .sync-view-button {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background-color: #444;
+    border: none;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-right: 4px;
+    transition: all 0.2s ease;
+}
+
+.multi-view-button:hover, .sync-view-button:hover {
+    background-color: #555;
+}
+
+/* Layout menu */
+.layout-menu {
+    animation: fadeIn 0.2s ease;
+}
+
+.layout-option {
+    transition: all 0.2s ease;
+    border-radius: 3px;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Progress and notification improvements */
+#progress-container {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+.notification {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
 
 
 
