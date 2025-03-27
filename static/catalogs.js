@@ -1,8 +1,6 @@
 // Load available catalogs
 
 
-
-
 // Update the catalog dropdown menu
 function updateCatalogDropdown(catalogs) {
     const dropdown = document.getElementById('catalog-dropdown');
