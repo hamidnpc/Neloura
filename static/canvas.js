@@ -574,7 +574,7 @@ function canvasHighlightSource(selectedIndex) {
     canvasUpdateOverlay();
 }
 
-// Function to update the canvas overlay
+// Function to update the canvas overlay with regions that scale correctly with zoom
 function canvasUpdateOverlay() {
     if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) return;
 
@@ -600,7 +600,7 @@ function canvasUpdateOverlay() {
     let visibleCount = 0;
     
     // Get styles
-    const FIXED_RADIUS = 5;
+    const FIXED_RADIUS = 5; // This is now in image coordinates (not screen pixels)
     const dotBorderWidth = window.regionStyles ? window.regionStyles.borderWidth || 1 : 1;
     const dotBorderColor = window.regionStyles ? window.regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)' : 'rgba(255, 165, 0, 0.7)';
     const dotFillColor = window.regionStyles ? window.regionStyles.backgroundColor || 'transparent' : 'transparent';
@@ -631,18 +631,31 @@ function canvasUpdateOverlay() {
             }
         }
         
-        // Convert to viewport
+        // Get the radius in image coordinates
+        const imageRadius = obj.radius_pixels || FIXED_RADIUS;
+        
+        // Convert the center point to viewport coordinates
         const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
         
-        // Calculate screen position whether in viewport or not
+        // Calculate screen position
         const pagePoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
-        const radius = obj.radius_pixels || FIXED_RADIUS;
         
-        // Store in source map regardless of viewport visibility
+        // Calculate a point offset by the radius in image coordinates
+        const offsetPoint = viewer.viewport.imageToViewportCoordinates(x + imageRadius, y);
+        const offsetPagePoint = viewer.viewport.viewportToViewerElementCoordinates(offsetPoint);
+        
+        // Calculate the radius in screen pixels based on the difference
+        const screenRadius = Math.sqrt(
+            Math.pow(offsetPagePoint.x - pagePoint.x, 2) +
+            Math.pow(offsetPagePoint.y - pagePoint.y, 2)
+        );
+        
+        // Store in source map with both image and screen radius
         window.catalogSourceMap.push({
             x: pagePoint.x,
             y: pagePoint.y,
-            radius: radius,
+            radius: screenRadius, // Screen radius for hit detection
+            imageRadius: imageRadius, // Original image radius
             sourceIndex: i,
             imageX: x,
             imageY: y,
@@ -661,9 +674,9 @@ function canvasUpdateOverlay() {
             // Check if this is the highlighted source
             const isHighlighted = (i === window.currentHighlightedSourceIndex);
             
-            // Draw regular dot (always draw these)
+            // Draw regular dot
             ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, radius, 0, 2 * Math.PI, false);
+            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI, false);
             
             // Style
             ctx.lineWidth = dotBorderWidth;
@@ -686,7 +699,7 @@ function canvasUpdateOverlay() {
                 // Draw highlight with full opacity
                 ctx.globalAlpha = 1.0;
                 ctx.beginPath();
-                ctx.arc(pagePoint.x, pagePoint.y, radius + 3, 0, 2 * Math.PI, false);
+                ctx.arc(pagePoint.x, pagePoint.y, screenRadius + 3, 0, 2 * Math.PI, false);
                 ctx.lineWidth = 2;
                 ctx.strokeStyle = 'yellow';
                 ctx.stroke();
@@ -707,14 +720,14 @@ function canvasUpdateOverlay() {
             
             // Draw regular dot
             ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, radius, 0, 2 * Math.PI, false);
+            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI, false);
             ctx.lineWidth = dotBorderWidth;
             ctx.strokeStyle = 'yellow';
             ctx.stroke();
             
             // Draw outer glow
             ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, radius + 3, 0, 2 * Math.PI, false);
+            ctx.arc(pagePoint.x, pagePoint.y, screenRadius + 3, 0, 2 * Math.PI, false);
             ctx.lineWidth = 2;
             ctx.strokeStyle = 'yellow';
             ctx.stroke();
@@ -731,6 +744,10 @@ function canvasUpdateOverlay() {
     
     console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
 }
+
+
+
+
 
 // Function to handle clicks on the canvas overlay
 function canvasHandleClick(event) {
