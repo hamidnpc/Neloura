@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aseman FITS Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script>
+    <script defer src="/static/peak.js"></script>
+    <script defer src="/static/main.js"></script>
+    <script defer src="/static/sed.js"></script>
+    <script defer src="/static/plotter.js"></script>
+    <script defer src="/static/catalogs.js"></script>
+    <script defer src="/static/files.js"></script>
+    <script defer src="/static/image-processing.js"></script>
+    <script defer src="/static/canvas.js"></script>
+    <script defer src="/static/view.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            background-color: #000000;
+            color: white;
+            font-family: 'Raleway', sans-serif;
+        }
+
+
+        /* Multi-view styles */
+.multi-view-grid {
+    background-color: #0a0a0a;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+.viewer-cell {
+    transition: all 0.2s ease;
+    overflow: hidden;
+    position: relative;
+}
+
+.viewer-cell.active {
+    box-shadow: 0 0 0 2px #4CAF50;
+    z-index: 5;
+}
+
+.empty-cell-overlay {
+    color: #aaa;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    text-align: center;
+    background-color: rgba(0, 0, 0, 0.7);
+    transition: all 0.2s ease;
+}
+
+.empty-cell-overlay:hover {
+    background-color: rgba(30, 30, 30, 0.7);
+    color: white;
+}
+
+.file-name-label {
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+}
+
+.viewer-cell:hover .file-name-label {
+    opacity: 1;
+}
+
+.viewer-controls {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.viewer-cell:hover .viewer-controls {
+    opacity: 1;
+}
+
+.viewer-controls button:hover {
+    background-color: rgba(70, 70, 70, 0.8) !important;
+}
+
+.active-viewer-indicator {
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+    transition: all 0.2s ease;
+}
+
+/* Multi-view toolbar buttons */
+.multi-view-button, .sync-view-button {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background-color: #444;
+    border: none;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-right: 4px;
+    transition: all 0.2s ease;
+}
+
+.multi-view-button:hover, .sync-view-button:hover {
+    background-color: #555;
+}
+
+/* Layout menu */
+.layout-menu {
+    animation: fadeIn 0.2s ease;
+}
+
+.layout-option {
+    transition: all 0.2s ease;
+    border-radius: 3px;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Progress and notification improvements */
+#progress-container {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+.notification {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+
+
+/* Add these styles to enhance animations */
+
+/* File item animations */
+.file-item {
+    opacity: 1;
+    transition: opacity 0.3s ease-in-out, transform 0.2s ease-out, background-color 0.2s;
+}
+
+/* Search animations - highlight matching text */
+.highlight-match {
+    background-color: rgba(33, 150, 243, 0.3);
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+/* Add this to the head section of your HTML or to your CSS file */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeOut {
+        from { opacity: 1; transform: translateY(0); }
+        to { opacity: 0; transform: translateY(5px); }
+    }
+
+    .file-item.show {
+        animation: fadeIn 0.3s ease-in-out forwards;
+    }
+
+    .file-item.hide {
+        animation: fadeOut 0.3s ease-in-out forwards;
+    }
+    
+    .welcome-pointer{display: none;}
+    /* Add a subtle pulse animation to the search input when active */
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
+        70% { box-shadow: 0 0 0 5px rgba(33, 150, 243, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0); }
+    }
+    
+    .search-active {
+        animation: pulse 1.5s infinite;
+    }
+/* File item hover and active states */
+.file-item:hover {
+    background-color: #444 !important;
+}
+
+.file-item.active {
+    background-color: #2196F3 !important;
+    color: white;
+}
+
+/* File browser scrollbar styling */
+#file-browser-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+#file-browser-container::-webkit-scrollbar-track {
+    background: #333;
+}
+
+#file-browser-container::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+
+#file-browser-container::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+        /* Add these styles to your existing CSS or include in a style tag in your HTML */
+.flag-filter-container {
+    display: inline-flex
+}
+
+.flag-filter-button {
+    padding: 6px 12px;
+    background-color: #444;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.3s;
+}
+
+.flag-filter-button:hover {
+    background-color: #555;
+}
+
+.flag-filter-button.active {
+    background-color: #4CAF50;
+}
+
+.flag-filter-button:hover,.flag-filter-button.active,.flag-filter-button:clicked{
+background-color: white !important;
+color: black !important;
+
+}
+
+.flag-dropdown-content {
+    position: absolute;
+    background-color: rgb(34, 34, 34);
+    min-width: 200px;
+    box-shadow: rgba(0, 0, 0, 0.4) 0px 8px 16px 0px;
+    z-index: 1000;
+    border-radius: 4px;
+    top: 100%;
+    left: 0px;
+    margin-top: 5px;
+    right: auto !important;
+}
+
+.flag-dropdown-content .flag-item {
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #444;
+    color: white;
+    transition: background-color 0.3s;
+}
+
+.flag-dropdown-content .flag-item:hover {
+    background-color: #333;
+}
+
+.flag-dropdown-content .flag-item.active {
+    background-color: #4CAF50;
+}
+
+        #openseadragon {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            border: none;
+            background-color: #000000;
+        }
+        .toolbar {
+            position: absolute;
+            top: 20px;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            z-index: 1000;
+            right: 0;
+        }
+        .toolbar button {
+            padding: 10px;
+            font-size: 14px;
+            color: white;
+            background: transparent;
+            border: 1px solid white;
+            cursor: pointer;
+            margin: 5px;
+            font-family: 'Raleway', sans-serif;
+        }
+        .toolbar button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            right: 0;
+            background-color: rgba(0, 0, 0, 0.9);
+            min-width: 160px;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.5);
+            z-index: 1001;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Raleway', sans-serif;
+        }
+        .dropdown-content a {
+            color: white;
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            font-family: 'Raleway', sans-serif;
+        }
+        .dropdown-content a:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
+        .catalog-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+            color: white;
+            font-family: 'Raleway', sans-serif;
+            font-size: 12px;
+            max-width: 300px;
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button onclick="zoomIn()">+</button>
+        <button onclick="zoomOut()">-</button>
+        <button onclick="resetView()">R</button>
+        <div class="dropdown">
+            <button id="catalog-button">Catalog</button>
+            <div id="catalog-dropdown" class="dropdown-content">
+                <!-- Catalog items will be added here dynamically -->
+                <a href="#" onclick="refreshCatalogs()">Refresh Catalogs</a>
+            </div>
+        </div>
+        <button id="plotter-button" onclick="togglePlotter()">Plotter</button>
+    </div>
+    <div id="openseadragon"></div>
+    <div id="catalog-info" class="catalog-info"></div>
+</body>
+</html>
