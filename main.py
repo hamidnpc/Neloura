@@ -1364,17 +1364,531 @@ async def catalog_info(catalog_name: str):
 
 
 
+
+# Add these imports to your FastAPI application
+from fastapi import UploadFile, File, Form, Body
+from typing import Optional, Dict, Any
+import os
+import json
+import time
+import shutil
+from pathlib import Path
+
+# Add these endpoints to your FastAPI application
+
+@app.post("/upload-catalog/")
+async def upload_catalog(file: UploadFile = File(...)):
+    """Upload a catalog file to the server."""
+    try:
+        # Create the catalogs directory if it doesn't exist
+        catalogs_dir = Path("catalogs")
+        catalogs_dir.mkdir(exist_ok=True)
+        
+        # Generate a safe filename
+        original_filename = file.filename
+        filename_parts = original_filename.split('.')
+        
+        # Get base name and extension
+        if len(filename_parts) > 1:
+            extension = filename_parts[-1].lower()
+            base_name = '.'.join(filename_parts[:-1])
+        else:
+            extension = ""
+            base_name = original_filename
+        
+        # Clean the base name (remove special characters)
+        base_name = ''.join(c for c in base_name if c.isalnum() or c in ['-', '_', '.'])
+        
+        # Add timestamp to ensure uniqueness
+        timestamp = int(time.time())
+        
+        # Construct final filename
+        if extension:
+            safe_filename = f"{base_name}_{timestamp}.{extension}"
+        else:
+            safe_filename = f"{base_name}_{timestamp}"
+        
+        # Convert to lowercase for consistency
+        safe_filename = safe_filename.lower()
+        
+        # Construct the file path
+        file_path = catalogs_dir / safe_filename
+        
+        # Write the file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Return success message with the filename
+        return JSONResponse(content={
+            "message": "Catalog uploaded successfully",
+            "filename": safe_filename
+        })
+    except Exception as e:
+        import traceback
+        print(f"Error uploading catalog: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to upload catalog: {str(e)}"}
+        )
+
+
+# Add this function to your main.py file to enhance coordinate column detection
+
+def detect_coordinate_columns(columns, sample_data=None):
+    """
+    Enhanced detection of RA and DEC columns in catalogs.
+    
+    Args:
+        columns: List of column names
+        sample_data: Optional sample data (list of rows) to examine values
+        
+    Returns:
+        dict: Contains 'ra_col', 'dec_col', and 'radius_col' keys if found
+    """
+    result = {'ra_col': None, 'dec_col': None, 'radius_col': None}
+    
+    # Convert all column names to lowercase for easier matching
+    lowercase_columns = [col.lower() for col in columns]
+    
+    # Exact matches for RA (must match whole word)
+    ra_exact_matches = [
+        'ra', 'right_ascension', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra', 
+        'ra_deg', 'ra_icrs', 'ra_fk5', 'ra_2000', 'ra_degrees'
+    ]
+    
+    # Exact matches for DEC (must match whole word)
+    dec_exact_matches = [
+        'dec', 'declination', 'delta', 'delta_j2000', 'decj2000', 'dej2000', 'cen_dec',
+        'dec_deg', 'dec_icrs', 'dec_fk5', 'dec_2000', 'dec_degrees'
+    ]
+    
+    # Patterns to match within names (with word boundaries)
+    ra_patterns = [
+        r'\bra\b', r'\bra_', '_ra\b', 
+        r'\bright.?asc', r'\br\.a\.',
+        r'\braj', r'\balpha\b'
+    ]
+    
+    dec_patterns = [
+        r'\bdec\b', r'\bdec_', '_dec\b',
+        r'\bdeclination', r'\bdecl\b', 
+        r'\bdelta\b', r'\bdej\b'
+    ]
+    
+    # Patterns for radius columns
+    radius_patterns = [
+        r'\bradius\b', r'\brad\b', r'\bsize\b', r'\bdiameter\b', r'\bwidth\b', 
+        r'\bextent\b', r'\br_eff\b', r'\br_50\b', r'\br_petro\b', r'\br_kron\b'
+    ]
+    
+    import re
+    
+    # First pass: Look for exact matches
+    for i, col in enumerate(lowercase_columns):
+        # Exact matches for RA
+        if result['ra_col'] is None and col in ra_exact_matches:
+            result['ra_col'] = columns[i]
+            continue
+            
+        # Exact matches for DEC
+        if result['dec_col'] is None and col in dec_exact_matches:
+            result['dec_col'] = columns[i]
+            continue
+            
+        # Exact matches for radius
+        if result['radius_col'] is None and (col == 'radius' or col == 'rad' or col == 'size'):
+            result['radius_col'] = columns[i]
+            continue
+    
+    # Second pass: Look for pattern matches
+    if result['ra_col'] is None or result['dec_col'] is None or result['radius_col'] is None:
+        for i, col in enumerate(lowercase_columns):
+            # Skip columns already found
+            if columns[i] == result['ra_col'] or columns[i] == result['dec_col'] or columns[i] == result['radius_col']:
+                continue
+                
+            # Check RA patterns - only if not found yet
+            if result['ra_col'] is None:
+                for pattern in ra_patterns:
+                    if re.search(pattern, col):
+                        # Avoid false positives by checking against DEC patterns
+                        if not any(re.search(dp, col) for dp in dec_patterns):
+                            result['ra_col'] = columns[i]
+                            break
+            
+            # Check DEC patterns - only if not found yet
+            if result['dec_col'] is None:
+                for pattern in dec_patterns:
+                    if re.search(pattern, col):
+                        # Avoid false positives by checking against RA patterns
+                        if not any(re.search(rp, col) for rp in ra_patterns):
+                            result['dec_col'] = columns[i]
+                            break
+            
+            # Check radius patterns - only if not found yet
+            if result['radius_col'] is None:
+                for pattern in radius_patterns:
+                    if re.search(pattern, col):
+                        result['radius_col'] = columns[i]
+                        break
+    
+    # If still not found, look for common coordinated pairs
+    if (result['ra_col'] is None or result['dec_col'] is None) and not (result['ra_col'] and result['dec_col']):
+        ra_candidates = []
+        dec_candidates = []
+        
+        # Find columns that contain 'ra' or 'dec' as complete words
+        for i, col in enumerate(lowercase_columns):
+            # Find potential RA columns with more restrictive matching
+            if re.search(r'\bra\b', col) or col.startswith('ra_') or col.endswith('_ra'):
+                ra_candidates.append((i, columns[i]))
+            
+            # Find potential DEC columns with more restrictive matching
+            if re.search(r'\bdec\b', col) or col.startswith('dec_') or col.endswith('_dec'):
+                dec_candidates.append((i, columns[i]))
+        
+        # Look for pairs with same suffix or prefix
+        if ra_candidates and dec_candidates:
+            for ra_idx, ra_col in ra_candidates:
+                ra_col_lower = ra_col.lower()
+                for dec_idx, dec_col in dec_candidates:
+                    dec_col_lower = dec_col.lower()
+                    
+                    # Extract the part after "ra_" or before "_ra"
+                    ra_suffix = ra_col_lower[3:] if ra_col_lower.startswith('ra_') else ''
+                    ra_prefix = ra_col_lower[:-3] if ra_col_lower.endswith('_ra') else ''
+                    
+                    # Extract the part after "dec_" or before "_dec"
+                    dec_suffix = dec_col_lower[4:] if dec_col_lower.startswith('dec_') else ''
+                    dec_prefix = dec_col_lower[:-4] if dec_col_lower.endswith('_dec') else ''
+                    
+                    # Check if they form a pair
+                    if (ra_suffix and ra_suffix == dec_suffix) or (ra_prefix and ra_prefix == dec_prefix):
+                        result['ra_col'] = columns[ra_idx]
+                        result['dec_col'] = columns[dec_idx]
+                        break
+                
+                if result['ra_col'] and result['dec_col']:
+                    break
+    
+    # Last resort: check if the column values look like coordinates
+    if (result['ra_col'] is None or result['dec_col'] is None) and sample_data:
+        # Skip coordinate value check if both are already found
+        if not (result['ra_col'] and result['dec_col']):
+            import re
+            import numpy as np
+            
+            # Function to check if a value looks like a coordinate
+            def is_coordinate_value(value, is_ra=None):
+                if value is None or str(value).strip() == '':
+                    return False
+                    
+                str_value = str(value).strip()
+                
+                # Check for sexagesimal format (hours/degrees:minutes:seconds)
+                if ':' in str_value or 'h' in str_value.lower() or 'd' in str_value.lower():
+                    if is_ra is True:
+                        return 'h' in str_value.lower() or len(str_value.split(':')) == 3
+                    elif is_ra is False:
+                        return 'd' in str_value.lower() or len(str_value.split(':')) == 3
+                    else:
+                        return True
+                
+                # Check for numeric value in appropriate range
+                try:
+                    float_val = float(str_value)
+                    if is_ra is True:
+                        return 0 <= float_val < 360  # RA is 0-360 degrees
+                    elif is_ra is False:
+                        return -90 <= float_val <= 90  # DEC is -90 to +90 degrees
+                    else:
+                        # If we don't know which coordinate, check both ranges
+                        return (0 <= float_val < 360) or (-90 <= float_val <= 90)
+                except ValueError:
+                    return False
+            
+            # Check each column for coordinate-like values
+            ra_likelihood = {}
+            dec_likelihood = {}
+            
+            for i, col in enumerate(columns):
+                # Skip columns already identified
+                if col == result['ra_col'] or col == result['dec_col']:
+                    continue
+                    
+                # Skip columns that don't "look like" coordinate columns by name
+                col_lower = col.lower()
+                
+                # Skip columns with metadata indicators
+                if any(term in col_lower for term in ['error', 'uncertainty', 'flag', 'quality', 'best.', 'met_', 'metallicity']):
+                    continue
+                
+                # Check a sample of rows
+                sample_size = min(5, len(sample_data))
+                ra_score = 0
+                dec_score = 0
+                
+                for row_idx in range(sample_size):
+                    if row_idx >= len(sample_data):
+                        break
+                        
+                    try:
+                        # Get value
+                        row = sample_data[row_idx]
+                        value = None
+                        
+                        # Handle different data structures
+                        if hasattr(row, '__getitem__'):
+                            # For dict-like objects
+                            if isinstance(row, dict) and col in row:
+                                value = row[col]
+                            # For list-like objects with numeric indexing
+                            elif isinstance(row, (list, tuple)) and i < len(row):
+                                value = row[i]
+                            # For Astropy Table rows
+                            elif hasattr(row, col):
+                                value = getattr(row, col)
+                        
+                        if value is not None:
+                            # Check if the value looks like an RA
+                            if is_coordinate_value(value, is_ra=True):
+                                ra_score += 1
+                            
+                            # Check if the value looks like a DEC
+                            if is_coordinate_value(value, is_ra=False):
+                                dec_score += 1
+                    except Exception:
+                        continue
+                
+                # Store scores if significant
+                if ra_score > 0:
+                    ra_likelihood[col] = ra_score / sample_size
+                
+                if dec_score > 0:
+                    dec_likelihood[col] = dec_score / sample_size
+            
+            # Find the most likely RA and DEC columns
+            if ra_likelihood and not result['ra_col']:
+                best_ra = max(ra_likelihood.items(), key=lambda x: x[1])
+                if best_ra[1] >= 0.5:  # At least half the samples match RA pattern
+                    result['ra_col'] = best_ra[0]
+            
+            if dec_likelihood and not result['dec_col']:
+                best_dec = max(dec_likelihood.items(), key=lambda x: x[1])
+                if best_dec[1] >= 0.5:  # At least half the samples match DEC pattern
+                    result['dec_col'] = best_dec[0]
+    
+    return result
+    
+# Replace the existing catalog_columns endpoint with this enhanced version
+@app.get("/catalog-columns/")
+async def catalog_columns(catalog_name: str):
+    """Get column names from a catalog file with enhanced RA/DEC detection."""
+    try:
+        catalog_path = f"catalogs/{catalog_name}"
+        
+        if not os.path.exists(catalog_path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Catalog file not found: {catalog_name}"}
+            )
+        
+        columns = []
+        sample_data = []
+        
+        # Check if it's a FITS file
+        if catalog_name.lower().endswith(('.fits', '.fit')):
+            # Read FITS table
+            from astropy.io import fits
+            from astropy.table import Table
+            
+            with fits.open(catalog_path) as hdul:
+                # Try to find a table HDU
+                table_hdu = None
+                for i, hdu in enumerate(hdul):
+                    if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                        table_hdu = i
+                        break
+                
+                if table_hdu is None:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "No table found in FITS file"}
+                    )
+                
+                # Read the table
+                table = Table(hdul[table_hdu].data)
+                columns = list(table.colnames)
+                
+                # Get a sample of the data for detection
+                sample_size = min(5, len(table))
+                sample_data = [table[i] for i in range(sample_size)]
+                
+        # Check if it's a CSV or text file
+        elif catalog_name.lower().endswith(('.csv', '.txt', '.cat')):
+            # Try to read as CSV
+            try:
+                # First try pandas
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(catalog_path, sep=None, engine='python', nrows=5)
+                    columns = list(df.columns)
+                    sample_data = [df.iloc[i] for i in range(min(5, len(df)))]
+                except Exception as e:
+                    print(f"Error reading with pandas: {e}")
+                    
+                    # Fallback to manual CSV reading
+                    import csv
+                    
+                    with open(catalog_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        # Try to detect the delimiter
+                        sample = f.read(4096)
+                        f.seek(0)  # Reset to beginning
+                        
+                        # Count occurrences of common delimiters
+                        comma_count = sample.count(',')
+                        tab_count = sample.count('\t')
+                        semicolon_count = sample.count(';')
+                        
+                        # Choose the most common delimiter
+                        if tab_count > comma_count and tab_count > semicolon_count:
+                            delimiter = '\t'
+                        elif semicolon_count > comma_count:
+                            delimiter = ';'
+                        else:
+                            delimiter = ','
+                        
+                        # Read the header and a few rows
+                        csv_reader = csv.reader(f, delimiter=delimiter)
+                        header = next(csv_reader)
+                        columns = [col.strip().strip('"\'') for col in header]
+                        
+                        # Read sample rows
+                        for i, row in enumerate(csv_reader):
+                            if i >= 5:  # Only read up to 5 rows
+                                break
+                            sample_data.append(row)
+            except Exception as e:
+                print(f"Error reading CSV/TSV file: {e}")
+                import traceback
+                print(traceback.format_exc())
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Failed to read catalog file: {str(e)}"}
+                )
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unsupported file format"}
+            )
+        
+        # Use the enhanced detection function
+        detected = detect_coordinate_columns(columns, sample_data)
+        
+        return JSONResponse(content={
+            "columns": columns,
+            "detected": {
+                "ra_column": detected['ra_col'],
+                "dec_column": detected['dec_col'],
+                "radius_column": detected['radius_col']
+            }
+        })
+            
+    except Exception as e:
+        import traceback
+        print(f"Error reading catalog columns: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to read catalog columns: {str(e)}"}
+        )
+
+@app.post("/save-catalog-mapping/")
+async def save_catalog_mapping(mapping_data: Dict[str, Any] = Body(...)):
+    """Save catalog column mappings."""
+    try:
+        catalog_name = mapping_data.get("catalog_name")
+        
+        if not catalog_name:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Catalog name is required"}
+            )
+        
+        catalog_path = f"catalogs/{catalog_name}"
+        if not os.path.exists(catalog_path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Catalog file not found: {catalog_name}"}
+            )
+        
+        # Get the mapping data
+        ra_column = mapping_data.get("ra_column", "auto")
+        dec_column = mapping_data.get("dec_column", "auto")
+        radius_column = mapping_data.get("radius_column", "")
+        fixed_radius = mapping_data.get("fixed_radius", 5)
+        
+        # Create a mapping file
+        mapping_file_path = f"catalogs/{catalog_name}.mapping.json"
+        
+        mapping_info = {
+            "catalog_name": catalog_name,
+            "ra_column": ra_column,
+            "dec_column": dec_column,
+            "radius_column": radius_column,
+            "fixed_radius": fixed_radius,
+            "created_at": time.time()
+        }
+        
+        # Save mapping to file
+        with open(mapping_file_path, 'w') as f:
+            json.dump(mapping_info, f, indent=2)
+        
+        print(f"Saved catalog mapping for {catalog_name}")
+        
+        return JSONResponse(content={
+            "message": "Catalog mapping saved successfully",
+            "load_catalog": True  # Signal to load the catalog after mapping
+        })
+    except Exception as e:
+        import traceback
+        print(f"Error saving catalog mapping: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to save catalog mapping: {str(e)}"}
+        )
+
+
+
+
+
+# Modify the existing load_catalog_data function to use the mapping file if it exists
 def load_catalog_data(catalog_path):
     """
     Load catalog data from a file.
     Supports FITS tables and CSV/TSV formats.
-    Filters objects to match the loaded FITS image galaxy.
-    Handles both decimal and sexagesimal (HH:MM:SS) coordinate formats.
+    Uses mapping file if available.
     """
     try:
         from astropy.coordinates import SkyCoord
         import astropy.units as u
         catalog_data = []
+        
+        # Check if a mapping file exists
+        catalog_name = os.path.basename(catalog_path)
+        mapping_file_path = f"catalogs/{catalog_name}.mapping.json"
+        
+        mapping = None
+        if os.path.exists(mapping_file_path):
+            try:
+                with open(mapping_file_path, 'r') as f:
+                    mapping = json.load(f)
+                print(f"Using mapping file for catalog: {catalog_name}")
+            except Exception as e:
+                print(f"Error loading mapping file: {e}")
+                mapping = None
         
         # Use the currently selected FITS file
         fits_file = getattr(app.state, "current_fits_file", None)
@@ -1383,34 +1897,12 @@ def load_catalog_data(catalog_path):
             return []
             
         print(f"Using WCS from current FITS file: {fits_file}")
-        fits_filename = os.path.basename(fits_file).lower()
-        fits_name_without_ext = os.path.splitext(fits_filename)[0]
-        
-        # Extract potential galaxy name from filename
-        galaxy_patterns = [
-            r'(ngc\d+)',  # NGC galaxies (e.g., ngc0628)
-            r'(m\d+)',    # Messier objects (e.g., m74)
-            r'(ic\d+)',   # IC catalog objects
-            r'([a-z]+\d+)'  # Any letter followed by numbers
-        ]
-        
-        target_galaxy = None
-        for pattern in galaxy_patterns:
-            matches = re.findall(pattern, fits_name_without_ext)
-            if matches:
-                target_galaxy = matches[0]
-                print(f"Extracted galaxy identifier from FITS filename: {target_galaxy}")
-                break
         
         # Function to convert coordinate strings to decimal degrees
         def parse_coordinate(coord_str, is_ra=None):
             """
             Parse a coordinate string that could be in decimal or sexagesimal format.
             Returns the coordinate value in decimal degrees.
-            
-            Parameters:
-            - coord_str: The coordinate string to parse
-            - is_ra: If True, treat as RA; if False, treat as DEC; if None, try to determine automatically
             """
             if coord_str is None:
                 return None
@@ -1485,223 +1977,305 @@ def load_catalog_data(catalog_path):
                 # Get the table data
                 catalog_table = table_hdu.data
                 
-                # Find RA and DEC columns
+                # Find RA and DEC columns based on mapping or auto-detection
                 ra_col = None
                 dec_col = None
+                radius_col = None
+                fixed_radius = 5.0  # Default fixed radius
                 
-                # Common names for RA and DEC columns
-                ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000','cen_ra']
-                dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000','cen_dec']
+                # Use mapping if available
+                if mapping:
+                    # Get columns from mapping
+                    if mapping.get("ra_column") and mapping.get("ra_column") != "auto":
+                        ra_col = mapping.get("ra_column")
+                    
+                    if mapping.get("dec_column") and mapping.get("dec_column") != "auto":
+                        dec_col = mapping.get("dec_column")
+                    
+                    if mapping.get("radius_column") and mapping.get("radius_column") != "auto":
+                        radius_col = mapping.get("radius_column")
+                    
+                    if mapping.get("fixed_radius"):
+                        fixed_radius = float(mapping.get("fixed_radius"))
                 
-                # Find RA column
-                for name in ra_names:
-                    if name in catalog_table.names:
-                        ra_col = name
-                        break
+                # If columns not specified in mapping, auto-detect
+                if ra_col is None:
+                    # Common names for RA column
+                    for name in ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000', 'cen_ra']:
+                        if name in catalog_table.names:
+                            ra_col = name
+                            break
                 
-                # Find DEC column
-                for name in dec_names:
-                    if name in catalog_table.names:
-                        dec_col = name
-                        break
+                if dec_col is None:
+                    # Common names for DEC column
+                    for name in ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000', 'cen_dec']:
+                        if name in catalog_table.names:
+                            dec_col = name
+                            break
+                
+                if radius_col is None and not mapping:
+                    # Try to find radius column (only if not explicitly set to empty in mapping)
+                    for name in ['RADIUS', 'radius', 'SIZE', 'size', 'WIDTH', 'width', 'DIAMETER', 'diameter']:
+                        if name in catalog_table.names:
+                            radius_col = name
+                            break
                 
                 if ra_col is None or dec_col is None:
                     print(f"RA or DEC column not found in catalog: {catalog_path}")
                     print(f"Available columns: {catalog_table.names}")
                     return []
                 
-                # Find galaxy column if it exists
-                galaxy_col = None
-                galaxy_col_candidates = ['gal_name','GALAXY', 'galaxy', 'Galaxy','TARGET', 'target', 'OBJECT', 'object']
-                
-                for col_name in galaxy_col_candidates:
-                    if col_name in catalog_table.names:
-                        galaxy_col = col_name
-                        print(f"Found galaxy column: {galaxy_col}")
-                        break
-                
-                # Process each row - optimize by pre-filtering if possible
-                total_count = len(catalog_table)
-                filtered_count = 0
-                
-                # If we have a galaxy column and target, pre-filter the table
-                if galaxy_col and target_galaxy:
-                    # Create a mask for matching rows
-                    mask = np.zeros(total_count, dtype=bool)
-                    
-                    # Convert all galaxy names to lowercase for case-insensitive comparison
-                    galaxy_names = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
-                    
-                    # Set mask for rows that contain the target galaxy name
-                    for i, name in enumerate(galaxy_names):
-                        if target_galaxy in name:
-                            mask[i] = True
-                            filtered_count += 1
-                    
-                    # Apply the mask to get only matching rows
-                    filtered_table = catalog_table[mask]
-                    print(f"Filtered catalog from {total_count} to {filtered_count} objects matching galaxy: {target_galaxy}")
-                    
-                    # Process the filtered rows
-                    for row in filtered_table:
-                        try:
-                            # Use the parsing function to handle different coordinate formats
-                            ra = parse_coordinate(row[ra_col], is_ra=True)
-                            dec = parse_coordinate(row[dec_col], is_ra=False)
-                            
-                            # Skip if invalid coordinates
-                            if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
-                                continue
-                            
-                            # Create object data
-                            obj_data = {
-                                'ra': ra,
-                                'dec': dec,
-                                'x': 0,  # Will be set later
-                                'y': 0,  # Will be set later
-                                'radius_pixels': 5.0  # Default radius
-                            }
-                            
-                            # Add magnitude if available
-                            for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                                if mag_col in catalog_table.names:
-                                    try:
-                                        obj_data['magnitude'] = float(row[mag_col])
-                                        break
-                                    except:
-                                        pass
-                            
-                            catalog_data.append(obj_data)
-                        except Exception as e:
-                            print(f"Error processing catalog row: {e}")
+                # Process each row
+                for row in catalog_table:
+                    try:
+                        # Use the parsing function to handle different coordinate formats
+                        ra = parse_coordinate(row[ra_col], is_ra=True)
+                        dec = parse_coordinate(row[dec_col], is_ra=False)
+                        
+                        # Skip if invalid coordinates
+                        if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
                             continue
-                else:
-                    # No filtering, process all rows
-                    for i, row in enumerate(catalog_table):
-                        try:
-                            # Use the parsing function to handle different coordinate formats
-                            ra = parse_coordinate(row[ra_col])
-                            dec = parse_coordinate(row[dec_col])
-                            
-                            # Skip if invalid coordinates
-                            if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
-                                continue
-                            
-                            # Create object data
-                            obj_data = {
-                                'ra': ra,
-                                'dec': dec,
-                                'x': 0,  # Will be set later
-                                'y': 0,  # Will be set later
-                                'radius_pixels': 5.0  # Default radius
-                            }
-                            
-                            # Add magnitude if available
-                            for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                                if mag_col in catalog_table.names:
-                                    try:
-                                        obj_data['magnitude'] = float(row[mag_col])
-                                        break
-                                    except:
-                                        pass
-                            
-                            catalog_data.append(obj_data)
-                        except Exception as e:
-                            print(f"Error processing catalog row: {e}")
-                            continue
-        else:
-            # Assume it's a CSV/TSV file - similar optimization can be applied here
+                        
+                        # Get radius if available
+                        radius = fixed_radius
+                        if radius_col and radius_col in catalog_table.names:
+                            try:
+                                radius = float(row[radius_col])
+                                # If radius is too small or invalid, use the default
+                                if radius <= 0 or np.isnan(radius):
+                                    radius = fixed_radius
+                            except:
+                                # If conversion fails, use the default radius
+                                radius = fixed_radius
+                        
+                        # Create object data
+                        obj_data = {
+                            'ra': ra,
+                            'dec': dec,
+                            'x': 0,  # Will be set later with WCS
+                            'y': 0,  # Will be set later with WCS
+                            'radius_pixels': radius
+                        }
+                        
+                        # Add magnitude if available
+                        for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
+                            if mag_col in catalog_table.names:
+                                try:
+                                    obj_data['magnitude'] = float(row[mag_col])
+                                    break
+                                except:
+                                    pass
+                        
+                        catalog_data.append(obj_data)
+                    except Exception as e:
+                        print(f"Error processing catalog row: {e}")
+                        continue
+                        
+        # Handle CSV and text files
+        elif catalog_path.lower().endswith(('.csv', '.txt', '.cat')):
             print(f"Loading CSV/TSV catalog: {catalog_path}")
             try:
-                from astropy.table import Table
-                catalog_table = Table.read(catalog_path, format='ascii')
-            except Exception as e:
-                print(f"Error reading catalog as ASCII: {e}")
-                return []
-            
-            # Find RA and DEC columns
-            ra_col = None
-            dec_col = None
-            
-            # Common names for RA and DEC columns
-            ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000','cen_ra']
-            dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000','cen_dec']
-            
-            # Find RA column
-            for name in ra_names:
-                if name in catalog_table.colnames:
-                    ra_col = name
-                    break
-            
-            # Find DEC column
-            for name in dec_names:
-                if name in catalog_table.colnames:
-                    dec_col = name
-                    break
-            
-            if ra_col is None or dec_col is None:
-                print(f"RA or DEC column not found in catalog: {catalog_path}")
-                print(f"Available columns: {catalog_table.colnames}")
-                return []
-            
-            # Find galaxy column if it exists
-            galaxy_col = None
-            galaxy_col_candidates = ['gal_name','GALAXY', 'galaxy', 'Galaxy','TARGET', 'target', 'OBJECT', 'object']
-            
-            for col_name in galaxy_col_candidates:
-                if col_name in catalog_table.colnames:
-                    galaxy_col = col_name
-                    print(f"Found galaxy column: {galaxy_col}")
-                    break
-            
-            # Process each row
-            total_count = len(catalog_table)
-            filtered_count = 0
-            
-            # Process all rows with filtering
-            for i, row in enumerate(catalog_table):
+                # Try to read the file using various methods
                 try:
-                    # Filter by galaxy name if possible
-                    if galaxy_col and target_galaxy:
-                        galaxy_name = str(row[galaxy_col]).lower()
-                        # Skip if galaxy name doesn't match target
-                        if target_galaxy not in galaxy_name:
-                            continue
-                        filtered_count += 1
-                    
-                    # Use the parsing function to handle different coordinate formats
-                    ra = parse_coordinate(row[ra_col], is_ra=True)
-                    dec = parse_coordinate(row[dec_col], is_ra=False)
-                    
-                    # Skip if invalid coordinates
-                    if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
-                        continue
-                    
-                    # Create object data
-                    obj_data = {
-                        'ra': ra,
-                        'dec': dec,
-                        'x': 0,  # Will be set later
-                        'y': 0,  # Will be set later
-                        'radius_pixels': 5.0  # Default radius
-                    }
-                    
-                    # Add magnitude if available
-                    for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                        if mag_col in catalog_table.colnames:
-                            try:
-                                obj_data['magnitude'] = float(row[mag_col])
-                                break
-                            except:
-                                pass
-                    
-                    catalog_data.append(obj_data)
+                    # First try using astropy's Table.read
+                    from astropy.table import Table
+                    catalog_table = Table.read(catalog_path, format='ascii')
+                    has_table = True
                 except Exception as e:
-                    print(f"Error processing catalog row: {e}")
-                    continue
-            
-            if galaxy_col and target_galaxy:
-                print(f"Filtered catalog from {total_count} to {filtered_count} objects matching galaxy: {target_galaxy}")
+                    print(f"Error reading with astropy: {e}")
+                    
+                    # Fallback to pandas
+                    try:
+                        import pandas as pd
+                        catalog_table = pd.read_csv(catalog_path, sep=None, engine='python')
+                        has_table = True
+                    except Exception as e2:
+                        print(f"Error reading with pandas: {e2}")
+                        
+                        # Last resort: manual CSV parsing
+                        import csv
+                        
+                        # Try to detect delimiter
+                        with open(catalog_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            sample = f.read(4096)
+                        
+                        # Count occurrences of common delimiters
+                        comma_count = sample.count(',')
+                        tab_count = sample.count('\t')
+                        semicolon_count = sample.count(';')
+                        
+                        # Choose the most common delimiter
+                        if tab_count > comma_count and tab_count > semicolon_count:
+                            delimiter = '\t'
+                        elif semicolon_count > comma_count:
+                            delimiter = ';'
+                        else:
+                            delimiter = ','
+                        
+                        # Read the CSV file manually
+                        rows = []
+                        headers = []
+                        with open(catalog_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            csv_reader = csv.reader(f, delimiter=delimiter)
+                            headers = next(csv_reader)  # Read header row
+                            for row in csv_reader:
+                                rows.append(row)
+                        
+                        has_table = len(headers) > 0 and len(rows) > 0
+                        
+                        # Create a simple table-like object
+                        class SimpleTable:
+                            def __init__(self, headers, rows):
+                                self.headers = headers
+                                self.rows = rows
+                                self.colnames = headers
+                            
+                            def __getitem__(self, idx):
+                                return self.rows[idx]
+                            
+                            def __len__(self):
+                                return len(self.rows)
+                        
+                        catalog_table = SimpleTable(headers, rows)
+                
+                if not has_table:
+                    print(f"Failed to read catalog file: {catalog_path}")
+                    return []
+                
+                # Find RA and DEC columns based on mapping or auto-detection
+                ra_col = None
+                dec_col = None
+                radius_col = None
+                fixed_radius = 5.0  # Default fixed radius
+                
+                # Get column names
+                if hasattr(catalog_table, 'colnames'):
+                    columns = catalog_table.colnames
+                elif hasattr(catalog_table, 'columns'):
+                    columns = list(catalog_table.columns)
+                else:
+                    columns = catalog_table.headers  # For SimpleTable
+                
+                # Use mapping if available
+                if mapping:
+                    # Get columns from mapping
+                    if mapping.get("ra_column") and mapping.get("ra_column") != "auto":
+                        ra_col = mapping.get("ra_column")
+                    
+                    if mapping.get("dec_column") and mapping.get("dec_column") != "auto":
+                        dec_col = mapping.get("dec_column")
+                    
+                    if mapping.get("radius_column") and mapping.get("radius_column") != "auto":
+                        radius_col = mapping.get("radius_column")
+                    
+                    if mapping.get("fixed_radius"):
+                        fixed_radius = float(mapping.get("fixed_radius"))
+                
+                # If columns not specified in mapping, auto-detect
+                if ra_col is None:
+                    # Common names for RA column
+                    for name in ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000', 'cen_ra']:
+                        if name in columns:
+                            ra_col = name
+                            break
+                
+                if dec_col is None:
+                    # Common names for DEC column
+                    for name in ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000', 'cen_dec']:
+                        if name in columns:
+                            dec_col = name
+                            break
+                
+                if radius_col is None and not mapping:
+                    # Try to find radius column
+                    for name in ['RADIUS', 'radius', 'SIZE', 'size', 'WIDTH', 'width', 'DIAMETER', 'diameter']:
+                        if name in columns:
+                            radius_col = name
+                            break
+                
+                if ra_col is None or dec_col is None:
+                    print(f"RA or DEC column not found in catalog: {catalog_path}")
+                    print(f"Available columns: {columns}")
+                    return []
+                
+                # Process each row
+                for i in range(len(catalog_table)):
+                    try:
+                        row = catalog_table[i]
+                        
+                        # Get RA and DEC values, handling different table types
+                        if hasattr(row, '__getitem__'):
+                            # For astropy Table or pandas DataFrame
+                            ra_val = row[ra_col]
+                            dec_val = row[dec_col]
+                        else:
+                            # For SimpleTable or list
+                            ra_idx = columns.index(ra_col)
+                            dec_idx = columns.index(dec_col)
+                            ra_val = row[ra_idx]
+                            dec_val = row[dec_idx]
+                        
+                        # Parse coordinates
+                        ra = parse_coordinate(ra_val, is_ra=True)
+                        dec = parse_coordinate(dec_val, is_ra=False)
+                        
+                        # Skip if invalid coordinates
+                        if ra is None or dec is None or np.isnan(ra) or np.isnan(dec):
+                            continue
+                        
+                        # Get radius if available
+                        radius = fixed_radius
+                        if radius_col and radius_col in columns:
+                            try:
+                                if hasattr(row, '__getitem__'):
+                                    radius_val = row[radius_col]
+                                else:
+                                    radius_idx = columns.index(radius_col)
+                                    radius_val = row[radius_idx]
+                                
+                                radius = float(radius_val)
+                                # If radius is too small or invalid, use the default
+                                if radius <= 0 or np.isnan(radius):
+                                    radius = fixed_radius
+                            except:
+                                # If conversion fails, use the default radius
+                                radius = fixed_radius
+                        
+                        # Create object data
+                        obj_data = {
+                            'ra': ra,
+                            'dec': dec,
+                            'x': 0,  # Will be set later with WCS
+                            'y': 0,  # Will be set later with WCS
+                            'radius_pixels': radius
+                        }
+                        
+                        # Add magnitude if available
+                        for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
+                            if mag_col in columns:
+                                try:
+                                    if hasattr(row, '__getitem__'):
+                                        mag_val = row[mag_col]
+                                    else:
+                                        mag_idx = columns.index(mag_col)
+                                        mag_val = row[mag_idx]
+                                    
+                                    obj_data['magnitude'] = float(mag_val)
+                                    break
+                                except:
+                                    pass
+                        
+                        catalog_data.append(obj_data)
+                    except Exception as e:
+                        print(f"Error processing row {i}: {e}")
+                        continue
+            except Exception as e:
+                print(f"Error loading CSV catalog: {e}")
+                import traceback
+                print(traceback.format_exc())
+        else:
+            print(f"Unsupported catalog format: {catalog_path}")
+            return []
         
         # Convert RA/DEC to pixel coordinates using the CURRENT image's WCS
         try:
@@ -1760,7 +2334,6 @@ def load_catalog_data(catalog_path):
         import traceback
         print(traceback.format_exc())
         return []
-
 
 
 # Corrected code to extract BUNIT from each specific HDU
@@ -4115,7 +4688,6 @@ def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
     imageData[indices1] = np.arcsinh((imageData[indices1] - scale_min)/non_linear)/factor
 
     return imageData
-
 
 # ---------------------------
 # Run FastAPI Server in a Thread
