@@ -64,7 +64,6 @@ document.addEventListener("DOMContentLoaded", function () {
     
     // Add dynamic range control
     createDynamicRangeControl();
-    addWcsToggleButton();
 
 });
 
@@ -483,106 +482,6 @@ function initializeViewerWithFitsData() {
 
 
 
-// Function to process downsampled image for very large files
-function processDownsampledImage() {
-    try {
-        const originalWidth = window.fitsData.width;
-        const originalHeight = window.fitsData.height;
-        
-        // Calculate downsample factor to get to a more manageable size
-        // Aim for around 4000-5000 pixels in the largest dimension
-        const targetSize = 4000;
-        const downsampleFactor = Math.ceil(Math.max(originalWidth, originalHeight) / targetSize);
-        
-        console.log(`Downsampling image by factor of ${downsampleFactor}`);
-        showProgress(true, `Downsampling image by factor of ${downsampleFactor}...`);
-        
-        // Create downsampled version
-        const newWidth = Math.floor(originalWidth / downsampleFactor);
-        const newHeight = Math.floor(originalHeight / downsampleFactor);
-        
-        // Process the downsampling in chunks to prevent UI freezing
-        const downsampledData = [];
-        let rowsProcessed = 0;
-        
-        function processNextDownsampleChunk() {
-            const chunkSize = 100; // Process 100 rows at a time
-            const endRow = Math.min(rowsProcessed + chunkSize, newHeight);
-            const percentDone = Math.round((rowsProcessed / newHeight) * 100);
-            
-            showProgress(true, `Downsampling image: ${percentDone}%`);
-            
-            // Process a chunk
-            for (let y = rowsProcessed; y < endRow; y++) {
-                const row = [];
-                
-                for (let x = 0; x < newWidth; x++) {
-                    // Calculate original coordinates
-                    const origX = x * downsampleFactor;
-                    const origY = y * downsampleFactor;
-                    
-                    // Get value from original data (with bounds checking)
-                    if (origY < originalHeight && origX < originalWidth) {
-                        row.push(window.fitsData.data[origY][origX]);
-                    } else {
-                        row.push(0); // Use 0 for out-of-bounds
-                    }
-                }
-                
-                downsampledData.push(row);
-            }
-            
-            rowsProcessed = endRow;
-            
-            // If more rows to process, schedule next chunk
-            if (rowsProcessed < newHeight) {
-                setTimeout(processNextDownsampleChunk, 0);
-            } else {
-                // All done - create downsampled image
-                finalizeDownsample();
-            }
-        }
-        
-        function finalizeDownsample() {
-            // Create a new downsampled fitsData object
-            const downsampledFitsData = {
-                data: downsampledData,
-                width: newWidth,
-                height: newHeight,
-                min_value: window.fitsData.min_value,
-                max_value: window.fitsData.max_value,
-                wcs: window.fitsData.wcs, // Keep original WCS
-                filename: window.fitsData.filename,
-                isDownsampled: true,
-                downsampleFactor: downsampleFactor,
-                originalWidth: originalWidth,
-                originalHeight: originalHeight
-            };
-            
-            // Replace the global fitsData with the downsampled version
-            window.fitsData = downsampledFitsData;
-            
-            console.log(`Downsampled image: ${newWidth}x${newHeight}`);
-            showNotification(`Large image downsampled for display (${originalWidth}x${originalHeight} → ${newWidth}x${newHeight})`, 5000, 'info');
-            
-            // Now process the downsampled image
-            if (window.Worker) {
-                processImageInWorker();
-            } else {
-                processImageInMainThread();
-            }
-        }
-        
-        // Start the downsampling process
-        processNextDownsampleChunk();
-        
-    } catch (error) {
-        console.error("Error downsampling image:", error);
-        showProgress(false);
-        showNotification(`Error downsampling image: ${error.message}`, 3000, 'error');
-    }
-}
-
 // Modified process binary data function
 function processBinaryData(arrayBuffer, filepath) {
     try {
@@ -685,9 +584,9 @@ function processBinaryData(arrayBuffer, filepath) {
                 
                 // Determine optimal chunk size based on image dimensions
                 // For very large images, use larger chunks to reduce overhead
-                let chunkSize = 1000; // Default
+                let chunkSize = 100000; // Default
                 if (height > 10000) {
-                    chunkSize = 2000;
+                    chunkSize = 200000;
                 }
                 
                 const data = [];
@@ -2601,7 +2500,8 @@ function applyColorMap(colorMapName) {
 // Updated OpenSeadragon initialization with better large image handling
 function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
     console.log("Initializing OpenSeadragon viewer");
-    
+    console.log("Light mode");
+
     // Determine if we're working with a large image
     isLargeImage = isLargeImage || (window.fitsData && (window.fitsData.width * window.fitsData.height) > 100000000);
     
@@ -2632,16 +2532,35 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
         
         // Performance optimizations for large images
         animationTime: isLargeImage ? 0.3 : 1.2,
-        springStiffness: isLargeImage ? 15 : 5.5,
-        visibilityRatio: 0.05, // Only load what's visible
+        // springStiffness: isLargeImage ? 15 : 5.5,
+        // visibilityRatio: 0.05, // Only load what's visible
         constrainDuringPan: true,
         wrapHorizontal: false,
         wrapVertical: false,
         
         // Additional performance tweaks for very large images
-        minPixelRatio: 0.5, // Render at lower resolution for performance
         degrees: 0,
         navigatorAutoFade: false, // Keep navigator visible
+        
+                // Add or modify these options:
+        minPixelRatio: 1.0, // Increase from 0.5 or 0.8 to 1.0 for better quality
+        immediateRender: true, // Force immediate render for small files
+        blendTime: 0, // No blend for crisp transitions
+        preserveViewport: true,             // Maintain current view when switching images
+        immediateRender: true,              // Don't defer rendering (better quality)
+        blendTime: 0,                       // Disable blending for sharper transitions
+        wrapHorizontal: false,
+        wrapVertical: false,
+
+        springStiffness: 5,                 // More gentle animations for clearer viewing
+        visibilityRatio: 0.1, 
+    // Memory management for large images
+        maxImageCacheCount: 500,            // Cache more images in memory
+        subPixelRoundingForTransparency: 1, // Best subpixel rounding
+
+        // Better interpolation:
+        placeholderFillStyle: "#000000",
+        subPixelRoundingForTransparency: 1, // Improved sub-pixel rendering
         
         // Setup appropriate rendering parameters for large images
         pixelsPerWheelLine: isLargeImage ? 120 : 40, // Faster zooming for large images
@@ -2660,8 +2579,6 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
     viewer.addHandler('open', function() {
         console.log("OpenSeadragon viewer opened successfully");
         showProgress(false);
-
-        setTimeout(initializeWcsFeatures, 500);  // Slight delay to ensure everything is ready
 
         
         
@@ -2698,6 +2615,8 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
         showProgress(false);
         showNotification(`Error loading image: ${event.message || 'Unknown error'}`, 3000, 'error');
     });
+    updateAllCanvases();
+
 }
 
 // === ADD THIS HELPER FUNCTION ===
@@ -4044,7 +3963,7 @@ function checkValidWCS() {
 function parseWCS(header) {
     if (!header) return null;
     
-    console.log("Parsing WCS from header with properties:", Object.keys(header));
+    // console.log("Parsing WCS from header with properties:", Object.keys(header));
     
     // Create an empty WCS object with default values
     const wcs = {
@@ -4111,18 +4030,18 @@ function parseWCS(header) {
     if (!wcs.crpix1 && header.x_ref !== undefined) wcs.crpix1 = header.x_ref;
     if (!wcs.crpix2 && header.y_ref !== undefined) wcs.crpix2 = header.y_ref;
     
-    // Log what we found
-    console.log("Found WCS parameters:", {
-        crval1: wcs.crval1, 
-        crval2: wcs.crval2,
-        crpix1: wcs.crpix1,
-        crpix2: wcs.crpix2,
-        cd1_1: wcs.cd1_1,
-        cd2_2: wcs.cd2_2,
-        pc1_1: wcs.pc1_1,
-        pc2_2: wcs.pc2_2,
-        orientat: wcs.orientat
-    });
+    // // Log what we found
+    // console.log("Found WCS parameters:", {
+    //     crval1: wcs.crval1, 
+    //     crval2: wcs.crval2,
+    //     crpix1: wcs.crpix1,
+    //     crpix2: wcs.crpix2,
+    //     cd1_1: wcs.cd1_1,
+    //     cd2_2: wcs.cd2_2,
+    //     pc1_1: wcs.pc1_1,
+    //     pc2_2: wcs.pc2_2,
+    //     orientat: wcs.orientat
+    // });
     
     // Calculate CD matrix if it's not provided but PC matrix and CDELT are available
     if (wcs.cd1_1 === undefined && wcs.pc1_1 !== undefined && wcs.cdelt1 !== undefined) {
@@ -4139,7 +4058,7 @@ function parseWCS(header) {
                  ((wcs.cd1_1 !== undefined && wcs.cd2_2 !== undefined) ||
                   (wcs.cdelt1 !== undefined && wcs.cdelt2 !== undefined)));
     
-    console.log("WCS is valid:", wcs.hasWCS);
+    // console.log("WCS is valid:", wcs.hasWCS);
     
     // Calculate effective transformation matrix and determine orientation
     if (wcs.hasWCS) {
@@ -4195,7 +4114,7 @@ function parseWCS(header) {
             m22: m22
         };
         
-        console.log(`WCS matrix transform: rotation=${thetaDegrees.toFixed(2)}°, flipped=${det < 0}`);
+        // console.log(`WCS matrix transform: rotation=${thetaDegrees.toFixed(2)}°, flipped=${det < 0}`);
     }
     
     return wcs;
@@ -4204,7 +4123,6 @@ function parseWCS(header) {
 
 
 function celestialToPixel(ra, dec, wcs) {
-    console.log("Celestial to pixel conversion started");
     if (!wcs || !wcs.hasWCS) return { x: 0, y: 0 };
     
     try {
@@ -4263,7 +4181,6 @@ function celestialToPixel(ra, dec, wcs) {
         // Apply X-axis reflection if needed
         if (reflectedX) {
             x = (wcs.width || 2 * crpix1) - x;
-            console.log('doing so!!!!')
         }
         
         
@@ -4289,7 +4206,7 @@ function pixelToCelestial(x, y, wcs) {
         let adjustedX = x;
         if (wcs.pc1_1 !== undefined && wcs.pc1_1 < 0) {
             adjustedX = (wcs.width || 2 * crpix1) - x;
-            console.log('Applying X-axis reflection in pixelToCelestial');
+            // console.log('Applying X-axis reflection in pixelToCelestial');
         }
         
         // Calculate pixel offsets from reference pixel
@@ -4299,7 +4216,7 @@ function pixelToCelestial(x, y, wcs) {
         // Use the transformation matrix from the WCS object
         const transform = wcs.transformInfo;
         if (!transform) {
-            console.warn("No transformation matrix available in WCS object");
+            // console.warn("No transformation matrix available in WCS object");
             return { ra: 0, dec: 0 };
         }
         
@@ -4701,7 +4618,7 @@ function selectHdu(hduIndex, filepath) {
             return checkFileSize(filepath)
                 .then(fileSize => {
                     // Use fast loading for files larger than 100MB
-                    const useFastLoading = fileSize > 100 * 1024 * 1024;
+                    const useFastLoading = fileSize > 1300 * 1024 * 1024;
                     
                     if (useFastLoading) {
                         console.log(`Large file detected (${formatFileSize(fileSize)}). Using fast loading.`);
@@ -5361,3 +5278,234 @@ function loadCatalogWithFlags(catalogName) {
 })();
 
 
+
+
+// Add pixel-perfect mode to the viewer
+viewer.pixelMode = true;  // Enable by default
+
+// Override the OpenSeadragon drawing method
+viewer.addHandler('tile-drawn', function(event) {
+    if (viewer.pixelMode && event.tile && event.tile.context) {
+        // Disable image smoothing on the tile
+        event.tile.context.imageSmoothingEnabled = false;
+        event.tile.context.mozImageSmoothingEnabled = false;
+        event.tile.context.webkitImageSmoothingEnabled = false;
+        event.tile.context.msImageSmoothingEnabled = false;
+    }
+});
+
+// Override the main drawer to disable smoothing
+viewer.addHandler('open', function() {
+    if (viewer.drawer && viewer.drawer.context) {
+        // Disable smoothing on the main canvas
+        viewer.drawer.context.imageSmoothingEnabled = false;
+        viewer.drawer.context.mozImageSmoothingEnabled = false;
+        viewer.drawer.context.webkitImageSmoothingEnabled = false;
+        viewer.drawer.context.msImageSmoothingEnabled = false;
+        
+        // Force redraw to apply changes
+        viewer.forceRedraw();
+    }
+});
+
+
+// Create a pixel mode toggle button for the toolbar
+const pixelModeButton = document.createElement('button');
+pixelModeButton.className = 'pixel-mode-button';
+pixelModeButton.textContent = 'Pixel Mode';
+pixelModeButton.title = 'Toggle pixel-perfect mode';
+pixelModeButton.style.backgroundColor = '#fff';  // Initially active
+pixelModeButton.style.color = '#000';
+
+// Add event listener to toggle pixel mode
+pixelModeButton.addEventListener('click', function() {
+    viewer.pixelMode = !viewer.pixelMode;
+    
+    // Update button appearance
+    if (viewer.pixelMode) {
+        pixelModeButton.style.backgroundColor = '#fff';
+        pixelModeButton.style.color = '#000';
+    } else {
+        pixelModeButton.style.backgroundColor = '#444';
+        pixelModeButton.style.color = '#fff';
+    }
+    
+    // Update the drawer context
+    if (viewer.drawer && viewer.drawer.context) {
+        viewer.drawer.context.imageSmoothingEnabled = !viewer.pixelMode;
+        viewer.drawer.context.mozImageSmoothingEnabled = !viewer.pixelMode;
+        viewer.drawer.context.webkitImageSmoothingEnabled = !viewer.pixelMode;
+        viewer.drawer.context.msImageSmoothingEnabled = !viewer.pixelMode;
+    }
+    
+    // Force redraw all tiles
+    viewer.forceRedraw();
+});
+
+// Add to toolbar
+const toolbar = document.querySelector('.toolbar');
+toolbar.appendChild(pixelModeButton);
+
+
+// Function to enable pixel-perfect mode that waits for viewer to be ready
+function enablePixelPerfectMode() {
+    console.log("Searching for OpenSeadragon viewer...");
+    
+    // Find the viewer using various methods
+    const findViewer = () => {
+        // Direct references first
+        if (window.viewer && window.viewer.drawer) return window.viewer;
+        if (window.tiledViewer && window.tiledViewer.drawer) return window.tiledViewer;
+        
+        // Search for any property that looks like an OpenSeadragon viewer
+        for (const key in window) {
+            try {
+                const obj = window[key];
+                if (obj && 
+                    typeof obj === 'object' && 
+                    obj.drawer && 
+                    obj.viewport && 
+                    typeof obj.forceRedraw === 'function') {
+                    console.log(`Found viewer at window.${key}`);
+                    return obj;
+                }
+            } catch (e) {
+                // Skip any properties that throw errors when accessed
+            }
+        }
+        
+        return null;
+    };
+    
+    // Try to find the viewer
+    let viewer = findViewer();
+    
+    // If we can't find it, wait and try again
+    if (!viewer) {
+        console.log("Viewer not found. Setting up observer to wait for it...");
+        
+        // Set up a MutationObserver to watch for the viewer being added
+        const observer = new MutationObserver((mutations) => {
+            // Check if we can find the viewer now
+            viewer = findViewer();
+            if (viewer) {
+                observer.disconnect();
+                console.log("Viewer found after waiting!");
+                applyPixelMode(viewer);
+            }
+        });
+        
+        // Start observing
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: true 
+        });
+        
+        // Also try again after a delay
+        setTimeout(() => {
+            if (!viewer) {
+                viewer = findViewer();
+                if (viewer) {
+                    observer.disconnect();
+                    console.log("Viewer found after timeout!");
+                    applyPixelMode(viewer);
+                } else {
+                    console.log("Still couldn't find viewer after waiting.");
+                }
+            }
+        }, 2000);
+        
+        return false;
+    }
+    
+    // If we found the viewer, apply pixel mode
+    return applyPixelMode(viewer);
+}
+
+// Function to actually apply pixel mode once we have a viewer
+function applyPixelMode(viewer) {
+    if (!viewer) return false;
+    
+    console.log("Applying pixel mode to viewer:", viewer);
+    
+    try {
+        // Don't try to set pixelMode property if it's causing errors
+        // viewer.pixelMode = true;
+        
+        // Instead, directly apply the settings we need
+        
+        // Disable image smoothing on the drawer
+        if (viewer.drawer && viewer.drawer.context) {
+            viewer.drawer.context.imageSmoothingEnabled = false;
+            viewer.drawer.context.mozImageSmoothingEnabled = false;
+            viewer.drawer.context.webkitImageSmoothingEnabled = false;
+            viewer.drawer.context.msImageSmoothingEnabled = false;
+            console.log("Disabled smoothing on drawer context");
+        }
+        
+        // Apply to all current tiles
+        if (viewer.tileCache) {
+            const tileKeys = Object.keys(viewer.tileCache.cache || {});
+            console.log(`Found ${tileKeys.length} tiles in cache`);
+            
+            tileKeys.forEach(key => {
+                const tile = viewer.tileCache.cache[key];
+                if (tile && tile.context) {
+                    tile.context.imageSmoothingEnabled = false;
+                    tile.context.mozImageSmoothingEnabled = false;
+                    tile.context.webkitImageSmoothingEnabled = false;
+                    tile.context.msImageSmoothingEnabled = false;
+                }
+            });
+        }
+        
+        // Set up handler for future tiles
+        viewer.addHandler('tile-drawn', function(event) {
+            if (event.tile && event.tile.context) {
+                event.tile.context.imageSmoothingEnabled = false;
+                event.tile.context.mozImageSmoothingEnabled = false;
+                event.tile.context.webkitImageSmoothingEnabled = false;
+                event.tile.context.msImageSmoothingEnabled = false;
+            }
+        });
+        
+        // Force a redraw to apply changes
+        console.log("Forcing redraw...");
+        viewer.forceRedraw();
+        
+        return true;
+    } catch (error) {
+        console.error("Error applying pixel mode:", error);
+        return false;
+    }
+}
+
+// Also try to directly modify any canvas elements we can find
+function updateAllCanvases() {
+    // Find all canvases in the document
+    const canvases = document.querySelectorAll('canvas');
+    console.log(`Found ${canvases.length} canvas elements`);
+    
+    canvases.forEach((canvas, index) => {
+        try {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                ctx.imageSmoothingEnabled = false;
+                ctx.mozImageSmoothingEnabled = false;
+                ctx.webkitImageSmoothingEnabled = false;
+                ctx.msImageSmoothingEnabled = false;
+                console.log(`Disabled smoothing on canvas #${index}`);
+            }
+        } catch (e) {
+            console.error(`Error updating canvas #${index}:`, e);
+        }
+    });
+    
+    return canvases.length;
+}
+
+// Try both approaches
+console.log("Starting pixel-perfect mode implementation...");
+const viewerResult = enablePixelPerfectMode();
+const canvasCount = updateAllCanvases();
+console.log(`Applied changes to canvases: ${canvasCount}, viewer update: ${viewerResult}`);
