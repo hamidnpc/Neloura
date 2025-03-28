@@ -64,6 +64,8 @@ document.addEventListener("DOMContentLoaded", function () {
     
     // Add dynamic range control
     createDynamicRangeControl();
+    addWcsToggleButton();
+
 });
 
 function createProgressIndicator() {
@@ -2658,6 +2660,10 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
     viewer.addHandler('open', function() {
         console.log("OpenSeadragon viewer opened successfully");
         showProgress(false);
+
+        setTimeout(initializeWcsFeatures, 500);  // Slight delay to ensure everything is ready
+
+        
         
         // For large images, add a notification with tips
         if (isLargeImage) {
@@ -4023,7 +4029,7 @@ function checkValidWCS() {
     }
     
     // Parse the WCS properly
-    const wcs = parseWCSFromHeader(window.fitsData.wcs);
+    const wcs = parseWCS(window.fitsData.wcs);
     
     // Store the properly parsed WCS for future use
     window.parsedWCS = wcs;
@@ -5353,3 +5359,674 @@ function loadCatalogWithFlags(catalogName) {
     // Execute initialization when script loads
     setTimeout(initCoordinates, 1000);
 })();
+
+
+
+function createWcsViewerLayer() {
+    if (!viewer || !window.parsedWCS || !window.parsedWCS.hasWCS) {
+        console.warn("Cannot create WCS layer: missing viewer or valid WCS");
+        return;
+    }
+    
+    // Create a canvas overlay instead of using fabric.js
+    const overlay = viewer.canvasOverlay({
+        onRedraw: drawWcsGrid
+    });
+    
+    // Store the overlay globally
+    window.wcsOverlay = overlay;
+    
+    console.log("WCS overlay created using canvas overlay");
+}
+
+function drawWcsGrid(position) {
+    if (!window.parsedWCS) return;
+    
+    const context = this.context2d();
+    const wcs = window.parsedWCS;
+    const imageWidth = window.fitsData.width;
+    const imageHeight = window.fitsData.height;
+    
+    // Clear the canvas
+    this.clear();
+    
+    // Calculate bounds in celestial coordinates
+    const topLeft = pixelToCelestial(0, 0, wcs);
+    const topRight = pixelToCelestial(imageWidth, 0, wcs);
+    const bottomLeft = pixelToCelestial(0, imageHeight, wcs);
+    const bottomRight = pixelToCelestial(imageWidth, imageHeight, wcs);
+    
+    // Calculate RA/Dec range
+    const minRa = Math.min(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+    const maxRa = Math.max(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+    const minDec = Math.min(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+    const maxDec = Math.max(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+    
+    // Set line style
+    context.strokeStyle = 'rgba(100, 100, 255, 0.5)';
+    context.lineWidth = 1 / position.scale;
+    context.font = (14 / position.scale) + 'px Arial';
+    context.fillStyle = 'rgba(200, 200, 255, 0.8)';
+    
+    // Draw RA grid lines
+    const raStep = calculateGridStep(maxRa - minRa);
+    const startRa = Math.ceil(minRa / raStep) * raStep;
+    
+    for (let ra = startRa; ra <= maxRa; ra += raStep) {
+        context.beginPath();
+        let firstPoint = true;
+        
+        for (let dec = minDec; dec <= maxDec; dec += (maxDec - minDec) / 100) {
+            const pixel = celestialToPixel(ra, dec, wcs);
+            const viewportPoint = this.viewer.viewport.imageToViewportCoordinates(pixel.x, pixel.y);
+            
+            if (firstPoint) {
+                context.moveTo(viewportPoint.x, viewportPoint.y);
+                firstPoint = false;
+            } else {
+                context.lineTo(viewportPoint.x, viewportPoint.y);
+            }
+        }
+        
+        context.stroke();
+        
+        // Add RA label
+        const midPoint = celestialToPixel(ra, (minDec + maxDec) / 2, wcs);
+        const viewportPoint = this.viewer.viewport.imageToViewportCoordinates(midPoint.x, midPoint.y);
+        context.fillText(formatRA(ra), viewportPoint.x, viewportPoint.y);
+    }
+    
+    // Set different style for Dec lines
+    context.strokeStyle = 'rgba(100, 255, 100, 0.5)';
+    
+    // Draw Dec grid lines
+    const decStep = calculateGridStep(maxDec - minDec);
+    const startDec = Math.ceil(minDec / decStep) * decStep;
+    
+    for (let dec = startDec; dec <= maxDec; dec += decStep) {
+        context.beginPath();
+        let firstPoint = true;
+        
+        for (let ra = minRa; ra <= maxRa; ra += (maxRa - minRa) / 100) {
+            const pixel = celestialToPixel(ra, dec, wcs);
+            const viewportPoint = this.viewer.viewport.imageToViewportCoordinates(pixel.x, pixel.y);
+            
+            if (firstPoint) {
+                context.moveTo(viewportPoint.x, viewportPoint.y);
+                firstPoint = false;
+            } else {
+                context.lineTo(viewportPoint.x, viewportPoint.y);
+            }
+        }
+        
+        context.stroke();
+        
+        // Add Dec label
+        const midPoint = celestialToPixel((minRa + maxRa) / 2, dec, wcs);
+        const viewportPoint = this.viewer.viewport.imageToViewportCoordinates(midPoint.x, midPoint.y);
+        context.fillStyle = 'rgba(200, 255, 200, 0.8)';
+        context.fillText(formatDec(dec), viewportPoint.x, viewportPoint.y);
+    }
+}
+function drawWcsGrid(overlay) {
+    if (!window.parsedWCS) return;
+    
+    const wcs = window.parsedWCS;
+    const imageWidth = window.fitsData.width;
+    const imageHeight = window.fitsData.height;
+    
+    // Calculate bounds in celestial coordinates
+    const topLeft = pixelToCelestial(0, 0, wcs);
+    const topRight = pixelToCelestial(imageWidth, 0, wcs);
+    const bottomLeft = pixelToCelestial(0, imageHeight, wcs);
+    const bottomRight = pixelToCelestial(imageWidth, imageHeight, wcs);
+    
+    // Calculate RA/Dec range
+    const minRa = Math.min(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+    const maxRa = Math.max(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+    const minDec = Math.min(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+    const maxDec = Math.max(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+    
+    // Draw RA/Dec grid lines
+    const canvas = overlay.fabricCanvas();
+    
+    // Clear existing grid
+    canvas.clear();
+    
+    // Draw RA grid lines
+    const raStep = calculateGridStep(maxRa - minRa);
+    const startRa = Math.ceil(minRa / raStep) * raStep;
+    
+    for (let ra = startRa; ra <= maxRa; ra += raStep) {
+        const points = [];
+        for (let dec = minDec; dec <= maxDec; dec += (maxDec - minDec) / 100) {
+            const pixel = celestialToPixel(ra, dec, wcs);
+            points.push({ x: pixel.x, y: pixel.y });
+        }
+        
+        const line = new fabric.Polyline(points, {
+            stroke: 'rgba(100, 100, 255, 0.5)',
+            strokeWidth: 1,
+            fill: '',
+            selectable: false
+        });
+        
+        canvas.add(line);
+        
+        // Add RA label
+        const midPoint = celestialToPixel(ra, (minDec + maxDec) / 2, wcs);
+        const text = new fabric.Text(formatRA(ra), {
+            left: midPoint.x,
+            top: midPoint.y,
+            fontSize: 12,
+            fill: 'rgba(200, 200, 255, 0.8)',
+            selectable: false
+        });
+        canvas.add(text);
+    }
+    
+    // Draw Dec grid lines
+    const decStep = calculateGridStep(maxDec - minDec);
+    const startDec = Math.ceil(minDec / decStep) * decStep;
+    
+    for (let dec = startDec; dec <= maxDec; dec += decStep) {
+        const points = [];
+        for (let ra = minRa; ra <= maxRa; ra += (maxRa - minRa) / 100) {
+            const pixel = celestialToPixel(ra, dec, wcs);
+            points.push({ x: pixel.x, y: pixel.y });
+        }
+        
+        const line = new fabric.Polyline(points, {
+            stroke: 'rgba(100, 255, 100, 0.5)',
+            strokeWidth: 1,
+            fill: '',
+            selectable: false
+        });
+        
+        canvas.add(line);
+        
+        // Add Dec label
+        const midPoint = celestialToPixel((minRa + maxRa) / 2, dec, wcs);
+        const text = new fabric.Text(formatDec(dec), {
+            left: midPoint.x,
+            top: midPoint.y,
+            fontSize: 12,
+            fill: 'rgba(200, 255, 200, 0.8)',
+            selectable: false
+        });
+        canvas.add(text);
+    }
+    
+    canvas.renderAll();
+}
+
+// Helper function to calculate appropriate grid step size
+function calculateGridStep(range) {
+    const minStep = 0.001; // Minimum step in degrees
+    const maxSteps = 10;   // Maximum number of grid lines
+    
+    let step = Math.pow(10, Math.floor(Math.log10(range)));
+    
+    if (range / step > maxSteps) step *= 2;
+    if (range / step > maxSteps) step *= 2.5;
+    if (range / step > maxSteps) step *= 2;
+    
+    return Math.max(step, minStep);
+}
+
+// Format RA in hours:minutes:seconds
+function formatRA(ra) {
+    // Convert degrees to hours (24 hours = 360 degrees)
+    const hours = ra / 15;
+    
+    const h = Math.floor(hours);
+    const m = Math.floor((hours - h) * 60);
+    const s = Math.floor(((hours - h) * 60 - m) * 60);
+    
+    return `${h}h ${m}m ${s}s`;
+}
+
+// Format Dec in degrees:arcminutes:arcseconds
+function formatDec(dec) {
+    const sign = dec < 0 ? '-' : '+';
+    const absDec = Math.abs(dec);
+    
+    const d = Math.floor(absDec);
+    const m = Math.floor((absDec - d) * 60);
+    const s = Math.floor(((absDec - d) * 60 - m) * 60);
+    
+    return `${sign}${d}° ${m}' ${s}"`;
+}
+
+
+function addWcsCoorcdinateDisplay() {
+    // Create display element
+    const coordDisplay = document.createElement('div');
+    coordDisplay.id = 'wcs-coordinate-display';
+    coordDisplay.style.position = 'absolute';
+    coordDisplay.style.bottom = '10px';
+    coordDisplay.style.left = '10px';
+    coordDisplay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+    coordDisplay.style.color = 'white';
+    coordDisplay.style.padding = '5px 10px';
+    coordDisplay.style.borderRadius = '3px';
+    coordDisplay.style.fontSize = '12px';
+    coordDisplay.style.fontFamily = 'monospace';
+    coordDisplay.style.zIndex = '1000';
+    
+    // Add to viewer container
+    const container = document.getElementById('openseadragon');
+    container.appendChild(coordDisplay);
+    
+    // Add mouse move handler to update coordinates
+    viewer.addHandler('mouse-move', function(event) {
+        // Get mouse position in image coordinates
+        const webPoint = event.position;
+        const viewportPoint = viewer.viewport.pointFromPixel(webPoint);
+        const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+        
+        // Convert to WCS coordinates if available
+        if (window.parsedWCS && window.parsedWCS.hasWCS) {
+            const celestial = pixelToCelestial(imagePoint.x, imagePoint.y, window.parsedWCS);
+            
+            // Format RA/Dec for display
+            const raFormatted = formatRA(celestial.ra);
+            const decFormatted = formatDec(celestial.dec);
+            
+            coordDisplay.textContent = `RA: ${raFormatted} | Dec: ${decFormatted}`;
+        } else {
+            // Fall back to pixel coordinates
+            coordDisplay.textContent = `X: ${Math.round(imagePoint.x)} | Y: ${Math.round(imagePoint.y)}`;
+        }
+    });
+}
+
+
+
+// Independent WCS grid implementation without plugins
+function createWcsGrid() {
+    if (!viewer || !window.parsedWCS || !window.parsedWCS.hasWCS) {
+        console.warn("Cannot create WCS grid: missing viewer or valid WCS");
+        return null;
+    }
+    
+    // Create a new canvas element
+    const canvas = document.createElement('canvas');
+    canvas.id = 'wcs-grid-canvas';
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none'; // Allow events to pass through
+    canvas.style.zIndex = '10'; // Above the image but below controls
+    
+    // Add the canvas to the viewer container
+    const container = document.getElementById('openseadragon');
+    container.appendChild(canvas);
+    
+    // Ensure canvas dimensions match container
+    function resizeCanvas() {
+        const rect = container.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        redrawGrid(); // Redraw after resize
+    }
+    
+    // Function to draw the WCS grid
+    function redrawGrid() {
+        if (!viewer.isOpen() || !window.parsedWCS) return;
+        
+        const context = canvas.getContext('2d');
+        const wcs = window.parsedWCS;
+        
+        // Clear the canvas
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Get image dimensions
+        const imageWidth = window.fitsData.width;
+        const imageHeight = window.fitsData.height;
+        
+        // Calculate bounds in celestial coordinates
+        const topLeft = pixelToCelestial(0, 0, wcs);
+        const topRight = pixelToCelestial(imageWidth, 0, wcs);
+        const bottomLeft = pixelToCelestial(0, imageHeight, wcs);
+        const bottomRight = pixelToCelestial(imageWidth, imageHeight, wcs);
+        
+        // Calculate RA/Dec range
+        const minRa = Math.min(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+        const maxRa = Math.max(topLeft.ra, topRight.ra, bottomLeft.ra, bottomRight.ra);
+        const minDec = Math.min(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+        const maxDec = Math.max(topLeft.dec, topRight.dec, bottomLeft.dec, bottomRight.dec);
+        
+        // Determine appropriate grid spacing
+        const raRange = maxRa - minRa;
+        const decRange = maxDec - minDec;
+        
+        const raStep = calculateGridStep(raRange);
+        const decStep = calculateGridStep(decRange);
+        
+        // Round starting values to nice grid lines
+        const startRa = Math.floor(minRa / raStep) * raStep;
+        const startDec = Math.floor(minDec / decStep) * decStep;
+        
+        // Draw RA grid lines
+        context.lineWidth = 1;
+        context.strokeStyle = 'rgba(100, 150, 255, 0.6)';
+        context.fillStyle = 'rgba(180, 220, 255, 0.8)';
+        context.font = '12px Arial';
+        
+        for (let ra = startRa; ra <= maxRa + raStep; ra += raStep) {
+            // Draw a RA line
+            context.beginPath();
+            
+            // Sample multiple points along the line
+            const points = [];
+            for (let dec = minDec - decStep; dec <= maxDec + decStep; dec += decRange / 40) {
+                const pixel = celestialToPixel(ra, dec, wcs);
+                const screenPoint = imageToScreenPoint(pixel.x, pixel.y);
+                points.push(screenPoint);
+            }
+            
+            // Draw the line
+            if (points.length > 0) {
+                context.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    context.lineTo(points[i].x, points[i].y);
+                }
+                context.stroke();
+                
+                // Add label at the middle
+                const midPoint = points[Math.floor(points.length / 2)];
+                if (isPointVisible(midPoint.x, midPoint.y)) {
+                    context.fillText(formatRA(ra), midPoint.x + 5, midPoint.y - 5);
+                }
+            }
+        }
+        
+        // Draw Dec grid lines
+        context.strokeStyle = 'rgba(100, 255, 150, 0.6)';
+        context.fillStyle = 'rgba(180, 255, 220, 0.8)';
+        
+        for (let dec = startDec; dec <= maxDec + decStep; dec += decStep) {
+            // Draw a Dec line
+            context.beginPath();
+            
+            // Sample multiple points along the line
+            const points = [];
+            for (let ra = minRa - raStep; ra <= maxRa + raStep; ra += raRange / 40) {
+                const pixel = celestialToPixel(ra, dec, wcs);
+                const screenPoint = imageToScreenPoint(pixel.x, pixel.y);
+                points.push(screenPoint);
+            }
+            
+            // Draw the line
+            if (points.length > 0) {
+                context.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    context.lineTo(points[i].x, points[i].y);
+                }
+                context.stroke();
+                
+                // Add label at the middle
+                const midPoint = points[Math.floor(points.length / 2)];
+                if (isPointVisible(midPoint.x, midPoint.y)) {
+                    context.fillText(formatDec(dec), midPoint.x + 5, midPoint.y + 15);
+                }
+            }
+        }
+    }
+    
+    // Helper function to check if a point is visible in the canvas
+    function isPointVisible(x, y) {
+        return x >= 0 && x <= canvas.width && y >= 0 && y <= canvas.height;
+    }
+    
+    // Helper function to convert image coordinates to screen coordinates
+    function imageToScreenPoint(x, y) {
+        // Convert image pixel coordinates to viewport coordinates
+        const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
+        
+        // Convert viewport coordinates to screen coordinates
+        const screenPoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+        
+        return screenPoint;
+    }
+    
+    // Helper function to calculate appropriate grid spacing
+    function calculateGridStep(range) {
+        const minStep = 0.001; // Minimum step in degrees
+        const maxStepsTarget = 10; // Target number of grid lines
+        
+        // Calculate a power-of-ten step size
+        let stepSize = Math.pow(10, Math.floor(Math.log10(range / maxStepsTarget)));
+        
+        // Adjust the step size to create nicer intervals
+        if (range / stepSize > maxStepsTarget * 2) {
+            stepSize *= 5;
+        } else if (range / stepSize > maxStepsTarget) {
+            stepSize *= 2;
+        }
+        
+        return Math.max(stepSize, minStep);
+    }
+    
+    // Format RA in hours:minutes:seconds
+    function formatRA(ra) {
+        // Convert degrees to hours (24 hours = 360 degrees)
+        const hours = ra / 15;
+        
+        const h = Math.floor(hours);
+        const m = Math.floor((hours - h) * 60);
+        const s = Math.floor(((hours - h) * 60 - m) * 60);
+        
+        return `${h}h ${m}m ${s}s`;
+    }
+    
+    // Format Dec in degrees:arcminutes:arcseconds
+    function formatDec(dec) {
+        const sign = dec < 0 ? '-' : '+';
+        const absDec = Math.abs(dec);
+        
+        const d = Math.floor(absDec);
+        const m = Math.floor((absDec - d) * 60);
+        const s = Math.floor(((absDec - d) * 60 - m) * 60);
+        
+        return `${sign}${d}° ${m}′ ${s}″`;
+    }
+    
+    // Set up event listeners for OpenSeadragon events
+    function setupEventListeners() {
+        // Handle viewer resizing
+        window.addEventListener('resize', resizeCanvas);
+        
+        // Handle OpenSeadragon events
+        viewer.addHandler('animation', redrawGrid);
+        viewer.addHandler('zoom', redrawGrid);
+        viewer.addHandler('pan', redrawGrid);
+        viewer.addHandler('rotate', redrawGrid);
+        viewer.addHandler('resize', resizeCanvas);
+        
+        // Handle initial setup and cleanup
+        viewer.addHandler('open', resizeCanvas);
+        viewer.addHandler('close', function() {
+            window.removeEventListener('resize', resizeCanvas);
+        });
+    }
+    
+    // Initialize
+    setupEventListeners();
+    resizeCanvas();
+    
+    // Return the control object for external use
+    return {
+        canvas: canvas,
+        redraw: redrawGrid,
+        resize: resizeCanvas,
+        show: function() { canvas.style.display = 'block'; },
+        hide: function() { canvas.style.display = 'none'; }
+    };
+}
+
+// Add a toggle button for the WCS grid
+function addWcsToggleButton() {
+    if (!window.parsedWCS || !window.parsedWCS.hasWCS) {
+        console.log("No valid WCS information available, not adding toggle button");
+        return;
+    }
+    
+    const button = document.createElement('button');
+    button.id = 'wcs-toggle-button';
+    button.textContent = 'WCS Grid: Off';
+    button.title = 'Toggle WCS Coordinate Grid';
+    button.style.position = 'absolute';
+    button.style.top = '10px';
+    button.style.right = '10px';
+    button.style.padding = '5px 10px';
+    button.style.background = '#444';
+    button.style.color = '#fff';
+    button.style.border = '1px solid #555';
+    button.style.borderRadius = '4px';
+    button.style.cursor = 'pointer';
+    button.style.zIndex = '1000';
+    button.style.fontFamily = 'Arial, sans-serif';
+    button.style.fontSize = '12px';
+    
+    // Add to the viewer container
+    const container = document.getElementById('openseadragon');
+    container.appendChild(button);
+    
+    // Create the grid controller
+    window.wcsGrid = null;
+    
+    // Add click handler
+    button.addEventListener('click', function() {
+        const isOn = button.getAttribute('data-on') === 'true';
+        
+        if (isOn) {
+            // Turn off
+            button.textContent = 'WCS Grid: Off';
+            button.setAttribute('data-on', 'false');
+            if (window.wcsGrid) {
+                window.wcsGrid.hide();
+            }
+        } else {
+            // Turn on
+            button.textContent = 'WCS Grid: On';
+            button.setAttribute('data-on', 'true');
+            
+            // Create grid if it doesn't exist
+            if (!window.wcsGrid) {
+                window.wcsGrid = createWcsGrid();
+            } else {
+                window.wcsGrid.show();
+                window.wcsGrid.redraw();
+            }
+        }
+    });
+    
+    return button;
+}
+
+// Add a coordinate display that shows RA/Dec coordinates
+function addWcsCoordinateDisplay() {
+    if (!window.parsedWCS || !window.parsedWCS.hasWCS) {
+        console.log("No valid WCS information available, not adding coordinate display");
+        return;
+    }
+    
+    const display = document.createElement('div');
+    display.id = 'wcs-coordinate-display';
+    display.style.position = 'absolute';
+    display.style.bottom = '10px';
+    display.style.left = '10px';
+    display.style.padding = '5px 10px';
+    display.style.background = 'rgba(0, 0, 0, 0.6)';
+    display.style.color = '#fff';
+    display.style.borderRadius = '4px';
+    display.style.fontFamily = 'monospace';
+    display.style.fontSize = '12px';
+    display.style.zIndex = '1000';
+    display.style.pointerEvents = 'none';
+    
+    // Add to the viewer container
+    const container = document.getElementById('openseadragon');
+    container.appendChild(display);
+    
+    // Format RA in hours:minutes:seconds
+    function formatRA(ra) {
+        // Convert degrees to hours (24 hours = 360 degrees)
+        const hours = ra / 15;
+        
+        const h = Math.floor(hours);
+        const m = Math.floor((hours - h) * 60);
+        const s = ((hours - h) * 60 - m) * 60;
+        
+        return `${h.toString().padStart(2, '0')}h ${m.toString().padStart(2, '0')}m ${s.toFixed(2).padStart(5, '0')}s`;
+    }
+    
+    // Format Dec in degrees:arcminutes:arcseconds
+    function formatDec(dec) {
+        const sign = dec < 0 ? '-' : '+';
+        const absDec = Math.abs(dec);
+        
+        const d = Math.floor(absDec);
+        const m = Math.floor((absDec - d) * 60);
+        const s = ((absDec - d) * 60 - m) * 60;
+        
+        return `${sign}${d.toString().padStart(2, '0')}° ${m.toString().padStart(2, '0')}′ ${s.toFixed(2).padStart(5, '0')}″`;
+    }
+    
+    // Update the display on mouse move
+    function updateDisplay(event) {
+        const point = viewer.viewport.pointFromPixel(event.position);
+        const imagePoint = viewer.viewport.viewportToImageCoordinates(point);
+        
+        const x = imagePoint.x;
+        const y = imagePoint.y;
+        
+        // Convert to WCS coordinates
+        const wcsCoords = pixelToCelestial(x, y, window.parsedWCS);
+        
+        if (wcsCoords && isFinite(wcsCoords.ra) && isFinite(wcsCoords.dec)) {
+            display.textContent = `RA: ${formatRA(wcsCoords.ra)} | Dec: ${formatDec(wcsCoords.dec)}`;
+        } else {
+            display.textContent = `X: ${Math.round(x)} | Y: ${Math.round(y)}`;
+        }
+    }
+    
+    // Add event listener
+    viewer.addHandler('mouse-move', updateDisplay);
+    
+    return display;
+}
+
+// Function to initialize WCS features
+function initializeWcsFeatures() {
+    if (window.fitsData && window.fitsData.wcs) {
+        console.log("Checking for WCS information...");
+        
+        // Parse WCS information
+        const wcs = parseWCS(window.fitsData.wcs);
+        
+        // Store globally
+        window.parsedWCS = wcs;
+        
+        if (wcs.hasWCS) {
+            console.log("Valid WCS information found, initializing WCS features");
+            
+            // Add WCS toggle button
+            addWcsToggleButton();
+            
+            // Add coordinate display
+            addWcsCoordinateDisplay();
+            
+            // Show notification
+            showNotification('WCS coordinate mode available', 3000, 'info');
+        } else {
+            console.log("No valid WCS information found");
+        }
+    } else {
+        console.log("No WCS data found in FITS header");
+    }
+}
