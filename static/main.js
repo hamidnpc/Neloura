@@ -4071,7 +4071,7 @@ function parseWCS(header) {
             m12 = wcs.cd1_2 || 0;
             m21 = wcs.cd2_1 || 0;
             m22 = wcs.cd2_2;
-            console.log("Using CD matrix for transformation");
+            // console.log("Using CD matrix for transformation");
         } else {
             // Use PC matrix with CDELT
             m11 = wcs.pc1_1 * wcs.cdelt1;

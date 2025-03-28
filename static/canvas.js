@@ -742,7 +742,7 @@ function canvasUpdateOverlay() {
     // Draw popup if active
     window.canvasPopup.render(ctx);
     
-    console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
+    // console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
 }
 
 
