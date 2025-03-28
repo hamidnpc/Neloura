@@ -21,26 +21,7 @@ function debounce(func, wait) {
     };
 }
 
-// First, verify the canvasPopup object has all required methods
-window.canvasPopup = window.canvasPopup || {};
 
-// Explicitly redefine the hide method to ensure it's properly attached
-window.canvasPopup.hide = function() {
-    this.active = false;
-    
-    // Reset highlighted source
-    window.currentHighlightedSourceIndex = -1;
-    
-    // Reset dragging state
-    this.isDragging = false;
-    
-    // Redraw canvas
-    if (typeof canvasUpdateOverlay === 'function') {
-        canvasUpdateOverlay();
-    }
-    
-    console.log("Popup hidden");
-};
 
 // Function to verify all methods are present
 function verifyCanvasPopupMethods() {
@@ -75,8 +56,10 @@ window.currentHighlightedSourceIndex = -1;
 
 // Create a custom popup system for the canvas with improved styling
 // Add these properties to the canvasPopup object
+// Create a hybrid canvasPopup system that maintains compatibility
+// with the canvas implementation but actually uses DOM elements
 window.canvasPopup = {
-    // Existing properties
+    // Properties
     active: false,
     sourceIndex: -1,
     x: 0,
@@ -84,22 +67,208 @@ window.canvasPopup = {
     width: 300,
     height: 200,
     content: {},
-    
-    // Add dragging state properties
     isDragging: false,
     dragOffsetX: 0,
     dragOffsetY: 0,
+    domElement: null,
     
-    // Modified render method with solid background
+    // Initialize the DOM element for the popup
+    initDomElement: function() {
+        // If already initialized, return
+        if (this.domElement) return;
+        
+        // Create container for the popup
+        const popup = document.createElement('div');
+        popup.id = 'canvas-dom-popup';
+        popup.style.position = 'absolute';
+        popup.style.top = '0';
+        popup.style.left = '0';
+        popup.style.backgroundColor = 'rgba(42, 42, 42, 0.95)';
+        popup.style.color = 'white';
+        popup.style.padding = '0';
+        popup.style.borderRadius = '8px';
+        popup.style.boxShadow = '0 4px 10px rgba(0, 0, 0, 0.5)';
+        popup.style.fontFamily = 'Arial, sans-serif';
+        popup.style.fontSize = '14px';
+        popup.style.zIndex = '1000';
+        popup.style.display = 'none';
+        popup.style.width = this.width + 'px';
+        popup.style.maxWidth = '350px';
+        popup.style.border = '1px solid rgba(255, 255, 255, 0.2)';
+        popup.style.backdropFilter = 'blur(5px)';
+        popup.style.webkitBackdropFilter = 'blur(5px)';
+        
+        // Create header with title and close button
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.alignItems = 'center';
+        header.style.padding = '10px 12px';
+        header.style.borderBottom = '1px solid rgba(255, 255, 255, 0.2)';
+        header.style.cursor = 'move';
+        
+        // Add title
+        const title = document.createElement('div');
+        title.textContent = 'Source Information';
+        title.style.fontWeight = 'bold';
+        title.style.fontSize = '14px';
+        
+        // Add drag handle
+        const dragHandle = document.createElement('div');
+        dragHandle.style.display = 'flex';
+        dragHandle.style.alignItems = 'center';
+        dragHandle.style.gap = '8px';
+        
+        // Drag handle indicator (three lines)
+        const dragIndicator = document.createElement('div');
+        dragIndicator.style.display = 'flex';
+        dragIndicator.style.flexDirection = 'column';
+        dragIndicator.style.gap = '3px';
+        dragIndicator.style.cursor = 'move';
+        
+        for (let i = 0; i < 3; i++) {
+            const line = document.createElement('div');
+            line.style.width = '15px';
+            line.style.height = '2px';
+            line.style.backgroundColor = 'rgba(255, 255, 255, 0.5)';
+            dragIndicator.appendChild(line);
+        }
+        
+        // Add close button
+        const closeButton = document.createElement('button');
+        closeButton.innerHTML = '&times;';
+        closeButton.style.background = 'none';
+        closeButton.style.border = 'none';
+        closeButton.style.color = 'rgba(255, 255, 255, 0.7)';
+        closeButton.style.fontSize = '20px';
+        closeButton.style.cursor = 'pointer';
+        closeButton.style.padding = '0 0 0 10px';
+        closeButton.style.marginLeft = '5px';
+        closeButton.style.display = 'flex';
+        closeButton.style.alignItems = 'center';
+        closeButton.style.justifyContent = 'center';
+        closeButton.style.width = '24px';
+        closeButton.style.height = '24px';
+        
+        closeButton.addEventListener('mouseover', () => {
+            closeButton.style.color = 'white';
+        });
+        
+        closeButton.addEventListener('mouseout', () => {
+            closeButton.style.color = 'rgba(255, 255, 255, 0.7)';
+        });
+        
+        closeButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.hide();
+        });
+        
+        dragHandle.appendChild(dragIndicator);
+        dragHandle.appendChild(closeButton);
+        
+        header.appendChild(title);
+        header.appendChild(dragHandle);
+        
+        // Create content area
+        const content = document.createElement('div');
+        content.id = 'canvas-dom-popup-content';
+        content.style.padding = '12px';
+        
+        // Add header and content to popup
+        popup.appendChild(header);
+        popup.appendChild(content);
+        
+        // Add to document
+        const viewerElement = document.getElementById('openseadragon');
+        if (viewerElement) {
+            viewerElement.appendChild(popup);
+        } else {
+            document.body.appendChild(popup);
+        }
+        
+        // Store reference
+        this.domElement = popup;
+        
+        // Make draggable
+        this.makeDomPopupDraggable(popup, header);
+        
+        return popup;
+    },
+    
+    // Make the DOM popup draggable
+    makeDomPopupDraggable: function(popup, dragHandle) {
+        let isDragging = false;
+        let startX, startY;
+        let startLeft, startTop;
+        
+        const startDrag = (e) => {
+            isDragging = true;
+            
+            // Get initial positions
+            startX = e.clientX;
+            startY = e.clientY;
+            startLeft = parseInt(popup.style.left) || 0;
+            startTop = parseInt(popup.style.top) || 0;
+            
+            // Prevent text selection during drag
+            document.body.style.userSelect = 'none';
+            
+            // Add drop shadow to indicate dragging
+            popup.style.boxShadow = '0 10px 20px rgba(0, 0, 0, 0.7)';
+        };
+        
+        const doDrag = (e) => {
+            if (!isDragging) return;
+            
+            // Calculate new position
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            // Update position
+            popup.style.left = (startLeft + dx) + 'px';
+            popup.style.top = (startTop + dy) + 'px';
+        };
+        
+        const endDrag = () => {
+            if (!isDragging) return;
+            isDragging = false;
+            
+            // Restore normal state
+            document.body.style.userSelect = '';
+            popup.style.boxShadow = '0 4px 10px rgba(0, 0, 0, 0.5)';
+        };
+        
+        // Add event listeners
+        dragHandle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', doDrag);
+        document.addEventListener('mouseup', endDrag);
+    },
+    
+    // Format a property value for display
+    formatValue: function(value) {
+        if (value === null || value === undefined) {
+            return 'N/A';
+        } else if (typeof value === 'number') {
+            // Format numbers appropriately
+            if (Math.abs(value) < 0.001 || Math.abs(value) >= 10000) {
+                return value.toExponential(4);
+            } else if (Number.isInteger(value)) {
+                return value.toString();
+            } else {
+                return value.toFixed(4);
+            }
+        } else if (typeof value === 'boolean') {
+            return value ? 'Yes' : 'No';
+        } else {
+            return String(value);
+        }
+    },
+    
+    // Render method - now updates the DOM element instead of drawing on canvas
     render: function(ctx) {
-        if (!this.active) return;
+        if (!this.active || !this.domElement) return;
         
-        // Constants for popup styling
-        const padding = 12;
-        const radius = 8;
-        
-        // Calculate popup position and dimensions
-        // Make sure popup stays within viewport
+        // Position the DOM element
         const viewerElement = document.getElementById('openseadragon');
         const viewerWidth = viewerElement.clientWidth;
         const viewerHeight = viewerElement.clientHeight;
@@ -120,254 +289,15 @@ window.canvasPopup = {
             popupY = viewerHeight - this.height - 10;
         }
         
-        // Draw popup background with rounded corners
-        ctx.save();
+        // Update DOM element position
+        this.domElement.style.left = popupX + 'px';
+        this.domElement.style.top = popupY + 'px';
         
-        // Solid background with border - changed from transparent
-        ctx.fillStyle = '#2a2a2a'; // Dark background
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-        ctx.lineWidth = 1;
-        
-        // Add shadow effect
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-        ctx.shadowBlur = 10;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 2;
-        
-        // Draw rounded rectangle
-        ctx.beginPath();
-        ctx.moveTo(popupX + radius, popupY);
-        ctx.lineTo(popupX + this.width - radius, popupY);
-        ctx.quadraticCurveTo(popupX + this.width, popupY, popupX + this.width, popupY + radius);
-        ctx.lineTo(popupX + this.width, popupY + this.height - radius);
-        ctx.quadraticCurveTo(popupX + this.width, popupY + this.height, popupX + this.width - radius, popupY + this.height);
-        ctx.lineTo(popupX + radius, popupY + this.height);
-        ctx.quadraticCurveTo(popupX, popupY + this.height, popupX, popupY + this.height - radius);
-        ctx.lineTo(popupX, popupY + radius);
-        ctx.quadraticCurveTo(popupX, popupY, popupX + radius, popupY);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        
-        // Draw a subtle header divider
-        ctx.beginPath();
-        ctx.moveTo(popupX, popupY + 36);
-        ctx.lineTo(popupX + this.width, popupY + 36);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.stroke();
-        
-        // Reset shadow
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-        
-        // Draw content
-        // Title
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.font = 'bold 14px Arial, sans-serif';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('Source Information', popupX + padding, popupY + 18);
-        
-        // Draw draggable indicator (horizontal lines) in the header
-        ctx.beginPath();
-        const dragX = popupX + this.width - 50;
-        const dragY = popupY + 18;
-        for (let i = 0; i < 3; i++) {
-            ctx.moveTo(dragX, dragY - 4 + (i * 3));
-            ctx.lineTo(dragX + 15, dragY - 4 + (i * 3));
-        }
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        
-        // Source details - structured like the second code snippet
-        let yOffset = popupY + 48;
-        
-        // Format key properties that we want to display in a specific way
-        const hasX = 'x' in this.content;
-        const hasY = 'y' in this.content;
-        const hasRA = 'ra' in this.content;
-        const hasDec = 'dec' in this.content;
-        const hasRadius = 'radius' in this.content;
-        
-        // Position (x, y)
-        if (hasX && hasY) {
-            const x = typeof this.content.x === 'number' ? this.content.x.toFixed(2) : this.content.x;
-            const y = typeof this.content.y === 'number' ? this.content.y.toFixed(2) : this.content.y;
-            
-            // Label
-            ctx.font = '12px Arial, sans-serif';
-            ctx.fillStyle = 'rgba(170, 170, 170, 0.9)';
-            ctx.textBaseline = 'top';
-            ctx.fillText('Position (x, y):', popupX + padding, yOffset);
-            
-            // Value
-            ctx.fillStyle = 'rgb(255, 255, 255)';
-            ctx.fillText(`${x}, ${y}`, popupX + padding + 110, yOffset);
-            
-            yOffset += 24;
-        }
-        
-        // Coordinates (RA, Dec)
-        if (hasRA && hasDec) {
-            const ra = typeof this.content.ra === 'number' ? this.content.ra.toFixed(6) : this.content.ra;
-            const dec = typeof this.content.dec === 'number' ? this.content.dec.toFixed(6) : this.content.dec;
-            
-            // Label
-            ctx.font = '12px Arial, sans-serif';
-            ctx.fillStyle = 'rgba(170, 170, 170, 0.9)';
-            ctx.textBaseline = 'top';
-            ctx.fillText('Coordinates (RA, Dec):', popupX + padding, yOffset);
-            
-            // Value
-            ctx.fillStyle = 'rgb(255, 255, 255)';
-            ctx.fillText(`${ra}°, ${dec}°`, popupX + padding + 110, yOffset);
-            
-            yOffset += 24;
-        }
-        
-        // Region Size
-        if (hasRadius) {
-            const radius = typeof this.content.radius === 'number' ? this.content.radius.toFixed(2) : this.content.radius;
-            
-            // Label
-            ctx.font = '12px Arial, sans-serif';
-            ctx.fillStyle = 'rgba(170, 170, 170, 0.9)';
-            ctx.textBaseline = 'top';
-            ctx.fillText('Region Size:', popupX + padding, yOffset);
-            
-            // Value
-            ctx.fillStyle = 'rgb(255, 255, 255)';
-            ctx.fillText(`${radius} pixels`, popupX + padding + 110, yOffset);
-            
-            yOffset += 24;
-        }
-        
-        // Add links instead of buttons
-        if (yOffset + 30 < popupY + this.height) {
-            const linkY = yOffset + 12;
-            const linkSpacing = 20;
-            
-            // SED Link
-            const sedLinkX = popupX + padding + 10;
-            ctx.fillStyle = '#66a3ff';
-            ctx.font = '12px Arial, sans-serif';
-            ctx.textBaseline = 'middle';
-            ctx.textAlign = 'left';
-            
-            // Underline for the link
-            const sedText = 'Show SED';
-            const sedTextWidth = ctx.measureText(sedText).width;
-            ctx.fillText(sedText, sedLinkX, linkY);
-            
-            ctx.beginPath();
-            ctx.moveTo(sedLinkX, linkY + 7);
-            ctx.lineTo(sedLinkX + sedTextWidth, linkY + 7);
-            ctx.strokeStyle = '#66a3ff';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-            
-            // Properties Link
-            const propLinkX = sedLinkX + sedTextWidth + linkSpacing;
-            
-            // Underline for the link
-            const propText = 'Properties';
-            const propTextWidth = ctx.measureText(propText).width;
-            ctx.fillText(propText, propLinkX, linkY);
-            
-            ctx.beginPath();
-            ctx.moveTo(propLinkX, linkY + 7);
-            ctx.lineTo(propLinkX + propTextWidth, linkY + 7);
-            ctx.strokeStyle = '#66a3ff';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-            
-            // Reset text alignment
-            ctx.textAlign = 'left';
-            
-            yOffset += 30;
-        }
-        
-        // Display other properties but skip color, fillColor and anything below them
-        // First create an array of keys we want to display
-        const propertiesToDisplay = [];
-        const skipAfter = ['color', 'fillColor'];
-        let foundSkipProperty = false;
-        
-        for (const key of Object.keys(this.content)) {
-            // Skip already displayed properties and internal ones
-            if (['x', 'y', 'ra', 'dec', 'radius'].includes(key) || 
-                key.startsWith('_') || typeof this.content[key] === 'function') {
-                continue;
-            }
-            
-            // Check if we've hit a property that we should skip after
-            if (skipAfter.includes(key)) {
-                foundSkipProperty = true;
-                continue;
-            }
-            
-            // Skip this property and all subsequent ones if we've found a skip property
-            if (foundSkipProperty) {
-                continue;
-            }
-            
-            propertiesToDisplay.push(key);
-        }
-        
-        // Now display the filtered properties
-        for (const key of propertiesToDisplay) {
-            // Format the value
-            let displayValue = this.content[key];
-            if (typeof displayValue === 'number') {
-                // Format numbers nicely
-                displayValue = displayValue.toFixed(displayValue % 1 === 0 ? 0 : 4);
-            } else if (typeof displayValue === 'object') {
-                // Skip objects
-                continue;
-            }
-            
-            // Don't show empty values
-            if (displayValue === undefined || displayValue === null || displayValue === '') continue;
-            
-            // Property label
-            ctx.font = '12px Arial, sans-serif';
-            ctx.fillStyle = 'rgba(170, 170, 170, 0.9)';
-            ctx.textBaseline = 'top';
-            ctx.fillText(`${key}:`, popupX + padding, yOffset);
-            
-            // Property value
-            ctx.fillStyle = 'rgb(255, 255, 255)';
-            ctx.font = '12px Arial, sans-serif';
-            ctx.fillText(`${displayValue}`, popupX + padding + 110, yOffset);
-            
-            yOffset += 22;
-            
-            // Limit the number of properties shown
-            if (yOffset > popupY + this.height - padding - 10) {
-                ctx.fillText('...', popupX + padding, yOffset);
-                break;
-            }
-        }
-        
-        // Draw close button (just X with no background)
-        const closeX = popupX + this.width - 20;
-        const closeY = popupY + 18;
-        
-        ctx.beginPath();
-        ctx.moveTo(closeX - 5, closeY - 5);
-        ctx.lineTo(closeX + 5, closeY + 5);
-        ctx.moveTo(closeX + 5, closeY - 5);
-        ctx.lineTo(closeX - 5, closeY + 5);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        
-        ctx.restore();
+        // Ensure the DOM element is visible
+        this.domElement.style.display = 'block';
     },
     
-    // Modified show method to reset dragging state
+    // Show method - displays the popup for a source
     show: function(sourceIndex, x, y, content) {
         this.active = true;
         this.sourceIndex = sourceIndex;
@@ -376,10 +306,13 @@ window.canvasPopup = {
         this.content = content || {};
         this.isDragging = false;
         
+        // Make sure the DOM element is initialized
+        this.initDomElement();
+        
         // Base height calculation
         let baseHeight = 70; // Header + padding
         
-        // Add height for standard fields (x, y, ra, dec, radius)
+        // Add height for standard fields
         const hasX = 'x' in this.content;
         const hasY = 'y' in this.content;
         const hasRA = 'ra' in this.content;
@@ -400,168 +333,212 @@ window.canvasPopup = {
         ).length;
         
         // Calculate final height
-        this.height = Math.min(baseHeight + remainingProps * 22, 300);
+        this.height = Math.min(baseHeight + remainingProps * 22, 400);
+        
+        // Update DOM content
+        const contentElement = document.getElementById('canvas-dom-popup-content');
+        if (contentElement) {
+            let html = '';
+            
+            // Format coordinates with 6 decimal places
+            if (hasX && hasY) {
+                const x = typeof this.content.x === 'number' ? this.content.x.toFixed(2) : this.content.x;
+                const y = typeof this.content.y === 'number' ? this.content.y.toFixed(2) : this.content.y;
+                html += `
+                    <div style="margin-bottom: 8px;">
+                        <span style="color: #aaa;">Position (x, y):</span> ${x}, ${y}
+                    </div>
+                `;
+            }
+            
+            if (hasRA && hasDec) {
+                const ra = typeof this.content.ra === 'number' ? this.content.ra.toFixed(6) : this.content.ra;
+                const dec = typeof this.content.dec === 'number' ? this.content.dec.toFixed(6) : this.content.dec;
+                html += `
+                    <div style="margin-bottom: 8px;">
+                        <span style="color: #aaa;">Coordinates (RA, Dec):</span> ${ra}°, ${dec}°
+                    </div>
+                `;
+            }
+            
+            if (hasRadius) {
+                const radius = typeof this.content.radius === 'number' ? this.content.radius.toFixed(2) : this.content.radius;
+                html += `
+                    <div style="margin-bottom: 8px;">
+                        <span style="color: #aaa;">Region Size:</span> ${radius} pixels
+                    </div>
+                `;
+            }
+            
+            // Add links instead of buttons
+            html += `
+                <div style="margin-top: 12px; text-align: center;">
+                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px;">Show SED</button>
+                    <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Show Properties</button>
+                </div>
+            `;
+            
+            // Display other properties but skip color, fillColor and anything below them
+            // First create an array of keys we want to display
+            const propertiesToDisplay = [];
+            const skipAfter = ['color', 'fillColor'];
+            let foundSkipProperty = false;
+            
+            for (const key of Object.keys(this.content)) {
+                // Skip already displayed properties and internal ones
+                if (['x', 'y', 'ra', 'dec', 'radius'].includes(key) || 
+                    key.startsWith('_') || typeof this.content[key] === 'function') {
+                    continue;
+                }
+                
+                // Check if we've hit a property that we should skip after
+                if (skipAfter.includes(key)) {
+                    foundSkipProperty = true;
+                    continue;
+                }
+                
+                // Skip this property and all subsequent ones if we've found a skip property
+                if (foundSkipProperty) {
+                    continue;
+                }
+                
+                propertiesToDisplay.push(key);
+            }
+            
+            // Now display the filtered properties
+            if (propertiesToDisplay.length > 0) {
+                html += `<div style="margin-top: 15px; border-top: 1px solid rgba(255, 255, 255, 0.2); padding-top: 10px;">`;
+                
+                for (const key of propertiesToDisplay) {
+                    // Format the value
+                    let displayValue = this.formatValue(this.content[key]);
+                    
+                    // Don't show empty values
+                    if (displayValue === 'N/A') continue;
+                    
+                    html += `
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: #aaa; margin-right: 10px;">${key}:</span>
+                            <span style="text-align: right;">${displayValue}</span>
+                        </div>
+                    `;
+                }
+                
+                html += `</div>`;
+            }
+            
+            contentElement.innerHTML = html;
+            
+            // Add event listeners to the buttons
+            setTimeout(() => {
+                const sedButton = document.getElementById('show-sed-btn');
+                const propertiesButton = document.getElementById('show-properties-btn');
+                
+                if (sedButton) {
+                    sedButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        
+                        // Get the current catalog name
+                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        
+                        // Show SED
+                        if (typeof window.showSed === 'function') {
+                            window.showSed(this.content.ra, this.content.dec, catalogName);
+                        } else {
+                            console.error('showSed function not found');
+                        }
+                    });
+                }
+                
+                if (propertiesButton) {
+                    propertiesButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        
+                        // Get the current catalog name
+                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        
+                        // Show properties
+                        if (typeof window.showProperties === 'function') {
+                            window.showProperties(this.content.ra, this.content.dec, catalogName);
+                        } else {
+                            console.error('showProperties function not found');
+                        }
+                    });
+                }
+            }, 0);
+        }
+        
+        // Update position and show
+        this.render(null);
+        
+        // Highlight the source on canvas
+        if (window.currentHighlightedSourceIndex !== sourceIndex) {
+            window.currentHighlightedSourceIndex = sourceIndex;
+            
+            // Force redraw canvas overlay
+            if (typeof canvasUpdateOverlay === 'function') {
+                canvasUpdateOverlay();
+            }
+        }
+    },
+    
+    // Hide method - hides the popup
+    hide: function() {
+        this.active = false;
+        
+        // Reset highlighted source
+        window.currentHighlightedSourceIndex = -1;
+        
+        // Reset dragging state
+        this.isDragging = false;
+        
+        // Hide DOM element
+        if (this.domElement) {
+            this.domElement.style.display = 'none';
+        }
         
         // Redraw canvas
-        canvasUpdateOverlay();
+        if (typeof canvasUpdateOverlay === 'function') {
+            canvasUpdateOverlay();
+        }
+        
+        console.log("Popup hidden successfully");
     },
     
-    // Modified isCloseButtonClicked method
+    // Method to check if close button was clicked - not needed for DOM popup
+    // but maintained for compatibility
     isCloseButtonClicked: function(x, y) {
-        if (!this.active) return false;
-        
-        // Calculate popup position
-        const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
-        
-        // Calculate popup position the same way as in render method
-        let popupX = this.x + 15;
-        let popupY = this.y - this.height / 2;
-        
-        // Adjust if popup would extend beyond right edge
-        if (popupX + this.width > viewerWidth) {
-            popupX = this.x - this.width - 15;
-        }
-        
-        // Adjust if popup would extend beyond top or bottom
-        if (popupY < 10) {
-            popupY = 10;
-        } else if (popupY + this.height > viewerHeight - 10) {
-            popupY = viewerHeight - this.height - 10;
-        }
-        
-        // Calculate close button position
-        const closeX = popupX + this.width - 20;
-        const closeY = popupY + 18;
-        
-        // Check if click is within close button
-        const distance = Math.sqrt((x - closeX) ** 2 + (y - closeY) ** 2);
-        return distance <= 9;
+        return false; // Not needed for DOM popup
     },
     
-    // Modified isPopupClicked method
+    // Method to check if popup was clicked - not needed for DOM popup
+    // but maintained for compatibility
     isPopupClicked: function(x, y) {
-        if (!this.active) return false;
-        
-        // Calculate popup position
-        const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
-        
-        let popupX = this.x + 15;
-        let popupY = this.y - this.height / 2;
-        
-        if (popupX + this.width > viewerWidth) {
-            popupX = this.x - this.width - 15;
-        }
-        
-        if (popupY < 10) {
-            popupY = 10;
-        } else if (popupY + this.height > viewerHeight - 10) {
-            popupY = viewerHeight - this.height - 10;
-        }
-        
-        // Check if click is within popup
-        return (
-            x >= popupX && 
-            x <= popupX + this.width && 
-            y >= popupY && 
-            y <= popupY + this.height
-        );
+        return false; // Not needed for DOM popup
     },
     
-    // New method to check if drag handle was clicked
+    // Method to check if drag handle was clicked - not needed for DOM popup
+    // but maintained for compatibility
     isDragHandleClicked: function(x, y) {
-        if (!this.active) return false;
-        
-        // Calculate popup position
-        const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
-        
-        let popupX = this.x + 15;
-        let popupY = this.y - this.height / 2;
-        
-        if (popupX + this.width > viewerWidth) {
-            popupX = this.x - this.width - 15;
-        }
-        
-        if (popupY < 10) {
-            popupY = 10;
-        } else if (popupY + this.height > viewerHeight - 10) {
-            popupY = viewerHeight - this.height - 10;
-        }
-        
-        // Check if click is within drag handle area
-        const dragX = popupX + this.width - 50;
-        const dragY = popupY + 18;
-        
-        return (
-            x >= dragX && 
-            x <= dragX + 15 && 
-            y >= dragY - 5 && 
-            y <= dragY + 5
-        );
+        return false; // Not needed for DOM popup
     },
     
-    // New method to start dragging
+    // Method to start dragging - not needed for DOM popup
+    // but maintained for compatibility
     startDrag: function(x, y) {
-        if (!this.active) return;
-        
-        this.isDragging = true;
-        
-        // Calculate popup position to get correct offset
-        const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
-        
-        let popupX = this.x + 15;
-        let popupY = this.y - this.height / 2;
-        
-        if (popupX + this.width > viewerWidth) {
-            popupX = this.x - this.width - 15;
-        }
-        
-        if (popupY < 10) {
-            popupY = 10;
-        } else if (popupY + this.height > viewerHeight - 10) {
-            popupY = viewerHeight - this.height - 10;
-        }
-        
-        // Calculate how far from the top-left corner of the popup the user clicked
-        this.dragOffsetX = x - popupX;
-        this.dragOffsetY = y - popupY;
+        // Not needed for DOM popup
     },
     
-    // New method to update position during drag
+    // Method to update position during drag - not needed for DOM popup
+    // but maintained for compatibility
     doDrag: function(x, y) {
-        if (!this.isDragging) return;
-        
-        // Calculate new position 
-        const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
-        
-        // Calculate new position based on mouse position and offset
-        let newPopupX = x - this.dragOffsetX;
-        let newPopupY = y - this.dragOffsetY;
-        
-        // Constrain to viewport
-        newPopupX = Math.max(10, Math.min(viewerWidth - this.width - 10, newPopupX));
-        newPopupY = Math.max(10, Math.min(viewerHeight - this.height - 10, newPopupY));
-        
-        // Convert back to source coords (the reverse of the calculation done in render)
-        this.x = newPopupX;
-        this.y = newPopupY + this.height / 2;
-        
-        // Redraw
-        canvasUpdateOverlay();
+        // Not needed for DOM popup
     },
     
-    // New method to end dragging
+    // Method to end dragging - not needed for DOM popup
+    // but maintained for compatibility
     endDrag: function() {
-        this.isDragging = false;
+        // Not needed for DOM popup
     }
 };
 
@@ -748,6 +725,227 @@ function canvasUpdateOverlay() {
 
 
 
+
+
+// Fixed hide method for the DOM-based popup
+// Replace just the hide method in the canvasPopup object
+
+window.canvasPopup.hide = function() {
+    // Set active state to false
+    this.active = false;
+    
+    // Debug log to track hide method calls
+    console.log("canvasPopup hide method called");
+    
+    // Reset highlighted source
+    if (typeof window.currentHighlightedSourceIndex !== 'undefined') {
+        window.currentHighlightedSourceIndex = -1;
+    }
+    
+    // Reset dragging state
+    this.isDragging = false;
+    
+    // Hide the DOM element - with extra error checking
+    try {
+        if (this.domElement) {
+            console.log("Hiding DOM element", this.domElement);
+            this.domElement.style.display = 'none';
+            
+            // Additional attempt in case the style property is being overridden
+            this.domElement.setAttribute('style', this.domElement.getAttribute('style') + '; display: none !important;');
+            
+            // Add a class that might be used for styling
+            this.domElement.classList.add('hidden');
+        } else {
+            console.log("No DOM element found to hide");
+            
+            // Try finding the element by ID as a fallback
+            const popupElement = document.getElementById('canvas-dom-popup');
+            if (popupElement) {
+                console.log("Found popup element by ID, hiding it");
+                popupElement.style.display = 'none';
+                popupElement.setAttribute('style', popupElement.getAttribute('style') + '; display: none !important;');
+                popupElement.classList.add('hidden');
+            } else {
+                console.log("Could not find popup element by ID either");
+            }
+        }
+    } catch (e) {
+        console.error("Error hiding DOM element:", e);
+    }
+    
+    // Try another approach - remove the element entirely and recreate it later
+    try {
+        const popup = document.getElementById('canvas-dom-popup');
+        if (popup && popup.parentNode) {
+            console.log("Removing popup element from DOM");
+            popup.parentNode.removeChild(popup);
+            this.domElement = null;  // Force recreation next time
+        }
+    } catch (e) {
+        console.error("Error removing popup from DOM:", e);
+    }
+    
+    // Redraw canvas
+    if (typeof canvasUpdateOverlay === 'function') {
+        try {
+            console.log("Calling canvasUpdateOverlay");
+            canvasUpdateOverlay();
+        } catch (e) {
+            console.error("Error calling canvasUpdateOverlay:", e);
+        }
+    } else {
+        console.log("canvasUpdateOverlay function not found");
+    }
+    
+    console.log("Popup hide method completed");
+    
+    // Return this for chaining
+    return this;
+};
+
+// Also add an explicit global function to hide the popup that can be called from anywhere
+window.hideCanvasPopup = function() {
+    console.log("Global hideCanvasPopup function called");
+    
+    try {
+        // Try using the object method first
+        if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') {
+            window.canvasPopup.hide();
+        }
+        
+        // Also try direct DOM manipulation as a fallback
+        const popup = document.getElementById('canvas-dom-popup');
+        if (popup) {
+            console.log("Directly hiding popup element");
+            popup.style.display = 'none';
+            
+            // Remove from DOM
+            if (popup.parentNode) {
+                popup.parentNode.removeChild(popup);
+            }
+        }
+        
+        // Reset the global state variable
+        if (typeof window.currentHighlightedSourceIndex !== 'undefined') {
+            window.currentHighlightedSourceIndex = -1;
+        }
+        
+        // Force canvas update
+        if (typeof canvasUpdateOverlay === 'function') {
+            canvasUpdateOverlay();
+        }
+        
+        console.log("Global hideCanvasPopup completed");
+        return true;
+    } catch (e) {
+        console.error("Error in global hideCanvasPopup:", e);
+        return false;
+    }
+};
+
+
+
+// Function to verify all methods are present
+function verifyCanvasPopupMethods() {
+    console.log("Verifying canvasPopup methods:");
+    
+    // Create the object if it doesn't exist
+    window.canvasPopup = window.canvasPopup || {};
+    
+    // List of required methods
+    const requiredMethods = [
+        'render', 'show', 'hide', 'isCloseButtonClicked', 'isPopupClicked',
+        'isDragHandleClicked', 'startDrag', 'doDrag', 'endDrag'
+    ];
+    
+    // Check each method
+    for (const method of requiredMethods) {
+        if (typeof window.canvasPopup[method] !== 'function') {
+            console.error(`Method ${method} is missing or not a function!`);
+            // Create stub method to prevent errors
+            window.canvasPopup[method] = window.canvasPopup[method] || function() {
+                console.log(`Stub method ${method} called`);
+            };
+        } else {
+            console.log(`Method ${method} is properly defined`);
+        }
+    }
+}
+
+// Call the verification function
+verifyCanvasPopupMethods();
+
+// Connect the canvas popup's "Show SED" and "Show Properties" buttons
+// to the existing sed.js functions
+function connectPopupToSedFunctions() {
+    // Override the canvasHandleClick function if needed to add event listeners to the SED buttons
+    const originalCanvasHandleClick = window.canvasHandleClick;
+    
+    if (typeof originalCanvasHandleClick === 'function') {
+        window.canvasHandleClick = function(event) {
+            // Call the original handler first
+            originalCanvasHandleClick.call(this, event);
+            
+            // Get click coordinates relative to the viewer
+            const viewerElement = document.getElementById('openseadragon');
+            const rect = viewerElement.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            
+            // Check if a popup is active
+            if (window.canvasPopup && window.canvasPopup.active) {
+                // Find clickable elements within the popup
+                // Find "Show SED" button click area
+                const popupX = window.canvasPopup.x;
+                const popupY = window.canvasPopup.y;
+                const popupWidth = window.canvasPopup.width;
+                const popupHeight = window.canvasPopup.height;
+                
+                // Simple check if the click is within the popup
+                if (window.canvasPopup.isPopupClicked(clickX, clickY)) {
+                    // Check for clicks on the SED or Properties links
+                    // This is an approximate position - adjust based on actual render method
+                    const linkY = popupY + popupHeight - 40; // Approximate Y position of links
+                    const sedLinkX = popupX + 50; // Approximate X position of "Show SED" link
+                    const propLinkX = sedLinkX + 80; // Approximate X position of "Properties" link
+                    
+                    // Very rough approximation of link click areas
+                    // Better to adjust these based on actual UI positions
+                    const isSedLinkClicked = (Math.abs(clickX - sedLinkX) < 40 && Math.abs(clickY - linkY) < 20);
+                    const isPropLinkClicked = (Math.abs(clickX - propLinkX) < 40 && Math.abs(clickY - linkY) < 20);
+                    
+                    if (isSedLinkClicked) {
+                        console.log("SED link clicked in canvas popup");
+                        const sourceObj = window.catalogDataForOverlay[window.canvasPopup.sourceIndex];
+                        
+                        // Get the current catalog name
+                        const catalogName = window.currentCatalogName || "catalog";
+                        
+                        // Call the showSed function with the source coordinates
+                        if (typeof window.showSed === 'function') {
+                            window.showSed(sourceObj.ra, sourceObj.dec, catalogName);
+                        }
+                    } else if (isPropLinkClicked) {
+                        console.log("Properties link clicked in canvas popup");
+                        const sourceObj = window.catalogDataForOverlay[window.canvasPopup.sourceIndex];
+                        
+                        // Get the current catalog name
+                        const catalogName = window.currentCatalogName || "catalog";
+                        
+                        // Call the showProperties function with the source coordinates
+                        if (typeof window.showProperties === 'function') {
+                            window.showProperties(sourceObj.ra, sourceObj.dec, catalogName);
+                        }
+                    }
+                }
+            }
+        };
+    }
+}
+
+// Connect the popup to SED functions
+connectPopupToSedFunctions();
 
 // Function to handle clicks on the canvas overlay
 function canvasHandleClick(event) {
@@ -1192,3 +1390,29 @@ if (document.readyState === 'complete') {
 } else {
     window.addEventListener('load', initPureCanvasImplementation);
 }
+
+
+
+// Add initialization function
+window.initDomPopupSystem = function() {
+    console.log("Initializing DOM-based popup system");
+    
+    // Force initialization of DOM element
+    window.canvasPopup.initDomElement();
+    
+    // Create a custom event for when a popup is shown
+    document.addEventListener('popupShown', function(e) {
+        console.log("Popup shown event received:", e.detail);
+    });
+    
+    console.log("DOM-based popup system initialized");
+};
+
+// Call initialization on load
+if (document.readyState === 'complete') {
+    window.initDomPopupSystem();
+} else {
+    window.addEventListener('load', window.initDomPopupSystem);
+}
+
+console.log("DOM-based popup replacement loaded");

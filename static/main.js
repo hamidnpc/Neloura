@@ -2579,7 +2579,7 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
     viewer.addHandler('open', function() {
         console.log("OpenSeadragon viewer opened successfully");
         showProgress(false);
-
+    updateAllCanvases();
         
         
         // For large images, add a notification with tips
@@ -2615,7 +2615,7 @@ function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
         showProgress(false);
         showNotification(`Error loading image: ${event.message || 'Unknown error'}`, 3000, 'error');
     });
-    updateAllCanvases();
+    // updateAllCanvases();
 
 }
 
@@ -5279,72 +5279,6 @@ function loadCatalogWithFlags(catalogName) {
 
 
 
-
-// Add pixel-perfect mode to the viewer
-viewer.pixelMode = true;  // Enable by default
-
-// Override the OpenSeadragon drawing method
-viewer.addHandler('tile-drawn', function(event) {
-    if (viewer.pixelMode && event.tile && event.tile.context) {
-        // Disable image smoothing on the tile
-        event.tile.context.imageSmoothingEnabled = false;
-        event.tile.context.mozImageSmoothingEnabled = false;
-        event.tile.context.webkitImageSmoothingEnabled = false;
-        event.tile.context.msImageSmoothingEnabled = false;
-    }
-});
-
-// Override the main drawer to disable smoothing
-viewer.addHandler('open', function() {
-    if (viewer.drawer && viewer.drawer.context) {
-        // Disable smoothing on the main canvas
-        viewer.drawer.context.imageSmoothingEnabled = false;
-        viewer.drawer.context.mozImageSmoothingEnabled = false;
-        viewer.drawer.context.webkitImageSmoothingEnabled = false;
-        viewer.drawer.context.msImageSmoothingEnabled = false;
-        
-        // Force redraw to apply changes
-        viewer.forceRedraw();
-    }
-});
-
-
-// Create a pixel mode toggle button for the toolbar
-const pixelModeButton = document.createElement('button');
-pixelModeButton.className = 'pixel-mode-button';
-pixelModeButton.textContent = 'Pixel Mode';
-pixelModeButton.title = 'Toggle pixel-perfect mode';
-pixelModeButton.style.backgroundColor = '#fff';  // Initially active
-pixelModeButton.style.color = '#000';
-
-// Add event listener to toggle pixel mode
-pixelModeButton.addEventListener('click', function() {
-    viewer.pixelMode = !viewer.pixelMode;
-    
-    // Update button appearance
-    if (viewer.pixelMode) {
-        pixelModeButton.style.backgroundColor = '#fff';
-        pixelModeButton.style.color = '#000';
-    } else {
-        pixelModeButton.style.backgroundColor = '#444';
-        pixelModeButton.style.color = '#fff';
-    }
-    
-    // Update the drawer context
-    if (viewer.drawer && viewer.drawer.context) {
-        viewer.drawer.context.imageSmoothingEnabled = !viewer.pixelMode;
-        viewer.drawer.context.mozImageSmoothingEnabled = !viewer.pixelMode;
-        viewer.drawer.context.webkitImageSmoothingEnabled = !viewer.pixelMode;
-        viewer.drawer.context.msImageSmoothingEnabled = !viewer.pixelMode;
-    }
-    
-    // Force redraw all tiles
-    viewer.forceRedraw();
-});
-
-// Add to toolbar
-const toolbar = document.querySelector('.toolbar');
-toolbar.appendChild(pixelModeButton);
 
 
 // Function to enable pixel-perfect mode that waits for viewer to be ready
