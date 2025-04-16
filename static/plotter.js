@@ -1,5 +1,3 @@
-
-
 // Generate histogram from the selected data
 function generateHistogram() {
     // Get the selected axis
@@ -39,6 +37,39 @@ function generateHistogram() {
         yMax = document.getElementById('y-max-input')?.value !== '' ? 
             parseFloat(document.getElementById('y-max-input').value) : null;
     }
+    
+    // --- BEGIN MODIFICATION: Adjust manual log limits ---
+    let limitsAdjusted = false;
+    if (!autoLimits) {
+        if (xScale === 'log') {
+            if (xMin !== null && xMin <= 0) {
+                xMin = 0.1; // Or calculate min positive value from data if needed
+                limitsAdjusted = true;
+                console.warn("Manual X Min <= 0 adjusted to 0.1 for log scale.");
+            }
+            if (xMax !== null && xMin !== null && xMax <= xMin) {
+                xMax = xMin * 10; // Ensure max is greater than min
+                limitsAdjusted = true;
+                console.warn("Manual X Max <= X Min adjusted for log scale.");
+            }
+        }
+        if (yScale === 'log') {
+            if (yMin !== null && yMin <= 0) {
+                yMin = 0.1; // Or calculate min positive value from data if needed
+                limitsAdjusted = true;
+                console.warn("Manual Y Min <= 0 adjusted to 0.1 for log scale.");
+            }
+            if (yMax !== null && yMin !== null && yMax <= yMin) {
+                yMax = yMin * 10; // Ensure max is greater than min
+                limitsAdjusted = true;
+                console.warn("Manual Y Max <= Y Min adjusted for log scale.");
+            }
+        }
+    }
+    if (limitsAdjusted) {
+        showNotification("Manual axis limits adjusted for log scale (must be > 0)", 4000);
+    }
+    // --- END MODIFICATION ---
     
     // Get the plot area
     const plotArea = document.getElementById('plot-area');
@@ -1327,38 +1358,43 @@ function addNormalizationControls(histogramControls) {
 // }
 
 // Create plotter container
-// Create plotter container
 function createPlotterContainer() {
+    const containerId = 'dynamic-plotter-panel'; // NEW ID
+    console.log(`[Plotter] createPlotterContainer called for ID: ${containerId}`); // Log start
     // Check if container already exists
-    if (document.getElementById('plotter-container')) {
+    if (document.getElementById(containerId)) {
+        console.log(`[Plotter] Container with ID ${containerId} already exists, returning.`);
         return;
     }
     
     // Create container
     const plotterContainer = document.createElement('div');
-    plotterContainer.id = 'plotter-container';
+    plotterContainer.id = containerId; // USE NEW ID
     plotterContainer.style.position = 'fixed';
     plotterContainer.style.top = '0';
-    plotterContainer.style.right = '-400px'; // Start off-screen
-    plotterContainer.style.width = '400px';
+    plotterContainer.style.right = '0'; // Position flush right
+    plotterContainer.style.transform = 'translateX(100%)'; // Hide using transform
+    plotterContainer.style.width = '500px'; // INCREASED WIDTH
     plotterContainer.style.height = '100vh';
     plotterContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.9)';
     plotterContainer.style.color = 'white';
-    plotterContainer.style.padding = '10px';
+    plotterContainer.style.padding = '15px'; // ADDED PADDING
     plotterContainer.style.boxSizing = 'border-box';
     plotterContainer.style.boxShadow = '-2px 0 10px rgba(0, 0, 0, 0.5)';
-    plotterContainer.style.zIndex = '1000';
-    plotterContainer.style.transition = 'transform 0.3s ease-in-out';
-    plotterContainer.style.overflowY = 'auto';
-    plotterContainer.style.fontFamily = 'Raleway, sans-serif';
+    plotterContainer.style.zIndex = '1000'; // Ensure it's above most content
+    plotterContainer.style.transition = 'transform 0.3s ease-in-out'; // Smooth transition
+    plotterContainer.style.overflowY = 'auto'; // Allow vertical scrolling within the panel
+    plotterContainer.style.overflowX = 'hidden'; // PREVENT horizontal scrolling
+    plotterContainer.style.fontFamily = 'Raleway, Arial, sans-serif';
     
-    // Create header
+    // Create header (padding adjusted for container padding)
     const header = document.createElement('div');
     header.style.display = 'flex';
     header.style.justifyContent = 'space-between';
     header.style.alignItems = 'center';
-    header.style.marginBottom = '15px';
-    header.style.paddingBottom = '10px';
+    // Remove bottom margin from header, rely on container padding
+    // header.style.marginBottom = '15px'; 
+    header.style.paddingBottom = '10px'; 
     header.style.borderBottom = '1px solid rgba(255, 255, 255, 0.2)';
     
     const title = document.createElement('h2');
@@ -2271,49 +2307,66 @@ window.currentPlotType = 'scatter';
     
     plotterContainer.appendChild(content);
     document.body.appendChild(plotterContainer);
+    console.log(`[Plotter] Container ${containerId} created and appended to body.`); // Log end
     
-    // Populate the axis dropdowns
-    populateAxisDropdowns();
+    // Populate axis dropdowns AFTER the container is added to the DOM and rendered
+    setTimeout(() => {
+        console.log(`[Plotter] setTimeout calling populateAxisDropdowns for ${containerId}`);
+        populateAxisDropdowns(); 
+    }, 10); // Small delay
 }
 
 // Toggle plotter panel
 function togglePlotter() {
-    // Create plotter container if it doesn't exist
-    createPlotterContainer();
+    const containerId = 'dynamic-plotter-panel'; // USE NEW ID
+    console.log(`[Plotter] togglePlotter called for ID: ${containerId}`); // Log entry
+    createPlotterContainer(); 
     
-    const plotterContainer = document.getElementById('plotter-container');
+    const plotterContainer = document.getElementById(containerId); // FIND NEW ID
+    if (!plotterContainer) { 
+        console.error(`[Plotter] Could not find plotter container with ID ${containerId} even after create attempt.`);
+        return;
+    }
     
-    // Check if plotter is currently visible
-    const isVisible = plotterContainer.style.transform === 'translateX(-400px)';
+    // Check if plotter is currently visible (transform is translateX(0))
+    const isVisible = plotterContainer.style.transform === 'translateX(0px)' || plotterContainer.style.transform === 'translateX(0)';
+    console.log(`[Plotter] togglePlotter - current transform: '${plotterContainer.style.transform}', isVisible: ${isVisible}`);
     
     if (isVisible) {
-        // Hide plotter
         hidePlotter();
     } else {
-        // Show plotter
         showPlotter();
     }
 }
 
 // Show plotter panel
 function showPlotter() {
-    const plotterContainer = document.getElementById('plotter-container');
-    if (!plotterContainer) return;
+    const containerId = 'dynamic-plotter-panel'; // USE NEW ID
+    console.log(`[Plotter] showPlotter called for ID: ${containerId}`); // Log entry
+    const plotterContainer = document.getElementById(containerId); // FIND NEW ID
+    if (!plotterContainer) {
+         console.error(`[Plotter] showPlotter - Could not find plotter container with ID ${containerId}.`);
+         return;
+    }
     
-    // Show the plotter
-    plotterContainer.style.transform = 'translateX(-400px)';
-    
-    // Populate axis dropdowns if catalog is loaded
-    populateAxisDropdowns();
+    // Show the plotter by translating it into view
+    console.log(`[Plotter] Applying transform translateX(0) to show plotter ${containerId}.`);
+    plotterContainer.style.transform = 'translateX(0)';
 }
 
 // Hide plotter panel
 function hidePlotter() {
-    const plotterContainer = document.getElementById('plotter-container');
-    if (!plotterContainer) return;
+    const containerId = 'dynamic-plotter-panel'; // USE NEW ID
+    console.log(`[Plotter] hidePlotter called for ID: ${containerId}`); // Log entry
+    const plotterContainer = document.getElementById(containerId); // FIND NEW ID
+    if (!plotterContainer) {
+         console.error(`[Plotter] hidePlotter - Could not find plotter container with ID ${containerId}.`);
+         return;
+    }
     
-    // Hide the plotter
-    plotterContainer.style.transform = 'translateX(0)';
+    // Hide the plotter by translating it out of view
+    console.log(`[Plotter] Applying transform translateX(100%) to hide plotter ${containerId}.`);
+    plotterContainer.style.transform = 'translateX(100%)';
 }
 
 // Further improved function to ensure all columns are properly detected and listed
@@ -2332,6 +2385,20 @@ function populateAxisDropdowns() {
     const xAxisSearch = document.getElementById('x-axis-search');
     const yAxisSearch = document.getElementById('y-axis-search');
     const colorSearch = document.getElementById('color-axis-search');
+    
+    // --> ADDED: Check if all required elements exist
+    if (!xAxisSelect || !yAxisSelect || !colorSelect || 
+        !xAxisDropdown || !yAxisDropdown || !colorDropdown ||
+        !xAxisSearch || !yAxisSearch || !colorSearch) {
+        console.error("[Plotter] populateAxisDropdowns - Required dropdown elements NOT found. Cannot populate."); // Log the failure
+        // Log which elements were found/not found for debugging
+        console.log("xAxisSelect:", !!xAxisSelect, "yAxisSelect:", !!yAxisSelect, "colorSelect:", !!colorSelect);
+        console.log("xAxisDropdown:", !!xAxisDropdown, "yAxisDropdown:", !!yAxisDropdown, "colorDropdown:", !!colorDropdown);
+        console.log("xAxisSearch:", !!xAxisSearch, "yAxisSearch:", !!yAxisSearch, "colorSearch:", !!colorSearch);
+        return; // Exit if elements are missing
+    }
+    console.log("[Plotter] populateAxisDropdowns - All dropdown elements found. Proceeding..."); // Log success
+    // <-- END ADDED
     
     // Function to clear a dropdown
     function clearDropdown(dropdown) {
@@ -2863,9 +2930,42 @@ function generatePlot() {
             parseFloat(document.getElementById('x-max-input').value) : null;
         yMin = document.getElementById('y-min-input')?.value !== '' ? 
             parseFloat(document.getElementById('y-min-input').value) : null;
-        yMax = document.getElementById('y-max-input')?.value !== '' ? 
+        yMax = document.getElementById('y-max-input')?.value !== '' ?
             parseFloat(document.getElementById('y-max-input').value) : null;
     }
+
+    // --- BEGIN MODIFICATION: Adjust manual log limits ---
+    let limitsAdjustedPlot = false;
+    if (!autoLimits) {
+        if (xScale === 'log') {
+            if (xMin !== null && xMin <= 0) {
+                xMin = 0.1; // Or calculate min positive value from data if needed
+                limitsAdjustedPlot = true;
+                console.warn("Manual X Min <= 0 adjusted to 0.1 for log scale.");
+            }
+            if (xMax !== null && xMin !== null && xMax <= xMin) {
+                xMax = xMin * 10; // Ensure max is greater than min
+                limitsAdjustedPlot = true;
+                console.warn("Manual X Max <= X Min adjusted for log scale.");
+            }
+        }
+        if (yScale === 'log') {
+            if (yMin !== null && yMin <= 0) {
+                yMin = 0.1; // Or calculate min positive value from data if needed
+                limitsAdjustedPlot = true;
+                console.warn("Manual Y Min <= 0 adjusted to 0.1 for log scale.");
+            }
+            if (yMax !== null && yMin !== null && yMax <= yMin) {
+                yMax = yMin * 10; // Ensure max is greater than min
+                limitsAdjustedPlot = true;
+                console.warn("Manual Y Max <= Y Min adjusted for log scale.");
+            }
+        }
+    }
+     if (limitsAdjustedPlot) {
+        showNotification("Manual axis limits adjusted for log scale (must be > 0)", 4000);
+    }
+    // --- END MODIFICATION ---
     
     // Get the plot area
     const plotArea = document.getElementById('plot-area');
@@ -3840,83 +3940,167 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
             if (point.obj._originalObj && point.obj._originalObj.ra !== undefined && point.obj._originalObj.dec !== undefined) {
                 const ra = point.obj._originalObj.ra;
                 const dec = point.obj._originalObj.dec;
-                
-                // Find all catalog overlay dots
-                const catalogDots = document.querySelectorAll('.catalog-dot');
-                
-                // Set all dots to zero opacity
-                catalogDots.forEach(dot => {
-                    dot.style.opacity = '0';  // Changed from 0.2 to 0
-                });
-                
-                // Find the matching dot based on RA and DEC
-                // We need to find the closest match since there might be small precision differences
-                let closestDot = null;
+                const clickedCircle = this; // Reference to the clicked SVG circle
+                console.log(`Plotter Click: RA=${ra}, DEC=${dec}`);
+
+                // Check if the canvas overlay data and source map exist
+                const catalogData = window.catalogDataForOverlay;
+                const sourceMap = window.catalogSourceMap; 
+                if (!catalogData || catalogData.length === 0 || !sourceMap || sourceMap.length === 0) {
+                    console.error("Plotter Click: window.catalogDataForOverlay or window.catalogSourceMap is empty or not available.");
+                    return;
+                }
+
+                // Find the closest source in the catalog data
+                let closestSourceIndex = -1;
                 let minDistance = Infinity;
-                
-                catalogDots.forEach(dot => {
-                    const dotRa = parseFloat(dot.getAttribute('data-ra'));
-                    const dotDec = parseFloat(dot.getAttribute('data-dec'));
-                    
-                    if (!isNaN(dotRa) && !isNaN(dotDec)) {
-                        // Calculate distance between points
-                        const distance = Math.sqrt(
-                            Math.pow(ra - dotRa, 2) + 
-                            Math.pow(dec - dotDec, 2)
-                        );
-                        
-                        if (distance < minDistance) {
-                            minDistance = distance;
-                            closestDot = dot;
+
+                catalogData.forEach((source, index) => {
+                    if (source.ra !== undefined && source.dec !== undefined) {
+                        const sourceRa = parseFloat(source.ra);
+                        const sourceDec = parseFloat(source.dec);
+
+                        if (!isNaN(sourceRa) && !isNaN(sourceDec)) {
+                            const distance = Math.sqrt(
+                                Math.pow(ra - sourceRa, 2) +
+                                Math.pow(dec - sourceDec, 2)
+                            );
+
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                closestSourceIndex = index;
+                            }
                         }
                     }
                 });
-                
-                // Highlight the closest dot
-                if (closestDot && minDistance < 0.0001) { // Small threshold to ensure it's the right point
-                    closestDot.style.opacity = '1';
-                    
-                    // Optionally, scroll to the dot to make it visible
-                    closestDot.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'center',
-                        inline: 'center'
-                    });
-                    
-                    // Call showRegionInfo to properly display the popup with content
-                    const dotIndex = closestDot.getAttribute('data-index');
-                    if (dotIndex) {
-                        // Call showRegionInfo to properly display the popup with content
-                        const obj = window.catalogData ? window.catalogData[parseInt(dotIndex)] : null;
-                        showRegionInfo(closestDot, obj);
+
+                console.log(`Plotter Click: Closest source search complete. Index: ${closestSourceIndex}`);
+
+                // Trigger canvas click, highlight scatter point, and zoom if found
+                const tolerance = 0.1; 
+                if (closestSourceIndex !== -1 && minDistance < tolerance) {
+                    console.log(`Plotter Click: Found matching source at index ${closestSourceIndex}`);
+                    const sourceMapEntry = sourceMap.find(s => s.sourceIndex === closestSourceIndex);
+
+                    if (!sourceMapEntry) {
+                        console.warn(`Plotter Click: Could not find sourceMapEntry for index ${closestSourceIndex}. Cannot trigger map interaction.`);
+                        return;
                     }
+
+                    // 1. Highlight Scatter Plot Point
+                    // Clear previous scatter highlight
+                    if (window.highlightedScatterCircle) {
+                        window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                        window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                        window.highlightedScatterCircle.setAttribute('r', pointRadius); 
+                    }
+                    // Apply new highlight
+                    clickedCircle.setAttribute('stroke', 'yellow');
+                    clickedCircle.setAttribute('stroke-width', '2');
+                    clickedCircle.setAttribute('r', pointRadius * 1.5); 
+                    window.highlightedScatterCircle = clickedCircle; // Store reference
+                    
+                    // 2. Trigger Map Interaction (Highlight + Popup via canvasHandleClick)
+                    // -- REVISED: Call canvasHighlightSource and canvasPopup.show directly --
+                    const sourceObj = catalogData[closestSourceIndex];
+                    if (sourceObj && sourceMapEntry) {
+                        // Highlight on Canvas first
+                        if (typeof canvasHighlightSource === 'function') {
+                             console.log(`Plotter Click: Calling canvasHighlightSource for index ${closestSourceIndex}`);
+                             canvasHighlightSource(closestSourceIndex);
+                         } else {
+                            console.warn("Plotter Click: canvasHighlightSource function not available.");
+                         }
+                         
+                         // Then show the popup directly
+                         if (window.canvasPopup && typeof window.canvasPopup.show === 'function') {
+                             console.log(`Plotter Click: Calling window.canvasPopup.show for index ${closestSourceIndex}`);
+                              window.canvasPopup.show(
+                                 closestSourceIndex,
+                                 sourceMapEntry.x, // Screen X for popup position
+                                 sourceMapEntry.y, // Screen Y for popup position
+                                 sourceObj
+                             );
+                         } else {
+                             console.warn("Plotter Click: window.canvasPopup.show function not available.");
+                         }
+                    } else {
+                         console.warn(`Plotter Click: Could not find sourceObj or sourceMapEntry for index ${closestSourceIndex}. Cannot show popup.`);
+                    }
+                    // -- End Revised Map Interaction --
+                    
+                    // 3. Zoom and Pan on Map (Keep this logic)
+                    if (typeof viewer !== 'undefined' && viewer && sourceMapEntry.imageX !== undefined && sourceMapEntry.imageY !== undefined) {
+                        try {
+                            console.log(`Plotter Click: Zooming to image coordinates (${sourceMapEntry.imageX}, ${sourceMapEntry.imageY})`);
+                            const imageCoords = new OpenSeadragon.Point(sourceMapEntry.imageX, sourceMapEntry.imageY);
+                            const viewportCoords = viewer.viewport.imageToViewportCoordinates(imageCoords);
+                            const currentZoom = viewer.viewport.getZoom();
+                            const targetZoom = Math.max(currentZoom * 1.5, 5); 
+                            viewer.viewport.panTo(viewportCoords, false);
+                            // viewer.viewport.zoomTo(targetZoom, viewportCoords, false); 
+                            console.log(`Plotter Click: Panning and zooming.`);
+                        } catch (zoomError) {
+                            console.error("Plotter Click: Error during zoom/pan:", zoomError);
+                        }
+                    } else {
+                        console.warn("Plotter Click: Viewer not available or source map entry missing image coordinates for zoom.");
+                    }
+
+                } else {
+                    console.log(`Plotter Click: No matching source found within tolerance (${tolerance}).`);
+                    if (closestSourceIndex !== -1) {
+                        console.log(`Plotter Click: Closest source found had distance ${minDistance}`);
+                    }
+                    // Optionally clear highlight if no match
+                    // if (typeof clearHighlight === 'function') clearHighlight();
                 }
-                
-                // Add clear selection button if it doesn't exist
-                if (!document.getElementById('clear-selection-btn')) {
-                    const clearBtn = document.createElement('button');
+
+                // Add/Update Clear Selection Button
+                 const plotAreaElement = document.getElementById('plot-area'); // Ensure we append to the correct element
+                 let clearBtn = document.getElementById('clear-selection-btn');
+
+                 if (!clearBtn && plotAreaElement) {
+                    clearBtn = document.createElement('button');
                     clearBtn.id = 'clear-selection-btn';
                     clearBtn.className = 'btn btn-sm btn-outline-secondary';
-                    clearBtn.textContent = 'Clear Selection';
+                    clearBtn.textContent = 'Clear Map Selection';
                     clearBtn.style.position = 'absolute';
                     clearBtn.style.top = '10px';
                     clearBtn.style.right = '10px';
-                    clearBtn.style.zIndex = '1000';
+                    clearBtn.style.zIndex = '1000'; 
                     clearBtn.style.padding = '3px 8px';
                     clearBtn.style.fontSize = '12px';
                     
                     clearBtn.addEventListener('click', function() {
-                        // Reset all dots to full opacity
-                        const allDots = document.querySelectorAll('.catalog-dot');
-                        allDots.forEach(dot => {
-                            dot.style.opacity = '1';
-                        });
+                        // Clear map highlight
+                        window.currentHighlightedSourceIndex = -1; // Reset the global index
+                        if (typeof canvasUpdateOverlay === 'function') { 
+                             console.log("Clear Selection: Calling canvasUpdateOverlay to clear map highlight.");
+                            canvasUpdateOverlay(); // Redraw canvas without highlight
+                        } else {
+                           console.warn("Clear Selection: canvasUpdateOverlay function not found.");
+                        }
                         
-                        // Remove this button
+                        // Clear scatter plot highlight
+                        if (window.highlightedScatterCircle) {
+                            window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                            window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                            window.highlightedScatterCircle.setAttribute('r', pointRadius);
+                            window.highlightedScatterCircle = null;
+                        }
+                        
+                        // Hide popups (use the canvas popup hide method if available)
+                         if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') {
+                            window.canvasPopup.hide();
+                        } else if (typeof hideAllInfoPopups === 'function') { // Fallback to old method
+                            hideAllInfoPopups();
+                        }
+                        // Remove button
                         this.remove();
                     });
                     
-                    plotArea.appendChild(clearBtn);
+                    plotAreaElement.appendChild(clearBtn);
                 }
             }
         });
@@ -4036,67 +4220,68 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
 
 // Function to parse and render LaTeX-like formulas
 function renderLatexLabel(text) {
-    if (!text) return '';
-    
-    // Replace common LaTeX-like patterns with HTML/SVG equivalents
-    let rendered = text;
-    
-    // Handle subscripts: x_1 -> x₁, y_2 -> y₂, etc.
-    rendered = rendered.replace(/_([0-9a-zA-Z])/g, (match, p1) => {
-        const subscriptMap = {
-            '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
-            '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
-            'a': 'ₐ', 'e': 'ₑ', 'h': 'ₕ', 'i': 'ᵢ', 'j': 'ⱼ',
-            'k': 'ₖ', 'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'o': 'ₒ',
-            'p': 'ₚ', 'r': 'ᵣ', 's': 'ₛ', 't': 'ₜ', 'u': 'ᵤ',
-            'v': 'ᵥ', 'x': 'ₓ'
-        };
-        return subscriptMap[p1] || `_${p1}`;
-    });
-    
-    // Handle superscripts: x^2 -> x², y^3 -> y³, etc.
-    rendered = rendered.replace(/\^([0-9a-zA-Z])/g, (match, p1) => {
-        const superscriptMap = {
-            '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-            '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-            'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ', 'd': 'ᵈ', 'e': 'ᵉ',
-            'f': 'ᶠ', 'g': 'ᵍ', 'h': 'ʰ', 'i': 'ⁱ', 'j': 'ʲ',
-            'k': 'ᵏ', 'l': 'ˡ', 'm': 'ᵐ', 'n': 'ⁿ', 'o': 'ᵒ',
-            'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
-            'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ'
-        };
-        return superscriptMap[p1] || `^${p1}`;
-    });
-    
-    // Handle Greek letters: \alpha -> α, \beta -> β, etc.
-    const greekLetters = {
-        'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε',
-        'zeta': 'ζ', 'eta': 'η', 'theta': 'θ', 'iota': 'ι', 'kappa': 'κ',
-        'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ', 'omicron': 'ο',
-        'pi': 'π', 'rho': 'ρ', 'sigma': 'σ', 'tau': 'τ', 'upsilon': 'υ',
-        'phi': 'φ', 'chi': 'χ', 'psi': 'ψ', 'omega': 'ω',
-        'Alpha': 'Α', 'Beta': 'Β', 'Gamma': 'Γ', 'Delta': 'Δ', 'Epsilon': 'Ε',
-        'Zeta': 'Ζ', 'Eta': 'Η', 'Theta': 'Θ', 'Iota': 'Ι', 'Kappa': 'Κ',
-        'Lambda': 'Λ', 'Mu': 'Μ', 'Nu': 'Ν', 'Xi': 'Ξ', 'Omicron': 'Ο',
-        'Pi': 'Π', 'Rho': 'Ρ', 'Sigma': 'Σ', 'Tau': 'Τ', 'Upsilon': 'Υ',
-        'Phi': 'Φ', 'Chi': 'Χ', 'Psi': 'Ψ', 'Omega': 'Ω'
-    };
-    
-    for (const [name, symbol] of Object.entries(greekLetters)) {
-        rendered = rendered.replace(new RegExp(`\\\\${name}\\b`, 'g'), symbol);
-    }
-    
-    // Handle common math symbols
-    const mathSymbols = {
-        'times': '×', 'div': '÷', 'pm': '±', 'mp': '∓',
-        'leq': '≤', 'geq': '≥', 'neq': '≠', 'approx': '≈',
-        'cdot': '·', 'infty': '∞', 'partial': '∂', 'nabla': '∇',
-        'sum': '∑', 'prod': '∏', 'int': '∫'
-    };
-    
-    for (const [name, symbol] of Object.entries(mathSymbols)) {
-        rendered = rendered.replace(new RegExp(`\\\\${name}\\b`, 'g'), symbol);
-    }
-    
-    return rendered;
+    // Placeholder for potential future LaTeX rendering
+    return text;
 }
+
+// Initialize plotter functionality when the DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    // DO NOT Populate dropdowns here either
+    // populateAxisDropdowns();
+
+    // Add event listeners for plotter controls if they exist
+    // (This assumes controls are part of the initial HTML or added before this listener runs)
+    const plotTypeSelect = document.getElementById('plot-type-select');
+    if (plotTypeSelect) {
+        plotTypeSelect.addEventListener('change', () => {
+            // Handle plot type change (e.g., show/hide relevant controls)
+        });
+    }
+
+    const generatePlotButton = document.getElementById('generate-plot-button');
+    if (generatePlotButton) {
+        generatePlotButton.addEventListener('click', () => {
+             const plotType = document.getElementById('plot-type-select')?.value;
+             if (plotType === 'histogram') {
+                 generateHistogram();
+             } else {
+                 generatePlot(); // Assuming scatter plot is the other main type
+             }
+        });
+    }
+    
+    // You might want to add other listeners here for sliders, color pickers etc.
+    // Example:
+    const binsSlider = document.getElementById('bins-slider');
+    const binsValue = document.getElementById('bins-value');
+    if (binsSlider && binsValue) {
+         binsSlider.addEventListener('input', () => {
+             binsValue.textContent = binsSlider.value;
+         });
+         // Set initial value
+         binsValue.textContent = binsSlider.value;
+    }
+
+    // Add listener for auto/manual limits checkbox
+    const autoLimitsCheckbox = document.getElementById('auto-limits-checkbox');
+    const manualLimitsContainer = document.getElementById('manual-limits-container');
+    if (autoLimitsCheckbox && manualLimitsContainer) {
+        autoLimitsCheckbox.addEventListener('change', () => {
+            manualLimitsContainer.style.display = autoLimitsCheckbox.checked ? 'none' : 'block';
+        });
+        // Set initial state
+        manualLimitsContainer.style.display = autoLimitsCheckbox.checked ? 'none' : 'block';
+    }
+});
+
+// --- Remove populateAxisDropdowns() calls from toggle/show functions if they exist --- 
+// Example: If it was called in showPlotter, remove it:
+/*
+function showPlotter() {
+    const plotterContainer = document.getElementById('plotter-container');
+    if (plotterContainer) {
+        plotterContainer.style.display = 'block';
+        // populateAxisDropdowns(); // REMOVE THIS CALL if it was here
+    }
+}
+*/

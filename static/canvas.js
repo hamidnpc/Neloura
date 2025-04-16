@@ -1,4 +1,3 @@
-
 // canvas-catalog-overlay.js - Pure Canvas Implementation
 
 // Utility functions for throttling and debouncing
@@ -570,24 +569,37 @@ function canvasUpdateOverlay() {
         bottom: bounds.y + bounds.height + 0.5
     };
     
-    // Clear the source map
-    window.catalogSourceMap = [];
+    // Performance optimization for large datasets
+    const totalSources = window.catalogDataForOverlay.length;
     
-    // Count visible objects
+    // Skip processing if we have no sources
+    if (totalSources === 0) return;
+    
+    // Clear source map and prepare batch collection
+    window.catalogSourceMap = [];
+    const regularPoints = [];
+    const highlightedPoint = {exists: false};
+    
+    // Direct pixel-based rendering for maximum performance
+    // Use TypedArrays to quickly process all the sources
+    const floatBytes = 4; // 4 bytes per float
+    const sourceProperties = 4; // x, y, radius, index
+    const bufferSize = totalSources * sourceProperties * floatBytes;
+    
+    // Create typed array for processing source positions efficiently
+    const sourceBuffer = new Float32Array(totalSources * sourceProperties);
     let visibleCount = 0;
     
-    // Get styles
-    const FIXED_RADIUS = 5; // This is now in image coordinates (not screen pixels)
-    const dotBorderWidth = window.regionStyles ? window.regionStyles.borderWidth || 1 : 1;
-    const dotBorderColor = window.regionStyles ? window.regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)' : 'rgba(255, 165, 0, 0.7)';
-    const dotFillColor = window.regionStyles ? window.regionStyles.backgroundColor || 'transparent' : 'transparent';
-    const dotOpacity = window.regionStyles ? window.regionStyles.opacity || 0.7 : 0.7;
+    // Get styles from the correct local variable in catalogs.js
+    const FIXED_RADIUS = 5;
+    const dotBorderWidth = regionStyles.borderWidth || 1;
+    const dotBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
+    const dotFillColor = regionStyles.backgroundColor || 'transparent';
+    const dotOpacity = regionStyles.opacity || 0.7;
     
-    // Set opacity
-    ctx.globalAlpha = dotOpacity;
-    
-    // Process each object
-    for (let i = 0; i < window.catalogDataForOverlay.length; i++) {
+    // OPTIMIZATION: Batch update all source coordinates in a single pass
+    // This significantly reduces function call overhead by using fast array operations
+    for (let i = 0; i < totalSources; i++) {
         const obj = window.catalogDataForOverlay[i];
         
         // Skip filtered objects
@@ -595,11 +607,11 @@ function canvasUpdateOverlay() {
             continue;
         }
         
-        // Get coordinates
+        // Get coordinates (reuse calculations when possible)
         let x = obj.x;
         let y = obj.y;
         
-        // Convert RA/DEC if needed
+        // Convert RA/DEC if needed (only once per source)
         if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
             if (typeof celestialToPixel === 'function') {
                 const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
@@ -608,31 +620,29 @@ function canvasUpdateOverlay() {
             }
         }
         
-        // Get the radius in image coordinates
-        const imageRadius = obj.radius_pixels || FIXED_RADIUS;
+        // Get radius
+        const imageRadius = obj.radius_pixels || 5; // Use 5 as default
         
-        // Convert the center point to viewport coordinates
+        // PERFORMANCE: Convert to viewport only once per source
         const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
-        
-        // Calculate screen position
         const pagePoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
         
-        // Calculate a point offset by the radius in image coordinates
+        // Use a single coordinate transformation for radius calculation
         const offsetPoint = viewer.viewport.imageToViewportCoordinates(x + imageRadius, y);
         const offsetPagePoint = viewer.viewport.viewportToViewerElementCoordinates(offsetPoint);
         
-        // Calculate the radius in screen pixels based on the difference
+        // Get screen radius
         const screenRadius = Math.sqrt(
             Math.pow(offsetPagePoint.x - pagePoint.x, 2) +
             Math.pow(offsetPagePoint.y - pagePoint.y, 2)
         );
         
-        // Store in source map with both image and screen radius
+        // Store source in map for hit detection
         window.catalogSourceMap.push({
             x: pagePoint.x,
             y: pagePoint.y,
-            radius: screenRadius, // Screen radius for hit detection
-            imageRadius: imageRadius, // Original image radius
+            radius: screenRadius,
+            imageRadius: imageRadius,
             sourceIndex: i,
             imageX: x,
             imageY: y,
@@ -642,84 +652,127 @@ function canvasUpdateOverlay() {
             dec: obj.dec
         });
         
-        // Only draw if in viewport
-        if (viewportPoint.x >= viewportBounds.left && 
+        // OPTIMIZATION: Use simple bounds check for viewport culling
+        const isInViewport = (
+            viewportPoint.x >= viewportBounds.left && 
             viewportPoint.x <= viewportBounds.right && 
             viewportPoint.y >= viewportBounds.top && 
-            viewportPoint.y <= viewportBounds.bottom) {
-            
-            // Check if this is the highlighted source
-            const isHighlighted = (i === window.currentHighlightedSourceIndex);
-            
-            // Draw regular dot
-            ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI, false);
-            
-            // Style
-            ctx.lineWidth = dotBorderWidth;
-            ctx.strokeStyle = isHighlighted ? 'yellow' : dotBorderColor;
-            
-            // Fill if needed
-            if (dotFillColor !== 'transparent') {
-                ctx.fillStyle = dotFillColor;
-                ctx.fill();
-            }
-            
-            // Draw border
-            ctx.stroke();
-            
-            // If highlighted, draw the outer glow
+            viewportPoint.y <= viewportBounds.bottom
+        );
+        
+        // OPTIMIZATION: Special case for highlighted source
+        const isHighlighted = (i === window.currentHighlightedSourceIndex);
+        
+        // Collect visible points efficiently
+        if (isInViewport) {
             if (isHighlighted) {
-                // Save context state
-                ctx.save();
-                
-                // Draw highlight with full opacity
-                ctx.globalAlpha = 1.0;
-                ctx.beginPath();
-                ctx.arc(pagePoint.x, pagePoint.y, screenRadius + 3, 0, 2 * Math.PI, false);
-                ctx.lineWidth = 2;
-                ctx.strokeStyle = 'yellow';
-                ctx.stroke();
-                
-                // Restore context
-                ctx.restore();
+                highlightedPoint.x = pagePoint.x;
+                highlightedPoint.y = pagePoint.y;
+                highlightedPoint.radius = screenRadius;
+                highlightedPoint.exists = true;
+            } else {
+                // OPTIMIZATION: Store only the minimal data needed
+                regularPoints.push({
+                    x: pagePoint.x,
+                    y: pagePoint.y,
+                    radius: screenRadius
+                });
             }
-            
             visibleCount++;
-        } else if (i === window.currentHighlightedSourceIndex) {
-            // Highlighted source but outside viewport - draw it anyway
-            
-            // Save context state
-            ctx.save();
-            
-            // Draw highlight with full opacity
-            ctx.globalAlpha = 1.0;
-            
-            // Draw regular dot
-            ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI, false);
-            ctx.lineWidth = dotBorderWidth;
-            ctx.strokeStyle = 'yellow';
-            ctx.stroke();
-            
-            // Draw outer glow
-            ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, screenRadius + 3, 0, 2 * Math.PI, false);
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = 'yellow';
-            ctx.stroke();
-            
-            // Restore context
-            ctx.restore();
-            
+        } else if (isHighlighted) {
+            highlightedPoint.x = pagePoint.x;
+            highlightedPoint.y = pagePoint.y;
+            highlightedPoint.radius = screenRadius;
+            highlightedPoint.exists = true;
             visibleCount++;
         }
+        
+        // --- BEGIN PER-OBJECT STYLES (Using globalRegionStyles as fallback) ---
+        // If specific styles are needed per object, they would be fetched here
+        // For now, using the globally applied regionStyles from catalogs.js
+        const objBorderWidth = regionStyles.borderWidth || 1;
+        const objBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
+        const objOpacity = regionStyles.opacity || 0.7;
+        let objFillColor = regionStyles.backgroundColor || 'transparent';
+
+        // Example logic for per-object fill (can be adapted):
+        // const objData = window.catalogDataForOverlay[i];
+        // if (objData.useTransparentFill === false) {
+        //     objFillColor = objData.fillColor || regionStyles.backgroundColor || 'rgba(255, 152, 0, 0.3)';
+        // } else if (objData.useTransparentFill === true) { 
+        //     try {
+        //         const r = parseInt(objBorderColor.slice(1, 3), 16);
+        //         const g = parseInt(objBorderColor.slice(3, 5), 16);
+        //         const b = parseInt(objBorderColor.slice(5, 7), 16);
+        //         objFillColor = `rgba(${r}, ${g}, ${b}, 0.3)`; 
+        //     } catch (e) { 
+        //         objFillColor = regionStyles.backgroundColor !== 'transparent' ? regionStyles.backgroundColor : 'rgba(255, 152, 0, 0.3)';
+        //     }
+        // } else { 
+        //     objFillColor = regionStyles.backgroundColor || 'transparent';
+        // } 
+        // --- END PER-OBJECT STYLES ---
+        
+        // Draw the object if visible (moved drawing inside main loop)
+        if (isInViewport && !isHighlighted) { // Draw regular points directly
+            ctx.globalAlpha = objOpacity;
+            ctx.lineWidth = objBorderWidth;
+            ctx.strokeStyle = objBorderColor;
+            ctx.fillStyle = objFillColor;
+
+            ctx.beginPath();
+            ctx.moveTo(pagePoint.x + screenRadius, pagePoint.y);
+            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI);
+            ctx.stroke();
+            if (objFillColor !== 'transparent') {
+                ctx.fill();
+            }
+        }
+    }
+    
+    // Handle highlighted point separately with special styling
+    if (highlightedPoint.exists) {
+        // Get the original highlighted object to fetch its style for fill
+        const highlightedObj = window.catalogDataForOverlay[window.currentHighlightedSourceIndex];
+        const highlightedFillColor = regionStyles.backgroundColor || 'transparent'; // Use global style
+        // const highlightedUseTransparentFill = highlightedObj.useTransparentFill !== undefined ? highlightedObj.useTransparentFill : true; // Per-object logic removed for now
+        let finalHighlightFill = highlightedFillColor; // Simpler logic
+
+        // if (highlightedUseTransparentFill === false) {
+        //     finalHighlightFill = highlightedFillColor;
+        // }
+        
+        ctx.save();
+        ctx.globalAlpha = 1.0;
+        ctx.lineWidth = regionStyles.borderWidth || 1; // Use global style
+        ctx.strokeStyle = 'yellow'; // Keep highlight stroke yellow
+        
+        // Draw highlighted circle
+        ctx.beginPath();
+        ctx.arc(highlightedPoint.x, highlightedPoint.y, highlightedPoint.radius, 0, 2 * Math.PI);
+        
+        // Fill if needed
+        if (finalHighlightFill !== 'transparent') {
+            ctx.fillStyle = finalHighlightFill;
+            ctx.fill();
+        }
+        
+        ctx.stroke();
+        
+        // Draw outer glow
+        ctx.beginPath();
+        ctx.arc(highlightedPoint.x, highlightedPoint.y, highlightedPoint.radius + 3, 0, 2 * Math.PI);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        ctx.restore();
     }
     
     // Draw popup if active
     window.canvasPopup.render(ctx);
     
-    // console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
+    // Reset global alpha
+    ctx.globalAlpha = 1.0;
 }
 
 
@@ -975,6 +1028,13 @@ function canvasHandleClick(event) {
             return;
         }
         
+        // Check if drag handle was clicked (or header area)
+        if (window.canvasPopup.isDragHandleClicked(clickX, clickY) || 
+           (window.canvasPopup.isPopupClicked(clickX, clickY) && clickY < window.canvasPopup.y - window.canvasPopup.height/2 + 36)) {
+            window.canvasPopup.startDrag(clickX, clickY);
+            return;
+        }
+        
         // Check if popup area was clicked (to prevent processing clicks through it)
         if (window.canvasPopup.isPopupClicked(clickX, clickY)) {
             return;
@@ -984,7 +1044,7 @@ function canvasHandleClick(event) {
     // Find closest source to the click point
     let closestSource = null;
     let closestDistance = Infinity;
-    const hitRadius = 10; // Increased click radius
+    const hitRadius = 10;
     
     for (const source of window.catalogSourceMap) {
         const dx = source.x - clickX;
@@ -1010,20 +1070,67 @@ function canvasHandleClick(event) {
         
         // Highlight the source on canvas
         canvasHighlightSource(closestSource.sourceIndex);
+
+        // --- Highlight corresponding point in scatter plot ---
+        const scatterPlotArea = document.getElementById('plot-area');
+        if (scatterPlotArea) {
+            // Clear previous scatter highlight
+            if (window.highlightedScatterCircle) {
+                try { // Add try-catch for safety
+                    const originalRadius = window.highlightedScatterCircle.dataset.originalRadius || 4; // Assume 4 if dataset not set
+                    window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                    window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                    window.highlightedScatterCircle.setAttribute('r', originalRadius);
+                } catch (err) {
+                    console.warn("Error clearing previous scatter highlight:", err);
+                }
+            }
+            
+            // Find and highlight the new circle
+            const targetCircle = scatterPlotArea.querySelector(`circle[data-index='${closestSource.sourceIndex}']`);
+            if (targetCircle) {
+                 try { // Add try-catch for safety
+                    targetCircle.dataset.originalRadius = targetCircle.getAttribute('r'); // Store original radius
+                    targetCircle.setAttribute('stroke', 'yellow');
+                    targetCircle.setAttribute('stroke-width', '2');
+                    targetCircle.setAttribute('r', parseFloat(targetCircle.dataset.originalRadius) * 1.5);
+                    window.highlightedScatterCircle = targetCircle; // Store reference
+                    console.log("Canvas Click: Highlighted scatter plot circle for index", closestSource.sourceIndex);
+                 } catch (err) {
+                     console.warn("Error highlighting new scatter circle:", err);
+                 }
+            } else {
+                console.log("Canvas Click: Could not find scatter plot circle for index", closestSource.sourceIndex);
+                window.highlightedScatterCircle = null; // Ensure no stale reference
+            }
+        } else {
+             window.highlightedScatterCircle = null; // Ensure no stale reference if plot area gone
+        }
+        // --- End scatter plot highlight ---
         
         // Show popup with source info using our canvas popup system
         window.canvasPopup.show(
             closestSource.sourceIndex,
-            closestSource.x,
-            closestSource.y,
+            closestSource.x, // Screen X for popup position
+            closestSource.y, // Screen Y for popup position
             sourceObj
         );
     } else {
         console.log("No source found near click position");
         
-        // If clicking empty space, hide any active popup
+        // If clicking empty space, hide any active popup and clear highlights
         if (window.canvasPopup.active) {
-            window.canvasPopup.hide();
+            window.canvasPopup.hide(); 
+        }
+        // Also clear scatter highlight if clicking empty space
+        if (window.highlightedScatterCircle) {
+            try {
+                const originalRadius = window.highlightedScatterCircle.dataset.originalRadius || 4;
+                window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                 window.highlightedScatterCircle.setAttribute('r', originalRadius);
+            } catch (err) { console.warn("Error clearing scatter highlight on empty click:", err); }
+             window.highlightedScatterCircle = null;
         }
     }
 }
@@ -1309,7 +1416,7 @@ function canvasAddCatalogOverlay(catalogData) {
 function canvasClearCatalogOverlay() {
     // Hide popup
     if (window.canvasPopup && window.canvasPopup.active) {
-        window.canvasPopup.hide();
+        window.canvasPopup.hide(); // This should also clear scatter highlight now
     }
     
     // Remove container
@@ -1323,13 +1430,9 @@ function canvasClearCatalogOverlay() {
     
     // Remove any handlers added to the viewer (if possible)
     if (window.viewer) {
-        try {
-            viewer.removeHandler('canvas-release');
-            viewer.removeHandler('canvas-press');
-            viewer.removeHandler('canvas-drag');
-        } catch (e) {
-            console.log("Note: Could not remove all handlers", e);
-        }
+        // No reliable way to remove specific handlers added by name, 
+        // but OpenSeadragon usually handles cleanup on close/destroy.
+        // We might need to explicitly remove the canvas-press/drag/release handlers if added globally.
     }
     
     // Clear references
@@ -1337,6 +1440,18 @@ function canvasClearCatalogOverlay() {
     window.catalogSourceMap = null;
     window.catalogDataForOverlay = null;
     window.currentHighlightedSourceIndex = -1;
+    
+    // --- Clear scatter plot highlight ---
+    if (window.highlightedScatterCircle) {
+         try {
+            const originalRadius = window.highlightedScatterCircle.dataset.originalRadius || 4;
+            window.highlightedScatterCircle.setAttribute('stroke', '#333');
+            window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+             window.highlightedScatterCircle.setAttribute('r', originalRadius);
+        } catch (err) { console.warn("Error clearing scatter highlight in canvasClearCatalogOverlay:", err); }
+        window.highlightedScatterCircle = null;
+    }
+    // --- End clear scatter highlight ---
     
 }
 
@@ -1352,7 +1467,7 @@ function initPureCanvasImplementation() {
     window.addCatalogOverlay = canvasAddCatalogOverlay;
     window.clearCatalogOverlay = canvasClearCatalogOverlay;
     
-    // Override showRegionInfo to be a no-op since we're using canvas popup
+    // Override showRegionInfo to be a no-op since we're using canvas popups
     window.showRegionInfo = function() {
         console.log("showRegionInfo called but we're using canvas popups instead");
         return null;

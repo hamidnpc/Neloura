@@ -25,6 +25,8 @@
 
 
     <style>
+        .flag-filter-container{display: none !important;}
+        #osd-coordinates{display: none !important;}
         html, body {
             margin: 0;
             padding: 0;
@@ -354,6 +356,143 @@ color: black !important;
             z-index: 1000;
             display: none;
         }
+
+        /* FITS Header Modal Styles */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1500; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%; /* Full width */
+            height: 100%; /* Full height */
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0,0,0,0.6); /* Black w/ opacity */
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background-color: #1e1e1e; /* Dark background */
+            color: #f1f1f1; /* Light text */
+            margin: 5% auto; /* 10% from the top and centered */
+            padding: 25px;
+            border: 1px solid #555;
+            width: 70%; /* Could be more or less, depending on screen size */
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4);
+            font-family: 'Courier New', Courier, monospace; /* Monospaced font for header */
+            max-height: 80vh; /* Limit height */
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-content h2 {
+             margin-top: 0;
+             color: #e0e0e0;
+             font-family: 'Raleway', sans-serif;
+             border-bottom: 1px solid #444;
+             padding-bottom: 10px;
+             margin-bottom: 15px;
+             font-weight: 500;
+             font-size: 1.4em;
+        }
+
+        #fits-header-search {
+            width: calc(100% - 22px); /* Full width minus padding */
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background-color: #333;
+            color: #f1f1f1;
+            font-size: 1em;
+        }
+        
+        #fits-header-table-container {
+             overflow-y: auto; /* Scrollable area for table */
+             flex-grow: 1; /* Takes remaining space */
+             background-color: #282828; /* Slightly different background */
+             padding: 10px;
+             border-radius: 4px;
+             border: 1px solid #444;
+        }
+
+        #fits-header-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+
+        #fits-header-table th, #fits-header-table td {
+            text-align: left;
+            padding: 6px 8px;
+            border-bottom: 1px solid #444;
+        }
+
+        #fits-header-table th {
+             background-color: #3a3a3a;
+             font-weight: bold;
+             position: sticky;
+             top: 0; /* Stick header to top */
+        }
+
+        #fits-header-table tr:last-child td {
+             border-bottom: none;
+        }
+
+        #fits-header-table tr:hover {
+             background-color: #3f3f3f;
+        }
+
+        #fits-header-table .header-key {
+             font-weight: bold;
+             color: #a7d7ff; /* Light blue for keys */
+             min-width: 100px;
+        }
+        
+        #fits-header-table .header-value {
+            color: #f0f0f0;
+            word-break: break-all; /* Break long values */
+        }
+        
+        #fits-header-table .header-comment {
+            color: #9e9e9e; /* Grey for comments */
+            font-style: italic;
+        }
+        
+        /* Highlight for search results */
+        .highlight {
+             background-color: rgba(255, 255, 0, 0.3);
+             font-weight: bold;
+        }
+
+        .close-button {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            cursor: pointer;
+        }
+
+        .close-button:hover,
+        .close-button:focus {
+            color: #fff;
+            text-decoration: none;
+        }
+
+        /* Fade-out animation for modal */
+        @keyframes fadeOutModal {
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(-20px); }
+        }
+
+        .modal.fade-out {
+            animation: fadeOutModal 0.3s ease-out forwards;
+        }
     </style>
 </head>
 <body>
@@ -372,5 +511,24 @@ color: black !important;
     </div>
     <div id="openseadragon"></div>
     <div id="catalog-info" class="catalog-info"></div>
+
+    <div id="plotter-container" style="display: none; width: 100%; height: 100%; position: relative;">
+         <canvas id="plotter-canvas" style="position: absolute; top: 0; left: 0;"></canvas>
+    </div>
+
+    <!-- Placeholder for FITS Header Modal -->
+    <div id="fits-header-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeFitsHeaderModal()">&times;</span>
+            <h2 id="fits-header-filename">FITS Header</h2>
+            <input type="text" id="fits-header-search" placeholder="Search header...">
+            <div id="fits-header-table-container">
+                <!-- Header content will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+</div> <!-- End of main-content -->
+
 </body>
 </html>

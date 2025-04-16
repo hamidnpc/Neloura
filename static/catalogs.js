@@ -35,7 +35,10 @@ function updateCatalogDropdown(catalogs) {
             option.href = "#";
             option.textContent = catalog.name;
             option.onclick = function() {
-                loadCatalog(catalog.name);
+                // Show the style customizer FIRST
+                showStyleCustomizerPopup(catalog.name);
+                // Don't load immediately, let the popup handle it via Apply button
+                // loadCatalog(catalog.name); // Remove or comment this out
                 return false;
             };
             dropdown.appendChild(option);
@@ -139,7 +142,7 @@ function loadCatalog(catalogName) {
             .then(catalogInfo => {
                 // Add catalog overlay
                 addCatalogOverlay(catalogData);
-                
+
                 // Display catalog info
                 displayCatalogInfo(catalogInfo);
 
@@ -154,7 +157,7 @@ function loadCatalog(catalogName) {
                 
                 // Still add the overlay even if info fails
                 addCatalogOverlay(catalogData);
-                
+
                 // Hide loading indicator
                 showProgress(false);
             });
@@ -166,11 +169,22 @@ function loadCatalog(catalogName) {
     });
 }
 
-
+// Keep a reference to the core loadCatalog function
+const coreLoadCatalog = loadCatalog;
 
 // Make sure this function is added/updated
 function updateCanvasOverlay() {
-    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) return;
+    console.log('[updateCanvasOverlay] Entered function.');
+    console.log('[updateCanvasOverlay] Checking prerequisites:', {
+        viewerExists: typeof viewer !== 'undefined' && viewer !== null,
+        canvasExists: typeof window.catalogCanvas !== 'undefined' && window.catalogCanvas !== null,
+        dataExists: typeof window.catalogDataForOverlay !== 'undefined' && window.catalogDataForOverlay !== null
+    });
+
+    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
+        console.log('[updateCanvasOverlay] Exiting early due to missing prerequisites.');
+        return;
+    }
 
     const canvas = window.catalogCanvas;
     const ctx = canvas.getContext('2d');
@@ -199,6 +213,14 @@ function updateCanvasOverlay() {
     const dotBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
     const dotFillColor = regionStyles.backgroundColor || 'transparent';
     const dotOpacity = regionStyles.opacity || 0.7;
+    
+    console.log('[updateCanvasOverlay] Reading styles:', {
+        raw: regionStyles, // Log the whole object
+        borderWidth: dotBorderWidth,
+        borderColor: dotBorderColor,
+        fillColor: dotFillColor,
+        opacity: dotOpacity
+    });
     
     // Set global alpha for transparency
     ctx.globalAlpha = dotOpacity;
@@ -1225,7 +1247,10 @@ function showStyleCustomizerPopup(catalogName) {
         closeButton.style.color = '#aaa';
     });
     closeButton.addEventListener('click', () => {
-        popup.style.display = 'none';
+        // popup.style.display = 'none'; // Hide the popup
+        if (popup && popup.parentNode) { // Remove the popup from the DOM
+             popup.parentNode.removeChild(popup);
+        }
     });
     
     // Create form content
@@ -1541,22 +1566,52 @@ function showStyleCustomizerPopup(catalogName) {
         applyButton.style.backgroundColor = '#4CAF50';
     });
     applyButton.addEventListener('click', () => {
-        // Save settings and apply to catalog regions
-        regionStyles = {
-            borderColor: borderColorInput.value,
-            backgroundColor: transparentCheckbox.checked ? 'transparent' : bgColorInput.value,
-            borderWidth: parseInt(borderWidthSlider.value),
-            opacity: parseFloat(opacitySlider.value)
+        const newBorderColor = borderColorInput.value;
+        const newBgColor = transparentCheckbox.checked ? 'transparent' : bgColorInput.value;
+        const newBorderWidth = parseInt(borderWidthSlider.value);
+        const newOpacity = parseFloat(opacitySlider.value);
+
+        console.log('[Apply Styles] Values from inputs:', {
+            borderColor: newBorderColor,
+            backgroundColor: newBgColor,
+            borderWidth: newBorderWidth,
+            opacity: newOpacity
+        });
+
+        // Save settings
+        regionStyles = { // Update the local regionStyles object
+            borderColor: newBorderColor,
+            backgroundColor: newBgColor,
+            borderWidth: newBorderWidth,
+            opacity: newOpacity
         };
-        
+        console.log('[Apply Styles] Updated regionStyles object:', regionStyles);
+
         // Hide popup
-        popup.style.display = 'none';
-        
-        // Store the current catalog name to use in subsequent functions
-        window.currentStyleCatalogName = catalogName;
-        
-        // Call the original loadCatalog function directly
-        originalLoadCatalog(catalogName);
+        // popup.style.display = 'none'; // Instead of hiding, remove it
+        if (popup && popup.parentNode) {
+             popup.parentNode.removeChild(popup);
+        }
+
+        // Apply styles to existing regions - REMOVED as we use canvas overlay now
+        // console.log('[Apply Styles] Calling applyStylesToRegions...');
+        // applyStylesToRegions();
+
+        // REMOVED: Update the overlay immediately - loadCatalog will handle the initial draw
+        // console.log('[Apply Styles] Triggering immediate overlay update...');
+        // if (typeof updateCanvasOverlay === 'function') {
+        //     updateCanvasOverlay(); // Prefer canvas update if available
+        // } else if (typeof updateOverlay === 'function') {
+        //     updateOverlay(); // Fallback to div overlay update
+        // }
+
+        // NOW load the catalog using the selected styles
+        if (typeof coreLoadCatalog === 'function') { // Use the core load function
+             console.log('[Apply Styles] Calling coreLoadCatalog to load/display with new styles...');
+             coreLoadCatalog(catalogName); // <-- Call the core function directly
+         } else {
+              console.error("coreLoadCatalog function not found! Cannot load catalog after applying styles.");
+         }
     });
     
     // Cancel button
@@ -1579,7 +1634,10 @@ function showStyleCustomizerPopup(catalogName) {
         cancelButton.style.backgroundColor = '#f44336';
     });
     cancelButton.addEventListener('click', () => {
-        popup.style.display = 'none';
+        // popup.style.display = 'none'; // Hide the popup
+        if (popup && popup.parentNode) { // Remove the popup from the DOM
+             popup.parentNode.removeChild(popup);
+        }
     });
     
     buttonContainer.appendChild(applyButton);
@@ -1660,88 +1718,6 @@ function createCatalogDotWithStyles(obj, dotIndex) {
     dot.dataset.originalZIndex = 'auto';
 
     return dot;
-}
-
-// Override the original addCatalogOverlay function to apply styles
-const originalAddCatalogOverlay = window.addCatalogOverlay;
-if (originalAddCatalogOverlay) {
-    window.addCatalogOverlay = function(catalogData) {
-        console.log("Custom addCatalogOverlay called with styles:", regionStyles);
-        
-        // Clear any existing overlay
-        clearCatalogOverlay();
-        
-        if (!viewer) {
-            console.error("No viewer available for catalog overlay");
-            return;
-        }
-        
-        if (!catalogData || catalogData.length === 0) {
-            console.error("No catalog data available");
-            return;
-        }
-        
-        console.log(`Adding overlay with ${catalogData.length} objects and custom styles`);
-        
-        // Store catalog data for later use
-        window.catalogDataForOverlay = catalogData;
-        
-        // Create a container for all dots
-        const container = document.createElement('div');
-        container.className = 'catalog-overlay-container';
-        container.style.position = 'absolute';
-        container.style.top = '0';
-        container.style.left = '0';
-        container.style.width = '100%';
-        container.style.height = '100%';
-        container.style.pointerEvents = 'none';
-        
-        // Add the container to the viewer
-        const viewerElement = document.getElementById('openseadragon');
-        viewerElement.appendChild(container);
-        
-        // Store the container for later reference
-        window.catalogOverlayContainer = container;
-        
-        // Create dots for each catalog object with custom styles
-        const dots = [];
-        for (let i = 0; i < catalogData.length; i++) {
-            const obj = catalogData[i];
-            
-            // Create a dot with custom styles
-            const dot = createCatalogDotWithStyles(obj, i);
-            
-            // Add click event listener
-            dot.addEventListener('click', function(event) {
-                event.stopPropagation();  // Prevent the click from propagating to the viewer
-                showRegionInfo(this, obj);
-            });
-            
-            // Add to container
-            container.appendChild(dot);
-            dots.push(dot);
-        }
-        
-        // Store dots for later reference
-        window.catalogDots = dots;
-        
-        // Initial update
-        updateOverlay();
-        
-        // Add event handlers for viewer movement
-        viewer.addHandler('animation', updateOverlay);
-        viewer.addHandler('open', updateOverlay);
-        
-        // Use throttled update for pan events to improve performance
-        const throttledUpdate = throttle(updateOverlay, 100);
-        viewer.addHandler('pan', throttledUpdate);
-        
-        // Use debounced update for zoom to reduce flickering
-        const debouncedZoomUpdate = debounce(updateOverlay, 50);
-        viewer.addHandler('zoom', debouncedZoomUpdate);
-        
-        return dots;
-    };
 }
 
 // Add styles to the original catalog loading function for backwards compatibility
@@ -2065,395 +2041,74 @@ function detectCoordinateColumns(columns) {
     return result;
 }
 
-// Add upload catalog function to catalogs.js
-function uploadCatalog() {
-    // Create file input element
+// Function to handle catalog file uploads
+async function uploadCatalog() {
+    // Create a file input element dynamically
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
-    fileInput.accept = '.fits,.fit,.csv,.txt,.cat';
-    fileInput.style.display = 'none';
-    document.body.appendChild(fileInput);
-    
-    // Trigger file selection dialog
-    fileInput.click();
-    
-    // Handle file selection
-    fileInput.addEventListener('change', function() {
-        if (this.files.length === 0) return;
-        
-        // Show loading indicator
-        showProgress(true, 'Uploading catalog...');
-        
+    fileInput.accept = '.fits, .fit, .csv, .txt, .cat'; // Specify acceptable file types
+    fileInput.style.display = 'none'; // Keep it hidden
+
+    // Add an event listener for when a file is selected
+    fileInput.addEventListener('change', async function() {
+        if (!this.files || this.files.length === 0) {
+            // No file selected or dialog cancelled
+            document.body.removeChild(fileInput); // Clean up the input element
+            return;
+        }
+
         const file = this.files[0];
         const formData = new FormData();
         formData.append('file', file);
-        
-        // Upload the file
-        fetch('/upload-catalog/', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                showNotification(`Error: ${data.error}`, 3000, 'error');
-                showProgress(false);
-                return;
-            }
-            
-            showProgress(false);
-            showNotification(`Catalog uploaded successfully: ${data.filename}`, 3000, 'success');
-            
-            // Show the field mapping popup
-            showCatalogFieldMappingPopup(data.filename);
-            
-            // Refresh the catalog list
-            refreshCatalogs();
-        })
-        .catch(error => {
-            console.error('Error uploading catalog:', error);
-            showProgress(false);
-            showNotification(`Upload failed: ${error.message}`, 3000, 'error');
-        })
-        .finally(() => {
-            // Clean up
-            document.body.removeChild(fileInput);
-        });
-    });
-}
 
+        showProgress(true, 'Uploading catalog...');
 
-// Function to create a popup for mapping catalog fields
-function showCatalogFieldMappingPopup(catalogName) {
-    // Check if a popup already exists and remove it
-    const existingPopup = document.getElementById('catalog-mapping-popup');
-    if (existingPopup) {
-        existingPopup.parentNode.removeChild(existingPopup);
-    }
-    
-    // Create popup container
-    const popup = document.createElement('div');
-    popup.id = 'catalog-mapping-popup';
-    popup.style.position = 'fixed';
-    popup.style.top = '50%';
-    popup.style.left = '50%';
-    popup.style.transform = 'translate(-50%, -50%)';
-    popup.style.backgroundColor = '#333';
-    popup.style.border = '1px solid #555';
-    popup.style.borderRadius = '5px';
-    popup.style.padding = '20px';
-    popup.style.zIndex = '2000';
-    popup.style.width = '600px';
-    popup.style.maxHeight = '80vh';
-    popup.style.overflowY = 'auto';
-    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.5)';
-    popup.style.color = '#fff';
-    popup.style.fontFamily = 'Arial, sans-serif';
-    
-    // Create title
-    const title = document.createElement('h2');
-    title.textContent = 'Map Catalog Fields';
-    title.style.marginTop = '0';
-    title.style.marginBottom = '20px';
-    title.style.borderBottom = '1px solid #555';
-    title.style.paddingBottom = '10px';
-    
-    // Create close button
-    const closeButton = document.createElement('button');
-    closeButton.innerHTML = '&times;';
-    closeButton.style.position = 'absolute';
-    closeButton.style.top = '10px';
-    closeButton.style.right = '10px';
-    closeButton.style.background = 'transparent';
-    closeButton.style.border = 'none';
-    closeButton.style.color = '#aaa';
-    closeButton.style.fontSize = '24px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.onclick = function() {
-        document.body.removeChild(popup);
-    };
-    
-    // Create description
-    const description = document.createElement('p');
-    description.textContent = 'Please select the columns in your catalog that correspond to the following fields:';
-    description.style.marginBottom = '20px';
-    
-    // Create loading indicator
-    const loadingDiv = document.createElement('div');
-    loadingDiv.textContent = 'Loading catalog columns...';
-    loadingDiv.style.textAlign = 'center';
-    loadingDiv.style.padding = '20px';
-    loadingDiv.style.color = '#aaa';
-    
-    // Add initial elements
-    popup.appendChild(title);
-    popup.appendChild(closeButton);
-    popup.appendChild(description);
-    popup.appendChild(loadingDiv);
-    
-    // Add to document
-    document.body.appendChild(popup);
-    
-    // Make popup draggable
-    makeDraggable(popup, title);
-    
-    // Fetch column information from the catalog
-    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
-        .then(response => response.json())
-        .then(data => {
-            // Remove loading indicator
-            popup.removeChild(loadingDiv);
-            
-            if (data.error) {
-                const errorDiv = document.createElement('div');
-                errorDiv.textContent = `Error: ${data.error}`;
-                errorDiv.style.color = '#f44336';
-                errorDiv.style.padding = '10px';
-                errorDiv.style.textAlign = 'center';
-                popup.appendChild(errorDiv);
-                return;
-            }
-            
-            const columns = data.columns || [];
-            if (columns.length === 0) {
-                const errorDiv = document.createElement('div');
-                errorDiv.textContent = 'No columns found in the catalog.';
-                errorDiv.style.color = '#f44336';
-                errorDiv.style.padding = '10px';
-                errorDiv.style.textAlign = 'center';
-                popup.appendChild(errorDiv);
-                return;
-            }
-            
-            // Use the new coordinate column detection function
-            const detectedColumns = detectCoordinateColumns(columns);
-            
-            // Create form for field mapping
-            const form = document.createElement('form');
-            form.style.display = 'grid';
-            form.style.gridTemplateColumns = '1fr 2fr';
-            form.style.gap = '15px';
-            form.style.alignItems = 'center';
-            
-            // Define required fields and their descriptions
-            const requiredFields = [
-                { id: 'ra', label: 'Right Ascension (RA)', description: 'Column containing right ascension coordinates' },
-                { id: 'dec', label: 'Declination (DEC)', description: 'Column containing declination coordinates' },
-                { id: 'radius', label: 'Radius (optional)', description: 'Column for region radius in pixels, or enter a fixed size below' }
-            ];
-            
-            // Create select elements for each required field
-            requiredFields.forEach(field => {
-                // Create label
-                const label = document.createElement('label');
-                label.textContent = field.label;
-                label.htmlFor = `field-${field.id}`;
-                label.title = field.description;
-                
-                // Create select element
-                const select = document.createElement('select');
-                select.id = `field-${field.id}`;
-                select.name = field.id;
-                select.style.width = '100%';
-                select.style.padding = '8px';
-                select.style.backgroundColor = '#444';
-                select.style.color = '#fff';
-                select.style.border = '1px solid #555';
-                select.style.borderRadius = '4px';
-                
-                // Add empty option
-                const emptyOption = document.createElement('option');
-                emptyOption.value = '';
-                emptyOption.textContent = `-- Select ${field.label} Column --`;
-                select.appendChild(emptyOption);
-                
-                // // Add auto-detect option
-                // const autoOption = document.createElement('option');
-                // autoOption.value = 'auto';
-                // autoOption.textContent = `Auto-detect ${field.id.toUpperCase()}`;
-                // select.appendChild(autoOption);
-                
-                // Add options for each column
-                columns.forEach(column => {
-                    const option = document.createElement('option');
-                    option.value = column;
-                    option.textContent = column;
-                    
-                    // Check if this column was auto-detected for this field
-                    let detected = false;
-                    
-                    if (field.id === 'ra' && detectedColumns.ra_column === column) {
-                        option.selected = true;
-                        detected = true;
-                    }
-                    else if (field.id === 'dec' && detectedColumns.dec_column === column) {
-                        option.selected = true;
-                        detected = true;
-                    }
-                    else if (field.id === 'radius' && detectedColumns.radius_column === column) {
-                        option.selected = true;
-                        detected = true;
-                    }
-                    
-                    // Add visual cue for detected columns
-                    if (detected) {
-                        option.textContent = `${column}`;
-                        option.style.fontWeight = 'bold';
-                        option.style.backgroundColor = 'rgba(76, 175, 80, 0.2)';
-                        
-                        // Show a notification
-                        if (!window.shownDetectionNotification) {
-                            showNotification(`Auto-detected ${field.id.toUpperCase()} column: ${column}`, 3000, 'info');
-                            window.shownDetectionNotification = true;
-                        }
-                    }
-                    
-                    select.appendChild(option);
-                });
-                
-                // Add to form
-                form.appendChild(label);
-                form.appendChild(select);
+        try {
+            const response = await fetch('/upload-catalog/', {
+                method: 'POST',
+                body: formData,
             });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
+                throw new Error(`Upload failed: ${response.status} - ${errorData.error || 'Unknown error'}`);
+            }
+
+            const result = await response.json();
+            const newFilename = result.filename; // Get the unique filename from the response
+
+            showNotification(result.message || 'Catalog uploaded successfully!', 3000, 'success');
             
-            // Add fixed radius option
-            const fixedRadiusLabel = document.createElement('label');
-            fixedRadiusLabel.textContent = 'Fixed Radius (pixels)';
-            fixedRadiusLabel.htmlFor = 'fixed-radius';
-            fixedRadiusLabel.title = 'Use this value for all regions if no radius column is selected';
+            // --- REMOVED MAPPING POPUP ---
+            // Don't show the mapping popup anymore
+            // showCatalogFieldMappingPopup(newFilename);
+
+            // Refresh the catalog list in the dropdown instead
+            if (typeof refreshCatalogs === 'function') {
+                 refreshCatalogs();
+            }
             
-            const fixedRadiusInput = document.createElement('input');
-            fixedRadiusInput.type = 'number';
-            fixedRadiusInput.id = 'fixed-radius';
-            fixedRadiusInput.name = 'fixed-radius';
-            fixedRadiusInput.min = '1';
-            fixedRadiusInput.max = '100';
-            fixedRadiusInput.value = '5';
-            fixedRadiusInput.style.width = '100%';
-            fixedRadiusInput.style.padding = '8px';
-            fixedRadiusInput.style.backgroundColor = '#444';
-            fixedRadiusInput.style.color = '#fff';
-            fixedRadiusInput.style.border = '1px solid #555';
-            fixedRadiusInput.style.borderRadius = '4px';
-            
-            form.appendChild(fixedRadiusLabel);
-            form.appendChild(fixedRadiusInput);
-            
-            // Add buttons container
-            const buttonsContainer = document.createElement('div');
-            buttonsContainer.style.gridColumn = '1 / span 2';
-            buttonsContainer.style.display = 'flex';
-            buttonsContainer.style.justifyContent = 'space-between';
-            buttonsContainer.style.marginTop = '20px';
-            
-            // Add cancel button
-            const cancelButton = document.createElement('button');
-            cancelButton.textContent = 'Cancel';
-            cancelButton.type = 'button';
-            cancelButton.style.padding = '10px 20px';
-            cancelButton.style.backgroundColor = '#f44336';
-            cancelButton.style.color = '#fff';
-            cancelButton.style.border = 'none';
-            cancelButton.style.borderRadius = '4px';
-            cancelButton.style.cursor = 'pointer';
-            cancelButton.onclick = function() {
-                document.body.removeChild(popup);
-            };
-            
-            // Add submit button
-            const submitButton = document.createElement('button');
-            submitButton.textContent = 'Save Mapping';
-            submitButton.type = 'button';
-            submitButton.style.padding = '10px 20px';
-            submitButton.style.backgroundColor = '#4CAF50';
-            submitButton.style.color = '#fff';
-            submitButton.style.border = 'none';
-            submitButton.style.borderRadius = '4px';
-            submitButton.style.cursor = 'pointer';
-            submitButton.onclick = function() {
-                // Get selected values
-                const raColumn = document.getElementById('field-ra').value;
-                const decColumn = document.getElementById('field-dec').value;
-                const radiusColumn = document.getElementById('field-radius').value;
-                const fixedRadius = document.getElementById('fixed-radius').value;
-                
-                // Validate selections
-                if (!raColumn || raColumn === '') {
-                    showNotification('Please select a column for Right Ascension (RA)', 3000, 'warning');
-                    return;
-                }
-                
-                if (!decColumn || decColumn === '') {
-                    showNotification('Please select a column for Declination (DEC)', 3000, 'warning');
-                    return;
-                }
-                
-                // Prepare mapping data
-                const mappingData = {
-                    catalog_name: catalogName,
-                    ra_column: raColumn === 'auto' ? 'auto' : raColumn,
-                    dec_column: decColumn === 'auto' ? 'auto' : decColumn,
-                    radius_column: radiusColumn === 'auto' ? 'auto' : radiusColumn,
-                    fixed_radius: parseInt(fixedRadius) || 5
-                };
-                
-                // Show loading indicator
-                showProgress(true, 'Saving mapping...');
-                
-                // Send mapping to server
-                fetch('/save-catalog-mapping/', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(mappingData)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    showProgress(false);
-                    
-                    if (data.error) {
-                        showNotification(`Error: ${data.error}`, 3000, 'error');
-                        return;
-                    }
-                    
-                    showNotification('Catalog mapping saved successfully', 3000, 'success');
-                    document.body.removeChild(popup);
-                    
-                    // Load the catalog if requested
-                    if (data.load_catalog) {
-                        loadCatalog(catalogName);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error saving mapping:', error);
-                    showProgress(false);
-                    showNotification(`Error: ${error.message}`, 3000, 'error');
-                });
-            };
-            
-            // Add buttons to container
-            buttonsContainer.appendChild(cancelButton);
-            buttonsContainer.appendChild(submitButton);
-            
-            // Add container to form
-            form.appendChild(buttonsContainer);
-            
-            // Add form to popup
-            popup.appendChild(form);
-        })
-        .catch(error => {
-            console.error('Error fetching catalog columns:', error);
-            popup.removeChild(loadingDiv);
-            
-            const errorDiv = document.createElement('div');
-            errorDiv.textContent = `Error loading catalog columns: ${error.message}`;
-            errorDiv.style.color = '#f44336';
-            errorDiv.style.padding = '10px';
-            errorDiv.style.textAlign = 'center';
-            popup.appendChild(errorDiv);
-        });
+            // Optional: Automatically load the newly uploaded catalog?
+            // loadCatalog(newFilename);
+
+        } catch (error) {
+            console.error('Error uploading catalog:', error);
+            showNotification(`Error: ${error.message}`, 4000, 'error');
+        } finally {
+            showProgress(false);
+            // Clean up the dynamically created input element
+            document.body.removeChild(fileInput);
+        }
+    });
+
+    // Append the input to the body temporarily
+    document.body.appendChild(fileInput);
+    // Programmatically click the hidden file input to open the dialog
+    fileInput.click();
 }
+
+// Function to create and show the catalog field mapping popup
+// ... (rest of the function, which will no longer be called automatically after upload)
 
 function addUploadCatalogButton() {
     // Get the catalog dropdown
@@ -2501,3 +2156,6 @@ window.updateCatalogDropdown = function(catalogs) {
     // Add the upload button
     addUploadCatalogButton();
 };
+
+// Function to create and show the style customizer popup
+// ... existing code ...

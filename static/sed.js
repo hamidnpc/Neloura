@@ -1,4 +1,3 @@
-
 // Create a container for the SED display at the bottom of the screen
 function createSedContainer() {
     // Check if container already exists
@@ -314,7 +313,7 @@ function fallbackToStandardMethod(ra, dec, catalogName) {
             console.log("Error loading SED image from standard method - trying direct URL");
             
             // Try one more fallback: direct URL to the file
-            const directUrl = `/static/${data.filename}?t=${timestamp}`;
+            const directUrl = `${data.url || `/static/${data.filename}`}?t=${timestamp}`;
             sedImage.src = directUrl;
             
             updateSedProgress(90, "Attempting direct image load...");
@@ -322,7 +321,8 @@ function fallbackToStandardMethod(ra, dec, catalogName) {
             // We already have an onload handler set up above
         };
         
-        sedImage.src = `/static/${data.filename}?t=${timestamp}`;
+        // Use the url property if available, otherwise fall back to filename
+        sedImage.src = `${data.url || `/static/${data.filename}`}?t=${timestamp}`;
     })
     .catch(error => {
         console.log("Error in standard method:", error);

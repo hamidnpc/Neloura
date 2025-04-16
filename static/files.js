@@ -36,7 +36,7 @@ function createFileBrowserContainer() {
     header.style.zIndex = '10';
     
     const title = document.createElement('h2');
-    title.textContent = 'Available Files';
+    title.textContent = 'Images';
     title.style.margin = '0';
     title.style.fontSize = '18px';
     title.style.fontWeight = '500';
@@ -70,13 +70,13 @@ function createItemElement(item, currentPath) {
     itemElement.dataset.name = item.name;
     itemElement.dataset.path = item.path;
     itemElement.dataset.type = item.type;
-    itemElement.style.padding = '8px';
+    itemElement.style.padding = '8px 12px 8px 8px'; // Added right padding (12px)
     itemElement.style.borderRadius = '4px';
     itemElement.style.backgroundColor = '#333';
     itemElement.style.cursor = 'pointer';
     itemElement.style.transition = 'background-color 0.2s, opacity 0.3s, transform 0.2s';
     itemElement.style.display = 'flex'; // Use flexbox for better alignment
-    itemElement.style.alignItems = 'center'; // Center items vertically
+    itemElement.style.alignItems = 'flex-start'; // Align items to the top to handle wrapping
     
     // Set color based on item type
     itemElement.style.borderLeft = '3px solid';
@@ -89,55 +89,117 @@ function createItemElement(item, currentPath) {
         itemElement.style.borderLeftColor = '#2196F3';
     }
     
-    // Create item icon based on type
-    const icon = document.createElement('div');
-    icon.className = 'item-icon';
-    icon.style.marginRight = '8px';
-    icon.style.width = '20px';
-    icon.style.height = '20px'; // Give fixed height to stabilize layout
-    icon.style.display = 'flex'; // Use flexbox for icon content
-    icon.style.alignItems = 'center'; // Center icon vertically
-    icon.style.justifyContent = 'center'; // Center icon horizontally
-    
-    if (item.type === 'directory') {
-        // Folder icon
-        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="#FFC107"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path></svg>';
-    } else {
-        // File icon
-        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="#2196F3"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"></path></svg>';
-    }
-    
     // Create content container for text
     const contentContainer = document.createElement('div');
     contentContainer.style.display = 'flex';
     contentContainer.style.flexDirection = 'column';
     contentContainer.style.justifyContent = 'center';
     contentContainer.style.flexGrow = '1';
+    contentContainer.style.overflow = 'hidden'; // Needed for text overflow
+    contentContainer.style.marginRight = '5px'; // Add space between text and button
     
     // Item name
     const nameElement = document.createElement('div');
     nameElement.className = 'file-name';
     nameElement.textContent = item.name;
     nameElement.style.fontWeight = 'bold';
+    nameElement.title = item.name; // Keep full name on hover
     
     // Add name to content container
     contentContainer.appendChild(nameElement);
     
-    // For files, also add size information
-    if (item.type === 'file' && item.size) {
-        const sizeElement = document.createElement('div');
-        sizeElement.className = 'file-size';
-        sizeElement.textContent = formatFileSize(item.size);
-        sizeElement.style.fontSize = '12px';
-        sizeElement.style.color = '#aaa';
-        sizeElement.style.marginTop = '4px';
-        
-        // Add size to content container
-        contentContainer.appendChild(sizeElement);
+    // For files, also add size information and potentially a header button
+    if (item.type === 'file') {
+        if (item.size !== undefined) {
+            const sizeElement = document.createElement('div');
+            sizeElement.className = 'file-size';
+            sizeElement.textContent = formatFileSize(item.size);
+            sizeElement.style.fontSize = '12px';
+            sizeElement.style.color = '#aaa';
+            sizeElement.style.marginTop = '4px';
+            contentContainer.appendChild(sizeElement);
+        }
+
+        // Add "Load Header" button for FITS files
+        if (item.name.toLowerCase().endsWith('.fits') || item.name.toLowerCase().endsWith('.fits.gz')) {
+             const headerButton = document.createElement('button');
+             headerButton.textContent = 'Header';
+             headerButton.className = 'load-header-button';
+             headerButton.style.padding = '3px 6px';
+             headerButton.style.fontSize = '10px';
+             headerButton.style.cursor = 'pointer';
+             headerButton.style.backgroundColor = '#007bff';
+             headerButton.style.color = 'white';
+             headerButton.style.border = 'none';
+             headerButton.style.borderRadius = '3px';
+             headerButton.style.transition = 'background-color 0.2s';
+             headerButton.style.flexShrink = '0'; // Prevent button from shrinking
+             headerButton.style.marginTop = '6px'; // Increased top margin for spacing below size
+             headerButton.style.width = 'fit-content'; // Make button width fit its content
+
+             headerButton.addEventListener('click', async (event) => {
+                 event.stopPropagation(); // Prevent triggering the file load
+                 hideFileBrowser(); // Hide the browser immediately
+
+                 // Show a temporary loading message near where the button was, maybe?
+                 showProgress(true, 'Fetching HDU info...'); 
+
+                 try {
+                     // Fetch HDU info first
+                     const hduList = await getFitsHduInfo(item.path);
+                     showProgress(false); // Hide loading indicator
+
+                     let selectedHduIndex = 0; // Default to primary HDU
+
+                     if (hduList && hduList.length > 1) {
+                         // More than one HDU, ask the user via the new styled popup
+                         if (typeof showHduHeaderSelectionPopup === 'function') {
+                             showHduHeaderSelectionPopup(hduList, item.path);
+                             // Don't proceed further here; the popup handles the call to loadAndDisplayFitsHeader
+                             return; 
+                         } else {
+                             // Fallback if the popup function is missing (shouldn't happen)
+                             console.error('showHduHeaderSelectionPopup function not found. Falling back to HDU 0 header.');
+                             showNotification('Error: HDU selection UI missing. Loading default header.', 3000, 'error');
+                             selectedHduIndex = 0; // Fallback index
+                         }
+                     } else {
+                         // Only one HDU, or error fetching HDU list - proceed with index 0
+                         selectedHduIndex = 0; 
+                     }
+                     
+                     // Call the function to load and display the header for the determined HDU index
+                     if (typeof loadAndDisplayFitsHeader === 'function') {
+                         loadAndDisplayFitsHeader(item.path, selectedHduIndex);
+                     } else {
+                         console.error('loadAndDisplayFitsHeader function not found.');
+                         showNotification('Error: Header display function not available.', 3000, 'error');
+                     }
+
+                 } catch (error) {
+                     showProgress(false);
+                     console.error('Error fetching HDU info:', error);
+                     showNotification(`Error getting HDU info: ${error.message}. Loading primary header.`, 4000, 'error');
+                     // Fallback: Try loading the primary header anyway
+                     if (typeof loadAndDisplayFitsHeader === 'function') {
+                         loadAndDisplayFitsHeader(item.path, 0); // Load HDU 0 as fallback
+                     }
+                 }
+             });
+
+             headerButton.addEventListener('mouseover', function() {
+                this.style.backgroundColor = '#0056b3';
+             });
+             headerButton.addEventListener('mouseout', function() {
+                 this.style.backgroundColor = '#007bff';
+             });
+
+             // Insert the button below the size in the content container
+             contentContainer.appendChild(headerButton); // Add button to the content container
+         }
     }
     
     // Add elements to the item
-    itemElement.appendChild(icon);
     itemElement.appendChild(contentContainer);
     
     // Hover effects
@@ -156,7 +218,12 @@ function createItemElement(item, currentPath) {
     itemElement.style.transform = 'translateY(10px)';
     
     // Click handling based on item type
-    itemElement.addEventListener('click', function() {
+    itemElement.addEventListener('click', function(event) {
+        // Ensure the click wasn't on the header button
+        if (event.target.classList.contains('load-header-button')) {
+            return; // Do nothing if the header button was clicked
+        }
+
         if (item.type === 'directory') {
             // Navigate to directory
             loadFilesList(item.path);
@@ -2641,3 +2708,403 @@ function loadFitsFileWithHduSelection(filepath) {
 // Override the original loadFitsFile function to use our new version
 const originalLoadFitsFile = window.loadFitsFile;
 window.loadFitsFile = loadFitsFileWithHduSelection;
+
+// Function to load and display FITS header in a modal
+async function loadAndDisplayFitsHeader(filepath, hduIndex = 0) { // Add hduIndex parameter
+    const modal = document.getElementById('fits-header-modal');
+    const filenameElement = document.getElementById('fits-header-filename');
+    const tableContainer = document.getElementById('fits-header-table-container');
+    const searchInput = document.getElementById('fits-header-search');
+
+    if (!modal || !filenameElement || !tableContainer || !searchInput) {
+        console.error('Header modal elements not found!');
+        showNotification('Error: Could not display header - UI elements missing.', 3000);
+        return;
+    }
+
+    // Show loading state in modal
+    filenameElement.textContent = `Loading Header for ${filepath.split('/').pop()} (HDU ${hduIndex})...`; // Update title
+    tableContainer.innerHTML = '<div style="text-align: center; padding: 20px;">Loading...</div>';
+    searchInput.value = ''; // Clear previous search
+    modal.style.display = 'block';
+    modal.classList.remove('fade-out'); // Ensure fade-out class is removed
+
+    try {
+        // Include hduIndex in the fetch request
+        const response = await fetch(`/fits-header/${encodeURIComponent(filepath)}?hdu_index=${hduIndex}`);
+        if (!response.ok) {
+             let errorMsg = `Error ${response.status}: ${response.statusText}`;
+             try {
+                 const errorData = await response.json();
+                 errorMsg = errorData.detail || errorMsg;
+             } catch (e) { /* Ignore if response is not JSON */ }
+             throw new Error(`Failed to fetch header. ${errorMsg}`);
+        }
+        const data = await response.json();
+
+        filenameElement.textContent = `Header: ${data.filename} (HDU ${data.hdu_index})`;
+        
+        // Build the table
+        const table = document.createElement('table');
+        table.id = 'fits-header-table';
+        const tbody = document.createElement('tbody');
+
+        data.header.forEach(item => {
+            const row = tbody.insertRow();
+            row.dataset.key = item.key.toLowerCase();
+            row.dataset.value = String(item.value).toLowerCase(); // Ensure value is string
+            row.dataset.comment = item.comment ? item.comment.toLowerCase() : '';
+
+            const keyCell = row.insertCell();
+            keyCell.className = 'header-key';
+            keyCell.textContent = item.key;
+
+            const valueCell = row.insertCell();
+            valueCell.className = 'header-value';
+            valueCell.textContent = item.value;
+
+            const commentCell = row.insertCell();
+            commentCell.className = 'header-comment';
+            commentCell.textContent = item.comment || ''; // Handle null comments
+        });
+
+        table.appendChild(tbody);
+        tableContainer.innerHTML = ''; // Clear loading message
+        tableContainer.appendChild(table);
+
+        // Implement search functionality
+        const filterHeader = () => {
+             const searchTerm = searchInput.value.toLowerCase().trim();
+             const rows = tbody.getElementsByTagName('tr');
+             let visibleCount = 0;
+
+             for (let i = 0; i < rows.length; i++) {
+                 const row = rows[i];
+                 const key = row.dataset.key;
+                 const value = row.dataset.value;
+                 const comment = row.dataset.comment;
+                 const textContent = `${key} ${value} ${comment}`;
+
+                 // Simple text highlighting (optional)
+                 const keyCell = row.cells[0];
+                 const valueCell = row.cells[1];
+                 const commentCell = row.cells[2];
+
+                 // Clear previous highlights
+                 keyCell.innerHTML = keyCell.textContent;
+                 valueCell.innerHTML = valueCell.textContent;
+                 commentCell.innerHTML = commentCell.textContent;
+
+                 if (!searchTerm || textContent.includes(searchTerm)) {
+                     row.style.display = ''; // Show row
+                     visibleCount++;
+                     
+                     // Apply highlighting if searching
+                     if (searchTerm) {
+                         const regex = new RegExp(`(${_.escapeRegExp(searchTerm)})`, 'gi');
+                         keyCell.innerHTML = keyCell.textContent.replace(regex, '<span class="highlight">$1</span>');
+                         valueCell.innerHTML = valueCell.textContent.replace(regex, '<span class="highlight">$1</span>');
+                         commentCell.innerHTML = commentCell.textContent.replace(regex, '<span class="highlight">$1</span>');
+                     }
+                 } else {
+                     row.style.display = 'none'; // Hide row
+                 }
+             }
+             // Optionally show a message if no results
+             // Add logic here if needed
+        };
+
+        // Debounce search input to avoid excessive filtering on fast typing
+        searchInput.oninput = _.debounce(filterHeader, 250); // Using lodash debounce
+
+    } catch (error) {
+        console.error('Error loading or displaying FITS header:', error);
+        filenameElement.textContent = 'Error Loading Header';
+        tableContainer.innerHTML = `<div style="color: red; padding: 20px;">Error: ${error.message}</div>`;
+        showNotification(`Error loading header: ${error.message}`, 5000);
+    }
+}
+
+// Function to close the FITS header modal with animation
+function closeFitsHeaderModal() {
+    const modal = document.getElementById('fits-header-modal');
+    const animationDuration = 300; // Must match the CSS animation duration (0.3s)
+
+    if (modal) {
+        modal.classList.add('fade-out'); // Add fade-out class to trigger animation
+        
+        // Wait for animation to finish before hiding
+        setTimeout(() => {
+            modal.style.display = 'none'; 
+            modal.classList.remove('fade-out'); // Clean up class for next time
+        }, animationDuration);
+    }
+}
+
+// Ensure the modal closes if the user clicks outside of the content area
+window.onclick = function(event) {
+    const modal = document.getElementById('fits-header-modal');
+    if (event.target == modal) { // Check if the click is directly on the modal backdrop
+        closeFitsHeaderModal();
+    }
+}
+
+// NEW function: Popup for selecting which FITS HEADER to view (styled like createHduSelectorPopup)
+function showHduHeaderSelectionPopup(hduList, filepath) {
+    // Create container for the popup (similar structure to createHduSelectorPopup)
+    const popup = document.createElement('div');
+    popup.id = 'hdu-header-selector-popup'; // Use a distinct ID
+    popup.style.position = 'fixed';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+    popup.style.backgroundColor = '#333'; // Match styling
+    popup.style.border = '1px solid #555';
+    popup.style.borderRadius = '5px';
+    popup.style.padding = '15px';
+    popup.style.zIndex = '2000'; // Ensure it's on top
+    popup.style.width = '500px';
+    popup.style.maxHeight = '80vh';
+    popup.style.overflowY = 'auto';
+    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
+
+    // --- Replicate Header and Content from createHduSelectorPopup --- 
+
+    // Header container
+    const headerContainer = document.createElement('div');
+    headerContainer.style.display = 'flex';
+    headerContainer.style.justifyContent = 'space-between';
+    headerContainer.style.alignItems = 'center';
+    headerContainer.style.marginBottom = '15px';
+    headerContainer.style.borderBottom = '1px solid #555';
+    headerContainer.style.paddingBottom = '10px';
+
+    // Title
+    const title = document.createElement('h3');
+    title.textContent = 'Select HDU Header to View'; // Adjusted title
+    title.style.margin = '0';
+    title.style.color = '#fff';
+    title.style.fontFamily = 'Arial, sans-serif';
+    title.style.fontSize = '18px';
+    title.style.fontWeight = 'bold';
+
+    // Close button (identical styling)
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.background = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.style.lineHeight = '24px';
+    closeButton.style.width = '30px';
+    closeButton.style.height = '30px';
+    closeButton.style.borderRadius = '50%';
+    closeButton.style.display = 'flex';
+    closeButton.style.alignItems = 'center';
+    closeButton.style.justifyContent = 'center';
+    closeButton.title = 'Close';
+    closeButton.addEventListener('mouseover', function() { this.style.backgroundColor = 'rgba(255,255,255,0.1)'; this.style.color = '#fff'; });
+    closeButton.addEventListener('mouseout', function() { this.style.backgroundColor = 'transparent'; this.style.color = '#aaa'; });
+    closeButton.addEventListener('click', function() { document.body.removeChild(popup); });
+    headerContainer.appendChild(title);
+    headerContainer.appendChild(closeButton);
+
+    // Description
+    const description = document.createElement('p');
+    description.textContent = 'This FITS file contains multiple headers. Please select which one to view:';
+    description.style.color = '#ddd';
+    description.style.marginBottom = '15px';
+    description.style.fontFamily = 'Arial, sans-serif';
+
+    // Search box (identical styling)
+    const searchContainer = document.createElement('div');
+    searchContainer.style.marginBottom = '15px';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search HDUs...';
+    searchInput.style.width = '100%';
+    searchInput.style.padding = '8px 12px';
+    searchInput.style.backgroundColor = '#444';
+    searchInput.style.border = '1px solid #555';
+    searchInput.style.borderRadius = '4px';
+    searchInput.style.color = '#fff';
+    searchInput.style.fontSize = '14px';
+    searchInput.style.boxSizing = 'border-box';
+    searchInput.addEventListener('focus', function() { this.style.border = '1px solid #2196F3'; this.style.outline = 'none'; });
+    searchInput.addEventListener('blur', function() { this.style.border = '1px solid #555'; });
+    searchContainer.appendChild(searchInput);
+
+    // Selection container
+    const selectionContainer = document.createElement('div');
+    selectionContainer.style.display = 'flex';
+    selectionContainer.style.flexDirection = 'column';
+    selectionContainer.style.gap = '10px';
+    selectionContainer.style.marginBottom = '15px';
+    selectionContainer.id = 'hdu-header-selection-container'; // Distinct ID
+
+    const optionElements = [];
+
+    // Add each HDU as an option (using same styling as createHduSelectorPopup)
+    hduList.forEach((hdu, index) => {
+        const option = document.createElement('div');
+        option.className = 'hdu-option'; // Reuse class for styling
+        option.style.padding = '10px';
+        option.style.backgroundColor = '#444';
+        option.style.borderRadius = '4px';
+        option.style.cursor = 'pointer';
+        option.style.transition = 'background-color 0.2s, transform 0.1s';
+        option.addEventListener('mouseover', function() { this.style.backgroundColor = '#555'; this.style.transform = 'translateY(-2px)'; });
+        option.addEventListener('mouseout', function() { this.style.backgroundColor = '#444'; this.style.transform = 'translateY(0)'; });
+
+        // Store searchable text
+        let searchText = `HDU ${index} ${hdu.type} `;
+        if (hdu.name) searchText += hdu.name + ' ';
+        if (hdu.dimensions) searchText += hdu.dimensions.join('x') + ' ';
+        if (hdu.bunit) searchText += hdu.bunit + ' ';
+        option.dataset.searchText = searchText.toLowerCase();
+
+        // Option header
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.alignItems = 'center';
+        header.style.marginBottom = '5px';
+        const optionTitle = document.createElement('div');
+        optionTitle.style.fontWeight = 'bold';
+        optionTitle.style.color = '#fff';
+        optionTitle.textContent = `HDU ${index}: ${hdu.type}`; 
+        if (hdu.name && hdu.name !== '') optionTitle.textContent += ` (${hdu.name})`;
+        if (hdu.isRecommended) {
+            const badge = document.createElement('span');
+            badge.textContent = 'Recommended';
+            badge.style.backgroundColor = '#4CAF50';
+            badge.style.color = 'white';
+            badge.style.padding = '2px 6px';
+            badge.style.borderRadius = '3px';
+            badge.style.fontSize = '12px';
+            badge.style.marginLeft = '10px';
+            optionTitle.appendChild(badge);
+        }
+        header.appendChild(optionTitle);
+
+        // Details (simplified)
+        const details = document.createElement('div');
+        details.style.fontSize = '13px';
+        details.style.color = '#ccc';
+        details.style.marginTop = '5px';
+        // Display only row count for tables, otherwise minimal info
+        if (hdu.type === 'Table' && hdu.rows !== undefined) {
+            details.innerHTML = `<div>Rows: ${hdu.rows}</div>`;
+        } else {
+            // For Image HDUs or others, don't show dimensions/WCS/unit here
+            // details.innerHTML = '<div>(Image Data)</div>'; // Or leave empty
+            details.innerHTML = ''; 
+        }
+        option.appendChild(header);
+        option.appendChild(details);
+
+        // *** KEY DIFFERENCE: Click handler calls loadAndDisplayFitsHeader ***
+        option.addEventListener('click', function() {
+            if (typeof loadAndDisplayFitsHeader === 'function') {
+                loadAndDisplayFitsHeader(filepath, index); // Call header display function
+            } else {
+                console.error('loadAndDisplayFitsHeader function not found.');
+                showNotification('Error: Header display function not available.', 3000, 'error');
+            }
+            document.body.removeChild(popup);
+        });
+
+        selectionContainer.appendChild(option);
+        optionElements.push(option);
+    });
+
+    // Add search functionality (identical logic)
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase().trim();
+        if (searchTerm === '') {
+            optionElements.forEach(option => { option.style.display = 'block'; });
+        } else {
+            optionElements.forEach(option => {
+                const searchText = option.dataset.searchText;
+                option.style.display = searchText.includes(searchTerm) ? 'block' : 'none';
+            });
+        }
+    });
+
+    // Button container (Cancel only, or add Recommended? Let's add Recommended for consistency)
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'space-between';
+    buttonContainer.style.marginTop = '15px'; // Added margin top
+
+    // Cancel button (identical)
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = 'Cancel';
+    cancelButton.style.flex = '1';
+    cancelButton.style.marginRight = '10px';
+    cancelButton.style.padding = '10px 0';
+    cancelButton.style.backgroundColor = '#f44336';
+    cancelButton.style.color = '#fff';
+    cancelButton.style.border = 'none';
+    cancelButton.style.borderRadius = '4px';
+    cancelButton.style.cursor = 'pointer';
+    cancelButton.style.fontFamily = 'Arial, sans-serif';
+    cancelButton.style.fontSize = '14px';
+    cancelButton.addEventListener('mouseover', () => { cancelButton.style.backgroundColor = '#d32f2f'; });
+    cancelButton.addEventListener('mouseout', () => { cancelButton.style.backgroundColor = '#f44336'; });
+    cancelButton.addEventListener('click', () => { document.body.removeChild(popup); });
+
+    // Auto-select recommended HDU button (calls loadAndDisplayFitsHeader)
+    const autoSelectButton = document.createElement('button');
+    autoSelectButton.textContent = 'View Recommended Header';
+    autoSelectButton.style.flex = '1';
+    autoSelectButton.style.padding = '10px 0';
+    autoSelectButton.style.backgroundColor = '#4CAF50';
+    autoSelectButton.style.color = '#fff';
+    autoSelectButton.style.border = 'none';
+    autoSelectButton.style.borderRadius = '4px';
+    autoSelectButton.style.cursor = 'pointer';
+    autoSelectButton.style.fontFamily = 'Arial, sans-serif';
+    autoSelectButton.style.fontSize = '14px';
+    autoSelectButton.addEventListener('mouseover', () => { autoSelectButton.style.backgroundColor = '#45a049'; });
+    autoSelectButton.addEventListener('mouseout', () => { autoSelectButton.style.backgroundColor = '#4CAF50'; });
+    autoSelectButton.addEventListener('click', () => {
+        const recommendedIndex = hduList.findIndex(hdu => hdu.isRecommended);
+        const indexToLoad = (recommendedIndex >= 0) ? recommendedIndex : 0; // Default to 0 if none recommended
+        if (typeof loadAndDisplayFitsHeader === 'function') {
+            loadAndDisplayFitsHeader(filepath, indexToLoad);
+        } else {
+             console.error('loadAndDisplayFitsHeader function not found.');
+             showNotification('Error: Header display function not available.', 3000, 'error');
+        }
+        document.body.removeChild(popup);
+    });
+
+    buttonContainer.appendChild(cancelButton);
+    buttonContainer.appendChild(autoSelectButton);
+
+    // Assemble popup
+    popup.appendChild(headerContainer);
+    popup.appendChild(description);
+    popup.appendChild(searchContainer);
+    popup.appendChild(selectionContainer);
+    popup.appendChild(buttonContainer);
+
+    // Add popup to document
+    document.body.appendChild(popup);
+    
+    // Make popup draggable (assuming makeDraggable function exists and works with the title element)
+    if (typeof makeDraggable === 'function') {
+         makeDraggable(popup, title); // Use the title element as the drag handle
+    } else {
+        console.warn('makeDraggable function not found, popup will not be draggable.');
+    }
+
+    // Focus search input
+    setTimeout(() => { searchInput.focus(); }, 100);
+}
+
+
+// Ensure the modal closes if the user clicks outside of the content area
+// ... existing code ...

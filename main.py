@@ -51,6 +51,7 @@ from fastapi import UploadFile, File
 import re
 import time
 from types import SimpleNamespace  # Add this import
+from datetime import datetime # Add datetime import
 
 # Determine if we're running locally or on a server
 RUNNING_ON_SERVER = os.getenv("RUN_SERVER", "False").lower() == "true"
@@ -64,6 +65,38 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Create a catalogs directory if it doesn't exist
 catalogs_dir = Path("catalogs")
 catalogs_dir.mkdir(exist_ok=True)
+
+# --- Catalog Column Mapping --- 
+# Path to store mappings
+catalog_mapping_file = Path("catalog_mappings.json")
+# Dictionary to hold mappings in memory
+catalog_column_mappings = {}
+
+# Load existing mappings at startup
+def load_mappings():
+    global catalog_column_mappings
+    if catalog_mapping_file.exists():
+        try:
+            with open(catalog_mapping_file, 'r') as f:
+                catalog_column_mappings = json.load(f)
+            print(f"Loaded column mappings from {catalog_mapping_file}")
+        except Exception as e:
+            print(f"Error loading column mappings: {e}. Starting with empty mappings.")
+            catalog_column_mappings = {}
+    else:
+        catalog_column_mappings = {}
+
+# Save mappings to file
+def save_mappings():
+    try:
+        with open(catalog_mapping_file, 'w') as f:
+            json.dump(catalog_column_mappings, f, indent=4)
+    except Exception as e:
+        print(f"Error saving column mappings: {e}")
+
+# Load mappings when the app starts
+load_mappings()
+# --- End Catalog Column Mapping ---
 
 # Global variable to store loaded catalog data
 loaded_catalogs = {}
@@ -100,69 +133,135 @@ async def list_catalogs():
             content={"error": f"Failed to list catalogs: {str(e)}"}
         )
 
+# NEW ENDPOINT: Upload Catalog File
+@app.post("/upload-catalog/")
+async def upload_catalog(file: UploadFile = File(...)):
+    """Uploads a FITS catalog file, adding a timestamp to avoid overwrites."""
+    try:
+        # Generate a unique filename with a timestamp
+        original_stem = Path(file.filename).stem
+        original_suffix = Path(file.filename).suffix
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{original_stem}_{timestamp}{original_suffix}"
+        upload_path = catalogs_dir / unique_filename
 
-import glob
-import os
-from pathlib import Path
+        # Basic check to prevent excessively large uploads (optional)
+        # max_size = 500 * 1024 * 1024 # 500 MB limit
+        # if file.size > max_size:
+        #     raise HTTPException(status_code=413, detail=f"File size exceeds limit ({max_size // 1024 // 1024} MB)")
 
+        print(f"Attempting to save uploaded catalog as: {upload_path}")
 
-# Add these imports to your main.py file
-import threading
-import queue
-import tempfile
-import shutil
-from skimage.transform import resize
-from pathlib import Path
-import numpy as np
-import io
-from PIL import Image
-import base64
-import json
-
-# Define a tile cache to store generated tiles
-class TileCache:
-    def __init__(self, max_size=100):
-        self.cache = {}  # Dictionary to store tiles
-        self.max_size = max_size
-        self.queue = []  # Queue to track tile usage order
-        self.lock = threading.Lock()  # Lock for thread safety
+        # Save the uploaded file
+        with open(upload_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        print(f"Successfully saved catalog: {upload_path}")
+        
+        # Optional: Clear cache if necessary
+        # catalog_cache.pop(unique_filename, None) 
+        
+        # Return the UNIQUE filename used for saving
+        return JSONResponse(content={"message": "Catalog uploaded successfully", "filename": unique_filename, "path": str(upload_path)})
     
-    def get(self, key):
-        with self.lock:
-            if key in self.cache:
-                # Move this tile to the end of the queue (most recently used)
-                self.queue.remove(key)
-                self.queue.append(key)
-                return self.cache[key]
-            return None
-    
-    def put(self, key, value):
-        with self.lock:
-            if key in self.cache:
-                # Update existing entry
-                self.cache[key] = value
-                self.queue.remove(key)
-                self.queue.append(key)
-            else:
-                # Add new entry, potentially evicting the oldest one
-                if len(self.queue) >= self.max_size:
-                    oldest = self.queue.pop(0)
-                    del self.cache[oldest]
-                self.cache[key] = value
-                self.queue.append(key)
-    
-    def clear(self):
-        with self.lock:
-            self.cache = {}
-            self.queue = []
+    except HTTPException as http_exc:
+         print(f"HTTP Exception during catalog upload: {http_exc.detail}")
+         raise http_exc # Re-raise FastAPI specific exceptions
 
-# Global tile cache
-tile_cache = TileCache(max_size=1000)  # Cache up to 1000 tiles
+    except Exception as e:
+        print(f"Error during catalog upload: {e}")
+        # Clean up partially uploaded file if error occurs
+        if 'upload_path' in locals() and upload_path.exists():
+            try:
+                 upload_path.unlink()
+                 print(f"Cleaned up partially uploaded file: {upload_path}")
+            except Exception as cleanup_err:
+                 print(f"Error cleaning up file {upload_path}: {cleanup_err}")
+        
+        # Determine appropriate status code
+        status_code = 500
+        error_detail = f"Failed to upload catalog: {str(e)}"
+        # Example: Check for specific errors like disk full (requires OS-specific checks or catching specific exceptions)
+        # if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        #    status_code = 507 # Insufficient Storage
+        #    error_detail = "Insufficient storage space to save catalog."
+            
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": error_detail}
+        )
+    finally:
+        if file and hasattr(file, 'file') and not file.file.closed:
+             file.file.close()
 
-# Global dictionary to store tile generators for active FITS files
-active_tile_generators = {}
+# NEW ENDPOINT: Get Catalog Columns
+@app.get("/catalog-columns/")
+async def get_catalog_columns(catalog_name: str):
+    """Reads a FITS catalog file and returns the column names from the first BinTableHDU."""
+    catalog_path = catalogs_dir / catalog_name
+    if not catalog_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Catalog file not found: {catalog_name}")
 
-# Add this endpoint to your FastAPI application for histogram data
+    try:
+        with fits.open(catalog_path) as hdul:
+            # Find the first binary table HDU
+            bintable_hdu = None
+            for hdu in hdul:
+                if isinstance(hdu, fits.BinTableHDU):
+                    bintable_hdu = hdu
+                    break
+            
+            if bintable_hdu is None:
+                raise HTTPException(status_code=400, detail=f"No binary table (catalog data) found in FITS file: {catalog_name}")
+
+            # Extract column names
+            column_names = bintable_hdu.columns.names
+            return JSONResponse(content={"columns": column_names})
+
+    except FileNotFoundError:
+         raise HTTPException(status_code=404, detail=f"Catalog file could not be opened (not found): {catalog_name}")
+    except HTTPException as e:
+        # Re-raise HTTPExceptions from above
+        raise e
+    except Exception as e:
+        # Catch other potential errors (e.g., corrupted FITS file)
+        raise HTTPException(status_code=500, detail=f"Error reading catalog columns for {catalog_name}: {str(e)}")
+
+# NEW ENDPOINT: Save Catalog Column Mapping
+@app.post("/save-catalog-mapping/")
+async def save_catalog_mapping(request: Request):
+    """Saves the user-defined mapping between standard fields (RA, Dec, etc.) and catalog columns."""
+    try:
+        mapping_data = await request.json()
+        catalog_name = mapping_data.get('catalog_name')
+        ra_col = mapping_data.get('ra_col')
+        dec_col = mapping_data.get('dec_col')
+        # Optional: Get other mapped columns like resolution/size if needed
+        resolution_col = mapping_data.get('resolution_col') 
+
+        if not catalog_name or not ra_col or not dec_col:
+            raise HTTPException(status_code=400, detail="Missing required mapping fields: catalog_name, ra_col, dec_col")
+
+        # Store the mapping
+        catalog_column_mappings[catalog_name] = {
+            "ra_col": ra_col,
+            "dec_col": dec_col
+        }
+        if resolution_col:
+            catalog_column_mappings[catalog_name]["resolution_col"] = resolution_col
+        
+        # Persist the mappings
+        save_mappings()
+        print(f"Saved mapping for {catalog_name}: {catalog_column_mappings[catalog_name]}")
+        
+        return JSONResponse(content={"message": "Catalog mapping saved successfully"})
+
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise FastAPI specific exceptions
+    except Exception as e:
+        print(f"Error saving catalog mapping: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save catalog mapping: {str(e)}")
+
 
 @app.get("/fits-histogram/")
 async def get_fits_histogram(bins: int = Query(100)):
@@ -180,9 +279,9 @@ async def get_fits_histogram(bins: int = Query(100)):
         with fits.open(fits_file) as hdul:
             # Find the HDU with image data
             hdu = None
-            for i, h in enumerate(hdul):
-                if hasattr(h, 'data') and h.data is not None and len(getattr(h, 'shape', [])) >= 2:
-                    hdu = h
+            for i, hdu in enumerate(hdul):
+                if hasattr(hdu, 'data') and hdu.data is not None and len(getattr(hdu, 'shape', [])) >= 2:
+                    hdu = hdu
                     break
             
             if hdu is None:
@@ -249,42 +348,56 @@ async def get_fits_histogram(bins: int = Query(100)):
             return JSONResponse(content=hist_data)
     
     except Exception as e:
+        # Log the error for debugging
         print(f"Error generating histogram: {e}")
-        import traceback
-        print(traceback.format_exc())
+        # Optionally, include traceback:
+        # import traceback
+        # print(traceback.format_exc())
+        
         return JSONResponse(
             status_code=500,
             content={"error": f"Failed to generate histogram: {str(e)}"}
         )
 
-# Optimized version of FitsTileGenerator with faster downsampling
-# Add this endpoint to main.py to handle FITS file uploads
+@app.get("/fits-header/{filepath:path}")
+async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
+    """Retrieve the header of a specific HDU from a FITS file."""
+    try:
+        # Construct the full path relative to the workspace or use absolute path
+        # This assumes 'files/' directory or allows absolute paths
+        if not os.path.isabs(filepath):
+             # Adjust base path if files are not in the root
+             base_path = Path("files") # Or Path(os.getcwd()) if files are elsewhere
+             full_path = base_path / filepath
+        else:
+             full_path = Path(filepath)
 
-from fastapi import UploadFile, File
-import re
-import time
-from pathlib import Path
-import shutil
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
 
+        with fits.open(full_path, memmap=False) as hdul: # Use memmap=False for safety
+            if hdu_index < 0 or hdu_index >= len(hdul):
+                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
-# Add this proxy endpoint to main.py to handle CORS issues with external URLs
+            header = hdul[hdu_index].header
+            # Convert header to a list of key-value pairs for easier frontend handling
+            header_list = [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k] # Ensure key is not empty
 
-import aiohttp
-from fastapi import Query
-import os
-import uuid
+            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
 
-# Add these endpoints to main.py to handle FITS file uploads and proxy downloads
+    except FileNotFoundError:
+         raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions
+        raise http_exc
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Error reading FITS header for {filepath}, HDU {hdu_index}: {e}")
+        # Optionally, include traceback:
+        # import traceback
+        # print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to read FITS header: {str(e)}")
 
-from fastapi import UploadFile, File, Request
-import re
-import time
-from pathlib import Path
-import shutil
-import aiohttp
-import ssl
-import certifi
-from fastapi.responses import Response
 
 @app.post("/upload-fits/")
 async def upload_fits_file(file: UploadFile = File(...)):
@@ -1367,12 +1480,17 @@ async def catalog_info(catalog_name: str):
 
 
 # Complete implementation of load_catalog_data function
-def load_catalog_data(catalog_path):
+def load_catalog_data(catalog_path_str):
     """
     Load catalog data from a file.
     Supports FITS tables and CSV/TSV formats.
     Filters objects to match the loaded FITS image galaxy.
+    Uses saved column mappings if available.
     """
+    catalog_path = Path(catalog_path_str) # Convert string path to Path object
+    catalog_name = catalog_path.name # Get filename for mapping lookup
+    print(f"load_catalog_data called for: {catalog_name}")
+    
     try:
         catalog_data = []
         
@@ -1402,8 +1520,56 @@ def load_catalog_data(catalog_path):
                 print(f"Extracted galaxy identifier from FITS filename: {target_galaxy}")
                 break
         
+        # Get WCS of the current image to filter by position
+        image_wcs = None
+        image_center_ra = None
+        image_center_dec = None
+        try:
+            with fits.open(fits_file) as hdul:
+                # Find the HDU with image data
+                image_hdu = None
+                for i, hdu in enumerate(hdul):
+                    if hasattr(hdu, 'data') and hdu.data is not None and len(getattr(hdu, 'shape', [])) >= 2:
+                        image_hdu = hdu
+                        break
+                
+                if image_hdu:
+                    # Get WCS from the HDU
+                    image_wcs = WCS(image_hdu.header)
+                    
+                    # Get the image center in pixel coordinates
+                    if hasattr(image_hdu, 'data'):
+                        height, width = image_hdu.data.shape[-2:]
+                        center_x = width // 2
+                        center_y = height // 2
+                        
+                        # Convert center to RA, DEC
+                        center_coords = image_wcs.pixel_to_world(center_x, center_y)
+                        if hasattr(center_coords, 'ra') and hasattr(center_coords, 'dec'):
+                            image_center_ra = center_coords.ra.deg
+                            image_center_dec = center_coords.dec.deg
+                            print(f"Image center: RA={image_center_ra}, DEC={image_center_dec}")
+        except Exception as e:
+            print(f"Error getting image WCS: {e}")
+        
+        # --- Column Name Handling --- 
+        ra_col = None
+        dec_col = None
+        resolution_col = None # Optional resolution/size column
+        
+        # Check for saved mapping first
+        if catalog_name in catalog_column_mappings:
+            mapping = catalog_column_mappings[catalog_name]
+            ra_col = mapping.get('ra_col')
+            dec_col = mapping.get('dec_col')
+            resolution_col = mapping.get('resolution_col') # Get resolution if mapped
+            print(f"Using saved mapping for {catalog_name}: RA={ra_col}, Dec={dec_col}, Res={resolution_col}")
+        else:
+             print(f"No saved mapping found for {catalog_name}. Attempting auto-detection.")
+        # --- End Column Name Handling --- 
+        
         # Check if it's a FITS file
-        if catalog_path.lower().endswith(('.fits', '.fit')):
+        if catalog_path.suffix.lower() in ['.fits', '.fit']:
             print(f"Loading FITS catalog: {catalog_path}")
             with fits.open(catalog_path) as hdul:
                 # Find the first HDU with a table
@@ -1419,191 +1585,281 @@ def load_catalog_data(catalog_path):
                 
                 # Get the table data
                 catalog_table = table_hdu.data
+                available_columns = [col.lower() for col in catalog_table.names]
                 
-                # Find RA and DEC columns
-                ra_col = None
-                dec_col = None
+                # Auto-detect columns ONLY if mapping wasn't found/used
+                if not ra_col:
+                    # Common names for RA and DEC columns
+                    ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
+                    for name in ra_names:
+                        if name in available_columns:
+                            ra_col = catalog_table.names[available_columns.index(name)] # Get original case
+                            print(f"Auto-detected RA column: {ra_col}")
+                            break
                 
-                # Common names for RA and DEC columns
-                ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000']
-                dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000']
+                if not dec_col:
+                    dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
+                    for name in dec_names:
+                        if name in available_columns:
+                            dec_col = catalog_table.names[available_columns.index(name)] # Get original case
+                            print(f"Auto-detected Dec column: {dec_col}")
+                            break
                 
-                # Find RA column
-                for name in ra_names:
-                    if name in catalog_table.names:
-                        ra_col = name
-                        break
-                
-                # Find DEC column
-                for name in dec_names:
-                    if name in catalog_table.names:
-                        dec_col = name
-                        break
-                
+                # Optional: Auto-detect resolution column if not mapped
+                if not resolution_col:
+                    res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
+                    for name in res_names:
+                        if name in available_columns:
+                            resolution_col = catalog_table.names[available_columns.index(name)]
+                            print(f"Auto-detected Resolution column: {resolution_col}")
+                            break
+                # Check if columns were successfully found (either mapped or auto-detected)
                 if ra_col is None or dec_col is None:
-                    print(f"RA or DEC column not found in catalog: {catalog_path}")
+                    print(f"RA ({ra_col}) or DEC ({dec_col}) column could not be determined in catalog: {catalog_path}")
                     print(f"Available columns: {catalog_table.names}")
-                    return []
+                    # Optionally raise an error or return empty if critical columns are missing
+                    # return [] 
+                    # For now, proceed but coordinates might be wrong/missing
+                    pass
                 
-                # Find galaxy column if it exists
+                # Find galaxy column if it exists (for filtering)
                 galaxy_col = None
-                galaxy_col_candidates = ['GALAXY', 'galaxy', 'Galaxy', 'NAME', 'name', 'Name', 'ID', 'id', 'Id', 'SOURCE_ID', 'source_id', 'TARGET', 'target', 'OBJECT', 'object']
+                galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
                 
-                for col_name in galaxy_col_candidates:
-                    if col_name in catalog_table.names:
-                        galaxy_col = col_name
-                        print(f"Found galaxy column: {galaxy_col}")
+                for col_name_candidate in galaxy_col_candidates:
+                    if col_name_candidate in available_columns:
+                        galaxy_col = catalog_table.names[available_columns.index(col_name_candidate)]
+                        print(f"Found potential galaxy column: {galaxy_col}")
                         break
                 
                 # Process each row - optimize by pre-filtering if possible
                 total_count = len(catalog_table)
                 filtered_count = 0
                 
-                # If we have a galaxy column and target, pre-filter the table
+                # Filtering logic - use a combination of galaxy name and position filtering
+                process_rows = catalog_table # Start with all rows
+                
+                # First try galaxy name filtering if possible
                 if galaxy_col and target_galaxy:
                     # Create a mask for matching rows
                     mask = np.zeros(total_count, dtype=bool)
                     
                     # Convert all galaxy names to lowercase for case-insensitive comparison
-                    galaxy_names = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                    galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
                     
                     # Set mask for rows that contain the target galaxy name
-                    for i, name in enumerate(galaxy_names):
-                        if target_galaxy in name:
-                            mask[i] = True
-                            filtered_count += 1
+                    mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                    filtered_count = np.sum(mask)
                     
-                    # Apply the mask to get only matching rows
-                    filtered_table = catalog_table[mask]
-                    print(f"Filtered catalog from {total_count} to {filtered_count} objects matching galaxy: {target_galaxy}")
+                    if filtered_count > 0:
+                        # Apply the mask to get only matching rows
+                        process_rows = catalog_table[mask]
+                        print(f"Filtered catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                    else:
+                        # If no matches by galaxy name, fall back to all rows (will filter by position later)
+                        print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                
+                # Apply distance-based filtering if we have image center coordinates
+                if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
+                    position_filtered_count = 0
+                    # Increased max_distance_deg for initial load to ensure context
+                    max_distance_deg = 0.5  # ~30 arcmin - adjust as needed
                     
-                    # Process the filtered rows
-                    for row in filtered_table:
-                        try:
-                            ra = float(row[ra_col])
-                            dec = float(row[dec_col])
+                    try:
+                        # Create arrays for faster calculation (handle potential non-numeric data)
+                        ra_values = np.array([float(row[ra_col]) for row in process_rows if row[ra_col] is not None and np.isfinite(float(row[ra_col]))])
+                        dec_values = np.array([float(row[dec_col]) for row in process_rows if row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
+                        original_indices = np.array([i for i, row in enumerate(process_rows) if row[ra_col] is not None and np.isfinite(float(row[ra_col])) and row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
+                        
+                        if len(ra_values) > 0:
+                            # Calculate angular distance (simple approximation)
+                            cos_dec = np.cos(np.radians(image_center_dec))
+                            ra_diff = (ra_values - image_center_ra) * cos_dec
+                            dec_diff = dec_values - image_center_dec
+                            distances = np.sqrt(ra_diff**2 + dec_diff**2)
                             
-                            # Skip if invalid coordinates
-                            if np.isnan(ra) or np.isnan(dec):
-                                continue
+                            # Create mask for objects within distance limit
+                            mask = distances <= max_distance_deg
+                            # Apply mask to the original indices
+                            final_indices = original_indices[mask]
+                            # Select the rows using the final indices
+                            process_rows = process_rows[final_indices]
+                            position_filtered_count = len(process_rows)
                             
-                            # Create object data
-                            obj_data = {
-                                'ra': ra,
-                                'dec': dec,
-                                'x': 0,  # Will be set later
-                                'y': 0,  # Will be set later
-                                'radius_pixels': 5.0  # Default radius
-                            }
-                            
-                            # Add magnitude if available
-                            for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                                if mag_col in catalog_table.names:
-                                    try:
-                                        obj_data['magnitude'] = float(row[mag_col])
-                                        break
-                                    except:
-                                        pass
-                            
-                            catalog_data.append(obj_data)
-                        except Exception as e:
-                            print(f"Error processing catalog row: {e}")
-                            continue
+                            print(f"Position-filtered from {len(ra_values)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees of image center")
+                        else:
+                            print("No valid RA/DEC values found for position filtering.")
+                            process_rows = np.array([]) # Empty array if no valid coords
+                    except (ValueError, TypeError) as coord_err:
+                        print(f"Warning: Could not perform position filtering due to non-numeric coordinate data: {coord_err}")
+                        # Continue without position filtering
                 else:
-                    # No filtering, process all rows
-                    for i, row in enumerate(catalog_table):
-                        try:
-                            ra = float(row[ra_col])
-                            dec = float(row[dec_col])
-                            
-                            # Skip if invalid coordinates
-                            if np.isnan(ra) or np.isnan(dec):
-                                continue
-                            
-                            # Create object data
-                            obj_data = {
-                                'ra': ra,
-                                'dec': dec,
-                                'x': 0,  # Will be set later
-                                'y': 0,  # Will be set later
-                                'radius_pixels': 5.0  # Default radius
-                            }
-                            
-                            # Add magnitude if available
-                            for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                                if mag_col in catalog_table.names:
-                                    try:
-                                        obj_data['magnitude'] = float(row[mag_col])
-                                        break
-                                    except:
-                                        pass
-                            
-                            catalog_data.append(obj_data)
-                        except Exception as e:
-                            print(f"Error processing catalog row: {e}")
+                    print("Skipping position filtering (no image center or RA/Dec columns determined).")
+                
+                # Process the filtered rows
+                for row_idx, row in enumerate(process_rows):
+                    try:
+                        # Use determined RA/Dec columns, skip if not found
+                        if ra_col and dec_col:
+                             ra = float(row[ra_col])
+                             dec = float(row[dec_col])
+                        else:
+                             continue # Skip row if essential coordinates aren't identified
+                        
+                        # Skip if invalid coordinates
+                        if np.isnan(ra) or np.isnan(dec):
                             continue
+                        
+                        # Create object data
+                        obj_data = {
+                            'ra': ra,
+                            'dec': dec,
+                            'x': 0,  # Will be set later
+                            'y': 0,  # Will be set later
+                            'radius_pixels': 5.0  # Default radius
+                        }
+                        
+                        # Add resolution/size if column exists and is valid
+                        if resolution_col and resolution_col in row.array.dtype.names:
+                             try:
+                                 res_value = float(row[resolution_col])
+                                 if np.isfinite(res_value) and res_value > 0:
+                                     obj_data['radius_pixels'] = res_value
+                             except (ValueError, TypeError):
+                                 pass # Ignore if conversion fails
+                        
+                        # Add magnitude if available
+                        mag_col_found = False
+                        for mag_col_candidate in ['mag', 'magnitude']:
+                            if mag_col_candidate in available_columns:
+                                mag_col = catalog_table.names[available_columns.index(mag_col_candidate)]
+                                try:
+                                    mag_value = float(row[mag_col])
+                                    if np.isfinite(mag_value):
+                                        obj_data['magnitude'] = mag_value
+                                        mag_col_found = True
+                                        break # Found one, stop looking
+                                except (ValueError, TypeError):
+                                    pass # Ignore if conversion fails
+                        
+                        catalog_data.append(obj_data)
+                    except Exception as e:
+                        print(f"Error processing FITS catalog row {row_idx}: {e}")
+                        continue
         else:
-            # Assume it's a CSV/TSV file - similar optimization can be applied here
-            print(f"Loading CSV/TSV catalog: {catalog_path}")
+            # Assume it's a CSV/TSV file
+            print(f"Loading ASCII/CSV catalog: {catalog_path}")
             try:
                 from astropy.table import Table
-                catalog_table = Table.read(catalog_path, format='ascii')
+                # Try common formats
+                try:
+                     catalog_table = Table.read(catalog_path, format='ascii')
+                except Exception:
+                     try:
+                         catalog_table = Table.read(catalog_path, format='csv')
+                     except Exception:
+                         catalog_table = Table.read(catalog_path, format='tab') # Try tab-separated
+                         
             except Exception as e:
-                print(f"Error reading catalog as ASCII: {e}")
+                print(f"Error reading catalog as ASCII/CSV/TSV: {e}")
                 return []
             
-            # Find RA and DEC columns
-            ra_col = None
-            dec_col = None
+            available_columns = [col.lower() for col in catalog_table.colnames]
             
-            # Common names for RA and DEC columns
-            ra_names = ['RA', 'ra', 'ALPHA', 'alpha', 'ALPHA_J2000', 'alpha_j2000', 'RAJ2000']
-            dec_names = ['DEC', 'dec', 'DELTA', 'delta', 'DELTA_J2000', 'delta_j2000', 'DEJ2000']
+            # Auto-detect columns ONLY if mapping wasn't found/used
+            if not ra_col:
+                ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
+                for name in ra_names:
+                    if name in available_columns:
+                        ra_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected RA column: {ra_col}")
+                        break
             
-            # Find RA column
-            for name in ra_names:
-                if name in catalog_table.colnames:
-                    ra_col = name
-                    break
-            
-            # Find DEC column
-            for name in dec_names:
-                if name in catalog_table.colnames:
-                    dec_col = name
-                    break
-            
+            if not dec_col:
+                dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
+                for name in dec_names:
+                    if name in available_columns:
+                        dec_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected Dec column: {dec_col}")
+                        break
+                        
+            # Optional: Auto-detect resolution column if not mapped
+            if not resolution_col:
+                res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
+                for name in res_names:
+                    if name in available_columns:
+                        resolution_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected Resolution column: {resolution_col}")
+                        break
+                        
+            # Check if columns were successfully found
             if ra_col is None or dec_col is None:
-                print(f"RA or DEC column not found in catalog: {catalog_path}")
+                print(f"RA or DEC column could not be determined in ASCII catalog: {catalog_path}")
                 print(f"Available columns: {catalog_table.colnames}")
-                return []
-            
+                # Optionally raise an error or return empty
+                # return []
+                pass
+                
             # Find galaxy column if it exists
             galaxy_col = None
-            galaxy_col_candidates = ['GALAXY', 'galaxy', 'Galaxy', 'NAME', 'name', 'Name', 'ID', 'id', 'Id', 'SOURCE_ID', 'source_id', 'TARGET', 'target', 'OBJECT', 'object']
-            
-            for col_name in galaxy_col_candidates:
-                if col_name in catalog_table.colnames:
-                    galaxy_col = col_name
-                    print(f"Found galaxy column: {galaxy_col}")
+            galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
+            for col_name_candidate in galaxy_col_candidates:
+                if col_name_candidate in available_columns:
+                    galaxy_col = catalog_table.colnames[available_columns.index(col_name_candidate)]
+                    print(f"Found potential galaxy column: {galaxy_col}")
                     break
             
             # Process each row
             total_count = len(catalog_table)
             filtered_count = 0
+            process_rows = catalog_table # Start with all rows
             
-            # Process all rows with filtering
-            for i, row in enumerate(catalog_table):
-                try:
-                    # Filter by galaxy name if possible
-                    if galaxy_col and target_galaxy:
-                        galaxy_name = str(row[galaxy_col]).lower()
-                        # Skip if galaxy name doesn't match target
-                        if target_galaxy not in galaxy_name:
-                            continue
-                        filtered_count += 1
+            # Apply filtering (similar logic as FITS)
+            if galaxy_col and target_galaxy:
+                mask = np.zeros(total_count, dtype=bool)
+                galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                filtered_count = np.sum(mask)
+                if filtered_count > 0:
+                    process_rows = catalog_table[mask]
+                    print(f"Filtered ASCII catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                else:
+                    print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
                     
-                    ra = float(row[ra_col])
-                    dec = float(row[dec_col])
+            if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
+                max_distance_deg = 0.5 # Same larger distance for initial load
+                try:
+                    ra_values = np.array([float(row[ra_col]) for row in process_rows if row[ra_col] is not None and np.isfinite(float(row[ra_col]))])
+                    dec_values = np.array([float(row[dec_col]) for row in process_rows if row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
+                    original_indices = np.array([i for i, row in enumerate(process_rows) if row[ra_col] is not None and np.isfinite(float(row[ra_col])) and row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
+                    
+                    if len(ra_values) > 0:
+                        cos_dec = np.cos(np.radians(image_center_dec))
+                        ra_diff = (ra_values - image_center_ra) * cos_dec
+                        dec_diff = dec_values - image_center_dec
+                        distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                        mask = distances <= max_distance_deg
+                        final_indices = original_indices[mask]
+                        process_rows = process_rows[final_indices]
+                        position_filtered_count = len(process_rows)
+                        print(f"Position-filtered ASCII from {len(ra_values)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees")
+                    else:
+                        print("No valid RA/DEC values found for position filtering.")
+                        process_rows = np.array([]) # Empty array
+                except (ValueError, TypeError) as coord_err:
+                    print(f"Warning: Could not perform position filtering on ASCII data: {coord_err}")
+            else:
+                 print("Skipping position filtering (no image center or RA/Dec columns determined).")
+                 
+            # Process the filtered rows
+            for row_idx, row in enumerate(process_rows):
+                try:
+                    # Use determined RA/Dec columns
+                    if ra_col and dec_col:
+                         ra = float(row[ra_col])
+                         dec = float(row[dec_col])
+                    else:
+                         continue # Skip if no coords
                     
                     # Skip if invalid coordinates
                     if np.isnan(ra) or np.isnan(dec):
@@ -1618,82 +1874,91 @@ def load_catalog_data(catalog_path):
                         'radius_pixels': 5.0  # Default radius
                     }
                     
+                    # Add resolution/size if column exists and is valid
+                    if resolution_col and resolution_col in catalog_table.colnames:
+                         try:
+                             res_value = float(row[resolution_col])
+                             if np.isfinite(res_value) and res_value > 0:
+                                 obj_data['radius_pixels'] = res_value
+                         except (ValueError, TypeError):
+                             pass # Ignore if conversion fails
+                             
                     # Add magnitude if available
-                    for mag_col in ['MAG', 'mag', 'MAGNITUDE', 'magnitude']:
-                        if mag_col in catalog_table.colnames:
+                    mag_col_found = False
+                    for mag_col_candidate in ['mag', 'magnitude']:
+                        if mag_col_candidate in available_columns:
+                            mag_col = catalog_table.colnames[available_columns.index(mag_col_candidate)]
                             try:
-                                obj_data['magnitude'] = float(row[mag_col])
-                                break
-                            except:
-                                pass
+                                mag_value = float(row[mag_col])
+                                if np.isfinite(mag_value):
+                                    obj_data['magnitude'] = mag_value
+                                    mag_col_found = True
+                                    break # Found one, stop looking
+                            except (ValueError, TypeError):
+                                pass # Ignore if conversion fails
                     
                     catalog_data.append(obj_data)
                 except Exception as e:
-                    print(f"Error processing catalog row: {e}")
+                    print(f"Error processing ASCII catalog row {row_idx}: {e}")
                     continue
-            
-            if galaxy_col and target_galaxy:
-                print(f"Filtered catalog from {total_count} to {filtered_count} objects matching galaxy: {target_galaxy}")
         
         # Convert RA/DEC to pixel coordinates using the CURRENT image's WCS
-        try:
-            # Open the CURRENTLY LOADED FITS file to get WCS
-            with fits.open(fits_file) as hdul:
-                # Find the HDU with valid WCS
-                wcs = None
-                for i, hdu in enumerate(hdul):
-                    if hasattr(hdu, 'header') and hdu.header and hdu.data is not None:
-                        try:
-                            # Try to create a WCS object from this HDU
-                            temp_wcs = WCS(hdu.header)
-                            if temp_wcs.has_celestial:
-                                wcs = temp_wcs
-                                print(f"Found valid WCS in HDU {i}")
-                                break
-                        except Exception as e:
-                            print(f"Error checking WCS in HDU {i}: {e}")
-                            continue
+        if image_wcs and image_wcs.has_celestial and catalog_data:
+            print(f"Applying WCS transformation to {len(catalog_data)} catalog objects...")
+            try:
+                # Extract RA/DEC arrays
+                ra_array = np.array([obj['ra'] for obj in catalog_data])
+                dec_array = np.array([obj['dec'] for obj in catalog_data])
                 
-                if wcs is None:
-                    print("No valid WCS found in any HDU")
-                    # If no WCS found, return catalog data without pixel coordinates
-                    return catalog_data
+                # Create SkyCoord object for all points at once
+                sky_coords = SkyCoord(ra_array, dec_array, unit='deg')
                 
-                # Convert RA/DEC to pixel coordinates for each object using the current image's WCS
-                if catalog_data:
-                    # Extract RA/DEC arrays
-                    ra_array = np.array([obj['ra'] for obj in catalog_data])
-                    dec_array = np.array([obj['dec'] for obj in catalog_data])
-                    
-                    # Create SkyCoord object for all points at once
-                    sky_coords = SkyCoord(ra_array, dec_array, unit='deg')
-                    
-                    # Convert all coordinates at once
-                    pixel_coords = wcs.world_to_pixel(sky_coords)
-                    
-                    # Update object data with pixel coordinates
-                    for i, obj in enumerate(catalog_data):
-                        obj['x'] = float(pixel_coords[0][i])
-                        obj['y'] = float(pixel_coords[1][i])
-                    
-                    print(f"Converted {len(catalog_data)} objects from RA/DEC to pixel coordinates")
+                # Convert all coordinates at once
+                pixel_coords = image_wcs.world_to_pixel(sky_coords)
                 
-        except Exception as e:
-            print(f"Error applying WCS to catalog: {e}")
-            import traceback
-            print(traceback.format_exc())
-            # If WCS conversion fails, leave x, y as zero for all objects
+                # Update object data with pixel coordinates
+                valid_conversion_count = 0
+                for i, obj in enumerate(catalog_data):
+                    px = float(pixel_coords[0][i])
+                    py = float(pixel_coords[1][i])
+                    # Only include if coordinates are finite (within image bounds)
+                    if np.isfinite(px) and np.isfinite(py):
+                        obj['x'] = px
+                        obj['y'] = py
+                        valid_conversion_count += 1
+                    else:
+                         # Mark objects outside the image bounds, maybe remove later
+                         obj['x'] = np.nan
+                         obj['y'] = np.nan 
+                
+                # Filter out objects that fall outside the image after WCS conversion
+                original_count = len(catalog_data)
+                catalog_data = [obj for obj in catalog_data if np.isfinite(obj['x'])]
+                print(f"WCS conversion successful. Kept {len(catalog_data)} of {original_count} objects within image bounds.")
+                
+            except Exception as e:
+                print(f"Error applying WCS to catalog: {e}")
+                import traceback
+                print(traceback.format_exc())
+                # If WCS conversion fails, potentially return empty or mark coords as invalid
+                for obj in catalog_data:
+                    obj['x'] = np.nan
+                    obj['y'] = np.nan
+        elif not image_wcs or not image_wcs.has_celestial:
+             print("Skipping WCS conversion (no valid WCS found in current image).")
+             # Mark all coordinates as invalid if no WCS
+             for obj in catalog_data:
+                 obj['x'] = np.nan
+                 obj['y'] = np.nan
         
-        print(f"Loaded {len(catalog_data)} objects from catalog: {catalog_path}")
+        print(f"Final loaded object count for {catalog_name}: {len(catalog_data)}")
         return catalog_data
         
     except Exception as e:
-        print(f"Error loading catalog: {e}")
+        print(f"Error loading catalog {catalog_name}: {e}")
         import traceback
         print(traceback.format_exc())
-        return []
-
-
+        return [] # Return empty list on error
 
 
 # Corrected code to extract BUNIT from each specific HDU
@@ -2316,9 +2581,9 @@ async def catalog_with_flags(catalog_name: str, prevent_auto_load: bool = Query(
                 dec_col = None
                 
                 for col_name in table.colnames:
-                    if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+                    if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
                         ra_col = col_name
-                    elif col_name.lower() in ['dec', 'delta', 'declination']:
+                    elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
                         dec_col = col_name
                 
                 if not ra_col or not dec_col:
@@ -2735,24 +3000,19 @@ async def catalog_data(catalog_name: str):
 
 @app.get("/load-catalog/{catalog_name}")
 async def load_catalog_endpoint(catalog_name: str):
-    """Return catalog data in JSON format for plotting and analysis."""
+    """Load a catalog file and return info about it."""
     try:
-        # Find the catalog file
-        catalog_path = None
-        for file_pattern in ["catalogs/*.cat", "catalogs/*.fits", "catalogs/*.fit"]:
-            for file in glob.glob(file_pattern):
-                if os.path.basename(file).lower() == catalog_name.lower() or os.path.splitext(os.path.basename(file))[0].lower() == catalog_name.lower():
-                    catalog_path = file
-                    break
-            if catalog_path:
-                break
+        catalog_path = f"catalogs/{catalog_name}"
         
-        if not catalog_path:
-            print(f"Catalog file not found: {catalog_name}")
+        if not os.path.exists(catalog_path):
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Catalog file not found: {catalog_name}"}
             )
+        
+        # Clear previously loaded catalogs to prevent issues
+        loaded_catalogs.clear()
+        print("Cleared previously loaded catalogs")
         
         # Load catalog data using the same function used elsewhere
         try:
@@ -2817,9 +3077,9 @@ async def load_catalog_endpoint(catalog_name: str):
                     dec_col = None
                     
                     for col_name in catalog_table.colnames:
-                        if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+                        if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
                             ra_col = col_name
-                        elif col_name.lower() in ['dec', 'delta', 'declination']:
+                        elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
                             dec_col = col_name
                     
                     if ra_col and dec_col:
@@ -2898,6 +3158,11 @@ async def catalog_binary(catalog_name: str, prevent_auto_load: bool = Query(Fals
         # Store the current catalog name to prevent duplicate loading
         app.state.last_loaded_catalog = catalog_name
         
+        # Clear previously loaded catalogs if not preventing auto-load
+        if not prevent_auto_load:
+            loaded_catalogs.clear()
+            print(f"Cleared previously loaded catalogs for loading {catalog_name}")
+        
         # Load the catalog data
         catalog_data = load_catalog_data(catalog_path)
         if not catalog_data:
@@ -2946,6 +3211,48 @@ async def catalog_binary(catalog_name: str, prevent_auto_load: bool = Query(Fals
             magnitude = obj.get('magnitude', 0.0)
             buffer.write(struct.pack('!f', magnitude))
         
+        # If catalog_data is empty but we have a table, try to create a minimal binary format
+        if not catalog_data and catalog_name in loaded_catalogs:
+            try:
+                catalog_table = loaded_catalogs[catalog_name]
+                print(f"No catalog data with RA/DEC, but we have a table. Creating minimal binary.")
+                
+                # Find RA and DEC columns
+                ra_col = None
+                dec_col = None
+                
+                for col_name in catalog_table.colnames:
+                    if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
+                        ra_col = col_name
+                    elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
+                        dec_col = col_name
+                
+                if ra_col and dec_col:
+                    # Reset buffer
+                    buffer = io.BytesIO()
+                    
+                    # Write the number of objects
+                    num_objects = len(catalog_table)
+                    buffer.write(struct.pack('!I', num_objects))
+                    
+                    # Write each row
+                    for row in catalog_table:
+                        # Default x, y (will be calculated by client)
+                        buffer.write(struct.pack('!ff', 0.0, 0.0))
+                        
+                        # Write ra, dec
+                        buffer.write(struct.pack('!ff', float(row[ra_col]), float(row[dec_col])))
+                        
+                        # Default radius and magnitude
+                        buffer.write(struct.pack('!ff', 5.0, 0.0))
+                    
+                    # Get the binary data
+                    binary_data = buffer.getvalue()
+                    print(f"Created binary data for {num_objects} objects using {ra_col}/{dec_col}")
+            except Exception as e:
+                print(f"Error creating minimal binary format: {e}")
+                # Continue with whatever binary_data we have
+        
         # Get the binary data
         binary_data = buffer.getvalue()
         
@@ -2980,9 +3287,9 @@ async def generate_sed(ra: float, dec: float, catalog_name: str):
         dec_col = None
         
         for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+            if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
                 ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination']:
+            elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
                 dec_col = col_name
         
         if not ra_col or not dec_col:
@@ -3505,8 +3812,13 @@ async def generate_sed(ra: float, dec: float, catalog_name: str):
         
         # Generate a filename based on coordinates
         filename = f"SED_RA{ra:.4f}_DEC{dec:.4f}.png"
-        # Save to static directory instead of root directory
-        filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", filename)
+        
+        # Make sure the static directory exists
+        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        
+        # Full path to save the file
+        filepath = os.path.join(static_dir, filename)
         
         # Save the figure to disk with high DPI and including all cutouts
         fig.savefig(filepath, format='png', dpi=400, bbox_inches='tight')
@@ -3515,9 +3827,12 @@ async def generate_sed(ra: float, dec: float, catalog_name: str):
         
         print(f"SED saved successfully as {filename} with DPI=400")
         
+        # Use URL path instead of file system path for the response
+        url_path = f"/static/{filename}"
+        
         return JSONResponse(
             status_code=200,
-            content={"message": f"SED saved successfully as {filename}", "filepath": filepath, "filename": filename}
+            content={"message": f"SED saved successfully", "url": url_path, "filename": filename}
         )
     
     except Exception as e:
@@ -3549,9 +3864,9 @@ async def source_properties(ra: float, dec: float, catalog_name: str):
         dec_col = None
         
         for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension']:
+            if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
                 ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination']:
+            elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
                 dec_col = col_name
         
         if not ra_col or not dec_col:
@@ -3893,3 +4208,38 @@ if __name__ == "__main__":
 
         # Run macOS GUI
         run_mac_app()
+
+# NEW ENDPOINT: Save Catalog Column Mapping
+@app.post("/save-catalog-mapping/")
+async def save_catalog_mapping(request: Request):
+    """Saves the user-defined mapping between standard fields (RA, Dec, etc.) and catalog columns."""
+    try:
+        mapping_data = await request.json()
+        catalog_name = mapping_data.get('catalog_name')
+        ra_col = mapping_data.get('ra_col')
+        dec_col = mapping_data.get('dec_col')
+        # Optional: Get other mapped columns like resolution/size if needed
+        resolution_col = mapping_data.get('resolution_col') 
+
+        if not catalog_name or not ra_col or not dec_col:
+            raise HTTPException(status_code=400, detail="Missing required mapping fields: catalog_name, ra_col, dec_col")
+
+        # Store the mapping
+        catalog_column_mappings[catalog_name] = {
+            "ra_col": ra_col,
+            "dec_col": dec_col
+        }
+        if resolution_col:
+            catalog_column_mappings[catalog_name]["resolution_col"] = resolution_col
+        
+        # Persist the mappings
+        save_mappings()
+        print(f"Saved mapping for {catalog_name}: {catalog_column_mappings[catalog_name]}")
+        
+        return JSONResponse(content={"message": "Catalog mapping saved successfully"})
+
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise FastAPI specific exceptions
+    except Exception as e:
+        print(f"Error saving catalog mapping: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save catalog mapping: {str(e)}")

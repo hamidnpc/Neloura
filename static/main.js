@@ -13,6 +13,18 @@ let histogramUpdateTimer = null;
 let currentColorMap = 'grayscale'; // Default color map
 let currentScaling = 'linear'; // Default scaling function
 
+// NEW: State for interactive histogram
+let histogramScaleInfo = { padding: {}, histWidth: 0, dataMin: 0, dataRange: 1 };
+let isDraggingLine = null; // Can be 'min', 'max', or null
+const DRAG_THRESHOLD = 5; // Pixel tolerance for clicking lines
+let throttledHistogramUpdate = null; // To be initialized later
+let debouncedApplyDynamicRange = null; // To be initialized later
+
+// NEW: State for line animation
+let currentMinLineX = null;
+let currentMaxLineX = null;
+let lineAnimationId = null;
+const LINE_ANIMATION_DURATION = 150; // ms
 
 const ENV_DESCRIPTIONS = {
     1: "Center",
@@ -290,8 +302,8 @@ function applyPercentile(percentileValue) {
         const maxInput = document.getElementById('max-range-input');
         
         if (minInput && maxInput) {
-            minInput.value = minValue.toExponential(4);
-            maxInput.value = maxValue.toExponential(4);
+            minInput.value = minValue.toFixed(2);
+            maxInput.value = maxValue.toFixed(2);
         }
         
         // Update the FITS data with new range
@@ -748,6 +760,7 @@ function processImageInMainThread() {
     const minValue = fitsData.min_value;
     const maxValue = fitsData.max_value;
     const range = maxValue - minValue;
+    // CHANGE: Use global COLOR_MAPS and SCALING_FUNCTIONS
     const colorMapFunc = COLOR_MAPS[currentColorMap] || COLOR_MAPS.grayscale;
     const scalingFunc = SCALING_FUNCTIONS[currentScaling] || SCALING_FUNCTIONS.linear;
     
@@ -854,7 +867,6 @@ function processImageInWorker() {
         }
         
         // We need to define the color maps and scaling functions directly in the worker code
-        // because we can't transfer function objects to workers
         const workerCode = `
         self.onmessage = function(e) {
             const fitsData = e.data.fitsData;
@@ -873,103 +885,77 @@ function processImageInWorker() {
             // Create array for image data
             const imageData = new Uint8ClampedArray(width * height * 4);
             
-            // Define color maps within the worker - must be defined here, not passed from main thread
+            // Define color maps within the worker
             const COLOR_MAPS = {
-                // Grayscale - simple linear gradient from black to white
-                grayscale: (val) => {
-                    return [val, val, val];
-                },
-                
-                // Viridis - perceptually uniform colormap
+                grayscale: (val) => [val, val, val],
                 viridis: (val) => {
-                    const v = val / 255;
-                    let r, g, b;
-                    
-                    if (v < 0.25) {
-                        r = 68 + v * 4 * (33 - 68);
-                        g = 1 + v * 4 * (144 - 1);
-                        b = 84 + v * 4 * (140 - 84);
-                    } else if (v < 0.5) {
-                        r = 33 + (v - 0.25) * 4 * (94 - 33);
-                        g = 144 + (v - 0.25) * 4 * (201 - 144);
-                        b = 140 + (v - 0.25) * 4 * (120 - 140);
-                    } else if (v < 0.75) {
-                        r = 94 + (v - 0.5) * 4 * (190 - 94);
-                        g = 201 + (v - 0.5) * 4 * (222 - 201);
-                        b = 120 + (v - 0.5) * 4 * (47 - 120);
-                    } else {
-                        r = 190 + (v - 0.75) * 4 * (253 - 190);
-                        g = 222 + (v - 0.75) * 4 * (231 - 222);
-                        b = 47 + (v - 0.75) * 4 * (37 - 47);
-                    }
-                    
+                    const v = val / 255; let r, g, b;
+                    if (v < 0.25) { r = 68 + v * 4 * (33 - 68); g = 1 + v * 4 * (144 - 1); b = 84 + v * 4 * (140 - 84); }
+                    else if (v < 0.5) { r = 33 + (v - 0.25) * 4 * (94 - 33); g = 144 + (v - 0.25) * 4 * (201 - 144); b = 140 + (v - 0.25) * 4 * (120 - 140); }
+                    else if (v < 0.75) { r = 94 + (v - 0.5) * 4 * (190 - 94); g = 201 + (v - 0.5) * 4 * (222 - 201); b = 120 + (v - 0.5) * 4 * (47 - 120); }
+                    else { r = 190 + (v - 0.75) * 4 * (253 - 190); g = 222 + (v - 0.75) * 4 * (231 - 222); b = 47 + (v - 0.75) * 4 * (37 - 47); }
                     return [Math.round(r), Math.round(g), Math.round(b)];
                 },
-                
-                // Plasma - another perceptually uniform colormap
                 plasma: (val) => {
-                    const v = val / 255;
-                    let r, g, b;
-                    
-                    if (v < 0.25) {
-                        r = 13 + v * 4 * (126 - 13);
-                        g = 8 + v * 4 * (8 - 8);
-                        b = 135 + v * 4 * (161 - 135);
-                    } else if (v < 0.5) {
-                        r = 126 + (v - 0.25) * 4 * (203 - 126);
-                        g = 8 + (v - 0.25) * 4 * (65 - 8);
-                        b = 161 + (v - 0.25) * 4 * (107 - 161);
-                    } else if (v < 0.75) {
-                        r = 203 + (v - 0.5) * 4 * (248 - 203);
-                        g = 65 + (v - 0.5) * 4 * (150 - 65);
-                        b = 107 + (v - 0.5) * 4 * (58 - 107);
-                    } else {
-                        r = 248 + (v - 0.75) * 4 * (239 - 248);
-                        g = 150 + (v - 0.75) * 4 * (204 - 150);
-                        b = 58 + (v - 0.75) * 4 * (42 - 58);
-                    }
-                    
+                    const v = val / 255; let r, g, b;
+                    if (v < 0.25) { r = 13 + v * 4 * (126 - 13); g = 8 + v * 4 * (8 - 8); b = 135 + v * 4 * (161 - 135); }
+                    else if (v < 0.5) { r = 126 + (v - 0.25) * 4 * (203 - 126); g = 8 + (v - 0.25) * 4 * (65 - 8); b = 161 + (v - 0.25) * 4 * (107 - 161); }
+                    else if (v < 0.75) { r = 203 + (v - 0.5) * 4 * (248 - 203); g = 65 + (v - 0.5) * 4 * (150 - 65); b = 107 + (v - 0.5) * 4 * (58 - 107); }
+                    else { r = 248 + (v - 0.75) * 4 * (239 - 248); g = 150 + (v - 0.75) * 4 * (204 - 150); b = 58 + (v - 0.75) * 4 * (42 - 58); }
                     return [Math.round(r), Math.round(g), Math.round(b)];
                 },
-                
-                // Hot - classic heat map
+                // ADDED: Inferno
+                inferno: (val) => {
+                    const v = val / 255; let r, g, b;
+                    if (v < 0.2) { r = 0 + v * 5 * 50; g = 0 + v * 5 * 10; b = 4 + v * 5 * 90; }
+                    else if (v < 0.4) { r = 50 + (v-0.2)*5 * (120-50); g = 10 + (v-0.2)*5 * (28-10); b = 94 + (v-0.2)*5 * (109-94); }
+                    else if (v < 0.6) { r = 120 + (v-0.4)*5 * (187-120); g = 28 + (v-0.4)*5 * (55-28); b = 109 + (v-0.4)*5 * (84-109); }
+                    else if (v < 0.8) { r = 187 + (v-0.6)*5 * (236-187); g = 55 + (v-0.6)*5 * (104-55); b = 84 + (v-0.6)*5 * (36-84); }
+                    else { r = 236 + (v-0.8)*5 * (251-236); g = 104 + (v-0.8)*5 * (180-104); b = 36 + (v-0.8)*5 * (26-36); }
+                    return [Math.round(r), Math.round(g), Math.round(b)];
+                },
+                // ADDED: Cividis
+                cividis: (val) => {
+                    const v = val / 255; let r, g, b;
+                    if (v < 0.2) { r = 0 + v*5 * 33; g = 32 + v*5 * (61-32); b = 76 + v*5 * (107-76); }
+                    else if (v < 0.4) { r = 33 + (v-0.2)*5 * (85-33); g = 61 + (v-0.2)*5 * (91-61); b = 107 + (v-0.2)*5 * (108-107); }
+                    else if (v < 0.6) { r = 85 + (v-0.4)*5 * (123-85); g = 91 + (v-0.4)*5 * (122-91); b = 108 + (v-0.4)*5 * (119-108); }
+                    else if (v < 0.8) { r = 123 + (v-0.6)*5 * (165-123); g = 122 + (v-0.6)*5 * (156-122); b = 119 + (v-0.6)*5 * (116-119); }
+                    else { r = 165 + (v-0.8)*5 * (217-165); g = 156 + (v-0.8)*5 * (213-156); b = 116 + (v-0.8)*5 * (122-116); }
+                    return [Math.round(r), Math.round(g), Math.round(b)];
+                },
                 hot: (val) => {
-                    const v = val / 255;
-                    let r, g, b;
-                    
-                    if (v < 1/3) {
-                        r = Math.min(255, v * 3 * 255);
-                        g = 0;
-                        b = 0;
-                    } else if (v < 2/3) {
-                        r = 255;
-                        g = Math.min(255, (v - 1/3) * 3 * 255);
-                        b = 0;
-                    } else {
-                        r = 255;
-                        g = 255;
-                        b = Math.min(255, (v - 2/3) * 3 * 255);
-                    }
-                    
+                    const v = val / 255; let r, g, b;
+                    if (v < 1/3) { r = v * 3 * 255; g = 0; b = 0; } 
+                    else if (v < 2/3) { r = 255; g = (v - 1/3) * 3 * 255; b = 0; }
+                    else { r = 255; g = 255; b = (v - 2/3) * 3 * 255; }
                     return [Math.round(r), Math.round(g), Math.round(b)];
                 },
-                
-                // Rainbow colormap
-                rainbow: (val) => {
+                // ADDED: Cool
+                cool: (val) => {
                     const v = val / 255;
-                    const a = (1 - v) * 4; // 0-4
-                    const X = Math.floor(a);   // integer part
-                    const Y = a - X;     // fractional part
-                    let r, g, b;
-                    
+                    return [Math.round(v * 255), Math.round((1 - v) * 255), 255];
+                },
+                rainbow: (val) => {
+                    const v = val / 255; const a = (1 - v) * 4; const X = Math.floor(a); const Y = a - X; let r, g, b;
                     switch(X) {
                         case 0: r = 1.0; g = Y; b = 0.0; break;
-                        case 1: r = 1.0-Y; g = 1.0; b = 0.0; break;
+                        case 1: r = 1.0 - Y; g = 1.0; b = 0.0; break;
                         case 2: r = 0.0; g = 1.0; b = Y; break;
                         case 3: r = 0.0; g = 1.0-Y; b = 1.0; break;
                         case 4: r = 0.0; g = 0.0; b = 1.0; break;
                     }
                     
+                    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+                },
+                // ADDED: Jet
+                jet: (val) => {
+                    const v = val / 255; let r = 0, g = 0, b = 0;
+                    if (v < 0.125) { b = 0.5 + 4 * v; } 
+                    else if (v < 0.375) { g = 4 * (v - 0.125); b = 1.0; } 
+                    else if (v < 0.625) { r = 4 * (v - 0.375); g = 1.0; b = 1.0 - 4 * (v - 0.375); } 
+                    else if (v < 0.875) { r = 1.0; g = 1.0 - 4 * (v - 0.625); } 
+                    else { r = 1.0 - 4 * (v - 0.875); } 
                     return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
                 }
             };
@@ -1684,8 +1670,8 @@ function showDynamicRangePopup() {
         const maxInput = document.getElementById('max-range-input');
         
         if (minInput && maxInput && window.fitsData) {
-            minInput.value = window.fitsData.min_value.toExponential(4);
-            maxInput.value = window.fitsData.max_value.toExponential(4);
+            minInput.value = window.fitsData.min_value.toFixed(2);
+            maxInput.value = window.fitsData.max_value.toFixed(2);
         }
         
         // Update the histogram with current data using the safe method
@@ -1748,21 +1734,41 @@ function showDynamicRangePopup() {
         popup.style.display = 'none';
     });
     
-    // Create histogram canvas
+    // Create histogram canvas container
     const canvasContainer = document.createElement('div');
     canvasContainer.style.width = '100%';
     canvasContainer.style.height = '200px';
     canvasContainer.style.marginBottom = '15px';
     canvasContainer.style.backgroundColor = '#222';
     canvasContainer.style.borderRadius = '3px';
-    
-    const canvas = document.createElement('canvas');
-    canvas.id = 'histogram-canvas';
-    canvas.width = 470;
-    canvas.height = 200;
-    canvas.style.display = 'block';
-    
-    canvasContainer.appendChild(canvas);
+    canvasContainer.style.position = 'relative'; // Needed for absolute positioning of overlay
+
+    // Create background canvas (bars, axes)
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.id = 'histogram-bg-canvas'; // New ID
+    bgCanvas.width = 470;
+    bgCanvas.height = 200;
+    bgCanvas.style.display = 'block';
+    bgCanvas.style.position = 'absolute';
+    bgCanvas.style.left = '0';
+    bgCanvas.style.top = '0';
+    bgCanvas.style.zIndex = '1'; // Background layer
+
+    // Create foreground canvas (lines)
+    const linesCanvas = document.createElement('canvas');
+    linesCanvas.id = 'histogram-lines-canvas'; // New ID
+    linesCanvas.width = 470;
+    linesCanvas.height = 200;
+    linesCanvas.style.display = 'block';
+    linesCanvas.style.position = 'absolute';
+    linesCanvas.style.left = '0';
+    linesCanvas.style.top = '0';
+    linesCanvas.style.zIndex = '2'; // Foreground layer
+    linesCanvas.style.pointerEvents = 'auto'; // Allow mouse events on this layer
+    linesCanvas.style.touchAction = 'none';
+
+    canvasContainer.appendChild(bgCanvas);
+    canvasContainer.appendChild(linesCanvas);
     
     // Create percentile buttons container
     const percentileContainer = document.createElement('div');
@@ -1854,9 +1860,23 @@ function showDynamicRangePopup() {
     
     // Initialize min/max inputs with current FITS data values
     if (window.fitsData) {
-        minInput.value = window.fitsData.min_value.toExponential(4);
-        maxInput.value = window.fitsData.max_value.toExponential(4);
+        minInput.value = window.fitsData.min_value.toFixed(2);
+        maxInput.value = window.fitsData.max_value.toFixed(2);
     }
+    
+    // --- MOVE THIS BLOCK --- 
+    // NEW: Add input event listeners to update histogram lines on manual change
+    // Use debounce to avoid excessive updates
+    const debouncedHistogramUpdate = debounce(requestHistogramUpdate, 150);
+    minInput.addEventListener('input', () => {
+        // Optional: Add basic validation here if needed
+        debouncedHistogramUpdate();
+    });
+    maxInput.addEventListener('input', () => {
+        // Optional: Add basic validation here if needed
+        debouncedHistogramUpdate();
+    });
+    // --- END MOVE --- 
     
     // Add inputs to container
     inputContainer.appendChild(minLabel);
@@ -1945,7 +1965,6 @@ function showDynamicRangePopup() {
         { value: 'viridis', label: 'Viridis', gradient: 'linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)' },
         { value: 'plasma', label: 'Plasma', gradient: 'linear-gradient(to right, #0d0887, #5302a3, #8b0aa5, #b83289, #db5c68, #f48849, #febc2a)' },
         { value: 'inferno', label: 'Inferno', gradient: 'linear-gradient(to right, #000004, #320a5a, #781c6d, #bb3754, #ec6824, #fbb41a)' },
-        { value: 'magma', label: 'Magma', gradient: 'linear-gradient(to right, #000004, #2c115f, #721f81, #b73779, #f0605d, #febc2a)' },
         { value: 'cividis', label: 'Cividis', gradient: 'linear-gradient(to right, #00204c, #213d6b, #555b6c, #7b7a77, #a59c74, #d9d57a)' },
         { value: 'hot', label: 'Hot', gradient: 'linear-gradient(to right, #000, #f00, #ff0, #fff)' },
         { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' },
@@ -2349,8 +2368,8 @@ function showDynamicRangePopup() {
     // Initialize min/max values if we have FITS data
     if (window.fitsData && window.fitsData.data) {
         // Use current values
-        minInput.value = window.fitsData.min_value.toExponential(4);
-        maxInput.value = window.fitsData.max_value.toExponential(4);
+        minInput.value = window.fitsData.min_value.toFixed(2);
+        maxInput.value = window.fitsData.max_value.toFixed(2);
         
         // Update the histogram
         requestHistogramUpdate();
@@ -2358,6 +2377,20 @@ function showDynamicRangePopup() {
         // If no data, just update the histogram
         requestHistogramUpdate();
     }
+
+    // NEW: Initialize throttled/debounced functions if not already done
+    if (!throttledHistogramUpdate) {
+        throttledHistogramUpdate = throttle(requestHistogramUpdate, 50); // Update histogram max 20fps during drag
+    }
+    if (!debouncedApplyDynamicRange) {
+        debouncedApplyDynamicRange = debounce(applyDynamicRange, 250); // Apply changes 250ms after drag stops
+    }
+
+    // NEW: Add event listeners for interactive histogram lines
+    addHistogramInteraction(linesCanvas, minInput, maxInput);
+
+    // Initialize the histogram display (will call background + lines drawing)
+    requestHistogramUpdate();
 }
 // Function to apply the new dynamic range
 function applyDynamicRange() {
@@ -2415,25 +2448,29 @@ function applyDynamicRange() {
 }
 
 function resetDynamicRange() {
-    if (!fitsData) {
-        showNotification('No image data available', 2000);
+    // FIX: Explicitly check window.fitsData and its properties
+    if (!window.fitsData || !window.fitsData.data || !window.fitsData.width || !window.fitsData.height) {
+        showNotification('No image data available or data is incomplete', 2000);
         return;
     }
     
-    // Instead of applying 90% percentile, use the full data range
     try {
         // Collect all valid pixel values with sampling for performance
         const validPixels = [];
         const maxSampleSize = 500000; // Limit sample size for performance
-        const skipFactor = Math.max(1, Math.floor((fitsData.width * fitsData.height) / maxSampleSize));
+        // FIX: Use window.fitsData consistently
+        const skipFactor = Math.max(1, Math.floor((window.fitsData.width * window.fitsData.height) / maxSampleSize));
         
         let pixelCount = 0;
-        for (let y = 0; y < fitsData.height; y++) {
-            for (let x = 0; x < fitsData.width; x += skipFactor) {
+        // FIX: Use window.fitsData consistently
+        for (let y = 0; y < window.fitsData.height; y++) {
+            // FIX: Use window.fitsData consistently
+            for (let x = 0; x < window.fitsData.width; x += skipFactor) {
                 pixelCount++;
                 if (pixelCount % skipFactor !== 0) continue; // Sample only every Nth pixel
                 
-                const value = fitsData.data[y][x];
+                // FIX: Use window.fitsData consistently
+                const value = window.fitsData.data[y][x];
                 if (!isNaN(value) && isFinite(value)) {
                     validPixels.push(value);
                 }
@@ -2446,34 +2483,42 @@ function resetDynamicRange() {
             return;
         }
         
-        // Calculate min and max values of the entire data range
-        const minValue = Math.min(...validPixels);
-        const maxValue = Math.max(...validPixels);
-        
-        console.log(`Full data range: min=${minValue}, max=${maxValue}`);
-        
-        // Apply the full data range
+        // --- CHANGE: Calculate Percentiles instead of Min/Max ---
+        // Sort the pixel values
+        validPixels.sort((a, b) => a - b);
+
+        // Calculate indices for 0.5% and 99.5% percentiles
+        const lowerPercentile = 0.005;
+        const upperPercentile = 0.995;
+        const lowerIndex = Math.floor(lowerPercentile * (validPixels.length - 1));
+        const upperIndex = Math.ceil(upperPercentile * (validPixels.length - 1));
+
+        // Get the values at these percentiles
+        const minValue = validPixels[lowerIndex];
+        const maxValue = validPixels[upperIndex];
+        // --- End CHANGE ---
+
+        console.log(`Resetting to 99% range: min=${minValue.toFixed(2)}, max=${maxValue.toFixed(2)}`);
+
+        // Apply the calculated percentile range
         const minInput = document.getElementById('min-range-input');
         const maxInput = document.getElementById('max-range-input');
         
         if (minInput && maxInput) {
-            minInput.value = minValue.toExponential(4);
-            maxInput.value = maxValue.toExponential(4);
+            minInput.value = minValue.toFixed(2);
+            maxInput.value = maxValue.toFixed(2);
         }
         
         // Update the dynamic range in the FITS data
-        if (fitsData && viewer) {
-            fitsData.min_value = minValue;
-            fitsData.max_value = maxValue;
-            
-            // Refresh the image with the new dynamic range
+        if (window.fitsData && viewer) {
+            window.fitsData.min_value = minValue;
+            window.fitsData.max_value = maxValue;
+
             refreshImage();
         }
         
-        // Update the histogram
         requestHistogramUpdate();
         
-        // Remove the notification text as requested
     } catch (error) {
         console.error('Error resetting dynamic range:', error);
         showNotification(`Error: ${error.message}`, 3000);
@@ -3005,7 +3050,8 @@ function updateHistogram() {
             
             // Calculate and draw label
             const value = minValue + (i / numXTicks) * range;
-            ctx.fillText(value.toExponential(2), x, height - padding.bottom + 20);
+            // CHANGE FORMAT
+            ctx.fillText(value.toFixed(2), x, height - padding.bottom + 20);
         }
         
         // Draw Y-axis label (rotated)
@@ -3023,10 +3069,11 @@ function updateHistogram() {
         ctx.font = '12px Arial';
         ctx.textAlign = 'center';
         const xAxisLabel = window.fitsData.wcs && window.fitsData.wcs.bunit ? window.fitsData.wcs.bunit : 'Value';
-        ctx.fillText(xAxisLabel, width / 2, height - 10);
+        // CHANGE Y-POSITION (increase from height - 10)
+        ctx.fillText(xAxisLabel, width / 2, height - 5); 
         
         // Draw histogram bars
-        ctx.fillStyle = '#4CAF50';
+        ctx.fillStyle = 'rgba(0, 180, 0, 0.7)'; // Green bars
         const barWidth = (width - padding.left - padding.right) / numBins;
         
         for (let i = 0; i < numBins; i++) {
@@ -3054,36 +3101,78 @@ function updateHistogram() {
             if (!isNaN(minVal) && !isNaN(maxVal) && minVal < maxVal) {
                 // Draw min line
                 const minX = padding.left + ((minVal - minValue) / range) * (width - padding.left - padding.right);
-                ctx.strokeStyle = '#ff5722';
+                ctx.strokeStyle = 'rgba(50, 150, 255, 0.9)'; // Blue
                 ctx.lineWidth = 2;
                 ctx.beginPath();
-                ctx.moveTo(minX, padding.top);
-                ctx.lineTo(minX, height - padding.bottom);
+                ctx.moveTo(minX, padding.top - 10); // Start slightly above the plot area
+                ctx.lineTo(minX, height - padding.bottom + 10); // End slightly below
                 ctx.stroke();
                 
                 // Draw max line
                 const maxX = padding.left + ((maxVal - minValue) / range) * (width - padding.left - padding.right);
-                ctx.strokeStyle = '#2196f3';
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.9)'; // Red
                 ctx.lineWidth = 2;
                 ctx.beginPath();
-                ctx.moveTo(maxX, padding.top);
-                ctx.lineTo(maxX, height - padding.bottom);
+                ctx.moveTo(maxX, padding.top - 10); // Start slightly above
+                ctx.lineTo(maxX, height - padding.bottom + 10); // End slightly below
                 ctx.stroke();
+
+                 // Optional: Draw small handles/indicators on the lines
+                 // Min Handle (Blue)
+                 ctx.fillStyle = 'rgba(50, 150, 255, 0.9)'; // Explicitly Blue
+                 ctx.fillRect(minX - 3, padding.top - 15, 6, 5); // Small rectangle handle for min
+                 // Max Handle (Red)
+                 ctx.fillStyle = 'rgba(255, 0, 0, 0.9)'; // Explicitly Red
+                 ctx.fillRect(maxX - 3, padding.top - 15, 6, 5); // Small rectangle handle for max
             }
         }
         
         // Draw statistics
         ctx.fillStyle = '#aaa';
         ctx.font = '12px Arial';
-        ctx.textAlign = 'left';
-        ctx.fillText(`Min: ${minValue.toExponential(4)}`, padding.left, padding.top - 15);
-        ctx.textAlign = 'right';
-        ctx.fillText(`Max: ${maxValue.toExponential(4)}`, width - padding.right, padding.top - 15);
+        // COMMENT OUT Min text
+        // ctx.textAlign = 'left';
+        // ctx.fillText(`Min: ${minValue.toExponential(4)}`, padding.left, padding.top - 15);
+        // COMMENT OUT Max text
+        // ctx.textAlign = 'right';
+        // ctx.fillText(`Max: ${maxValue.toExponential(4)}`, width - padding.right, padding.top - 15);
+        // Keep Pixel Count text
         ctx.textAlign = 'center';
         ctx.fillText(`Pixels: ${validPixelCount.toLocaleString()}`, width / 2, padding.top - 15);
+
+        // Store scale info for interaction handlers
+        // Use actual min/max of the data for scaling, not necessarily the input values
+        const dataMin = window.fitsData.min_value;
+        const dataMax = window.fitsData.max_value;
+        const dataRange = dataMax - dataMin;
+
+        histogramScaleInfo = {
+            padding: padding,
+            histWidth: width - padding.left - padding.right,
+            histHeight: histHeight,
+            dataMin: dataMin, // Min value used for the current histogram rendering *scale*
+            dataRange: dataRange, // Range used for the current histogram rendering *scale*
+            canvasWidth: width,
+            canvasHeight: height
+        };
+
+        if (histogramScaleInfo.histWidth <= 0 || !isFinite(histogramScaleInfo.dataRange) || histogramScaleInfo.dataRange <= 0) {
+             console.warn('Invalid histogram scale parameters:', histogramScaleInfo);
+             drawEmptyHistogram(canvas, 'Invalid scale');
+             return;
+        }
+
     } catch (error) {
         console.error('Error updating histogram:', error);
-        drawEmptyHistogram(canvas, 'Error updating histogram: ' + error.message);
+        drawEmptyHistogram(canvas, 'Error updating histogram');
+    } finally {
+        isUpdatingHistogram = false;
+        // If another update was requested while this one was running, start it now
+        if (histogramUpdateRequested) {
+            histogramUpdateRequested = false;
+            // Use a timeout to avoid potential stack overflow if updates are rapid
+            setTimeout(requestHistogramUpdate, 0);
+        }
     }
 }
 
@@ -3674,7 +3763,7 @@ function createWelcomeScreen() {
     
     welcomeDiv.innerHTML = `
         <h2>Welcome to Neloura</h2>
-        <p>Please select a FITS file to open using the folder icon <span class="highlight">📁</span> in the top-right corner.</p>
+        <p>Please select a FITS file to open using the folder icon 📁 in the top-right corner.</p>
     `;
     
     // Add animated arrow pointing to the file browser button
@@ -5106,95 +5195,201 @@ function loadCatalogWithFlags(catalogName) {
         // Wait for the OpenSeadragon container to be available
         const container = await waitForElement('#openseadragon');
         if (!container) {
-            console.warn("OpenSeadragon container not found");
+            console.warn("OpenSeadragon container not found for coordinates");
             return;
         }
         
-        console.log("Found OpenSeadragon container");
+        console.log("Found OpenSeadragon container for coordinates");
         
         // Remove any existing coordinate display
         const existing = document.getElementById('osd-coordinates');
-        if (existing) existing.remove();
+        if (existing) {
+            console.log("Removing existing coordinates display");
+            existing.remove();
+        }
         
         // Create new coordinates display
         const coordsDisplay = createCoordinatesElement();
+        if (!coordsDisplay) {
+            console.error("Failed to create coordinates element!");
+            return;
+        }
         container.appendChild(coordsDisplay);
         
-        console.log("Coordinates display added to container");
+        console.log("Coordinates display element added to container");
         
         // Get the inner container for animations
         const innerContainer = coordsDisplay.querySelector('.coords-container');
+        if (!innerContainer) {
+            console.error("Could not find .coords-container within the coordinates display element");
+            return;
+        }
         
         // Set up event listeners using direct DOM events
+        console.log("Adding mousemove listener for coordinates");
         container.addEventListener('mousemove', function(event) {
-            // Only execute if FITS data is available
-            if (!window.fitsData || !window.fitsData.width) return;
+            // Ensure viewer and fitsData are available
+            const currentViewer = window.viewer || window.tiledViewer; // Find the active viewer
             
+            if (!currentViewer) {
+                 console.log("mousemove: No viewer found");
+                 if (innerContainer) innerContainer.classList.remove('visible'); 
+                 return;
+            }
+            if (!currentViewer.world) {
+                 console.log("mousemove: Viewer found, but no world");
+                 if (innerContainer) innerContainer.classList.remove('visible');
+                 return;
+            }
+             if (!currentViewer.world.getItemAt(0)) {
+                 console.log("mousemove: Viewer world found, but no item at index 0");
+                 if (innerContainer) innerContainer.classList.remove('visible');
+                 return;
+            }
+             if (!window.fitsData) {
+                 console.log("mousemove: No FITS data found");
+                 if (innerContainer) innerContainer.classList.remove('visible');
+                 return;
+            }
+             
+             // console.log("mousemove: Viewer and FITS data OK"); // Log on success if needed
+
+            // Ensure WCS is parsed (assuming it's stored in window.parsedWCS after loading)
+            if (!window.parsedWCS && window.fitsData.wcs) {
+                 console.log("mousemove: Attempting to parse WCS");
+                 try {
+                     window.parsedWCS = parseWCS(window.fitsData.wcs);
+                     console.log("WCS parsed successfully for coordinate display.");
+                 } catch (e) {
+                     console.error("Failed to parse WCS for coordinate display:", e);
+                     window.parsedWCS = null; // Mark as failed
+                 }
+            }
+
+
             // Make sure container is visible
-            innerContainer.classList.add('visible');
-            
-            // Calculate relative position in the container
-            const rect = container.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            
-            // Convert to image coordinates using a simple ratio calculation
-            const imageX = Math.round((x / rect.width) * window.fitsData.width);
-            const imageY = Math.round((y / rect.height) * window.fitsData.height);
-            
+            if (innerContainer) {
+                // console.log("mousemove: Adding 'visible' class"); // Optional log
+                innerContainer.classList.add('visible');
+            } else {
+                 console.log("mousemove: innerContainer not found when trying to make visible");
+                 return; // Should not happen if init checks passed
+            }
+
+            // Get mouse position relative to the viewer element
+            let viewportPoint;
+            try {
+                const mousePos = currentViewer.mouseTracker.getMousePosition(event);
+                 if (!mousePos) {
+                    console.log("mousemove: getMousePosition returned null");
+                    return;
+                 }
+                viewportPoint = currentViewer.viewport.pointFromPixel(mousePos);
+                 if (!viewportPoint) {
+                    console.log("mousemove: pointFromPixel returned null");
+                     return;
+                 }
+            } catch (e) {
+                console.error("mousemove: Error getting viewport point:", e);
+                return;
+            }
+            // console.log("mousemove: Got viewport point:", viewportPoint);
+
+
+            // Check if the point is within the image bounds
+             const imageBounds = currentViewer.world.getItemAt(0).getBounds();
+             if (!imageBounds) {
+                 console.log("mousemove: Could not get image bounds");
+                 return;
+             }
+             // console.log("mousemove: Image bounds:", imageBounds); // Optional log
+             
+             if (!imageBounds.containsPoint(viewportPoint)) {
+                 // console.log("mousemove: Mouse is outside image bounds"); // Optional log
+                 if (innerContainer) innerContainer.classList.remove('visible'); 
+                 // Reset values or let mouseleave handle it
+                 updateValueWithAnimation('coord-x', '-');
+                 updateValueWithAnimation('coord-y', '-');
+                 updateValueWithAnimation('coord-ra', '-');
+                 updateValueWithAnimation('coord-dec', '-');
+                 updateValueWithAnimation('coord-value', '-');
+                 document.getElementById('coord-unit').textContent = '';
+                 return;
+             }
+
+            // Coordinates are in the image coordinate system (0 to width, 0 to height)
+            const imageX = Math.round(viewportPoint.x);
+            const imageY = Math.round(viewportPoint.y);
+            // console.log(`mousemove: Image coords: (${imageX}, ${imageY})`); // Optional log
+
+
             // Update pixel coordinates with animation
             updateValueWithAnimation('coord-x', imageX);
             updateValueWithAnimation('coord-y', imageY);
-            
-            // Calculate RA/DEC if WCS info is available
-            if (window.fitsData.wcs) {
+
+            // Calculate RA/DEC if WCS info is available and parsed
+            if (window.parsedWCS) {
+                // console.log("mousemove: Calculating RA/DEC"); // Optional log
                 try {
-                    const celestial = window.pixelToCelestial(imageX, imageY, parseWCS(window.fitsData.wcs));
-                    updateValueWithAnimation('coord-ra', celestial.ra.toFixed(4));
-                    updateValueWithAnimation('coord-dec', celestial.dec.toFixed(4));
+                    // Use the pre-parsed WCS object
+                    const celestial = pixelToCelestial(imageX, imageY, window.parsedWCS);
+                     if (!celestial) {
+                         console.log("mousemove: pixelToCelestial returned null/undefined");
+                         updateValueWithAnimation('coord-ra', '?'); // Indicate error
+                         updateValueWithAnimation('coord-dec', '?');
+                     } else {
+                        updateValueWithAnimation('coord-ra', celestial.ra.toFixed(4));
+                        updateValueWithAnimation('coord-dec', celestial.dec.toFixed(4));
+                     }
                 } catch (e) {
-                    updateValueWithAnimation('coord-ra', '-');
-                    updateValueWithAnimation('coord-dec', '-');
+                     console.error("Error converting pixel to celestial:", e); // Log error
+                    updateValueWithAnimation('coord-ra', 'Err'); // Indicate error
+                    updateValueWithAnimation('coord-dec', 'Err');
                 }
             } else {
+                // console.log("mousemove: No parsed WCS for RA/DEC"); // Optional log
                 updateValueWithAnimation('coord-ra', '-');
                 updateValueWithAnimation('coord-dec', '-');
             }
-            
-            // Try to add pixel value if available
-            if (window.fitsData.data && 
-                imageY >= 0 && imageY < window.fitsData.height && 
-                imageX >= 0 && imageX < window.fitsData.width) {
-                try {
-                    const value = window.fitsData.data[imageY][imageX];
-                    if (typeof value === 'number' && !isNaN(value)) {
-                        updateValueWithAnimation('coord-value', value.toExponential(4));
-                        
-                        // Get BUNIT from FITS header if available
-                        const bunit = getBunit();
-                        document.getElementById('coord-unit').textContent = bunit;
-                    } else {
-                        updateValueWithAnimation('coord-value', '-');
-                        document.getElementById('coord-unit').textContent = '';
-                    }
-                } catch (e) {
-                    updateValueWithAnimation('coord-value', '-');
-                    document.getElementById('coord-unit').textContent = '';
-                }
-            } else {
-                updateValueWithAnimation('coord-value', '-');
-                document.getElementById('coord-unit').textContent = '';
-            }
+
+            // Try to get pixel value using the dedicated function
+             // console.log("mousemove: Getting pixel value"); // Optional log
+             try {
+                 // Use getFitsPixel for potentially complex data access
+                 const value = getFitsPixel(imageX, imageY); // Assuming getFitsPixel handles data access logic
+                 // console.log(`mousemove: Pixel value raw: ${value}`); // Optional log
+                 
+                 if (typeof value === 'number' && !isNaN(value)) {
+                     // console.log(`mousemove: Pixel value formatted: ${value.toExponential(4)}`); // Optional log
+                     updateValueWithAnimation('coord-value', value.toExponential(4));
+                     const bunit = getBunit(); // Keep using helper for BUNIT
+                     // console.log(`mousemove: Bunit: ${bunit}`); // Optional log
+                     document.getElementById('coord-unit').textContent = bunit || '';
+                 } else {
+                      // console.log("mousemove: Pixel value is not a valid number"); // Optional log
+                      updateValueWithAnimation('coord-value', '-');
+                      document.getElementById('coord-unit').textContent = '';
+                 }
+             } catch (e) {
+                  console.error("Error getting pixel value:", e); // Log error
+                 updateValueWithAnimation('coord-value', 'Err'); // Indicate error
+                 document.getElementById('coord-unit').textContent = '';
+             }
         });
         
         // Handle mouse leave
+        console.log("Adding mouseleave listener for coordinates");
         container.addEventListener('mouseleave', function() {
+            // console.log("mouseleave triggered for coordinates"); // Optional log
             // Fade out animation
-            innerContainer.classList.remove('visible');
+            if (innerContainer) {
+                innerContainer.classList.remove('visible');
+            }
             
             // Reset values after animation completes
             setTimeout(() => {
-                if (!innerContainer.classList.contains('visible')) {
+                if (innerContainer && !innerContainer.classList.contains('visible')) {
+                    // console.log("Resetting coordinate values on mouseleave timeout"); // Optional log
                     updateValueWithAnimation('coord-x', '-');
                     updateValueWithAnimation('coord-y', '-');
                     updateValueWithAnimation('coord-ra', '-');
@@ -5202,16 +5397,18 @@ function loadCatalogWithFlags(catalogName) {
                     updateValueWithAnimation('coord-value', '-');
                     document.getElementById('coord-unit').textContent = '';
                 }
-            }, 300);
+            }, 300); // Corresponds to CSS transition time
         });
         
         // Make this function available globally
         window.updateCoordinatesDisplay = function() {
+            console.log("updateCoordinatesDisplay called");
             // This function can be called when new images are loaded
             const coordsContainer = document.querySelector('.coords-container');
             if (coordsContainer) coordsContainer.classList.remove('visible');
         };
         
+        console.log("Coordinates display initialization finished.");
         return coordsDisplay;
     }
     
@@ -5443,3 +5640,459 @@ console.log("Starting pixel-perfect mode implementation...");
 const viewerResult = enablePixelPerfectMode();
 const canvasCount = updateAllCanvases();
 console.log(`Applied changes to canvases: ${canvasCount}, viewer update: ${viewerResult}`);
+
+// --- NEW: Interaction Logic ---
+function addHistogramInteraction(canvas, minInput, maxInput) {
+    let startX = 0;
+
+    const getMousePos = (evt) => {
+        const rect = canvas.getBoundingClientRect();
+        // Adjust for touch events
+        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+        return {
+            x: clientX - rect.left,
+            y: (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top
+        };
+    };
+
+    const xToValue = (x) => {
+        const { padding, histWidth, dataMin, dataRange } = histogramScaleInfo;
+        const plotX = Math.max(padding.left, Math.min(padding.left + histWidth, x));
+        const value = dataMin + ((plotX - padding.left) / histWidth) * dataRange;
+        // Ensure the value respects potential bounds if necessary, e.g., non-negative
+        // For now, just return the calculated value
+        return value;
+    };
+
+     const valueToX = (value) => {
+         const { padding, histWidth, dataMin, dataRange } = histogramScaleInfo;
+         // Clamp value to the *currently displayed* histogram range before converting
+         const clampedValue = Math.max(dataMin, Math.min(dataMin + dataRange, value));
+         return padding.left + ((clampedValue - dataMin) / dataRange) * histWidth;
+     };
+
+
+    const handleMouseDown = (evt) => {
+        evt.preventDefault(); // Prevent text selection, etc.
+        const pos = getMousePos(evt);
+        const currentMin = parseFloat(minInput.value);
+        const currentMax = parseFloat(maxInput.value);
+
+        if (isNaN(currentMin) || isNaN(currentMax) || !histogramScaleInfo.histWidth) return; // Need valid inputs and scale
+
+        const minX = valueToX(currentMin);
+        const maxX = valueToX(currentMax);
+
+        if (Math.abs(pos.x - minX) <= DRAG_THRESHOLD) {
+            isDraggingLine = 'min';
+            startX = pos.x;
+            canvas.style.cursor = 'ew-resize';
+        } else if (Math.abs(pos.x - maxX) <= DRAG_THRESHOLD) {
+            isDraggingLine = 'max';
+            startX = pos.x;
+            canvas.style.cursor = 'ew-resize';
+        } else {
+            isDraggingLine = null;
+        }
+    };
+
+    const handleMouseMove = (evt) => {
+        if (!isDraggingLine) return;
+        evt.preventDefault();
+
+        const pos = getMousePos(evt);
+        const newValue = xToValue(pos.x);
+        const currentMin = parseFloat(minInput.value);
+        const currentMax = parseFloat(maxInput.value);
+
+        if (isDraggingLine === 'min') {
+             // Ensure min doesn't go above max
+             if (newValue < currentMax) {
+                minInput.value = newValue.toFixed(2);
+                // Throttle the histogram update for performance during drag
+                if (throttledHistogramUpdate) throttledHistogramUpdate();
+             }
+        } else if (isDraggingLine === 'max') {
+             // Ensure max doesn't go below min
+             if (newValue > currentMin) {
+                maxInput.value = newValue.toFixed(2);
+                 // Throttle the histogram update for performance during drag
+                if (throttledHistogramUpdate) throttledHistogramUpdate();
+             }
+        }
+    };
+
+    const handleMouseUpOrLeave = (evt) => {
+        if (isDraggingLine) {
+            isDraggingLine = null;
+            canvas.style.cursor = 'default';
+            // Apply the changes after dragging stops (debounced)
+             if (debouncedApplyDynamicRange) {
+                 debouncedApplyDynamicRange();
+             } else {
+                 // Fallback if debounce isn't ready
+                 applyDynamicRange();
+             }
+        }
+    };
+
+    // Add listeners
+    canvas.addEventListener('mousedown', handleMouseDown);
+    canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('mouseup', handleMouseUpOrLeave);
+    canvas.addEventListener('mouseleave', handleMouseUpOrLeave);
+
+    // Add touch listeners
+    canvas.addEventListener('touchstart', handleMouseDown, { passive: false });
+    canvas.addEventListener('touchmove', handleMouseMove, { passive: false });
+    canvas.addEventListener('touchend', handleMouseUpOrLeave);
+    canvas.addEventListener('touchcancel', handleMouseUpOrLeave);
+
+
+     // Store cleanup function to remove listeners if popup is destroyed
+     // (Although in this app, the popup seems to be hidden, not destroyed)
+     canvas._removeHistogramInteraction = () => {
+         canvas.removeEventListener('mousedown', handleMouseDown);
+         canvas.removeEventListener('mousemove', handleMouseMove);
+         canvas.removeEventListener('mouseup', handleMouseUpOrLeave);
+         canvas.removeEventListener('mouseleave', handleMouseUpOrLeave);
+         canvas.removeEventListener('touchstart', handleMouseDown);
+         canvas.removeEventListener('touchmove', handleMouseMove);
+         canvas.removeEventListener('touchend', handleMouseUpOrLeave);
+         canvas.removeEventListener('touchcancel', handleMouseUpOrLeave);
+         console.log("Removed histogram interaction listeners.");
+     };
+}
+// --- End NEW ---
+// --- End NEW ---
+
+// Rename updateHistogram and modify its content
+function updateHistogramBackground() { // Renamed
+    const canvas = document.getElementById('histogram-bg-canvas'); // Use BG canvas ID
+    if (!canvas) {
+        console.log('Histogram background canvas not found, skipping update');
+        return;
+    }
+    
+    // Check if we're in tiled mode - if so, fetch server histogram (which draws on bg canvas? Need to verify)
+    const inTiledMode = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
+    if (inTiledMode) {
+        console.log('Tiled mode: Fetching server histogram for background');
+        fetchServerHistogram(); // Assuming this function now targets 'histogram-bg-canvas'
+        return;
+    }
+
+    // Check if we have access to fitsData with pixel data
+    if (!window.fitsData || !window.fitsData.data || !window.fitsData.data.length === 0) {
+        console.log('No FITS data available for histogram background');
+        // Optionally draw an empty message on the background canvas
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('No FITS data available', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+    
+    // --- Keep the data processing and bar/axis drawing logic --- 
+    try {
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        // Clear the background canvas
+        ctx.clearRect(0, 0, width, height);
+        
+        // ... (Calculate bins, range, skipFactor, validPixelCount etc. as before) ...
+         const numBins = 100;
+         const bins = new Array(numBins).fill(0);
+         const minValue = window.fitsData.min_value;
+         const maxValue = window.fitsData.max_value;
+         const range = maxValue - minValue;
+        
+         if (range <= 0 || !isFinite(range)) {
+             console.log('Invalid data range:', minValue, maxValue);
+             // Draw empty message on bg canvas
+             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+             ctx.fillText('Invalid data range', width / 2, height / 2);
+             return;
+         }
+        
+         const maxSampleSize = 500000;
+         const skipFactor = Math.max(1, Math.floor((window.fitsData.width * window.fitsData.height) / maxSampleSize));
+         let pixelCount = 0;
+         let validPixelCount = 0;
+         for (let y = 0; y < window.fitsData.height; y++) {
+             for (let x = 0; x < window.fitsData.width; x += skipFactor) {
+                 pixelCount++;
+                 if (pixelCount % skipFactor !== 0) continue;
+                 let val; try { val = window.fitsData.data[y][x]; } catch (e) { continue; }
+                 if (!isNaN(val) && isFinite(val)) {
+                     validPixelCount++;
+                     if (val < minValue || val > maxValue) continue;
+                     const binIndex = Math.min(numBins - 1, Math.floor(((val - minValue) / range) * numBins));
+                     bins[binIndex]++;
+                 }
+             }
+         }
+        
+         let maxBinCount = 0; for (let i = 0; i < numBins; i++) { maxBinCount = Math.max(maxBinCount, bins[i]); }
+         if (maxBinCount === 0) {
+             // Draw empty message on bg canvas
+             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+             ctx.fillText('No pixels in selected range', width / 2, height / 2);
+             return;
+         }
+         const logMaxBinCount = Math.log(maxBinCount + 1);
+
+        // Draw the axes and labels (directly on bg canvas)
+        const padding = { top: 30, right: 20, bottom: 40, left: 60 };
+        const histHeight = height - padding.top - padding.bottom;
+        ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+        // Y-axis line
+        ctx.beginPath(); ctx.moveTo(padding.left, padding.top); ctx.lineTo(padding.left, height - padding.bottom); ctx.stroke();
+        // X-axis line
+        ctx.beginPath(); ctx.moveTo(padding.left, height - padding.bottom); ctx.lineTo(width - padding.right, height - padding.bottom); ctx.stroke();
+        // Y Ticks & Labels
+        ctx.fillStyle = '#aaa'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
+        const numYTicks = 5;
+        for (let i = 0; i <= numYTicks; i++) { 
+            const y = height - padding.bottom - (i / numYTicks) * histHeight;
+            ctx.beginPath(); ctx.moveTo(padding.left - 5, y); ctx.lineTo(padding.left, y); ctx.stroke();
+            const logValue = (i / numYTicks) * logMaxBinCount;
+            const actualValue = Math.round(Math.exp(logValue) - 1);
+            ctx.fillText(actualValue.toLocaleString(), padding.left - 8, y + 4);
+        }
+        // X Ticks & Labels
+        ctx.textAlign = 'center';
+        const numXTicks = 5;
+        for (let i = 0; i <= numXTicks; i++) {
+            const x = padding.left + (i / numXTicks) * (width - padding.left - padding.right);
+            ctx.beginPath(); ctx.moveTo(x, height - padding.bottom); ctx.lineTo(x, height - padding.bottom + 5); ctx.stroke();
+            const value = minValue + (i / numXTicks) * range;
+            ctx.fillText(value.toFixed(2), x, height - padding.bottom + 20);
+        }
+        // Axis Labels
+        ctx.save(); ctx.translate(15, height / 2); ctx.rotate(-Math.PI / 2); ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('Pixel Count (log)', 0, 0); ctx.restore();
+        ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        const xAxisLabel = window.fitsData.wcs && window.fitsData.wcs.bunit ? window.fitsData.wcs.bunit : 'Value';
+        ctx.fillText(xAxisLabel, width / 2, height - 5);
+        // Pixel Count Stat
+        ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(`Pixels: ${validPixelCount.toLocaleString()}`, width / 2, padding.top - 15);
+
+        // Draw histogram bars (directly on bg canvas)
+        ctx.fillStyle = 'rgba(0, 180, 0, 0.7)'; // Green bars
+        const barWidth = (width - padding.left - padding.right) / numBins;
+        for (let i = 0; i < numBins; i++) {
+            const binCount = bins[i];
+            if (binCount === 0) continue;
+            const logHeight = Math.log(binCount + 1) / logMaxBinCount * histHeight;
+            const x = padding.left + i * barWidth;
+            const y = height - padding.bottom - logHeight;
+            ctx.fillRect(x, y, barWidth - 1, logHeight); // Use barWidth - 1 for slight gap
+        }
+
+        // --- REMOVE Min/Max Line Drawing from here --- 
+
+        // Store scale info globally (needed by drawHistogramLines)
+        histogramScaleInfo = {
+            padding: padding,
+            histWidth: width - padding.left - padding.right,
+            histHeight: histHeight,
+            // Store the range used for THIS specific background render
+            dataMin: minValue, 
+            dataRange: range,
+            canvasWidth: width,
+            canvasHeight: height
+        };
+        if (histogramScaleInfo.histWidth <= 0 || !isFinite(histogramScaleInfo.dataRange) || histogramScaleInfo.dataRange <= 0) {
+             console.warn('Invalid histogram scale parameters calculated in background update:', histogramScaleInfo);
+        }
+
+    } catch (error) {
+        console.error('Error updating histogram background:', error);
+        // Optionally draw error message on bg canvas
+        const canvas = document.getElementById('histogram-bg-canvas');
+        if(canvas) {
+           const ctx = canvas.getContext('2d');
+           ctx.clearRect(0, 0, canvas.width, canvas.height);
+           ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+           ctx.fillText('Error updating histogram', canvas.width / 2, canvas.height / 2);
+        }
+    } finally {
+        // No need for isUpdatingHistogram flags here if it only draws background
+    }
+}
+
+// NEW Function to draw lines (with animation)
+function drawHistogramLines(targetMinVal, targetMaxVal, animate = false) {
+    const canvas = document.getElementById('histogram-lines-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Need scale info from the background draw
+    if (!histogramScaleInfo || !histogramScaleInfo.padding) {
+        console.warn('Histogram scale info not available for drawing lines.');
+        return;
+    }
+    const { padding, histWidth, dataMin, dataRange, histHeight } = histogramScaleInfo;
+
+    // Helper to calculate X coordinate from data value
+    const valueToX = (value) => {
+        if (!isFinite(dataRange) || dataRange <= 0 || histWidth <= 0) return padding.left; // Fallback
+        const clampedValue = Math.max(dataMin, Math.min(dataMin + dataRange, value));
+        return padding.left + ((clampedValue - dataMin) / dataRange) * histWidth;
+    };
+
+    const targetMinX = valueToX(targetMinVal);
+    const targetMaxX = valueToX(targetMaxVal);
+
+    // Cancel any ongoing animation
+    if (lineAnimationId) {
+        cancelAnimationFrame(lineAnimationId);
+        lineAnimationId = null;
+    }
+
+    const startMinX = (currentMinLineX === null) ? targetMinX : currentMinLineX;
+    const startMaxX = (currentMaxLineX === null) ? targetMaxX : currentMaxLineX;
+
+    const drawLinesAt = (minX, maxX) => {
+        ctx.clearRect(0, 0, width, height);
+        ctx.lineWidth = 2;
+
+        // Draw Min Line (Blue)
+        if (isFinite(minX)) {
+            ctx.strokeStyle = 'rgba(50, 150, 255, 0.9)';
+            ctx.fillStyle = 'rgba(50, 150, 255, 0.9)';
+            ctx.beginPath();
+            ctx.moveTo(minX, padding.top - 10);
+            ctx.lineTo(minX, height - padding.bottom + 10);
+            ctx.stroke();
+            ctx.fillRect(minX - 3, padding.top - 15, 6, 5);
+        }
+
+        // Draw Max Line (Red)
+        if (isFinite(maxX)) {
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.9)';
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+            ctx.beginPath();
+            ctx.moveTo(maxX, padding.top - 10);
+            ctx.lineTo(maxX, height - padding.bottom + 10);
+            ctx.stroke();
+            ctx.fillRect(maxX - 3, padding.top - 15, 6, 5);
+        }
+    };
+
+    if (animate && (startMinX !== targetMinX || startMaxX !== targetMaxX)) {
+        const startTime = performance.now();
+
+        const step = (timestamp) => {
+            const elapsed = timestamp - startTime;
+            const progress = Math.min(1, elapsed / LINE_ANIMATION_DURATION);
+            // Ease out function (quad) progress = progress * (2 - progress);
+
+            const interpolatedMinX = startMinX + (targetMinX - startMinX) * progress;
+            const interpolatedMaxX = startMaxX + (targetMaxX - startMaxX) * progress;
+
+            drawLinesAt(interpolatedMinX, interpolatedMaxX);
+
+            currentMinLineX = interpolatedMinX;
+            currentMaxLineX = interpolatedMaxX;
+
+            if (progress < 1) {
+                lineAnimationId = requestAnimationFrame(step);
+            } else {
+                lineAnimationId = null;
+                currentMinLineX = targetMinX; // Ensure final position is exact
+                currentMaxLineX = targetMaxX;
+            }
+        };
+        lineAnimationId = requestAnimationFrame(step);
+    } else {
+        // No animation, draw directly
+        drawLinesAt(targetMinX, targetMaxX);
+        currentMinLineX = targetMinX;
+        currentMaxLineX = targetMaxX;
+    }
+}
+
+// Modify requestHistogramUpdate
+function requestHistogramUpdate() {
+    // If an update is already queued or running, do nothing for now
+    // The finally block of updateHistogramBackground will handle queuing.
+    // We might need more sophisticated debouncing/throttling here if needed.
+    if (isUpdatingHistogram || histogramUpdateTimer) {
+        histogramUpdateRequested = true;
+        return;
+    }
+
+    // Set flag and potentially use a timer for debouncing
+    isUpdatingHistogram = true;
+    histogramUpdateRequested = false; // Clear request flag
+
+    // Update background first
+    updateHistogramBackground();
+    
+    // Draw lines based on current input values (no animation needed here as it follows background)
+    const minInput = document.getElementById('min-range-input');
+    const maxInput = document.getElementById('max-range-input');
+    if (minInput && maxInput) {
+        const currentMin = parseFloat(minInput.value);
+        const currentMax = parseFloat(maxInput.value);
+        if (!isNaN(currentMin) && !isNaN(currentMax)) {
+            drawHistogramLines(currentMin, currentMax, false); 
+        }
+    }
+    
+    // Reset flags after completion (or use finally block in updateHistBG)
+    isUpdatingHistogram = false; 
+    if (histogramUpdateRequested) { // Check if a new request came in during update
+        histogramUpdateTimer = setTimeout(() => {
+             histogramUpdateTimer = null;
+             requestHistogramUpdate();
+        }, 100); // Small delay before next update
+    }
+}
+
+// Modify fetchServerHistogram if it exists to draw on bg canvas
+function fetchServerHistogram() {
+    const canvas = document.getElementById('histogram-bg-canvas'); // Target BG canvas
+    // ... rest of fetch logic ...
+    // Inside .then(data => { ... drawServerHistogram(data); ... })
+     if (!canvas) return;
+    
+     // Show a loading message on BG canvas
+     const ctx = canvas.getContext('2d');
+     ctx.clearRect(0, 0, canvas.width, canvas.height);
+     ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+     ctx.fillText('Loading histogram data...', canvas.width / 2, canvas.height / 2);
+    
+     fetch('/fits-histogram/')
+         .then(response => response.json())
+         .then(data => {
+             if (data.error) throw new Error(data.error);
+             drawServerHistogram(data); // Draw the received data
+             // Also draw lines based on current inputs
+             const minInput = document.getElementById('min-range-input');
+             const maxInput = document.getElementById('max-range-input');
+             if (minInput && maxInput) {
+                 const currentMin = parseFloat(minInput.value);
+                 const currentMax = parseFloat(maxInput.value);
+                 if (!isNaN(currentMin) && !isNaN(currentMax)) {
+                     drawHistogramLines(currentMin, currentMax, false); // Draw lines over server BG
+                 }
+             }
+         })
+         .catch(error => {
+             console.error('Error fetching histogram:', error);
+             // Draw error message on BG canvas
+             ctx.clearRect(0, 0, canvas.width, canvas.height);
+             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+             ctx.fillText('Error: ' + error.message, canvas.width / 2, canvas.height / 2);
+         });
+}
+
+

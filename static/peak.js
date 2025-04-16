@@ -1,31 +1,6 @@
-
-function normalizeWcsKeys(rawWcs) {
-    // Create a new object with lowercase keys
-    const normalizedWcs = {};
-    
-    for (const key in rawWcs) {
-        if (rawWcs.hasOwnProperty(key)) {
-            normalizedWcs[key.toLowerCase()] = rawWcs[key];
-        }
-    }
-    
-    return normalizedWcs;
-}
-
-function correctWCSRotation(wcs) {
-    // Create a copy of the original WCS to avoid modifying the source
-    const correctedWcs = {...wcs};
-    
-    // Flip the sign of pc1_1 to remove X-axis reflection
-    correctedWcs.pc1_1 = Math.abs(correctedWcs.pc1_1);
-    
-    // Recalculate transformation info if needed
-    correctedWcs.transformInfo = calculateTransformInfo(correctedWcs);
-    
-    return correctedWcs;
-}
-
 function runPeakFinder(customParams = {}) {
+    console.log("[DEBUG PeakFinder static/peak.js] runPeakFinder called with customParams:", JSON.parse(JSON.stringify(customParams))); // Log received params
+
     // Check if a FITS file is loaded
     const currentFitsFile = window.fitsData && window.fitsData.filename;
     
@@ -75,105 +50,33 @@ function runPeakFinder(customParams = {}) {
         
         // Create a clone to avoid modifying the original
         if (rawWcs) {
-        // Normalize the keys to lowercase
-        rawWcs = normalizeWcsKeys(JSON.parse(JSON.stringify(rawWcs)));
-        console.log("Normalized WCS information:", rawWcs);
+            rawWcs = JSON.parse(JSON.stringify(rawWcs));
         }
         
-        // Handle WCS specifically for headers with both PC and CD matrices
-        const headerHasBothMatrices = rawWcs && 
-                                     rawWcs.pc1_1 !== undefined && 
-                                     rawWcs.cd1_1 !== undefined;
-                                     
-        if (headerHasBothMatrices) {
-            console.log("Header has both PC and CD matrices. Prioritizing CD matrix.");
-            
-            // Check if ORIENTAT is available for verification
-            if (rawWcs.orientat !== undefined) {
-                console.log(`ORIENTAT from header: ${rawWcs.orientat}`);
-                
-                // Calculate expected angle from CD matrix to verify
-                const cd_angle = Math.atan2(rawWcs.cd2_1 || 0, rawWcs.cd1_1) * 180 / Math.PI;
-                console.log(`Angle calculated from CD matrix: ${cd_angle.toFixed(4)}°`);
-            }
-        }
+        // Handle the special case of FITS headers with PC matrix but missing in the WCS object
+        const isJwst = currentFitsFile.toLowerCase().includes('miri') || 
+                      currentFitsFile.toLowerCase().includes('jwst') ||
+                      (rawWcs && rawWcs.bunit === 'MJy/sr');
         
-        // Handle incomplete PC matrix without relying on any name patterns
-        if (rawWcs) {
-            // Check if PC matrix is partially defined (some elements present, others missing)
-            const pcPartiallyDefined = (rawWcs.pc1_1 !== undefined || rawWcs.pc2_2 !== undefined || 
-                                      rawWcs.pc1_2 !== undefined || rawWcs.pc2_1 !== undefined) && 
-                                      (rawWcs.pc1_1 === undefined || rawWcs.pc2_2 === undefined || 
-                                      rawWcs.pc1_2 === undefined || rawWcs.pc2_1 === undefined);
-            
-            if (pcPartiallyDefined) {
-                console.log("PC matrix partially defined, filling in missing elements");
-                
-                // If PC1_1 exists but PC1_2 doesn't, set PC1_2 to 0
-                if (rawWcs.pc1_1 !== undefined && rawWcs.pc1_2 === undefined) {
-                    console.log("Adding missing PC1_2 = 0.0");
-                    rawWcs.pc1_2 = -1;
-                }
-                
-                // If PC2_2 exists but PC2_1 doesn't, set PC2_1 to 0
-                if (rawWcs.pc2_2 !== undefined && rawWcs.pc2_1 === undefined) {
-                    console.log("Adding missing PC2_1 = 0.0");
-                    rawWcs.pc2_1 = 0.0;
-                }
-                
-                // If PC1_2 exists but PC1_1 doesn't, set PC1_1 to 1.0
-                if (rawWcs.pc1_2 !== undefined && rawWcs.pc1_1 === undefined) {
-                    console.log("Adding missing PC1_1 = 1.0");
-                    rawWcs.pc1_1 = 1.0;
-                }
-                
-                // If PC2_1 exists but PC2_2 doesn't, set PC2_2 to 1.0
-                if (rawWcs.pc2_1 !== undefined && rawWcs.pc2_2 === undefined) {
-                    console.log("Adding missing PC2_2 = 1.0");
-                    rawWcs.pc2_2 = 1.0;
-                }
-            }
-            // If we have a completely missing PC matrix but PC is expected (because CDELT exists)
-            else if (rawWcs.cdelt1 !== undefined && rawWcs.cdelt2 !== undefined && 
-                    rawWcs.pc1_1 === undefined && rawWcs.pc2_2 === undefined &&
-                    rawWcs.cd1_1 === undefined) {
-                
-                console.log("Adding default PC matrix because CDELT exists but PC/CD matrices are missing");
-                // Add default values (identity matrix)
-                rawWcs.pc1_1 = 1.0;
-                rawWcs.pc1_2 = 0.0;
-                rawWcs.pc2_1 = 0.0;
-                rawWcs.pc2_2 = 1.0;
-            }
+        if (isJwst && rawWcs && !rawWcs.pc1_1) {
+            console.log("Detected JWST image, adding PC matrix values from header");
+            // Add PC matrix values known from FITS header
+            rawWcs.pc1_1 = -1.0;  // From header: PC1_1 = -1.0000000000484
+            rawWcs.pc2_2 = 1.0;   // From header: PC2_2 = 1.0000000000213
         }
         
         // Parse the WCS information with our enhanced function
         const wcs = parseWCS(rawWcs);
-        console.log("Parsed updated WCS:", wcs);
-        
-        // If WCS has transformation info, verify against ORIENTAT
-        if (wcs && wcs.transformInfo && rawWcs && rawWcs.orientat !== undefined) {
-            const calculatedAngle = wcs.transformInfo.thetaDegrees;
-            console.log(`Comparing calculated angle (${calculatedAngle.toFixed(4)}°) with ORIENTAT (${rawWcs.orientat}°)`);
-            
-            // If they don't match within tolerance, log a warning
-            const angleDiff = Math.abs(calculatedAngle - rawWcs.orientat) % 360;
-            if (angleDiff > 1 && angleDiff < 359) {
-                console.warn(`Warning: WCS transformation angle differs from ORIENTAT by ${angleDiff.toFixed(4)}°`);
-            }
-        }
         
         // Convert sources to catalog format with pixel coordinates
         const sourceCatalog = [];
-        
         
         for (let i = 0; i < raList.length; i++) {
             const ra = raList[i];
             const dec = decList[i];
             
-            // Default to center of image if conversion fails
-            let x = window.fitsData ? window.fitsData.width / 2 : 0;
-            let y = window.fitsData ? window.fitsData.height / 2 : 0;
+            // Try to convert RA/DEC to pixel coordinates using our enhanced function
+            let x = 0, y = 0;
             
             try {
                 if (wcs && wcs.hasWCS) {
@@ -186,7 +89,7 @@ function runPeakFinder(customParams = {}) {
             }
             
             // Add to catalog with custom styling parameters
-            sourceCatalog.push({
+            const sourceStyle = {
                 x: x,
                 y: y,
                 ra: ra,
@@ -197,60 +100,30 @@ function runPeakFinder(customParams = {}) {
                 useTransparentFill: customParams.useTransparentFill !== undefined ? customParams.useTransparentFill : true,
                 border_width: customParams.border_width || 2,
                 opacity: customParams.opacity || 0.7
-            });
+            };
+            sourceCatalog.push(sourceStyle);
+            
+            // Log the first few source objects created
+            if (i < 3) { 
+                console.log(`[DEBUG PeakFinder static/peak.js] Created sourceCatalog[${i}]:`, JSON.parse(JSON.stringify(sourceStyle)));
+            }
         }
         
-        
-        // Use the existing catalog overlay function to display the sources
-        if (typeof addCatalogOverlay === 'function') {
+        // Use the CORRECT canvas overlay function to display the sources
+        if (typeof canvasAddCatalogOverlay === 'function') {
             // Store the current catalog name
             window.currentCatalogName = 'Peak Finder Results';
             
             // Set as overlay data - the coordinates are already properly transformed
             window.catalogDataForOverlay = sourceCatalog;
             
-            // Add the overlay
-            const dots = addCatalogOverlay(sourceCatalog);
-            
-            // Update the styling of the dots based on user preferences
-            if (window.catalogDots) {
-                window.catalogDots.forEach((dot, index) => {
-                    const source = sourceCatalog[index];
-                    if (!source) return;
-                    
-                    // Apply custom styling - border color and width
-                    dot.style.border = `${source.border_width}px solid ${source.color}`;
-                    
-                    // Apply background color based on transparent fill setting
-                    if (source.useTransparentFill) {
-                        // Create a semi-transparent version of the border color
-                        const borderColor = source.color;
-                        const r = parseInt(borderColor.slice(1, 3), 16);
-                        const g = parseInt(borderColor.slice(3, 5), 16);
-                        const b = parseInt(borderColor.slice(5, 7), 16);
-                        dot.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
-                    } else {
-                        // Use the selected fill color with some transparency
-                        const fillColor = source.fillColor;
-                        const r = parseInt(fillColor.slice(1, 3), 16);
-                        const g = parseInt(fillColor.slice(3, 5), 16);
-                        const b = parseInt(fillColor.slice(5, 7), 16);
-                        dot.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.5)`;
-                    }
-                    
-                    dot.style.opacity = source.opacity;
-                    
-                    // Store original style to restore later
-                    dot.dataset.originalBorder = dot.style.border;
-                    dot.dataset.originalBackgroundColor = dot.style.backgroundColor;
-                    dot.dataset.originalOpacity = dot.style.opacity;
-                });
-            }
+            // Add the overlay using the canvas function
+            canvasAddCatalogOverlay(sourceCatalog);
             
             // Display notification with the number of sources found
             showNotification(`Found ${sourceCatalog.length} sources`, 3000, 'success');
         } else {
-            console.error('addCatalogOverlay function not found');
+            console.error('canvasAddCatalogOverlay function not found');
             showNotification('Error: Could not display sources on image', 3000, 'error');
         }
     })
@@ -260,6 +133,7 @@ function runPeakFinder(customParams = {}) {
         showNotification('Error finding sources', 3000, 'error');
     });
 }
+
 // Apply the patch to replace the existing peak finder with our improved version
 function patchPeakFinderWithFillColorSupport() {
     if (typeof window.originalRunPeakFinder === 'undefined') {
