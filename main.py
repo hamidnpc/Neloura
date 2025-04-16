@@ -359,45 +359,51 @@ async def get_fits_histogram(bins: int = Query(100)):
             content={"error": f"Failed to generate histogram: {str(e)}"}
         )
 
+
 @app.get("/fits-header/{filepath:path}")
 async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
     """Retrieve the header of a specific HDU from a FITS file."""
     try:
-        # Construct the full path relative to the workspace or use absolute path
-        # This assumes 'files/' directory or allows absolute paths
-        if not os.path.isabs(filepath):
-             # Adjust base path if files are not in the root
-             base_path = Path("files") # Or Path(os.getcwd()) if files are elsewhere
-             full_path = base_path / filepath
-        else:
-             full_path = Path(filepath)
+        possible_base_dirs = [Path("files"), Path("uploads"), Path.cwd()]  # Add more if needed
 
-        if not full_path.exists():
-            raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
+        full_path = None
+        for base_dir in possible_base_dirs:
+            candidate = base_dir / filepath
+            if candidate.exists():
+                full_path = candidate
+                break
 
-        with fits.open(full_path, memmap=False) as hdul: # Use memmap=False for safety
+        if full_path is None:
+            # Try absolute path as a last resort
+            abs_path = Path(filepath)
+            if abs_path.exists():
+                full_path = abs_path
+            else:
+                raise HTTPException(status_code=404, detail=f"FITS file not found in known locations for: {filepath}")
+
+        with fits.open(full_path, memmap=False) as hdul:
             if hdu_index < 0 or hdu_index >= len(hdul):
-                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
             header = hdul[hdu_index].header
-            # Convert header to a list of key-value pairs for easier frontend handling
-            header_list = [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k] # Ensure key is not empty
+            header_list = [
+                {"key": k, "value": repr(v), "comment": header.comments[k]}
+                for k, v in header.items() if k
+            ]
 
-            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
+            return JSONResponse(content={
+                "header": header_list,
+                "hdu_index": hdu_index,
+                "filename": full_path.name
+            })
 
     except FileNotFoundError:
-         raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
+        raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
     except HTTPException as http_exc:
-        # Re-raise HTTP exceptions
         raise http_exc
     except Exception as e:
-        # Log the error for debugging
         print(f"Error reading FITS header for {filepath}, HDU {hdu_index}: {e}")
-        # Optionally, include traceback:
-        # import traceback
-        # print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to read FITS header: {str(e)}")
-
 
 @app.post("/upload-fits/")
 async def upload_fits_file(file: UploadFile = File(...)):
