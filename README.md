@@ -1,4 +1,5 @@
-# Neloura 🌌
+# Neloura 
+![Neloura Logo](https://neloura.com/static/logo/logo.png)
 
 **A modern, web-based astronomical image analysis and visualization platform**
 
@@ -7,33 +8,33 @@ Neloura is a comprehensive tool for astronomical data analysis, specializing in 
 The platform features a clean, responsive design with integrated code execution, real-time progress monitoring, and advanced visualization tools - all accessible through any modern web browser without requiring local software installation.
 
 
-## ✨ Key Features
+##  Key Features
 
-### 🔭 Advanced FITS Image Processing
+###  Advanced FITS Image Processing
 - **High-performance tile-based rendering** for large astronomical images
 - **Real-time image scaling** with multiple stretch functions (linear, logarithmic, sqrt, power, asinh)
 - **Dynamic range adjustment** with percentile-based scaling
 - **Multi-HDU support** with automatic HDU detection and selection
 
-### 📊 Comprehensive Catalog Management
+###  Comprehensive Catalog Management
 - **Advanced filtering and search** with TopCat-like functionality
 - **Column mapping system** for flexible data integration
 - **Spatial queries** including cone search and coordinate matching
 - **Real-time catalog overlay** on astronomical images
 
-### 🌈 Multi-wavelength Visualization
+###  Multi-wavelength Visualization
 - **RGB composite generation** for HST, JWST NIRCam, and MIRI data
 - **Spectral Energy Distribution (SED) plotting** 
 - **Automated cutout extraction** from multi-instrument datasets
 - **Publication-ready figure generation**
 
-### 🔍 Source Detection & Analysis
+###  Source Detection & Analysis
 - **Automated peak finding** with configurable parameters
 - **Source property extraction** and photometry
 - **Cross-matching between catalogs and images**
 - **Artificial source injection** for completeness testing
 
-### 🌐 Modern Web Interface
+###  Modern Web Interface
 - **Professional toolbar** with zoom controls and dropdown menus
 - **Integrated code execution** with CodeMirror syntax highlighting (Python)
 - **Real-time progress monitoring** with progress indicators
@@ -132,7 +133,7 @@ neloura/
 - **Fabric.js** - High-performance canvas rendering for overlays
 
 
-## 🔧 Configuration
+## Configuration
 
 Neloura is configurable through constants defined in `main.py`. Key settings include:
 
