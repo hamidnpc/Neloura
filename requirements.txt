@@ -15,3 +15,13 @@ scikit-image
 numpy  
 aiohttp
 photutils
+PyQt6
+PyQt6-WebEngine
+psutil
+httpx
+requests
+certifi
+websockets
+wsproto
+uvicorn[standard]
+astrodendro

@@ -4,496 +4,38 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Neloura</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
+    <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css">
+    <link rel="stylesheet" href="/static/vendor/codemirror/theme/dracula.min.css">
+    <link rel="stylesheet" href="/static/vendor/codemirror/addon/hint/show-hint.min.css">
     <!-- Required libraries for WCS overlay -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/4.5.0/fabric.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/openseadragon-fabricjs-overlay@0.1.3/dist/openseadragon-fabricjs-overlay.min.js"></script>
+    <script src="/static/vendor/fabric/fabric.min.js"></script>
+    <link rel="stylesheet" href="/static/progress.css">
 
     <script defer src="/static/peak.js"></script>
+    <script defer src="/static/image-processing.js"></script>
     <script defer src="/static/main.js"></script>
     <script defer src="/static/sed.js"></script>
     <script defer src="/static/plotter.js"></script>
+    <script defer src="/static/asttest.js"></script>
     <script defer src="/static/catalogs.js"></script>
     <script defer src="/static/files.js"></script>
-    <script defer src="/static/image-processing.js"></script>
     <script defer src="/static/canvas.js"></script>
-    <script defer src="/static/view.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
-
-
-    <style>
-        .flag-filter-container{display: none !important;}
-        #osd-coordinates{display: none !important;}
-        html, body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            width: 100%;
-            overflow: hidden;
-            background-color: #000000;
-            color: white;
-            font-family: 'Raleway', sans-serif;
-        }
-
-
-        /* Multi-view styles */
-.multi-view-grid {
-    background-color: #0a0a0a;
-    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
-}
-
-.viewer-cell {
-    transition: all 0.2s ease;
-    overflow: hidden;
-    position: relative;
-}
-
-.viewer-cell.active {
-    box-shadow: 0 0 0 2px #4CAF50;
-    z-index: 5;
-}
-
-.empty-cell-overlay {
-    color: #aaa;
-    font-family: Arial, sans-serif;
-    font-size: 14px;
-    text-align: center;
-    background-color: rgba(0, 0, 0, 0.7);
-    transition: all 0.2s ease;
-}
-
-.empty-cell-overlay:hover {
-    background-color: rgba(30, 30, 30, 0.7);
-    color: white;
-}
-
-.file-name-label {
-    opacity: 0.7;
-    transition: opacity 0.2s ease;
-}
-
-.viewer-cell:hover .file-name-label {
-    opacity: 1;
-}
-
-.viewer-controls {
-    opacity: 0;
-    transition: opacity 0.2s ease;
-}
-
-.viewer-cell:hover .viewer-controls {
-    opacity: 1;
-}
-
-.viewer-controls button:hover {
-    background-color: rgba(70, 70, 70, 0.8) !important;
-}
-
-.active-viewer-indicator {
-    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
-    transition: all 0.2s ease;
-}
-
-/* Multi-view toolbar buttons */
-.multi-view-button, .sync-view-button {
-    width: 32px;
-    height: 32px;
-    border-radius: 4px;
-    background-color: #444;
-    border: none;
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    margin-right: 4px;
-    transition: all 0.2s ease;
-}
-
-.multi-view-button:hover, .sync-view-button:hover {
-    background-color: #555;
-}
-
-/* Layout menu */
-.layout-menu {
-    animation: fadeIn 0.2s ease;
-}
-
-.layout-option {
-    transition: all 0.2s ease;
-    border-radius: 3px;
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* Progress and notification improvements */
-#progress-container {
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-}
-
-.notification {
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-}
-
-
-
-/* Add these styles to enhance animations */
-
-/* File item animations */
-.file-item {
-    opacity: 1;
-    transition: opacity 0.3s ease-in-out, transform 0.2s ease-out, background-color 0.2s;
-}
-
-/* Search animations - highlight matching text */
-.highlight-match {
-    background-color: rgba(33, 150, 243, 0.3);
-    border-radius: 2px;
-    padding: 0 2px;
-}
-
-/* Add this to the head section of your HTML or to your CSS file */
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(5px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes fadeOut {
-        from { opacity: 1; transform: translateY(0); }
-        to { opacity: 0; transform: translateY(5px); }
-    }
-
-    .file-item.show {
-        animation: fadeIn 0.3s ease-in-out forwards;
-    }
-
-    .file-item.hide {
-        animation: fadeOut 0.3s ease-in-out forwards;
-    }
-    
-    .welcome-pointer{display: none;}
-    /* Add a subtle pulse animation to the search input when active */
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
-        70% { box-shadow: 0 0 0 5px rgba(33, 150, 243, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0); }
-    }
-    
-    .search-active {
-        animation: pulse 1.5s infinite;
-    }
-/* File item hover and active states */
-.file-item:hover {
-    background-color: #444 !important;
-}
-
-.file-item.active {
-    background-color: #2196F3 !important;
-    color: white;
-}
-
-/* File browser scrollbar styling */
-#file-browser-container::-webkit-scrollbar {
-    width: 8px;
-}
-
-#file-browser-container::-webkit-scrollbar-track {
-    background: #333;
-}
-
-#file-browser-container::-webkit-scrollbar-thumb {
-    background: #555;
-    border-radius: 4px;
-}
-
-#file-browser-container::-webkit-scrollbar-thumb:hover {
-    background: #777;
-}
-
-        /* Add these styles to your existing CSS or include in a style tag in your HTML */
-.flag-filter-container {
-    display: inline-flex
-}
-
-.flag-filter-button {
-    padding: 6px 12px;
-    background-color: #444;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 14px;
-    transition: background-color 0.3s;
-}
-
-.flag-filter-button:hover {
-    background-color: #555;
-}
-
-.flag-filter-button.active {
-    background-color: #4CAF50;
-}
-
-.flag-filter-button:hover,.flag-filter-button.active,.flag-filter-button:clicked{
-background-color: white !important;
-color: black !important;
-
-}
-
-.flag-dropdown-content {
-    position: absolute;
-    background-color: rgb(34, 34, 34);
-    min-width: 200px;
-    box-shadow: rgba(0, 0, 0, 0.4) 0px 8px 16px 0px;
-    z-index: 1000;
-    border-radius: 4px;
-    top: 100%;
-    left: 0px;
-    margin-top: 5px;
-    right: auto !important;
-}
-
-.flag-dropdown-content .flag-item {
-    padding: 10px;
-    cursor: pointer;
-    border-bottom: 1px solid #444;
-    color: white;
-    transition: background-color 0.3s;
-}
-
-.flag-dropdown-content .flag-item:hover {
-    background-color: #333;
-}
-
-.flag-dropdown-content .flag-item.active {
-    background-color: #4CAF50;
-}
-
-        #openseadragon {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            border: none;
-            background-color: #000000;
-        }
-        .toolbar {
-            position: absolute;
-            top: 20px;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 8px;
-            text-align: center;
-            z-index: 1000;
-            right: 0;
-        }
-        .toolbar button {
-            padding: 10px;
-            font-size: 14px;
-            color: white;
-            background: transparent;
-            border: 1px solid white;
-            cursor: pointer;
-            margin: 5px;
-            font-family: 'Raleway', sans-serif;
-        }
-        .toolbar button:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-        .dropdown {
-            position: relative;
-            display: inline-block;
-        }
-        .dropdown-content {
-            display: none;
-            position: absolute;
-            right: 0;
-            background-color: rgba(0, 0, 0, 0.9);
-            min-width: 160px;
-            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.5);
-            z-index: 1001;
-            border-radius: 5px;
-            max-height: 300px;
-            overflow-y: auto;
-            font-family: 'Raleway', sans-serif;
-        }
-        .dropdown-content a {
-            color: white;
-            padding: 12px 16px;
-            text-decoration: none;
-            display: block;
-            text-align: left;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            font-family: 'Raleway', sans-serif;
-        }
-        .dropdown-content a:hover {
-            background-color: rgba(255, 255, 255, 0.1);
-        }
-        .dropdown:hover .dropdown-content {
-            display: block;
-        }
-        .catalog-info {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 8px;
-            color: white;
-            font-family: 'Raleway', sans-serif;
-            font-size: 12px;
-            max-width: 300px;
-            z-index: 1000;
-            display: none;
-        }
-
-        /* FITS Header Modal Styles */
-        .modal {
-            display: none; /* Hidden by default */
-            position: fixed; /* Stay in place */
-            z-index: 1500; /* Sit on top */
-            left: 0;
-            top: 0;
-            width: 100%; /* Full width */
-            height: 100%; /* Full height */
-            overflow: auto; /* Enable scroll if needed */
-            background-color: rgba(0,0,0,0.6); /* Black w/ opacity */
-            backdrop-filter: blur(5px);
-            -webkit-backdrop-filter: blur(5px);
-        }
-
-        .modal-content {
-            background-color: #1e1e1e; /* Dark background */
-            color: #f1f1f1; /* Light text */
-            margin: 5% auto; /* 10% from the top and centered */
-            padding: 25px;
-            border: 1px solid #555;
-            width: 70%; /* Could be more or less, depending on screen size */
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.4);
-            font-family: 'Courier New', Courier, monospace; /* Monospaced font for header */
-            max-height: 80vh; /* Limit height */
-            display: flex;
-            flex-direction: column;
-        }
-
-        .modal-content h2 {
-             margin-top: 0;
-             color: #e0e0e0;
-             font-family: 'Raleway', sans-serif;
-             border-bottom: 1px solid #444;
-             padding-bottom: 10px;
-             margin-bottom: 15px;
-             font-weight: 500;
-             font-size: 1.4em;
-        }
-
-        #fits-header-search {
-            width: calc(100% - 22px); /* Full width minus padding */
-            padding: 10px;
-            margin-bottom: 15px;
-            border: 1px solid #555;
-            border-radius: 4px;
-            background-color: #333;
-            color: #f1f1f1;
-            font-size: 1em;
-        }
-        
-        #fits-header-table-container {
-             overflow-y: auto; /* Scrollable area for table */
-             flex-grow: 1; /* Takes remaining space */
-             background-color: #282828; /* Slightly different background */
-             padding: 10px;
-             border-radius: 4px;
-             border: 1px solid #444;
-        }
-
-        #fits-header-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9em;
-        }
-
-        #fits-header-table th, #fits-header-table td {
-            text-align: left;
-            padding: 6px 8px;
-            border-bottom: 1px solid #444;
-        }
-
-        #fits-header-table th {
-             background-color: #3a3a3a;
-             font-weight: bold;
-             position: sticky;
-             top: 0; /* Stick header to top */
-        }
-
-        #fits-header-table tr:last-child td {
-             border-bottom: none;
-        }
-
-        #fits-header-table tr:hover {
-             background-color: #3f3f3f;
-        }
-
-        #fits-header-table .header-key {
-             font-weight: bold;
-             color: #a7d7ff; /* Light blue for keys */
-             min-width: 100px;
-        }
-        
-        #fits-header-table .header-value {
-            color: #f0f0f0;
-            word-break: break-all; /* Break long values */
-        }
-        
-        #fits-header-table .header-comment {
-            color: #9e9e9e; /* Grey for comments */
-            font-style: italic;
-        }
-        
-        /* Highlight for search results */
-        .highlight {
-             background-color: rgba(255, 255, 0, 0.3);
-             font-weight: bold;
-        }
-
-        .close-button {
-            color: #aaa;
-            float: right;
-            font-size: 28px;
-            font-weight: bold;
-            position: absolute;
-            top: 10px;
-            right: 20px;
-            cursor: pointer;
-        }
-
-        .close-button:hover,
-        .close-button:focus {
-            color: #fff;
-            text-decoration: none;
-        }
-
-        /* Fade-out animation for modal */
-        @keyframes fadeOutModal {
-            from { opacity: 1; transform: translateY(0); }
-            to { opacity: 0; transform: translateY(-20px); }
-        }
-
-        .modal.fade-out {
-            animation: fadeOutModal 0.3s ease-out forwards;
-        }
-    </style>
+    <script defer src="/static/local_coding.js"></script>
+    <script src="/static/catalog_viewer.js"></script>
+    <script src="/static/vendor/codemirror/codemirror.min.js"></script>
+    <script src="/static/vendor/codemirror/mode/python/python.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/comment/comment.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/hint/show-hint.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/hint/anyword-hint.min.js"></script>
+    <script src="/static/vendor/lodash/lodash.min.js"></script>
+    <script src="/static/vendor/sweetalert2/sweetalert2.all.min.js"></script>
+    <script src="/static/usage.js" defer></script>
+    <script src="/static/credit.js" defer></script>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/logo/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="static/logo/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/logo/favicon-16x16.png">
 </head>
 <body>
     <div class="toolbar">
@@ -508,12 +50,26 @@ color: black !important;
             </div>
         </div>
         <button id="plotter-button" onclick="togglePlotter()">Plotter</button>
+        <div id="top-bar-custom-buttons" class="top-bar-section">
+            <button id="local-coding-button" class="top-bar-button" onclick="toggleLocalCodingPanel()">Local Coding</button>
+        </div>
+        <!-- <span id="filename-display" style="margin-left: 10px; color: #ddd; font-size: 12px; align-self: center;">No file loaded</span> -->
     </div>
     <div id="openseadragon"></div>
     <div id="catalog-info" class="catalog-info"></div>
 
     <div id="plotter-container" style="display: none; width: 100%; height: 100%; position: relative;">
          <canvas id="plotter-canvas" style="position: absolute; top: 0; left: 0;"></canvas>
+    </div>
+
+    <div id="local-coding-run-controls" style="display:none;">
+        <button id="local-run-button" class="coding-panel-button">
+            <span class="play-icon">
+                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
+            </span>
+            <span class="button-text">Run</span>
+        </button>
+        <div id="local-run-loader" class="button-loader" style="display: none; margin-left: 10px;"></div>
     </div>
 
     <!-- Placeholder for FITS Header Modal -->
@@ -529,6 +85,51 @@ color: black !important;
     </div>
 
 </div> <!-- End of main-content -->
+    <div id="coding-panel-container"></div>
+<!-- <script src="jstat.min.js"></script> -->
+<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script> -->
+    <script src="/static/coding.js"></script>
 
+    <!-- UI Components -->
+    <div id="notification-container"></div>
+    
+    <!-- Peak Finder Progress Bar -->
+    <div id="progress-container" style="display: none; position: fixed; bottom: 20px; right: 20px; z-index: 1000; background: linear-gradient(135deg, rgba(0, 0, 0, 0.9), rgba(20, 20, 20, 0.95)); backdrop-filter: blur(15px); border-radius: 50%; width: 90px; height: 90px; box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); cursor: pointer; border: 2px solid rgba(76, 175, 80, 0.3);">
+        <svg id="progress-svg" width="90" height="90" viewBox="0 0 36 36" style="transform: rotate(-90deg); filter: drop-shadow(0 0 8px rgba(76, 175, 80, 0.3));">
+            <!-- Background ring with gradient -->
+            <defs>
+                <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#4CAF50"/>
+                    <stop offset="100%" style="stop-color:#45a049"/>
+                </linearGradient>
+                <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:rgba(255,255,255,0.1)"/>
+                    <stop offset="100%" style="stop-color:rgba(255,255,255,0.05)"/>
+                </linearGradient>
+            </defs>
+            
+            <!-- Background circle -->
+            <circle class="progress-ring-bg" cx="18" cy="18" r="15.9155" fill="transparent" stroke="url(#bgGradient)" stroke-width="1.5" opacity="0.3"/>
+            
+            <!-- Main progress circle -->
+            <circle id="progress-bar" class="progress-ring-circle" cx="18" cy="18" r="15.9155" fill="transparent" stroke="url(#progressGradient)" stroke-width="2.5" stroke-dasharray="100 100" stroke-dashoffset="100" stroke-linecap="round" style="transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;"/>
+            
+            <!-- ETA text -->
+            <text id="progress-eta" x="18" y="20" font-size="5" font-weight="400" fill="rgba(255, 255, 255, 0.8)" text-anchor="middle" style="transform: rotate(90deg) translate(0, -36px); text-shadow: 0 1px 2px rgba(0,0,0,0.3);">Ready</text>
+        </svg>
+        
+        <!-- Status indicator dot -->
+        <div id="status-dot" style="position: absolute; top: 8px; right: 8px; width: 12px; height: 12px; border-radius: 50%; background: #4CAF50; border: 2px solid rgba(0, 0, 0, 0.8); opacity: 0; transition: all 0.3s ease; box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);"></div>
+        
+        <!-- Subtle glow effect -->
+        <div style="position: absolute; inset: -2px; border-radius: 50%; background: conic-gradient(from 0deg, transparent, rgba(76, 175, 80, 0.1), transparent); opacity: 0; transition: opacity 0.3s ease;" id="glow-ring"></div>
+    </div>
+    <div id="download-progress-container" style="display: none;">
+        <svg class="progress-ring" width="130" height="130">
+            <circle id="progress-circle-bg" class="progress-ring__circle" stroke="#333" stroke-width="9" fill="transparent" r="58" cx="65" cy="65"/>
+            <circle id="progress-circle-fg" class="progress-ring__circle" stroke="#2196F3" stroke-width="9" fill="transparent" r="58" cx="65" cy="65"/>
+        </svg>
+        <div id="progress-text">0%</div>
+    </div>
 </body>
 </html>

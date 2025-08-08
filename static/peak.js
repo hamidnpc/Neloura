@@ -1,137 +1,139 @@
-function runPeakFinder(customParams = {}) {
-    console.log("[DEBUG PeakFinder static/peak.js] runPeakFinder called with customParams:", JSON.parse(JSON.stringify(customParams))); // Log received params
+function runPeakFinder(filepath, customParams = {}) {
+    console.log('[DEBUG PeakFinder] Starting job with params:', customParams);
 
-    // Check if a FITS file is loaded
-    const currentFitsFile = window.fitsData && window.fitsData.filename;
-    
-    if (!currentFitsFile) {
-        showNotification('Please load a FITS file first', 3000, 'warning');
+    if (!filepath) {
+        showNotification("No FITS file is currently loaded.", 3000, 'error');
         return;
     }
     
-    // Show loading indicator
-    showProgress(true, 'Finding sources...');
-    
-    // Prepare form data to send the file and parameters
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressPercentage = document.getElementById('progress-percentage');
+    const progressEta = document.getElementById('progress-eta');
+    const circumference = 2 * Math.PI * progressBar.r.baseVal.value;
+
+    function showProgressUI(show) {
+        progressContainer.style.display = show ? 'block' : 'none';
+    }
+
+    function updateProgressUI(progress, eta) {
+        const p = (typeof progress === 'number') ? Math.round(progress) : 0;
+        const offset = circumference - (p / 100) * circumference;
+        progressBar.style.strokeDashoffset = offset;
+        progressPercentage.textContent = `${p}`;
+
+        if (typeof eta === 'number' && eta >= 0) {
+            progressEta.textContent = `ETA: ${eta}s`;
+        } else {
+            progressEta.textContent = `ETA: ...`;
+        }
+    }
+
+    showProgressUI(true);
+    updateProgressUI(0, -1);
+
     const formData = new FormData();
-    formData.append('fits_file', currentFitsFile);
-    formData.append('pix_across_beam', customParams.pix_across_beam || 5);
-    formData.append('min_beams', customParams.min_beams || 1.0);
-    formData.append('beams_to_search', customParams.beams_to_search || 1.0);
-    formData.append('delta_rms', customParams.delta_rms || 3.0);
-    formData.append('minval_rms', customParams.minval_rms || 5.0);
-    
-    // Send request to run peak finding
-    fetch('/run-peak-finder/', {
+    formData.append('fits_file', filepath);
+    Object.keys(customParams).forEach(key => {
+        formData.append(key, customParams[key]);
+    });
+
+    fetch('/start-peak-finder/', {
         method: 'POST',
         body: formData
     })
     .then(response => response.json())
     .then(data => {
-        showProgress(false);
-        
-        // Check for errors
-        if (data.error) {
-            showNotification(`Error finding sources: ${data.error}`, 3000, 'error');
-            return;
+        if (data.error || !data.job_id) {
+            throw new Error(data.error || "Server did not return a job ID.");
         }
         
-        // Process and display sources
-        const raList = data.ra || [];
-        const decList = data.dec || [];
-        
-        if (raList.length === 0) {
-            showNotification('No sources found', 3000, 'info');
-            return;
-        }
-        
-        // Parse the WCS information from the FITS header
-        let rawWcs = window.fitsData.wcs;
-        
-        // Create a clone to avoid modifying the original
-        if (rawWcs) {
-            rawWcs = JSON.parse(JSON.stringify(rawWcs));
-        }
-        
-        // Handle the special case of FITS headers with PC matrix but missing in the WCS object
-        const isJwst = currentFitsFile.toLowerCase().includes('miri') || 
-                      currentFitsFile.toLowerCase().includes('jwst') ||
-                      (rawWcs && rawWcs.bunit === 'MJy/sr');
-        
-        if (isJwst && rawWcs && !rawWcs.pc1_1) {
-            console.log("Detected JWST image, adding PC matrix values from header");
-            // Add PC matrix values known from FITS header
-            rawWcs.pc1_1 = -1.0;  // From header: PC1_1 = -1.0000000000484
-            rawWcs.pc2_2 = 1.0;   // From header: PC2_2 = 1.0000000000213
-        }
-        
-        // Parse the WCS information with our enhanced function
-        const wcs = parseWCS(rawWcs);
-        
-        // Convert sources to catalog format with pixel coordinates
-        const sourceCatalog = [];
-        
-        for (let i = 0; i < raList.length; i++) {
-            const ra = raList[i];
-            const dec = decList[i];
-            
-            // Try to convert RA/DEC to pixel coordinates using our enhanced function
-            let x = 0, y = 0;
-            
-            try {
-                if (wcs && wcs.hasWCS) {
-                    const coords = celestialToPixel(ra, dec, wcs);
-                    x = coords.x;
-                    y = coords.y;
+        const jobId = data.job_id;
+        console.log(`Job started with ID: ${jobId}`);
+
+        const intervalId = setInterval(() => {
+            fetch(`/peak-finder-status/${jobId}`)
+            .then(response => response.json())
+            .then(statusData => {
+                if (statusData.status === 'complete') {
+                    clearInterval(intervalId);
+                    updateProgressUI(100, 0);
+                    
+                    requestIdleCallback(() => {
+                        processPeakFinderResults(statusData.result, customParams);
+                        requestIdleCallback(() => showProgressUI(false));
+                    });
+
+                } else if (statusData.status === 'error') {
+                    clearInterval(intervalId);
+                    showProgressUI(false);
+                    showNotification(`Error: ${statusData.error}`, 5000, 'error');
+                } else {
+                    updateProgressUI(statusData.progress, statusData.eta);
                 }
-            } catch (error) {
-                console.warn(`Error converting coordinates for source ${i}:`, error);
-            }
-            
-            // Add to catalog with custom styling parameters
-            const sourceStyle = {
-                x: x,
-                y: y,
-                ra: ra,
-                dec: dec,
-                radius_pixels: customParams.size || 5,
-                color: customParams.color || '#ff9800',
-                fillColor: customParams.fillColor || '#ff9800',
-                useTransparentFill: customParams.useTransparentFill !== undefined ? customParams.useTransparentFill : true,
-                border_width: customParams.border_width || 2,
-                opacity: customParams.opacity || 0.7
-            };
-            sourceCatalog.push(sourceStyle);
-            
-            // Log the first few source objects created
-            if (i < 3) { 
-                console.log(`[DEBUG PeakFinder static/peak.js] Created sourceCatalog[${i}]:`, JSON.parse(JSON.stringify(sourceStyle)));
-            }
-        }
-        
-        // Use the CORRECT canvas overlay function to display the sources
-        if (typeof canvasAddCatalogOverlay === 'function') {
-            // Store the current catalog name
-            window.currentCatalogName = 'Peak Finder Results';
-            
-            // Set as overlay data - the coordinates are already properly transformed
-            window.catalogDataForOverlay = sourceCatalog;
-            
-            // Add the overlay using the canvas function
-            canvasAddCatalogOverlay(sourceCatalog);
-            
-            // Display notification with the number of sources found
-            showNotification(`Found ${sourceCatalog.length} sources`, 3000, 'success');
-        } else {
-            console.error('canvasAddCatalogOverlay function not found');
-            showNotification('Error: Could not display sources on image', 3000, 'error');
-        }
+            })
+            .catch(error => {
+                clearInterval(intervalId);
+                showProgressUI(false);
+                console.error('Polling error:', error);
+                showNotification(`Error checking job status: ${error.message}`, 3000, 'error');
+            });
+        }, 1000);
     })
     .catch(error => {
-        console.error('Error in peak finder:', error);
-        showProgress(false);
-        showNotification('Error finding sources', 3000, 'error');
+        showProgressUI(false);
+        console.error('Request failed:', error);
+        showNotification(`Request failed: ${error.message}`, 3000, 'error');
     });
+}
+
+function processPeakFinderResults(data, customParams) {
+    if (data.error) {
+        console.error('Peak finder error:', data.error);
+        showNotification(`Error: ${data.error}`, 3000, 'error');
+    } else {
+        const sources = data.sources;
+        const sourceCatalog = [];
+        const radiusInPixels = customParams.pix_across_beam || 5;
+
+        // Prefer new photometry fields if available
+        const fluxJyArr = (sources && (sources.flux_ujy || sources.Flux_uJy)) || null;
+        const fluxErrJyArr = (sources && (sources.flux_err_ujy || sources.FluxErr_uJy)) || null;
+        const snrArr = (sources && (sources.snr || sources.SNR)) || null;
+
+        if (sources && sources.source_count > 0) {
+            for (let i = 0; i < sources.source_count; i++) {
+                const catalogEntry = {
+                    x: sources.x[i],
+                    y: sources.y[i],
+                    ra: sources.ra[i],
+                    dec: sources.dec[i],
+                    radius_pixels: radiusInPixels,
+                    // Backward compatibility: set value from flux_ujy if provided
+                    value: fluxJyArr ? fluxJyArr[i] : null,
+                    flux_ujy: fluxJyArr ? fluxJyArr[i] : null,
+                    flux_err_ujy: fluxErrJyArr ? fluxErrJyArr[i] : null,
+                    snr: snrArr ? snrArr[i] : null,
+                    id: i
+                };
+                sourceCatalog.push(catalogEntry);
+            }
+
+            transformSourceCoordinates(sourceCatalog);
+            
+            const catalogName = `Found Sources (${sources.source_count})`;
+            const catalogOptions = {
+                name: catalogName,
+                isPeakFinder: true,
+                ...customParams
+            };
+
+            createNewCatalog(sourceCatalog, catalogOptions);
+            showNotification(`Found ${sources.source_count} sources`, 2000, 'success');
+        } else {
+            showNotification('No sources found.', 2000, 'info');
+        }
+    }
 }
 
 // Apply the patch to replace the existing peak finder with our improved version
@@ -172,50 +174,38 @@ patchPeakFinderWithImprovedWCS();
 
 
 // Function to transform source coordinates for proper alignment
-function transformSourceCoordinates(sources, rotation) {
-    if (!sources || !sources.length || !window.fitsData) return;
+function transformSourceCoordinates(sources) {
+    if (!sources || !sources.length || !window.fitsData) {
+        console.warn("transformSourceCoordinates: Missing sources or FITS data. Aborting.");
+        return;
+    }
     
-    // Get image dimensions
+    // Get image dimensions from the global fitsData object
     const width = window.fitsData.width;
     const height = window.fitsData.height;
-    const centerX = width / 2;
-    const centerY = height / 2;
     
-    console.log(`Transforming ${sources.length} sources with rotation ${rotation}°`);
+    console.log(`Transforming ${sources.length} source coordinates for display. Image size: ${width}x${height}`);
     
     // Apply transformation to each source
     sources.forEach((source, index) => {
-        // Store original coordinates for debugging
         const origX = source.x;
         const origY = source.y;
         
-        // Translate to origin
-        let x = source.x - centerX;
-        let y = source.y - centerY;
+        // The peak finder backend (Python/astropy) likely uses a FITS standard
+        // coordinate system with the origin (0,0) at the bottom-left. The frontend
+        // canvas rendering uses a top-left origin. We need to flip the Y-axis for correct display.
+        const newX = origX;
+        const newY = height - origY;
         
-        // Apply rotation
-        const angle = rotation * Math.PI / 180;
-        const newX = x * Math.cos(angle) - y * Math.sin(angle);
-        const newY = x * Math.sin(angle) + y * Math.cos(angle);
+        // Update source coordinates and ensure they are within the image bounds.
+        source.x = Math.max(0, Math.min(newX, width - 1));
+        source.y = Math.max(0, Math.min(newY, height - 1));
         
-        // Translate back
-        source.x = newX + centerX;
-        source.y = newY + centerY;
-        
-        // Ensure coordinates are within bounds
-        source.x = Math.max(0, Math.min(source.x, width - 1));
-        source.y = Math.max(0, Math.min(source.y, height - 1));
-        
-        // Log a few transformations for debugging
-        if (index < 5) {
-            console.log(`Transformed source ${index}: (${origX.toFixed(2)}, ${origY.toFixed(2)}) -> (${source.x.toFixed(2)}, ${source.y.toFixed(2)})`);
+        if (index < 5) { // Log first few for debugging
+            console.log(`Transformed source ${index}: Original (${origX.toFixed(2)}, ${origY.toFixed(2)}) -> Canvas (${source.x.toFixed(2)}, ${source.y.toFixed(2)})`);
         }
     });
 }
-
-// Create a patch function to replace the existing peak finder
-
-
 
 // Function to log detailed information about the current FITS data's WCS information
 function inspectCurrentWCS() {
@@ -271,715 +261,389 @@ function inspectCurrentWCS() {
 // Run the inspection to check the current FITS data
 inspectCurrentWCS();
 
-
-
-function createPeakFinderModal() {
-    // Check if popup already exists
+function createPeakFinderModal(filepath) {
     let popup = document.getElementById('peak-finder-modal');
-    
     if (popup) {
-        // Only show if explicitly requested (not on page load)
         if (document.readyState === 'complete' && document.visibilityState === 'visible') {
             popup.style.display = 'block';
         }
         return popup;
     }
-    
-    // Create modal container with same styling as region style settings
+
     popup = document.createElement('div');
     popup.id = 'peak-finder-modal';
-    popup.style.position = 'fixed';
-    popup.style.top = '50%';
-    popup.style.left = '50%';
-    popup.style.transform = 'translate(-50%, -50%)';
-    popup.style.backgroundColor = '#333';
-    popup.style.border = '1px solid #555';
-    popup.style.borderRadius = '5px';
-    popup.style.padding = '15px';
-    popup.style.zIndex = '1500';
-    popup.style.width = '350px';
-    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
-    
-    // Create title with same styling as region style settings
+    Object.assign(popup.style, {
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        backgroundColor: '#333', border: '1px solid #555', borderRadius: '5px',
+        padding: '15px', zIndex: '1500', width: '650px', // Increased width for two columns
+        boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)', boxSizing: 'border-box'
+    });
+
     const title = document.createElement('h3');
     title.textContent = 'Peak Finder Settings';
-    title.style.margin = '0 0 15px 0';
-    title.style.color = '#fff';
-    title.style.fontFamily = 'Arial, sans-serif';
-    title.style.fontSize = '18px';
-    title.style.fontWeight = 'bold';
-    title.style.borderBottom = '1px solid #555';
-    title.style.paddingBottom = '10px';
-    
-    // Create close button
+    Object.assign(title.style, {
+        margin: '0 0 15px 0', color: '#fff', fontFamily: 'Arial, sans-serif',
+        fontSize: '18px', fontWeight: 'bold', borderBottom: '1px solid #555',
+        paddingBottom: '10px', cursor: 'grab' // Make title draggable
+    });
+
     const closeButton = document.createElement('button');
     closeButton.textContent = '×';
-    closeButton.style.position = 'absolute';
-    closeButton.style.top = '10px';
-    closeButton.style.right = '10px';
-    closeButton.style.backgroundColor = 'transparent';
-    closeButton.style.border = 'none';
-    closeButton.style.color = '#aaa';
-    closeButton.style.fontSize = '20px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.style.padding = '0';
-    closeButton.style.width = '24px';
-    closeButton.style.height = '24px';
-    closeButton.style.lineHeight = '24px';
-    closeButton.style.textAlign = 'center';
-    closeButton.style.borderRadius = '12px';
-    closeButton.addEventListener('mouseover', () => {
-        closeButton.style.backgroundColor = '#555';
-        closeButton.style.color = '#fff';
+    Object.assign(closeButton.style, {
+        position: 'absolute', top: '10px', right: '10px', backgroundColor: 'transparent',
+        border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer',
+        padding: '0', width: '24px', height: '24px', lineHeight: '24px',
+        textAlign: 'center', borderRadius: '12px'
     });
-    closeButton.addEventListener('mouseout', () => {
-        closeButton.style.backgroundColor = 'transparent';
-        closeButton.style.color = '#aaa';
+    closeButton.addEventListener('mouseover', () => { closeButton.style.backgroundColor = '#555'; closeButton.style.color = '#fff'; });
+    closeButton.addEventListener('mouseout', () => { closeButton.style.backgroundColor = 'transparent'; closeButton.style.color = '#aaa'; });
+    closeButton.addEventListener('click', () => { popup.style.display = 'none'; });
+
+    // Main container for the two columns
+    const columnsContainer = document.createElement('div');
+    Object.assign(columnsContainer.style, {
+        display: 'flex',
+        flexDirection: 'row',
+        gap: '15px', // Space between columns
+        marginBottom: '15px' // Space before action buttons
     });
-    closeButton.addEventListener('click', () => {
-        popup.style.display = 'none';
+
+    // Left Column: Algorithm Parameters
+    const leftColumn = document.createElement('div');
+    Object.assign(leftColumn.style, {
+        flex: '1', // Takes up 50% of the space
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px' // Space between elements in this column
     });
-    
-    // Create form container with same flex layout as region style settings
-    const formContainer = document.createElement('div');
-    formContainer.style.display = 'flex';
-    formContainer.style.flexDirection = 'column';
-    formContainer.style.gap = '15px';
-    
-    // Section 1: Algorithm Parameters
+
     const algorithmSection = document.createElement('fieldset');
-    algorithmSection.style.border = '1px solid #555';
-    algorithmSection.style.borderRadius = '4px';
-    algorithmSection.style.padding = '10px';
-    algorithmSection.style.marginBottom = '10px';
-    
+    Object.assign(algorithmSection.style, { border: '1px solid #555', borderRadius: '4px', padding: '10px' });
     const algorithmLegend = document.createElement('legend');
     algorithmLegend.textContent = 'Algorithm Parameters';
-    algorithmLegend.style.color = '#ccc';
-    algorithmLegend.style.padding = '0 5px';
-    algorithmLegend.style.fontSize = '14px';
-    
+    Object.assign(algorithmLegend.style, { color: '#ccc', padding: '0 5px', fontSize: '14px' });
     algorithmSection.appendChild(algorithmLegend);
-    
-    // Create algorithm parameters grid
+
     const algorithmGrid = document.createElement('div');
-    algorithmGrid.style.display = 'grid';
-    algorithmGrid.style.gridTemplateColumns = '1fr 1fr';
-    algorithmGrid.style.gap = '10px';
-    
-    // Parameters
+    Object.assign(algorithmGrid.style, { display: 'grid', gridTemplateColumns: '1fr', gap: '10px' }); // Single column grid for params
+
     const parameters = [
-        { id: 'pix-across-beam', label: 'Pixels Across Beam:', value: 5, min: 1, max: 20, step: 1 },
-        { id: 'min-beams', label: 'Minimum Beams:', value: 1.0, min: 0.1, max: 10, step: 0.1 },
-        { id: 'beams-to-search', label: 'Beams to Search:', value: 1.0, min: 0.1, max: 10, step: 0.1 },
-        { id: 'delta-rms', label: 'Delta RMS:', value: 3.0, min: 0.1, max: 10, step: 0.1 },
-        { id: 'minval-rms', label: 'Minimum RMS:', value: 5.0, min: 0.1, max: 10, step: 0.1 }
+        { id: 'pix-across-beam', label: 'Pixels Across Beam:', value: 5, min: 1, max: 20, step: 1, title: 'Typical beam FWHM in pixels. Used for smoothing and source size.' },
+        { id: 'min-beams', label: 'Minimum Beams in Source:', value: 1.0, min: 0.1, max: 10, step: 0.1, title: 'Minimum number of beams a source must span to be considered valid.' },
+        { id: 'beams-to-search', label: 'Beams to Search For Merge:', value: 1.0, min: 0.1, max: 10, step: 0.1, title: 'Radius (in beamwidths) to search for nearby peaks to merge.' },
+        { id: 'delta-rms', label: 'Peak Detection Threshold (ΔRMS):', value: 3.0, min: 0.1, max: 20, step: 0.1, title: 'Threshold above local RMS for initial peak detection.' },
+        { id: 'minval-rms', label: 'Min Valid Peak Value (RMS):', value: 5.0, min: 0.1, max: 20, step: 0.1, title: 'Minimum peak value (relative to global RMS) for a source to be considered valid after merging.' },
+        { id: 'edge-clip', label: 'Edge Clip (pixels):', value: 1, min: 0, max: 50, step: 1, title: 'Number of pixels to clip from the image edge to avoid spurious detections.' }
     ];
-    
-    // Add parameters to grid
+
     parameters.forEach(param => {
         const paramGroup = document.createElement('div');
-        
         const paramLabel = document.createElement('label');
         paramLabel.textContent = param.label;
-        paramLabel.style.display = 'block';
-        paramLabel.style.marginBottom = '5px';
-        paramLabel.style.color = '#aaa';
-        paramLabel.style.fontFamily = 'Arial, sans-serif';
-        paramLabel.style.fontSize = '14px';
-        
+        paramLabel.title = param.title || '';
+        Object.assign(paramLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
         const paramInput = document.createElement('input');
-        paramInput.type = 'number';
-        paramInput.id = param.id;
-        paramInput.value = param.value;
-        paramInput.min = param.min;
-        paramInput.max = param.max;
-        paramInput.step = param.step;
-        paramInput.style.width = '100%';
-        paramInput.style.padding = '5px';
-        paramInput.style.backgroundColor = '#444';
-        paramInput.style.color = 'white';
-        paramInput.style.border = '1px solid #555';
-        paramInput.style.borderRadius = '3px';
-        paramInput.style.boxSizing = 'border-box';
-        
+        paramInput.type = 'number'; paramInput.id = param.id; paramInput.value = param.value;
+        paramInput.min = param.min; paramInput.max = param.max; paramInput.step = param.step; paramInput.title = param.title || '';
+        Object.assign(paramInput.style, { width: '100%', padding: '6px', backgroundColor: '#444', color: 'white', border: '1px solid #555', borderRadius: '3px', boxSizing: 'border-box', fontSize:'13px' });
         paramGroup.appendChild(paramLabel);
         paramGroup.appendChild(paramInput);
         algorithmGrid.appendChild(paramGroup);
     });
-    
     algorithmSection.appendChild(algorithmGrid);
-    
-    // Section 2: Visual Style - matching region style settings
+    leftColumn.appendChild(algorithmSection);
+
+    // Photometry (JWST) section
+    const photometrySection = document.createElement('fieldset');
+    Object.assign(photometrySection.style, { border: '1px solid #555', borderRadius: '4px', padding: '10px' });
+    const photometryLegend = document.createElement('legend');
+    photometryLegend.textContent = 'Photometry (JWST)';
+    Object.assign(photometryLegend.style, { color: '#ccc', padding: '0 5px', fontSize: '14px' });
+    photometrySection.appendChild(photometryLegend);
+
+    const photometryGrid = document.createElement('div');
+    Object.assign(photometryGrid.style, { display: 'grid', gridTemplateColumns: '1fr', gap: '10px' });
+
+    // JWST filter dropdown (matches ast_test.py jwst_filters keys)
+    const filterGroup = document.createElement('div');
+    const filterLabel = document.createElement('label');
+    filterLabel.textContent = 'JWST Filter (for photometry):';
+    filterLabel.title = 'Choose JWST filter to apply conversion and background subtraction. Select "Not JWST FILTER" for no conversion and no background subtraction.';
+    Object.assign(filterLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    const filterSelect = document.createElement('select');
+    filterSelect.id = 'jwst-filter';
+    Object.assign(filterSelect.style, { width: '100%', padding: '6px', backgroundColor: '#444', color: 'white', border: '1px solid #555', borderRadius: '3px', boxSizing: 'border-box', fontSize:'13px' });
+
+    const jwstFilters = ['Not JWST Filter','F200W','F300M','F335M','F360M','F770M','F1000W','F1130W','F2100W'];
+    jwstFilters.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f; opt.textContent = f;
+        filterSelect.appendChild(opt);
+    });
+    // Choose a sensible default
+    filterSelect.value = 'F2100W';
+
+    filterGroup.appendChild(filterLabel);
+    filterGroup.appendChild(filterSelect);
+    photometryGrid.appendChild(filterGroup);
+
+    photometrySection.appendChild(photometryGrid);
+    leftColumn.appendChild(photometrySection);
+
+    // Right Column: Visual Style
+    const rightColumn = document.createElement('div');
+    Object.assign(rightColumn.style, {
+        flex: '1', // Takes up 50% of the space
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px' // Space between elements in this column
+    });
+
     const styleSection = document.createElement('fieldset');
-    styleSection.style.border = '1px solid #555';
-    styleSection.style.borderRadius = '4px';
-    styleSection.style.padding = '10px';
-    
+    Object.assign(styleSection.style, { border: '1px solid #555', borderRadius: '4px', padding: '10px' });
     const styleLegend = document.createElement('legend');
     styleLegend.textContent = 'Visual Style';
-    styleLegend.style.color = '#ccc';
-    styleLegend.style.padding = '0 5px';
-    styleLegend.style.fontSize = '14px';
-    
+    Object.assign(styleLegend.style, { color: '#ccc', padding: '0 5px', fontSize: '14px' });
     styleSection.appendChild(styleLegend);
-    
-    // Border color selector
-    const borderColorGroup = document.createElement('div');
-    borderColorGroup.style.marginBottom = '10px';
-    
-    const borderColorLabel = document.createElement('label');
-    borderColorLabel.textContent = 'Border Color:';
-    borderColorLabel.style.display = 'block';
-    borderColorLabel.style.marginBottom = '5px';
-    borderColorLabel.style.color = '#aaa';
-    borderColorLabel.style.fontFamily = 'Arial, sans-serif';
-    borderColorLabel.style.fontSize = '14px';
-    
-    const borderColorInput = document.createElement('input');
-    borderColorInput.type = 'color';
-    borderColorInput.id = 'source-color';
-    borderColorInput.value = '#ff9800';
-    borderColorInput.style.width = '100%';
-    borderColorInput.style.height = '30px';
-    borderColorInput.style.cursor = 'pointer';
-    borderColorInput.style.backgroundColor = '#444';
-    borderColorInput.style.border = '1px solid #555';
-    borderColorInput.style.borderRadius = '3px';
-    
-    borderColorGroup.appendChild(borderColorLabel);
-    borderColorGroup.appendChild(borderColorInput);
-    
-    // Background color selector
-    const bgColorGroup = document.createElement('div');
-    bgColorGroup.style.marginBottom = '10px';
-    
-    const bgColorLabel = document.createElement('label');
-    bgColorLabel.textContent = 'Fill Color:';
-    bgColorLabel.style.display = 'block';
-    bgColorLabel.style.marginBottom = '5px';
-    bgColorLabel.style.color = '#aaa';
-    bgColorLabel.style.fontFamily = 'Arial, sans-serif';
-    bgColorLabel.style.fontSize = '14px';
-    
-    const bgColorContainer = document.createElement('div');
-    bgColorContainer.style.display = 'flex';
-    bgColorContainer.style.alignItems = 'center';
-    bgColorContainer.style.gap = '10px';
-    
-    const bgColorInput = document.createElement('input');
-    bgColorInput.type = 'color';
-    bgColorInput.id = 'fill-color';
-    bgColorInput.value = '#ff9800';
-    bgColorInput.style.width = '85%';
-    bgColorInput.style.height = '30px';
-    bgColorInput.style.cursor = 'pointer';
-    bgColorInput.style.backgroundColor = '#444';
-    bgColorInput.style.border = '1px solid #555';
-    bgColorInput.style.borderRadius = '3px';
-    
-    const transparentCheckbox = document.createElement('input');
-    transparentCheckbox.type = 'checkbox';
-    transparentCheckbox.id = 'transparent-fill-checkbox';
-    transparentCheckbox.checked = true;
-    transparentCheckbox.style.margin = '0';
-    transparentCheckbox.style.cursor = 'pointer';
-    
-    const transparentLabel = document.createElement('label');
-    transparentLabel.textContent = 'Transparent';
-    transparentLabel.htmlFor = 'transparent-fill-checkbox';
-    transparentLabel.style.color = '#aaa';
-    transparentLabel.style.fontFamily = 'Arial, sans-serif';
-    transparentLabel.style.fontSize = '14px';
-    transparentLabel.style.marginLeft = '5px';
-    
-    // Toggle background color input based on transparent checkbox
-    transparentCheckbox.addEventListener('change', () => {
-        bgColorInput.disabled = transparentCheckbox.checked;
-        bgColorInput.style.opacity = transparentCheckbox.checked ? '0.5' : '1';
-        updatePreview();
-    });
-    
-    // Initialize state
-    bgColorInput.disabled = transparentCheckbox.checked;
-    bgColorInput.style.opacity = transparentCheckbox.checked ? '0.5' : '1';
-    
-    bgColorContainer.appendChild(bgColorInput);
-    
-    const transparentContainer = document.createElement('div');
-    transparentContainer.style.display = 'flex';
-    transparentContainer.style.alignItems = 'center';
-    transparentContainer.appendChild(transparentCheckbox);
-    transparentContainer.appendChild(transparentLabel);
-    
-    bgColorContainer.appendChild(transparentContainer);
-    
-    bgColorGroup.appendChild(bgColorLabel);
-    bgColorGroup.appendChild(bgColorContainer);
-    
-    // Border width slider
-    const borderWidthGroup = document.createElement('div');
-    borderWidthGroup.style.marginBottom = '10px';
-    
-    const borderWidthLabel = document.createElement('label');
-    borderWidthLabel.textContent = 'Border Width:';
-    borderWidthLabel.style.display = 'block';
-    borderWidthLabel.style.marginBottom = '5px';
-    borderWidthLabel.style.color = '#aaa';
-    borderWidthLabel.style.fontFamily = 'Arial, sans-serif';
-    borderWidthLabel.style.fontSize = '14px';
-    
-    const borderWidthContainer = document.createElement('div');
-    borderWidthContainer.style.display = 'flex';
-    borderWidthContainer.style.alignItems = 'center';
-    borderWidthContainer.style.gap = '10px';
-    
-    const borderWidthSlider = document.createElement('input');
-    borderWidthSlider.type = 'range';
-    borderWidthSlider.id = 'border-width-slider';
-    borderWidthSlider.min = '1';
-    borderWidthSlider.max = '5';
-    borderWidthSlider.step = '1';
-    borderWidthSlider.value = 1;
-    borderWidthSlider.style.flex = '1';
-    borderWidthSlider.style.height = '6px';
-    borderWidthSlider.style.appearance = 'none';
-    borderWidthSlider.style.backgroundColor = '#555';
-    borderWidthSlider.style.borderRadius = '3px';
-    borderWidthSlider.style.outline = 'none';
-    borderWidthSlider.style.cursor = 'pointer';
-    
-    // Add custom styling for slider thumb
-    const sliderStyle = document.createElement('style');
-    sliderStyle.textContent = `
-        #border-width-slider::-webkit-slider-thumb, #opacity-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #4CAF50;
-            cursor: pointer;
-        }
-        #border-width-slider::-moz-range-thumb, #opacity-slider::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #4CAF50;
-            cursor: pointer;
-            border: none;
-        }
-    `;
-    document.head.appendChild(sliderStyle);
-    
-    const borderWidthValue = document.createElement('span');
-    borderWidthValue.id = 'border-width-value';
-    borderWidthValue.textContent = '2px';
-    borderWidthValue.style.minWidth = '35px';
-    borderWidthValue.style.textAlign = 'center';
-    borderWidthValue.style.color = '#fff';
-    borderWidthValue.style.fontFamily = 'Arial, sans-serif';
-    borderWidthValue.style.fontSize = '14px';
-    
-    // Update the displayed value when the slider changes
-    borderWidthSlider.addEventListener('input', function() {
-        borderWidthValue.textContent = this.value + 'px';
-        updatePreview();
-    });
-    
-    borderWidthContainer.appendChild(borderWidthSlider);
-    borderWidthContainer.appendChild(borderWidthValue);
-    
-    borderWidthGroup.appendChild(borderWidthLabel);
-    borderWidthGroup.appendChild(borderWidthContainer);
-    
-    // Opacity slider
-    const opacityGroup = document.createElement('div');
-    opacityGroup.style.marginBottom = '10px';
-    
-    const opacityLabel = document.createElement('label');
-    opacityLabel.textContent = 'Opacity:';
-    opacityLabel.style.display = 'block';
-    opacityLabel.style.marginBottom = '5px';
-    opacityLabel.style.color = '#aaa';
-    opacityLabel.style.fontFamily = 'Arial, sans-serif';
-    opacityLabel.style.fontSize = '14px';
-    
-    const opacityContainer = document.createElement('div');
-    opacityContainer.style.display = 'flex';
-    opacityContainer.style.alignItems = 'center';
-    opacityContainer.style.gap = '10px';
-    
-    const opacitySlider = document.createElement('input');
-    opacitySlider.type = 'range';
-    opacitySlider.id = 'opacity-slider';
-    opacitySlider.min = '0';
-    opacitySlider.max = '1';
-    opacitySlider.step = '0.1';
-    opacitySlider.value = 1;
-    opacitySlider.style.flex = '1';
-    opacitySlider.style.height = '6px';
-    opacitySlider.style.appearance = 'none';
-    opacitySlider.style.backgroundColor = '#555';
-    opacitySlider.style.borderRadius = '3px';
-    opacitySlider.style.outline = 'none';
-    opacitySlider.style.cursor = 'pointer';
-    
-    const opacityValue = document.createElement('span');
-    opacityValue.id = 'opacity-value';
-    opacityValue.textContent = '0.7';
-    opacityValue.style.minWidth = '35px';
-    opacityValue.style.textAlign = 'center';
-    opacityValue.style.color = '#fff';
-    opacityValue.style.fontFamily = 'Arial, sans-serif';
-    opacityValue.style.fontSize = '14px';
-    
-    // Update the displayed value when the slider changes
-    opacitySlider.addEventListener('input', function() {
-        opacityValue.textContent = this.value;
-        updatePreview();
-    });
-    
-    opacityContainer.appendChild(opacitySlider);
-    opacityContainer.appendChild(opacityValue);
-    
-    opacityGroup.appendChild(opacityLabel);
-    opacityGroup.appendChild(opacityContainer);
-    
-    // Preview area - styled like region style settings
-    const previewGroup = document.createElement('div');
-    
-    const previewLabel = document.createElement('label');
-    previewLabel.textContent = 'Preview:';
-    previewLabel.style.display = 'block';
-    previewLabel.style.marginBottom = '5px';
-    previewLabel.style.color = '#aaa';
-    previewLabel.style.fontFamily = 'Arial, sans-serif';
-    previewLabel.style.fontSize = '14px';
-    
-    const previewArea = document.createElement('div');
-    previewArea.style.width = '100%';
-    previewArea.style.height = '60px';
-    previewArea.style.backgroundColor = '#222';
-    previewArea.style.borderRadius = '3px';
-    previewArea.style.display = 'flex';
-    previewArea.style.justifyContent = 'center';
-    previewArea.style.alignItems = 'center';
-    
-    const previewDot = document.createElement('div');
-    previewDot.id = 'preview-dot';
-    previewDot.style.width = '30px';
-    previewDot.style.height = '30px';
-    previewDot.style.borderRadius = '50%';
-    previewDot.style.borderWidth = '2px';
-    previewDot.style.borderStyle = 'solid';
-    previewDot.style.borderColor = '#ff9800';
-    previewDot.style.backgroundColor = 'rgba(255, 152, 0, 0.3)';
-    previewDot.style.opacity = '0.7';
-    
-    previewArea.appendChild(previewDot);
-    previewGroup.appendChild(previewLabel);
-    previewGroup.appendChild(previewArea);
-    
-    // Function to update preview dot
-    function updatePreview() {
-        const borderWidth = borderWidthSlider.value;
-        const opacity = opacitySlider.value;
-        const borderColor = borderColorInput.value;
-        const useTransparentFill = transparentCheckbox.checked;
-        const fillColor = bgColorInput.value;
-        
-        previewDot.style.borderWidth = borderWidth + 'px';
-        previewDot.style.borderColor = borderColor;
-        previewDot.style.opacity = opacity;
-        
-        // Apply background color based on transparent fill setting
-        if (useTransparentFill) {
-            // Create a semi-transparent version of the border color
-            const r = parseInt(borderColor.slice(1, 3), 16);
-            const g = parseInt(borderColor.slice(3, 5), 16);
-            const b = parseInt(borderColor.slice(5, 7), 16);
-            previewDot.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
-        } else {
-            // Use the selected fill color with a moderate transparency
-            const r = parseInt(fillColor.slice(1, 3), 16);
-            const g = parseInt(fillColor.slice(3, 5), 16);
-            const b = parseInt(fillColor.slice(5, 7), 16);
-            previewDot.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.5)`;
-        }
+
+    // Helper to create a style control group
+    function createStyleControl(labelTextContent, inputElement, helpText = "") {
+        const group = document.createElement('div');
+        group.style.marginBottom = '8px'; // Reduced margin
+        const label = document.createElement('label');
+        label.textContent = labelTextContent;
+        if (helpText) label.title = helpText;
+        Object.assign(label.style, { display: 'block', marginBottom: '3px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+        group.appendChild(label);
+        group.appendChild(inputElement);
+        return group;
     }
     
-    // Add event listeners to update preview
-    borderColorInput.addEventListener('input', updatePreview);
-    bgColorInput.addEventListener('input', updatePreview);
+    const defaultBorderColor = '#FF8C00'; // DarkOrange
+    const defaultFillColor = '#FF8C00'; // DarkOrange
+
+    // Border color selector
+    const borderColorInput = document.createElement('input');
+    borderColorInput.type = 'color'; borderColorInput.id = 'source-color'; borderColorInput.value = defaultBorderColor;
+    Object.assign(borderColorInput.style, { width: '100%', height: '30px', cursor: 'pointer', backgroundColor: '#444', border: '1px solid #555', borderRadius: '3px', boxSizing: 'border-box' });
+    styleSection.appendChild(createStyleControl('Border Color:', borderColorInput, 'Color of the source marker border.'));
+
+    // Fill color selector
+    const bgColorContainer = document.createElement('div'); // Container for color input and checkbox
+    Object.assign(bgColorContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+
+    const bgColorInput = document.createElement('input');
+    bgColorInput.type = 'color'; bgColorInput.id = 'fill-color'; bgColorInput.value = defaultFillColor;
+    Object.assign(bgColorInput.style, { flexGrow: '1', height: '30px', cursor: 'pointer', backgroundColor: '#444', border: '1px solid #555', borderRadius: '3px', boxSizing: 'border-box' });
+
+    const transparentCheckbox = document.createElement('input');
+    transparentCheckbox.type = 'checkbox'; transparentCheckbox.id = 'transparent-fill-checkbox'; transparentCheckbox.checked = true;
+    Object.assign(transparentCheckbox.style, { margin: '0', cursor: 'pointer', width:'16px', height:'16px' });
     
-    // Add style elements to the style section
-    styleSection.appendChild(borderColorGroup);
-    styleSection.appendChild(bgColorGroup);
-    styleSection.appendChild(borderWidthGroup);
-    styleSection.appendChild(opacityGroup);
-    styleSection.appendChild(previewGroup);
+    const transparentLabel = document.createElement('label');
+    transparentLabel.textContent = 'Transparent Fill';
+    transparentLabel.htmlFor = 'transparent-fill-checkbox';
+    Object.assign(transparentLabel.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px', cursor: 'pointer', userSelect:'none' });
+
+    const transparentFillContainer = document.createElement('div');
+    Object.assign(transparentFillContainer.style, {display: 'flex', alignItems: 'center', gap: '5px', marginTop:'3px'});
+    transparentFillContainer.appendChild(transparentCheckbox);
+    transparentFillContainer.appendChild(transparentLabel);
     
-    // Button container
+    bgColorContainer.appendChild(bgColorInput);
+    bgColorContainer.appendChild(transparentFillContainer);
+
+    styleSection.appendChild(createStyleControl('Fill Color:', bgColorContainer, 'Color of the source marker fill. Check "Transparent Fill" to use a semi-transparent version of the Border Color.'));
+
+    // Border width slider
+    const borderWidthContainer = document.createElement('div');
+    Object.assign(borderWidthContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const borderWidthSlider = document.createElement('input');
+    borderWidthSlider.type = 'range'; borderWidthSlider.id = 'border-width-slider'; borderWidthSlider.min = '1'; borderWidthSlider.max = '5'; borderWidthSlider.step = '1'; borderWidthSlider.value = '2'; // Default to 2px
+    Object.assign(borderWidthSlider.style, { flex: '1', height: '8px', appearance: 'none', backgroundColor: '#555', borderRadius: '4px', outline: 'none', cursor: 'pointer' });
+    const borderWidthValue = document.createElement('span');
+    borderWidthValue.id = 'border-width-value'; borderWidthValue.textContent = borderWidthSlider.value + 'px';
+    Object.assign(borderWidthValue.style, { minWidth: '30px', textAlign: 'right', color: '#fff', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    borderWidthSlider.addEventListener('input', function() { borderWidthValue.textContent = this.value + 'px'; updatePreview(); });
+    borderWidthContainer.appendChild(borderWidthSlider); borderWidthContainer.appendChild(borderWidthValue);
+    styleSection.appendChild(createStyleControl('Border Width:', borderWidthContainer, 'Width of the source marker border in pixels.'));
+
+    // Opacity slider
+    const opacityContainer = document.createElement('div');
+    Object.assign(opacityContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const opacitySlider = document.createElement('input');
+    opacitySlider.type = 'range'; opacitySlider.id = 'opacity-slider'; opacitySlider.min = '0.1'; opacitySlider.max = '1'; opacitySlider.step = '0.1'; opacitySlider.value = '0.7'; // Default opacity
+    Object.assign(opacitySlider.style, { flex: '1', height: '8px', appearance: 'none', backgroundColor: '#555', borderRadius: '4px', outline: 'none', cursor: 'pointer' });
+    const opacityValue = document.createElement('span');
+    opacityValue.id = 'opacity-value'; opacityValue.textContent = opacitySlider.value;
+    Object.assign(opacityValue.style, { minWidth: '30px', textAlign: 'right', color: '#fff', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    opacitySlider.addEventListener('input', function() { opacityValue.textContent = this.value; updatePreview(); });
+    opacityContainer.appendChild(opacitySlider); opacityContainer.appendChild(opacityValue);
+    styleSection.appendChild(createStyleControl('Marker Opacity:', opacityContainer, 'Overall opacity of the source markers.'));
+    
+    // Add slider thumb styling
+    const sliderStyle = document.getElementById('peak-finder-slider-styles') || document.createElement('style');
+    sliderStyle.id = 'peak-finder-slider-styles';
+    sliderStyle.textContent = `
+        #border-width-slider::-webkit-slider-thumb, #opacity-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 16px; height: 16px;
+            border-radius: 50%; background: #007bff; cursor: pointer;
+        }
+        #border-width-slider::-moz-range-thumb, #opacity-slider::-moz-range-thumb {
+            width: 16px; height: 16px; border-radius: 50%; background: #007bff; cursor: pointer; border: none;
+        }`;
+    document.head.appendChild(sliderStyle);
+
+    // Preview area
+    const previewArea = document.createElement('div');
+    Object.assign(previewArea.style, { width: '100%', height: '60px', backgroundColor: '#222', borderRadius: '3px', display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: '10px', boxSizing:'border-box' });
+    const previewDot = document.createElement('div');
+    previewDot.id = 'preview-dot';
+    Object.assign(previewDot.style, { width: '30px', height: '30px', borderRadius: '50%', transition: 'all 0.2s ease' });
+    previewArea.appendChild(previewDot);
+    styleSection.appendChild(createStyleControl('Preview:', previewArea));
+
+    function updatePreview() {
+        const bw = borderWidthSlider.value;
+        const op = opacitySlider.value;
+        const bc = borderColorInput.value;
+        const useTransparent = transparentCheckbox.checked;
+        const fc = bgColorInput.value;
+
+        previewDot.style.borderWidth = bw + 'px';
+        previewDot.style.borderStyle = 'solid';
+        previewDot.style.borderColor = bc;
+        previewDot.style.opacity = op;
+
+        if (useTransparent) {
+            const r = parseInt(bc.slice(1, 3), 16);
+            const g = parseInt(bc.slice(3, 5), 16);
+            const b = parseInt(bc.slice(5, 7), 16);
+            previewDot.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
+        } else {
+            previewDot.style.backgroundColor = fc;
+        }
+        bgColorInput.disabled = useTransparent;
+        bgColorInput.style.opacity = useTransparent ? '0.5' : '1';
+    }
+    
+    [borderColorInput, bgColorInput, transparentCheckbox, borderWidthSlider, opacitySlider].forEach(el => {
+        el.addEventListener('input', updatePreview);
+        if (el.type === 'checkbox') el.addEventListener('change', updatePreview);
+    });
+    
+    rightColumn.appendChild(styleSection);
+
+    columnsContainer.appendChild(leftColumn);
+    columnsContainer.appendChild(rightColumn);
+
     const buttonContainer = document.createElement('div');
-    buttonContainer.style.display = 'flex';
-    buttonContainer.style.justifyContent = 'space-between';
-    buttonContainer.style.marginTop = '15px';
-    
-    // Cancel button
+    Object.assign(buttonContainer.style, { display: 'flex', justifyContent: 'flex-end', marginTop: '15px', gap: '10px' });
+
     const cancelButton = document.createElement('button');
     cancelButton.textContent = 'Cancel';
-    cancelButton.style.flex = '1';
-    cancelButton.style.marginRight = '10px';
-    cancelButton.style.padding = '8px 0';
-    cancelButton.style.backgroundColor = '#f44336';
-    cancelButton.style.color = '#fff';
-    cancelButton.style.border = 'none';
-    cancelButton.style.borderRadius = '3px';
-    cancelButton.style.cursor = 'pointer';
-    cancelButton.style.fontFamily = 'Arial, sans-serif';
-    cancelButton.style.fontSize = '14px';
-    
-    cancelButton.addEventListener('mouseover', () => {
-        cancelButton.style.backgroundColor = '#d32f2f';
-    });
-    cancelButton.addEventListener('mouseout', () => {
-        cancelButton.style.backgroundColor = '#f44336';
-    });
-    cancelButton.addEventListener('click', () => {
-        popup.style.display = 'none';
-    });
-    
-    // Apply button
+    Object.assign(cancelButton.style, { padding: '8px 15px', backgroundColor: '#6c757d', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontFamily: 'Arial, sans-serif', fontSize: '14px' });
+    cancelButton.addEventListener('mouseover', () => cancelButton.style.backgroundColor = '#5a6268');
+    cancelButton.addEventListener('mouseout', () => cancelButton.style.backgroundColor = '#6c757d');
+    cancelButton.addEventListener('click', () => { popup.style.display = 'none'; });
+
     const findSourcesButton = document.createElement('button');
     findSourcesButton.textContent = 'Find Sources';
-    findSourcesButton.style.flex = '1';
-    findSourcesButton.style.padding = '8px 0';
-    findSourcesButton.style.backgroundColor = '#4CAF50';
-    findSourcesButton.style.color = '#fff';
-    findSourcesButton.style.border = 'none';
-    findSourcesButton.style.borderRadius = '3px';
-    findSourcesButton.style.cursor = 'pointer';
-    findSourcesButton.style.fontFamily = 'Arial, sans-serif';
-    findSourcesButton.style.fontSize = '14px';
-    
-    findSourcesButton.addEventListener('mouseover', () => {
-        findSourcesButton.style.backgroundColor = '#45a049';
-    });
-    findSourcesButton.addEventListener('mouseout', () => {
-        findSourcesButton.style.backgroundColor = '#4CAF50';
-    });
+    Object.assign(findSourcesButton.style, { padding: '8px 15px', backgroundColor: '#007bff', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontFamily: 'Arial, sans-serif', fontSize: '14px' });
+    findSourcesButton.addEventListener('mouseover', () => findSourcesButton.style.backgroundColor = '#0056b3');
+    findSourcesButton.addEventListener('mouseout', () => findSourcesButton.style.backgroundColor = '#007bff');
     findSourcesButton.addEventListener('click', () => {
-        // Collect all parameters
-        const pixAcrossBeam = parseFloat(document.getElementById('pix-across-beam').value);
-        const minBeams = parseFloat(document.getElementById('min-beams').value);
-        const beamsToSearch = parseFloat(document.getElementById('beams-to-search').value);
-        const deltaRms = parseFloat(document.getElementById('delta-rms').value);
-        const minvalRms = parseFloat(document.getElementById('minval-rms').value);
-        const borderColor = document.getElementById('source-color').value;
-        const fillColor = document.getElementById('fill-color').value;
-        const useTransparentFill = document.getElementById('transparent-fill-checkbox').checked;
-        const borderWidth = parseInt(document.getElementById('border-width-slider').value);
-        const opacity = parseFloat(document.getElementById('opacity-slider').value);
-        
-        // Hide popup
+        const params = {
+            pix_across_beam: parseFloat(document.getElementById('pix-across-beam').value),
+            min_beams: parseFloat(document.getElementById('min-beams').value),
+            beams_to_search: parseFloat(document.getElementById('beams-to-search').value),
+            delta_rms: parseFloat(document.getElementById('delta-rms').value),
+            minval_rms: parseFloat(document.getElementById('minval-rms').value),
+            edge_clip: parseInt(document.getElementById('edge-clip').value),
+            // Pass through the selected JWST filter using the same field name as ast_test.py (filterName)
+            filterName: document.getElementById('jwst-filter').value,
+            color: document.getElementById('source-color').value,
+            fillColor: document.getElementById('fill-color').value,
+            useTransparentFill: document.getElementById('transparent-fill-checkbox').checked,
+            border_width: parseInt(document.getElementById('border-width-slider').value),
+            opacity: parseFloat(document.getElementById('opacity-slider').value)
+        };
         popup.style.display = 'none';
-        
-        // Run peak finder with these parameters
-        runPeakFinder({
-            pix_across_beam: pixAcrossBeam,
-            min_beams: minBeams,
-            beams_to_search: beamsToSearch,
-            delta_rms: deltaRms,
-            minval_rms: minvalRms,
-            color: borderColor,
-            fillColor: fillColor,
-            useTransparentFill: useTransparentFill,
-            size: pixAcrossBeam, // Use Pixels Across Beam for region size
-            border_width: borderWidth,
-            opacity: opacity
-        });
+
+        // Add the 'files/' prefix to the filepath before sending to the backend
+        const fullFilepath = `files/${filepath}`;
+
+        // Use the filepath that was passed into createPeakFinderModal
+        runPeakFinder(fullFilepath, params);
     });
-    
-    // Add buttons to container
+
     buttonContainer.appendChild(cancelButton);
     buttonContainer.appendChild(findSourcesButton);
-    
-    // Add all elements to form container
-    formContainer.appendChild(algorithmSection);
-    formContainer.appendChild(styleSection);
-    
-    // Add all elements to popup
+
     popup.appendChild(title);
     popup.appendChild(closeButton);
-    popup.appendChild(formContainer);
+    popup.appendChild(columnsContainer); // Add the new two-column container
     popup.appendChild(buttonContainer);
-    
-    // Make popup draggable (just like region style settings)
-    makeDraggable(popup, title);
-    
-    // Add popup to document
+
+    makeDraggable(popup, title); // Ensure makeDraggable is defined and works
     document.body.appendChild(popup);
-    
-    // Initial preview update
-    updatePreview();
-    
+    updatePreview(); // Initial preview
     return popup;
 }
 
+// Ensure makeDraggable function is available
+if (typeof makeDraggable !== 'function') {
+    function makeDraggable(elmnt, dragHandle) {
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        const handle = dragHandle || elmnt;
 
+        handle.onmousedown = dragMouseDown;
 
-// Modify the determineWcsTransformation function to better handle galaxy orientation
-function determineWcsTransformation() {
-    // Default transformation (identity)
-    const defaultTransform = {
-        rotation: 0,
-        flipX: false,
-        flipY: false,
-        scale: 1
-    };
-    
-    try {
-        // Check if we have FITS data with WCS information
-        if (!window.fitsData || !window.fitsData.wcs) {
-            console.warn("No WCS information available in FITS data");
-            return defaultTransform;
-        }
-        
-        const wcs = window.fitsData.wcs;
-        console.log("WCS data from FITS:", wcs);
-        
-        // Extract CD matrix elements for rotation calculation
-        let cd1_1 = wcs.cd1_1 || 0;
-        let cd1_2 = wcs.cd1_2 || 0;
-        let cd2_1 = wcs.cd2_1 || 0; 
-        let cd2_2 = wcs.cd2_2 || 0;
-        
-        // Improved detection for NGC 628 (M74) galaxy
-        // Check both filename and any metadata that might identify the galaxy
-        const isM74 = window.fitsData.filename && (
-            window.fitsData.filename.toLowerCase().includes('ngc628') || 
-            window.fitsData.filename.toLowerCase().includes('m74') ||
-            // Add additional checks for this specific galaxy if needed
-            (wcs.ra_ref && Math.abs(wcs.ra_ref - 24.174) < 1 && 
-             wcs.dec_ref && Math.abs(wcs.dec_ref - 15.783) < 1)
-        );
-        
-        if (isM74) {
-            console.log("Detected M74/NGC628 galaxy - applying specialized transformation");
+        function dragMouseDown(e) {
+            e = e || window.event;
+            if (e.button !== 0) return; // Only left click
             
-            // ADJUSTED: Modify rotation angle to better match galaxy orientation
-            // Based on visual analysis, the correct angle appears to be 130 degrees
-            return {
-                rotation: 120, // Adjusted from 115 to 130 for better alignment
-                flipX: false,
-                flipY: false,
-                scale: 1
-            };
+            // Prevent drag if clicking on input/button/select elements within the handle
+            const nonDragTags = ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA'];
+            if (nonDragTags.includes(e.target.tagName) || e.target.closest('input, button, select, textarea')) {
+                 if (e.target !== handle) return; // Allow drag if mousedown on handle itself, even if it's one of these tags
+            }
+
+            e.preventDefault();
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+
+            // If popup is centered with transform, convert to pixel values for dragging
+            if (elmnt.style.transform.includes('translate')) {
+                const rect = elmnt.getBoundingClientRect();
+                elmnt.style.top = `${rect.top}px`;
+                elmnt.style.left = `${rect.left}px`;
+                elmnt.style.transform = 'none'; 
+            }
+            
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+            handle.style.cursor = 'grabbing';
         }
-        
-        // Calculate determinant to check for flips
-        const det = cd1_1 * cd2_2 - cd1_2 * cd2_1;
-        const hasFlip = det < 0;
-        
-        // Calculate rotation angle from CD matrix
-        let rotation = Math.atan2(cd2_1, cd2_2) * 180 / Math.PI;
-        
-        // Adjust based on CD matrix signs for astronomical convention
-        if (cd1_1 < 0 && cd2_2 < 0) {
-            rotation += 180;
+
+        function elementDrag(e) {
+            e = e || window.event;
+            e.preventDefault();
+            pos1 = pos3 - e.clientX;
+            pos2 = pos4 - e.clientY;
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+            elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
         }
-        
-        // Normalize rotation to 0-360 range
-        rotation = (rotation + 360) % 360;
-        
-        // Check for common astronomical conventions
-        // For RA/DEC coordinates, typically North is up, East is left
-        let flipX = false;
-        let flipY = false;
-        
-        // Enhanced handling of coordinate system orientations
-        // If the rotation appears to be close to 0 but there are cross-terms in CD matrix
-        if (Math.abs(rotation) < 5 && (Math.abs(cd1_2) > 0.0001 || Math.abs(cd2_1) > 0.0001)) {
-            // Likely needs 90 degree adjustment
-            rotation = 90;
+
+        function closeDragElement() {
+            document.onmouseup = null;
+            document.onmousemove = null;
+            handle.style.cursor = 'grab';
         }
-        
-        // Log detailed information about the transformation
-        console.log(`Calculated rotation from CD matrix: ${rotation}°`);
-        console.log(`CD matrix: [${cd1_1}, ${cd1_2}; ${cd2_1}, ${cd2_2}]`);
-        console.log(`Determinant: ${det}, hasFlip: ${hasFlip}`);
-        
-        return {
-            rotation: rotation,
-            flipX: flipX,
-            flipY: flipY,
-            scale: 1
-        };
-    } catch (error) {
-        console.error("Error determining WCS transformation:", error);
-        return defaultTransform;
     }
 }
-
-// Improved applyWcsTransformation function with better handling of rotations
-function applyWcsTransformation(catalog, transform) {
-    if (!catalog || !catalog.length) return;
-    
-    // Get image dimensions
-    const width = window.fitsData ? window.fitsData.width : 2000; // Default if not available
-    const height = window.fitsData ? window.fitsData.height : 2000;
-    const centerX = width / 2;
-    const centerY = height / 2;
-    
-    console.log(`Applying transformation: rotation=${transform.rotation}°, flipX=${transform.flipX}, flipY=${transform.flipY}, scale=${transform.scale}`);
-    
-    // Apply transformation to each source
-    catalog.forEach(source => {
-        // Store original coordinates for debugging
-        const origX = source.x;
-        const origY = source.y;
-        
-        // Translate to origin
-        let x = source.x - centerX;
-        let y = source.y - centerY;
-        
-        // Apply flips if needed
-        if (transform.flipX) x = -x;
-        if (transform.flipY) y = -y;
-        
-        // Apply rotation - ensure we're using the correct math for the rotation direction
-        if (transform.rotation !== 0) {
-            const angle = transform.rotation * Math.PI / 180;
-            const xNew = x * Math.cos(angle) - y * Math.sin(angle);
-            const yNew = x * Math.sin(angle) + y * Math.cos(angle);
-            x = xNew;
-            y = yNew;
-        }
-        
-        // Apply scale
-        if (transform.scale !== 1) {
-            x *= transform.scale;
-            y *= transform.scale;
-        }
-        
-        // Translate back
-        source.x = x + centerX;
-        source.y = y + centerY;
-        
-        // Ensure coordinates are within image bounds
-        source.x = Math.max(0, Math.min(source.x, width - 1));
-        source.y = Math.max(0, Math.min(source.y, height - 1));
-        
-        // Debug: log transformation for a few sources
-        if (catalog.indexOf(source) < 5) {
-            console.log(`Transformed source: (${origX}, ${origY}) -> (${source.x}, ${source.y})`);
-        }
-    });
-}
-
-
-
 
 // Helper function to update styling of catalog dots for peak finder results
 function updatePeakFinderDotStyling(dots, customParams = {}) {
@@ -1021,51 +685,67 @@ function updatePeakFinderDotStyling(dots, customParams = {}) {
 
 // Existing function, we'll add dropdown update functionality
 function createNewCatalog(sources, options = {}) {
-    // Generate a unique catalog name
-    const baseName = options.name || 'New Catalog';
-    let catalogName = baseName;
-    let counter = 1;
-    
-    // Ensure unique catalog name
-    if (window.loadedCatalogs) {
-        while (window.loadedCatalogs.some(c => c.name === catalogName)) {
-            catalogName = `${baseName} (${counter})`;
-            counter++;
+    const newCatalogName = options.name || `Catalog-${Date.now()}`;
+    console.log(`[createNewCatalog] Creating new catalog: '${newCatalogName}' with ${sources.length} sources.`);
+    console.log(`[createNewCatalog] Options received:`, options);
+
+    // --- FIX START ---
+    // The `options` object contains style settings from the modal, including a `size`
+    // property that conflicts with the `radius_pixels` we calculated.
+    // By deleting `size` from the options before mapping, we prevent it from
+    // overwriting the correct value when the objects are merged.
+    delete options.size;
+    // --- FIX END ---
+
+    // If sources already have x and y, preserve them. This is crucial for peak finder.
+    const processedSources = sources.map((source, index) => {
+        const finalSource = {
+            ...options,
+            ...source,
+            catalog_name: newCatalogName,
+            magnitude: (source.value !== undefined && source.value !== null) ? source.value : null,
+            source_type: 'peak_finder', // Mark as a peak finder source
+            startIndex: 0,
+            id: index
+        };
+
+        // --- DEFINITIVE FIX ---
+        // Per user instruction, directly set radius_pixels from pix_across_beam.
+        // This bypasses any incorrect default values assigned earlier.
+        if (options.pix_across_beam !== undefined) {
+            finalSource.radius_pixels = options.pix_across_beam;
         }
-    }
+
+        return finalSource;
+    });
     
-    // Prepare catalog metadata
+    // --- FIX START ---
+    // Define catalogMetadata before it is used.
     const catalogMetadata = {
-        name: catalogName,
+        name: newCatalogName,
         color: options.color || '#ff9800',
-        showLabels: options.showLabels ?? true,
-        source_count: sources.length
+        showLabels: options.showLabels !== undefined ? options.showLabels : true,
+        source_count: processedSources.length
     };
-    
-    // Normalize sources to match existing catalog structure
-    const normalizedSources = sources.map(source => ({
-        x: 0, // will be set by coordinate conversion
-        y: 0, // will be set by coordinate conversion
-        ra: source.ra,
-        dec: source.dec,
-        radius_pixels: options.size || 5, // configurable size
-        source_type: options.source_type || 'peak_finder',
-        magnitude: source.magnitude || null
-    }));
-    
+    // --- FIX END ---
+
     // Initialize global catalog data if not exists
-    window.catalogData = window.catalogData || [];
-    window.loadedCatalogs = window.loadedCatalogs || [];
-    
+    if (!window.catalogData) {
+        window.catalogData = [];
+    }
+    if (!window.loadedCatalogs) {
+        window.loadedCatalogs = [];
+    }
+
     // Append the new catalog
     const startIndex = window.catalogData.length;
-    window.catalogData.push(...normalizedSources);
+    window.catalogData.push(...processedSources);
     window.loadedCatalogs.push(catalogMetadata);
     
-    // Trigger catalog overlay update
-    triggerCatalogOverlayUpdate(normalizedSources, {
-        name: catalogName,
-        color: options.color || '#ff9800',
+    // Pass the full set of options along to the overlay update function
+    triggerCatalogOverlayUpdate(processedSources, {
+        ...options, // Pass all original options
+        name: newCatalogName,
         startIndex: startIndex
     });
     
@@ -1073,11 +753,11 @@ function createNewCatalog(sources, options = {}) {
     updateCatalogSelectionDropdown();
     
     // Show notification
-    showNotification(`Created catalog: ${catalogName} with ${sources.length} sources`, 2000, 'success');
+    showNotification(`Created catalog: ${newCatalogName} with ${sources.length} sources`, 2000, 'success');
     
     return {
-        name: catalogName,
-        sources: normalizedSources
+        name: newCatalogName,
+        sources: processedSources
     };
 }
 
@@ -1085,39 +765,39 @@ function createNewCatalog(sources, options = {}) {
 function updateCatalogSelectionDropdown() {
     console.log('Updating catalog selection dropdown');
     
-    // Get the catalog select element
-    const catalogSelect = document.getElementById('catalog-select');
+    // // Get the catalog select element
+    // const catalogSelect = document.getElementById('catalog-select');
     
-    if (!catalogSelect) {
-        console.warn('Catalog select dropdown not found');
-        return;
-    }
+    // if (!catalogSelect) {
+    //     console.warn('Catalog select dropdown not found');
+    //     return;
+    // }
     
-    // Clear existing options
-    catalogSelect.innerHTML = '';
+    // // Clear existing options
+    // catalogSelect.innerHTML = '';
     
-    // Add new options for each loaded catalog
-    if (window.loadedCatalogs && window.loadedCatalogs.length > 0) {
-        window.loadedCatalogs.forEach(catalog => {
-            const option = document.createElement('option');
-            option.value = catalog.name;
-            option.textContent = `${catalog.name} (${catalog.source_count} sources)`;
-            catalogSelect.appendChild(option);
-        });
+    // // Add new options for each loaded catalog
+    // if (window.loadedCatalogs && window.loadedCatalogs.length > 0) {
+    //     window.loadedCatalogs.forEach(catalog => {
+    //         const option = document.createElement('option');
+    //         option.value = catalog.name;
+    //         option.textContent = `${catalog.name} (${catalog.source_count} sources)`;
+    //         catalogSelect.appendChild(option);
+    //     });
         
-        // Select the last added catalog
-        catalogSelect.value = window.loadedCatalogs[window.loadedCatalogs.length - 1].name;
+    //     // Select the last added catalog
+    //     catalogSelect.value = window.loadedCatalogs[window.loadedCatalogs.length - 1].name;
         
-        // Trigger any necessary update events
-        const event = new Event('change', { bubbles: true });
-        catalogSelect.dispatchEvent(event);
-    }
+    //     // Trigger any necessary update events
+    //     const event = new Event('change', { bubbles: true });
+    //     catalogSelect.dispatchEvent(event);
+    // }
 }
 
 
 // New function to trigger catalog overlay update
 function triggerCatalogOverlayUpdate(sources, options = {}) {
-    console.log('Triggering catalog overlay update', sources, options);
+    // console.log('Triggering catalog overlay update', sources, options);
     
     // Ensure we have the necessary global objects
     window.catalogDataForOverlay = window.catalogDataForOverlay || [];
@@ -1127,117 +807,55 @@ function triggerCatalogOverlayUpdate(sources, options = {}) {
         ? options.startIndex 
         : window.catalogDataForOverlay.length;
     
-    // Convert sources and add to overlay data
+    // Convert sources and add to overlay data, carrying over all style properties
     const convertedSources = sources.map((source, index) => ({
         ...source,
+        ...options, // Apply all options (color, opacity, etc.) to each source
         index: startIndex + index,
-        color: options.color || '#ff9800',
         catalog_name: options.name || 'Default Catalog'
     }));
     
     // Extend existing overlay data
     window.catalogDataForOverlay.push(...convertedSources);
     
-    // Try to update the overlay
+    // Try to update the overlay using the correct, modern function
     try {
-        if (typeof updateOverlay === 'function') {
-            updateOverlay();
+        if (typeof canvasAddCatalogOverlay === 'function') {
+            // This is the correct function to call for the new canvas system
+            canvasAddCatalogOverlay(convertedSources);
         } else {
-            console.warn('updateOverlay function not found');
+            console.warn('canvasAddCatalogOverlay function not found');
         }
     } catch (error) {
         console.error('Error updating catalog overlay:', error);
     }
 }
 
-
-
-// Fallback catalog selection update
-function updateCatalogSelectionDropdown() {
-    console.log('Updating catalog selection dropdown');
-    
-    // Get the catalog select element
-    const catalogSelect = document.getElementById('catalog-select');
-    
-    if (!catalogSelect) {
-        console.warn('Catalog select dropdown not found');
-        return;
-    }
-    
-    // Clear existing options
-    catalogSelect.innerHTML = '';
-    
-    // Add new options for each loaded catalog
-    if (window.loadedCatalogs && window.loadedCatalogs.length > 0) {
-        window.loadedCatalogs.forEach(catalog => {
-            const option = document.createElement('option');
-            option.value = catalog.name;
-            option.textContent = `${catalog.name} (${catalog.source_count} sources)`;
-            catalogSelect.appendChild(option);
-        });
-        
-        // Select the last added catalog
-        catalogSelect.value = window.loadedCatalogs[window.loadedCatalogs.length - 1].name;
-    }
-}
-
-
-
-
-
 // Add peak finder button to toolbar with fix to prevent auto-opening
 function addPeakFinderButton() {
-    // Create peak finder button
-    const peakFinderButton = document.createElement('button');
-    peakFinderButton.className = 'peak-finder-button';
-    peakFinderButton.title = 'Find Sources';
-    
-    // Create SVG icon for peak finder
-    const svgNS = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(svgNS, "svg");
-    svg.setAttribute("width", "16");
-    svg.setAttribute("height", "16");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.style.fill = "currentColor";
-    
-    // Create star/point icon
-    const path = document.createElementNS(svgNS, "path");
-    path.setAttribute("d", "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z");
-    svg.appendChild(path);
-    
-    peakFinderButton.appendChild(svg);
-    
-    // Add event listener to show modal when button is clicked
-    peakFinderButton.addEventListener('click', () => {
-        // Create the modal if needed and then explicitly show it
-        const peakFinderModal = createPeakFinderModal();
-        if (peakFinderModal) {
-            peakFinderModal.style.display = 'block';
-        }
-    });
-    
-    // Find the toolbar
-    const toolbar = document.querySelector('.toolbar');
-    if (toolbar) {
-        // Insert the peak finder button after the file browser button
-        const fileBrowserButton = toolbar.querySelector('.file-browser-button');
-        if (fileBrowserButton) {
-            fileBrowserButton.insertAdjacentElement('afterend', peakFinderButton);
-        } else {
-            // Fallback: prepend to toolbar
-            toolbar.prepend(peakFinderButton);
-        }
+    const customButtonContainer = document.getElementById('custom-button-container');
+    if (!customButtonContainer) {
+        console.warn('Custom button container not found');
+        return;
     }
+
+    // Check if the button already exists to prevent duplicates
+    if (document.getElementById('peak-finder-btn')) {
+        return;
+    }
+
+    const peakFinderButton = document.createElement('button');
+    peakFinderButton.id = 'peak-finder-btn';
+    peakFinderButton.textContent = 'Peak Finder';
+    peakFinderButton.className = 'custom-button';
+
+    peakFinderButton.addEventListener('click', () => {
+        // Pass the current FITS file path to the peak finder
+        createPeakFinderModal(window.currentFitsFile); 
+    });
+
+    customButtonContainer.appendChild(peakFinderButton);
 }
 
-// Add event listener to add peak finder button when DOM is loaded
-// but don't automatically open the modal
-document.addEventListener('DOMContentLoaded', () => {
-    addPeakFinderButton();
-    
-    // Double-check to make sure modal is hidden on startup
-    const existingModal = document.getElementById('peak-finder-modal');
-    if (existingModal) {
-        existingModal.style.display = 'none';
-    }
-});
+// Make the function globally available so it can be called from other scripts
+window.addPeakFinderButton = addPeakFinderButton;

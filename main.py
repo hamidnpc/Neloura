@@ -2,22 +2,27 @@ import sys
 import os
 import threading
 import time
-from fastapi import FastAPI, Response, Body, HTTPException, Query, Request
+from fastapi import FastAPI, Response, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import uuid
+from multiprocessing import Process, Manager
 import numpy as np
 import io
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.table import Table
 from astropy.coordinates import SkyCoord
+from astropy.coordinates import search_around_sky
+
 import astropy.units as u
 import json
 from pathlib import Path
 import struct
 import base64
 import glob
+from ast_test import AstInjectRequest, inject_sources, get_pixel_scale_from_header, AstPlotRequest, compute_ast_plot
 import re
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
@@ -49,6 +54,599 @@ import re
 import time
 from types import SimpleNamespace  # Add this import
 from datetime import datetime # Add datetime import
+from concurrent.futures import ProcessPoolExecutor
+from astropy.time import Time # Added for type handling
+import psutil # Added for system stats
+import asyncio # <--- ADD THIS IMPORT
+import logging # Add logger import
+import warnings # Import the warnings module
+from astropy.visualization import simple_norm
+import matplotlib as mpl
+from pydantic import BaseModel
+from typing import Optional, List, Literal, Union
+from scipy.ndimage import zoom
+from pydantic import BaseModel
+from typing import Optional, List, Literal
+from scipy.ndimage import zoom
+from astropy.wcs import WCS as WCSpy
+from astropy.wcs.utils import proj_plane_pixel_scales
+import coding
+from local_coding import router as local_coding_router
+plt.rcParams["font.family"] = "serif"
+mpl.rcParams['mathtext.fontset'] = 'stix'
+mpl.rcParams['mathtext.rm'] = 'serif'
+
+#Global parameters
+
+logger = logging.getLogger(__name__) # Create a logger instance
+
+# --- Global Configuration Constants for Performance Tuning ---
+MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 1000  # Max points for dynamic range calculation in SimpleTileGenerator
+MAX_POINTS_FOR_HISTOGRAM = 1000        # Max points for direct histogram processing or deriving overall stats
+# --- End Global Configuration Constants ---
+
+# Prime psutil.cpu_percent() for non-blocking calls later
+psutil.cpu_percent(interval=None)
+
+
+
+
+# ==============================================================================
+# --- NELOURA APPLICATION CONFIGURATION (FINAL & VERIFIED) ---
+# ==============================================================================
+# This section contains a comprehensive, verified list of all tunable parameters
+# for the application, extracted directly from the source code.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# I. Web Server & API Configuration
+# ------------------------------------------------------------------------------
+UVICORN_HOST = "127.0.0.1"
+UVICORN_PORT = 8000
+UVICORN_RELOAD_MODE = True
+PROXY_REQUEST_TIMEOUT = 30
+DEFAULT_API_PAGE_SIZE = 1000
+MAX_API_PAGE_SIZE = 10000
+DEFAULT_API_SORT_ORDER = "asc"
+MAX_CATALOG_ROWS_FULL_LOAD = 50000000
+RANGE_SEARCH_MAX_RESULTS = 5000000000
+DEFAULT_EXPORT_FORMAT = 'csv'
+MAX_EXPORT_ROWS = 10000
+CATALOG_COLUMN_ANALYSIS_SAMPLE_SIZE = 1000
+SYSTEM_STATS_UPDATE_INTERVAL = 2
+PROXY_DOWNLOAD_TIMEOUT = 60
+FIND_FILES_TIMEOUT = 2.0
+MAX_DISTANCE_DEG = 0.5
+PEAK_FINDER_TIMEOUT = 300
+SYSTEM_STATS_WEBSOCKET_UPDATE_INTERVAL = 2
+
+# ------------------------------------------------------------------------------
+# II. File System & Path Configuration
+# ------------------------------------------------------------------------------
+CATALOGS_DIRECTORY = 'catalogs'
+UPLOADS_DIRECTORY = 'files/uploads'
+AST_INJECT_OUTPUT_DIR = 'files/injected'
+PEAK_FINDER_OUTPUT_DIR = 'catalogs'
+PEAK_FINDER_FILENAME_FORMAT = "peak_catalog_{base_name}_{timestamp}.fits"
+FILE_BROWSER_IGNORE_DIRS = {".git", "__pycache__", "node_modules", ".vscode", "catalogs", "data", "psf"}
+FILE_BROWSER_IGNORE_FILES = {".DS_Store"}
+IGNORED_CATALOGS_LIST = {'test_catalog.fits'}
+CATALOG_MAPPINGS_FILE= 'catalog_mappings.json'
+FILES_DIRECTORY= 'files'
+BASE_FITS_PATH = f"{FILES_DIRECTORY}/"
+PSF_DIRECTORY = 'psf'
+BASE_PSF_PATH = f"{PSF_DIRECTORY}/"
+IMAGE_DIR = 'images'
+# ------------------------------------------------------------------------------
+# III. FITS Image & Tile Processing
+# ------------------------------------------------------------------------------
+DEFAULT_HDU_INDEX = 0
+IMAGE_TILE_SIZE_PX = 256
+DEFAULT_TILE_REQUEST_RADIUS = 2
+OVERVIEW_IMAGE_SIZE_PX = 512
+MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 1000
+DYNAMIC_RANGE_PERCENTILES = {'q_min': 0.5, 'q_max': 99.5}
+
+# ------------------------------------------------------------------------------
+# IV. Algorithm & Processing Defaults
+# ------------------------------------------------------------------------------
+PEAK_FINDER_DEFAULTS = {
+    'pix_across_beam': 5.0, 'min_beams': 1.0, 'beams_to_search': 1.0,
+    'delta_rms': 3.0, 'minval_rms': 2.0, 'edge_clip': 1
+}
+CUTOUT_BATCH_SIZE = 4
+SOURCE_PROPERTIES_SEARCH_RADIUS_ARCSEC = 1.0
+MAX_POINTS_FOR_FULL_HISTOGRAM = 1000
+FITS_HISTOGRAM_DEFAULT_BINS = 100
+CATALOG_ANALYSIS_HISTOGRAM_BINS = 20
+
+RA_COLUMN_NAMES = ['XCTR_DEG','cen_ra','ra', 'RA', 'Ra', 'right_ascension', 'RIGHT_ASCENSION', 'raj2000', 'RAJ2000']
+DEC_COLUMN_NAMES = ['YCTR_DEG','cen_dec','dec', 'DEC', 'Dec', 'declination', 'DECLINATION', 'decj2000', 'DECJ2000', 'dej2000', 'DEJ2000']
+RGB_GALAXY_COLUMN_NAMES = ['galaxy', 'galaxy_name', 'object_name', 'obj_name', 'target']
+RGB_INVALID_GALAXY_NAMES = ['nan', 'none', '', 'unknown']
+
+
+ra_columns= RA_COLUMN_NAMES
+dec_columns= DEC_COLUMN_NAMES
+RGB_RA_COLUMN_NAMES= RA_COLUMN_NAMES
+RGB_DEC_COLUMN_NAMES= DEC_COLUMN_NAMES
+
+SED_RA_COLUMN_NAMES = RA_COLUMN_NAMES
+SED_DEC_COLUMN_NAMES =DEC_COLUMN_NAMES
+
+
+STATIC_DIRECTORY = 'static'
+KERNELS_DIRECTORY = 'kernels'
+
+
+
+# ------------------------------------------------------------------------------
+# V. Caching Configuration
+# ------------------------------------------------------------------------------
+TILE_CACHE_MAX_SIZE = 100
+GLOB_SEARCH_CACHE_SIZE = 200
+FILE_LIST_CACHE_SIZE = 100
+
+# ------------------------------------------------------------------------------
+# VI. Plotting & Visualization (RGB and SED)
+# ------------------------------------------------------------------------------
+# --- General Settings ---
+PLOT_DPI = 300
+PLOT_SAVEFIG_BBOX_INCHES = 'tight'
+MATPLOTLIB_FONT_FAMILY = "serif"
+MATPLOTLIB_MATH_FONTSET = 'stix'
+MATPLOTLIB_MATH_RM_FONT = 'serif'
+
+# --- RGB Cutout Settings (`generate_rgb_cutouts`) ---
+# NOTE: The filter logic for RGB is handled by if/elif/else statements
+# in the function, not a single dictionary. These are the relevant values.
+RGB_FIGURE_SIZE_INCHES = (10, 10)
+RGB_FIGURE_FACE_COLOR = '#1e293b'
+CUTOUT_SIZE_ARCSEC= 7.5
+RGB_CUTOUT_STRETCH_PERCENTILES = {'q_min': 12.0, 'q_max': 99.8}
+RGB_PANEL_TYPE_DEFAULT = "default"
+
+
+# Coordinate matching
+RGB_COORDINATE_TOLERANCE_FACTOR = 3.0  # Cutout size divided by this factor for coordinate matching
+
+
+# ------------------------------------------------------------------------------
+# VI. RGB
+# ------------------------------------------------------------------------------
+
+# Figure layout
+RGB_FIGURE_WIDTH = 9.2
+RGB_FIGURE_HEIGHT = 2.3
+RGB_SUBPLOT_ROWS = 1
+RGB_SUBPLOT_COLS = 4
+RGB_TIGHT_LAYOUT_PAD = 0
+RGB_TIGHT_LAYOUT_W_PAD = 0
+RGB_TIGHT_LAYOUT_H_PAD = 0
+
+# Panel styling
+RGB_PANEL_BACKGROUND_COLOR = '#1e1e1e'
+RGB_PANEL_SPINE_COLOR = '#383838'
+RGB_TITLE_FONT_SIZE = 11
+RGB_TITLE_COLOR = 'white'
+RGB_TITLE_FONT_WEIGHT = 'bold'
+RGB_TITLE_X_POSITION = 0.97
+RGB_TITLE_Y_POSITION = 0.97
+RGB_TITLE_BBOX_FACECOLOR = 'black'
+RGB_TITLE_BBOX_ALPHA = 0.6
+
+# RA/Dec marker styling
+RGB_MARKER_SYMBOL = 'r+'
+RGB_MARKER_SIZE = 10
+RGB_MARKER_EDGE_WIDTH = 1.5
+RGB_MARKER_ALPHA = 0.8
+
+# H-alpha display settings
+RGB_HA_COLORMAP = 'gray'
+RGB_HA_STRETCH = 'linear'
+RGB_HA_PERCENTILE = 99.0
+
+
+# Filter configurations (ids, display_name)
+RGB_FILTERS = {
+    "HST": {
+        "RED": (["f814w", "814"], "F814W"),
+        "GREEN": (["f555w", "555"], "F555W"), 
+        "BLUE": (["f438w", "f435w", "438", "435"], "F438W/F435W"),
+        "exclude_patterns": ["ha-img", "ha_img"]  # Exclude H-alpha composite files
+    },
+    "NIRCAM": {
+        "RED": (["f360m", "360", "nircam_f360m"], "F360M"),
+        "GREEN": (["f335m", "335", "nircam_f335m"], "F335M"),
+        "BLUE": (["f300m", "300", "nircam_f300m"], "F300M"),
+        "exclude_patterns": ["ha-img", "ha_img"]  # Exclude H-alpha composite files
+    },
+    "MIRI": {
+        "RED": (["f2100w", "2100", "miri_f2100w"], "F2100W"),
+        "GREEN": (["f1000w", "1000", "miri_f1000w"], "F1000W"),
+        "BLUE": (["f770w", "770", "miri_f770w"], "F770W"),
+        "exclude_patterns": ["ha-img", "ha_img"]  # Exclude H-alpha composite files
+    },
+    "HA": (['ha',"halpha", "f657n", "f658n", "f656n"], "H-alpha")  # Removed "ha" from the list
+}
+
+# Panel titles and labels
+RGB_HST_SHORT_TITLE = "HST"
+RGB_NIRCAM_SHORT_TITLE = "NIRCam"
+RGB_MIRI_SHORT_TITLE = "MIRI"
+RGB_HA_SHORT_TITLE = "H-alpha"
+
+# Default scaling parameters
+RGB_DEFAULT_Q_MIN = 0.5
+RGB_DEFAULT_Q_MAX = 99.4
+
+# File output settings
+RGB_OUTPUT_DPI = 300
+RGB_DEFAULT_GALAXY_NAME = "UnknownGalaxy"
+RGB_FILENAME_PREFIX = "RGB_Cutouts"
+RGB_ALLOWED_FILENAME_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ '
+RGB_FILENAME_REPLACEMENT_CHAR = '_'
+
+# Panel indices
+RGB_HST_PANEL_INDEX = 0
+RGB_NIRCAM_PANEL_INDEX = 1
+RGB_MIRI_PANEL_INDEX = 2
+RGB_HA_PANEL_INDEX = 3
+
+
+# Default scaling percentiles
+RGB_DISPLAY_DEFAULT_Q_MIN = 12.0
+RGB_DISPLAY_DEFAULT_Q_MAX = 99.8
+
+# HST-specific scaling percentiles
+RGB_DISPLAY_HST_MIN_PERCENTILE = 5
+RGB_DISPLAY_HST_FIRST_SOURCE_MAX_PERCENTILE = 99.4
+
+# NIRCam-specific scaling percentiles  
+RGB_DISPLAY_NIRCAM_MIN_PERCENTILE = 5
+RGB_DISPLAY_NIRCAM_MAX_PERCENTILE = 99.7
+
+# MIRI-specific scaling percentiles
+RGB_DISPLAY_MIRI_MIN_PERCENTILE = 5
+RGB_DISPLAY_MIRI_MAX_PERCENTILE = 99.3
+
+
+
+SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE = 99.3            # Max value for MIRI RGB composite creation
+SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE= 5
+
+SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE = 99.7          # Max value for NIRCam RGB composite creation
+SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE = 5         # Max value for NIRCam RGB composite creation
+
+SED_RGB_HST_COMPOSITE_MAX_PERCENTILE = 99.4         # Max value for HST RGB composite scaling
+SED_RGB_HST_COMPOSITE_MIN_PERCENTILE = 5             # Min value for HST RGB composite scaling
+
+
+# Image processing constants
+RGB_DISPLAY_OUTPUT_SCALE_FACTOR = 255
+RGB_DISPLAY_NAN_REPLACEMENT_VALUE = 0
+
+# Panel type identifiers
+RGB_PANEL_TYPE_HST = "hst"
+RGB_PANEL_TYPE_NIRCAM = "nircam"
+RGB_PANEL_TYPE_MIRI = "miri"
+RGB_PANEL_TYPE_DEFAULT = "default"
+
+# Channel indices for RGB mapping
+RGB_CHANNEL_RED = 0
+RGB_CHANNEL_GREEN = 1
+RGB_CHANNEL_BLUE = 2
+
+# RGB array dimensions
+RGB_IMAGE_CHANNELS = 3
+
+
+
+# ------------------------------------------------------------------------------
+# VI. SED
+# ------------------------------------------------------------------------------
+
+# --- SED Plot Settings (`generate_sed_optimized`) ---
+# Figure and Main Plot
+SED_FIGURE_SIZE_INCHES = (18, 14)
+SED_FIGURE_BACKGROUND_COLOR = '#1e293b'
+
+# Main Plot Axes, Grid, and Text
+SED_X_LABEL = "Wavelength (μm)"
+SED_Y_LABEL = "Flux (mJy)"
+
+
+# SED Generation Parameters
+SED_COORDINATE_TOLERANCE = 0.0003
+
+# Filter wavelengths and names
+SED_FILTER_WAVELENGTHS = [0.275, 0.336, 0.438, 0.555, 0.814, 2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3, 21]
+SED_FILTER_NAMES = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W', 'F200W', 'F300M', 'F335M', 'F360M', 'F770W', 'F1000W', 'F1130W', 'F2100W']
+SED_FILTER_WAVELENGTHS_EXTENDED = [0.275, 0.336, 0.438, 0.555, 0.814, 2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3, 11.4, 11.5, 21, 21.5]
+
+# Filter categories
+SED_HST_FILTERS = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']
+SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
+SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
+
+# CIGALE multiplier
+SED_CIGALE_MULTIPLIER = 1000
+
+# Catalog column names
+SED_COL_AGE = 'best.stellar.age_m_star'
+SED_COL_MASS = 'best.stellar.m_star'
+SED_COL_CHI = 'best.reduced_chi_square'
+SED_COL_EBV_GAS = 'best.attenuation.E_BV_lines'
+SED_COL_ISM_SOURCE = 'ISM_source'
+SED_COL_GALAXY = 'galaxy'
+
+# Plot configuration
+SED_FIGURE_SIZE_WIDTH = 9
+SED_FIGURE_SIZE_HEIGHT = 3.5
+SED_DPI = 300
+SED_MARKERSIZE = 9
+SED_CAPSIZE = 4
+SED_ALPHA = 0.4
+SED_X_LIM_MIN = 0.25
+SED_X_LIM_MAX = 23
+SED_FONTSIZE_LABELS = 12
+SED_FONTSIZE_TICKS = 10
+SED_FONTSIZE_TITLE = 8
+SED_FONTSIZE_INFO = 12
+
+CIRCLE_COLOR = 'red'
+CIRCLE_LINEWIDTH = 0.5
+SED_CUTOUT_CMAP = 'gray'
+
+# Cutout configuration
+SED_CUTOUT_SIZE_ARCSEC = 2.5
+SED_CIRCLE_RADIUS_ARCSEC = 0.67
+SED_INSET_WIDTH = '80%'
+SED_INSET_HEIGHT = '80%'
+SED_INSET_BBOX_SIZE = 0.19
+SED_RGB_WIDTH = '40%'
+SED_RGB_HEIGHT = '40%'
+SED_RGB_BBOX_SIZE = 0.62
+
+# X-axis offsets for cutout positioning
+SED_X_OFFSETS = [0.002, 0.02, 0.023, 0.032, 0.009, -0.07, -0.083, -0.045, 0.001, -0.10, -0.0955, -0.06, 0.007, -0.7, -1, -0.885]
+
+# RGB composite positioning
+SED_RGB_NIRCAM_X = -0.17
+SED_RGB_NIRCAM_Y = 0.52
+SED_RGB_MIRI_X = -0.073
+SED_RGB_MIRI_Y = 0.52
+SED_RGB_HST_X = -0.17
+SED_RGB_HST_Y = 0.28
+
+# RGB filter assignments
+SED_NIRCAM_RED_FILTER = 'F360M'
+SED_NIRCAM_GREEN_FILTER = 'F335M'
+SED_NIRCAM_BLUE_FILTER = 'F300M'
+
+SED_MIRI_RED_FILTER = 'F2100W'
+SED_MIRI_GREEN_FILTER = 'F1000W'
+SED_MIRI_BLUE_FILTER = 'F770W'
+
+SED_HST_RED_FILTERS =  ['F814W']
+SED_HST_BLUE_FILTER = ['F438W', 'F435W']
+SED_HST_GREEN_FILTER = ['F555W']
+
+# Ha file patterns
+SED_HA_PATTERNS = [
+    f"{FILES_DIRECTORY}/*ha-img.fits",
+    f"{FILES_DIRECTORY}/hlsp_*ha-img.fits", 
+    f"{FILES_DIRECTORY}/*_ha-*.fits",
+    f"{FILES_DIRECTORY}/*-ha-*.fits",
+    f"{FILES_DIRECTORY}/*halpha*.fits"
+]
+
+# Ha wavelength and positioning
+SED_HA_WAVELENGTH = 21.5
+SED_HA_X_OFFSET = -0.7
+SED_HA_Y_POSITION = 0.72
+
+# Processing configuration
+SED_MAX_WORKERS_FILES = 8
+SED_MAX_WORKERS_CUTOUTS = 3
+SED_BATCH_SIZE = 4
+
+# Percentile values for image normalization
+SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE = 99.7  # Max value for NIRCam/MIRI individual cutout display
+SED_HST_CUTOUT_DISPLAY_MAX_PERCENTILE = 99.97          # Max value for HST individual cutout display with sqrt norm
+
+
+
+SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE = 99.9           # Max value for H-alpha cutout display with sqrt norm
+SED_CO_CONTOUR_LOW_LEVEL_PERCENTILE = 70              # Low level percentile for CO contours
+SED_CO_CONTOUR_MID_LEVEL_PERCENTILE = 80              # Mid level percentile for CO contours
+SED_CO_CONTOUR_HIGH_LEVEL_PERCENTILE = 98             # High level percentile for CO contours
+SED_HA_CONTOUR_HIGH_LEVEL_PERCENTILE = 99             # High level percentile for H-alpha contours
+
+# Contour settings
+SED_CONTOUR_LINEWIDTH = 0.3
+SED_CONTOUR_ALPHA = 0.5
+SED_GAUSSIAN_FILTER_SIGMA = 4
+
+# Info box settings
+SED_INFO_BOX_X = 0.98
+SED_INFO_BOX_Y = 0.05
+SED_RGB_TEXT_X = 0.63
+SED_RGB_TEXT_Y = 0.83
+SED_RGB_TEXT_X_ALT = 0.4
+
+
+# ==============================================================================
+# --- END OF CONFIGURATION ---
+# ==============================================================================
+# Python implementations of Colormaps and Scaling functions
+# Adapted from static/image-processing.js
+
+
+COLOR_MAPS_PY = {
+    'grayscale': lambda val: (val, val, val),
+
+    'viridis': lambda val: (
+        # Red channel
+        round(68 + (val / 255) * 4 * (33 - 68)) if val / 255 < 0.25 else
+        round(33 + (val / 255 - 0.25) * 4 * (94 - 33)) if val / 255 < 0.5 else
+        round(94 + (val / 255 - 0.5) * 4 * (190 - 94)) if val / 255 < 0.75 else
+        round(190 + (val / 255 - 0.75) * 4 * (253 - 190)),
+
+        # Green channel
+        round(1 + (val / 255) * 4 * (144 - 1)) if val / 255 < 0.25 else
+        round(144 + (val / 255 - 0.25) * 4 * (201 - 144)) if val / 255 < 0.5 else
+        round(201 + (val / 255 - 0.5) * 4 * (222 - 201)) if val / 255 < 0.75 else
+        round(222 + (val / 255 - 0.75) * 4 * (231 - 222)),
+
+        # Blue channel
+        round(84 + (val / 255) * 4 * (140 - 84)) if val / 255 < 0.25 else
+        round(140 + (val / 255 - 0.25) * 4 * (120 - 140)) if val / 255 < 0.5 else
+        round(120 + (val / 255 - 0.5) * 4 * (47 - 120)) if val / 255 < 0.75 else
+        round(47 + (val / 255 - 0.75) * 4 * (37 - 47))
+    ),
+
+    'plasma': lambda val: (
+        round(13 + (val / 255) * 4 * (126 - 13)) if val / 255 < 0.25 else
+        round(126 + (val / 255 - 0.25) * 4 * (203 - 126)) if val / 255 < 0.5 else
+        round(203 + (val / 255 - 0.5) * 4 * (248 - 203)) if val / 255 < 0.75 else
+        round(248 + (val / 255 - 0.75) * 4 * (239 - 248)),
+
+        round(8 + (val / 255) * 4 * (8 - 8)) if val / 255 < 0.25 else
+        round(8 + (val / 255 - 0.25) * 4 * (65 - 8)) if val / 255 < 0.5 else
+        round(65 + (val / 255 - 0.5) * 4 * (150 - 65)) if val / 255 < 0.75 else
+        round(150 + (val / 255 - 0.75) * 4 * (204 - 150)),
+
+        round(135 + (val / 255) * 4 * (161 - 135)) if val / 255 < 0.25 else
+        round(161 + (val / 255 - 0.25) * 4 * (107 - 161)) if val / 255 < 0.5 else
+        round(107 + (val / 255 - 0.5) * 4 * (58 - 107)) if val / 255 < 0.75 else
+        round(58 + (val / 255 - 0.75) * 4 * (42 - 58))
+    ),
+
+    'inferno': lambda val: (
+        round(0 + (val / 255) * 5 * 50) if val / 255 < 0.2 else
+        round(50 + (val / 255 - 0.2) * 5 * (120 - 50)) if val / 255 < 0.4 else
+        round(120 + (val / 255 - 0.4) * 5 * (187 - 120)) if val / 255 < 0.6 else
+        round(187 + (val / 255 - 0.6) * 5 * (236 - 187)) if val / 255 < 0.8 else
+        round(236 + (val / 255 - 0.8) * 5 * (251 - 236)),
+
+        round(0 + (val / 255) * 5 * 10) if val / 255 < 0.2 else
+        round(10 + (val / 255 - 0.2) * 5 * (28 - 10)) if val / 255 < 0.4 else
+        round(28 + (val / 255 - 0.4) * 5 * (55 - 28)) if val / 255 < 0.6 else
+        round(55 + (val / 255 - 0.6) * 5 * (104 - 55)) if val / 255 < 0.8 else
+        round(104 + (val / 255 - 0.8) * 5 * (180 - 104)),
+
+        round(4 + (val / 255) * 5 * 90) if val / 255 < 0.2 else
+        round(94 + (val / 255 - 0.2) * 5 * (109 - 94)) if val / 255 < 0.4 else
+        round(109 + (val / 255 - 0.4) * 5 * (84 - 109)) if val / 255 < 0.6 else
+        round(84 + (val / 255 - 0.6) * 5 * (36 - 84)) if val / 255 < 0.8 else
+        round(26 + (val / 255 - 0.8) * 5 * (26 - 26))
+    ),
+
+    'cividis': lambda val: (
+        round(0 + (val / 255) * 5 * 33) if val / 255 < 0.2 else
+        round(33 + (val / 255 - 0.2) * 5 * (85 - 33)) if val / 255 < 0.4 else
+        round(85 + (val / 255 - 0.4) * 5 * (123 - 85)) if val / 255 < 0.6 else
+        round(123 + (val / 255 - 0.6) * 5 * (165 - 123)) if val / 255 < 0.8 else
+        round(165 + (val / 255 - 0.8) * 5 * (217 - 165)),
+
+        round(32 + (val / 255) * 5 * (61 - 32)) if val / 255 < 0.2 else
+        round(61 + (val / 255 - 0.2) * 5 * (91 - 61)) if val / 255 < 0.4 else
+        round(91 + (val / 255 - 0.4) * 5 * (122 - 91)) if val / 255 < 0.6 else
+        round(122 + (val / 255 - 0.6) * 5 * (156 - 122)) if val / 255 < 0.8 else
+        round(156 + (val / 255 - 0.8) * 5 * (213 - 156)),
+
+        round(76 + (val / 255) * 5 * (107 - 76)) if val / 255 < 0.2 else
+        round(107 + (val / 255 - 0.2) * 5 * (108 - 107)) if val / 255 < 0.4 else
+        round(108 + (val / 255 - 0.4) * 5 * (119 - 108)) if val / 255 < 0.6 else
+        round(119 + (val / 255 - 0.6) * 5 * (116 - 119)) if val / 255 < 0.8 else
+        round(116 + (val / 255 - 0.8) * 5 * (122 - 116))
+    ),
+
+    'hot': lambda val: (
+        round((val / 255) * 3 * 255) if val / 255 < 1/3 else 255,
+        round((val / 255 - 1/3) * 3 * 255) if 1/3 <= val / 255 < 2/3 else (255 if val / 255 >= 2/3 else 0),
+        round((val / 255 - 2/3) * 3 * 255) if val / 255 >= 2/3 else 0
+    ),
+
+    'cool': lambda val: (
+        round(val / 255 * 255),
+        round((1 - val / 255) * 255),
+        255
+    ),
+
+    'rainbow': lambda val: (
+        round(math.sin(0.024 * val + 0) * 127 + 128),
+        round(math.sin(0.024 * val + 2) * 127 + 128),
+        round(math.sin(0.024 * val + 4) * 127 + 128)
+    ),
+
+    'jet': lambda val: (
+        round(max(0, min(255, 4 * (val - 96)))) if val > 96 else 
+        round(max(0, min(255, 255 - 4 * (val - 32)))) if val > 160 else 0,
+        
+        round(max(0, min(255, 4 * (val - 32)))) if 32 <= val <= 96 else
+        255 if 96 < val <= 160 else
+        round(max(0, min(255, 255 - 4 * (val - 160)))) if val > 160 else 0,
+        
+        255 if val <= 32 else
+        round(max(0, min(255, 255 - 4 * (val - 32)))) if val <= 96 else 0
+    ),
+}
+
+
+SCALING_FUNCTIONS_PY = {
+    'linear': lambda val, min_v, max_v: (val - min_v) / (max_v - min_v) if min_v != max_v else 0.5,
+    'logarithmic': lambda val, min_v, max_v:
+        (math.log(max(val, 1e-10)) - math.log(max(min_v, 1e-10))) / (math.log(max_v) - math.log(max(min_v, 1e-10)))
+        if max_v > 0 and math.log(max_v) != math.log(max(min_v, 1e-10)) # Revised condition
+        else (0.5 if min_v == max_v else ((val - min_v) / (max_v - min_v) if max_v > min_v else 0.5)), # Fallback
+    'sqrt': lambda val, min_v, max_v: math.sqrt(max(0, (val - min_v) / (max_v - min_v))) if min_v != max_v else 0.5,
+    'power': lambda val, min_v, max_v: math.pow(max(0, (val - min_v) / (max_v - min_v)), 2) if min_v != max_v else 0.5,
+    'asinh': lambda val, min_v, max_v: 
+        (math.asinh( (2 * ((val - min_v) / (max_v - min_v)) - 1) * 3 ) / math.asinh(3) + 1) / 2 
+        if min_v != max_v else 0.5
+}
+
+
+# Simple tile cache
+class TileCache:
+    def __init__(self, max_size=100):
+        self.cache = {}
+        self.max_size = max_size
+        self.access_order = []
+    
+    def get(self, key):
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.access_order.remove(key)
+            self.access_order.append(key)
+            return self.cache[key]
+        return None
+    
+    def put(self, key, value):
+        if key in self.cache:
+            # Update existing
+            self.cache[key] = value
+            self.access_order.remove(key)
+            self.access_order.append(key)
+        else:
+            # Add new
+            if len(self.cache) >= self.max_size:
+                # Remove least recently used
+                lru_key = self.access_order.pop(0)
+                del self.cache[lru_key]
+            
+            self.cache[key] = value
+            self.access_order.append(key)
+    
+    def clear(self):
+        self.cache.clear()
+        self.access_order.clear()
+
+# Global tile cache and active generators
+tile_cache = TileCache(max_size=TILE_CACHE_MAX_SIZE)
+active_tile_generators = {}
 
 # Determine if we're running locally or on a server
 RUNNING_ON_SERVER = os.getenv("RUN_SERVER", "False").lower() == "true"
@@ -56,16 +654,19 @@ RUNNING_ON_SERVER = os.getenv("RUN_SERVER", "False").lower() == "true"
 # FastAPI app
 app = FastAPI()
 
+app.include_router(coding.router, prefix="/coding", tags=["coding"])
+app.include_router(local_coding_router, prefix="/local-coding", tags=["local-coding"])
 # Mount static files directory
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/"+STATIC_DIRECTORY, StaticFiles(directory=STATIC_DIRECTORY), name=STATIC_DIRECTORY)
+app.mount("/"+IMAGE_DIR, StaticFiles(directory=IMAGE_DIR), name=IMAGE_DIR)
 
 # Create a catalogs directory if it doesn't exist
-catalogs_dir = Path("catalogs")
+catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
 catalogs_dir.mkdir(exist_ok=True)
 
 # --- Catalog Column Mapping --- 
 # Path to store mappings
-catalog_mapping_file = Path("catalog_mappings.json")
+catalog_mapping_file = Path(CATALOG_MAPPINGS_FILE)  # Updated
 # Dictionary to hold mappings in memory
 catalog_column_mappings = {}
 
@@ -104,11 +705,11 @@ catalog_cache = {}
 # Serve static HTML page for OpenSeadragon
 @app.get("/")
 async def home():
-    return FileResponse("static/index.html")
+    return FileResponse(f"{STATIC_DIRECTORY}/index.html")
 
 @app.get("/favicon.ico")
 async def favicon():
-    return FileResponse("static/favicon.ico")
+    return FileResponse(f"{STATIC_DIRECTORY}/favicon.ico")
 
 @app.get("/list-catalogs/")
 async def list_catalogs():
@@ -130,7 +731,271 @@ async def list_catalogs():
             content={"error": f"Failed to list catalogs: {str(e)}"}
         )
 
-# NEW ENDPOINT: Upload Catalog File
+@app.post("/ast-plot/")
+async def ast_plot(request: AstPlotRequest):
+    try:
+        base_dir = Path(".").resolve()
+
+        # Resolve possible relative paths against CATALOGS_DIRECTORY or project root
+        def resolve_path(p: str) -> str:
+            for candidate in [base_dir / CATALOGS_DIRECTORY / p, base_dir / p]:
+                if Path(candidate).exists():
+                    return str(candidate)
+            return str(p)
+
+        request.fakeCatalogFile = resolve_path(request.fakeCatalogFile)
+        request.detectedCatalogFile = resolve_path(request.detectedCatalogFile)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, compute_ast_plot, request)
+        return JSONResponse(content=result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ast-inject/")
+async def ast_inject(request: AstInjectRequest):
+    try:
+        # Resolve file paths before passing to the executor
+        base_dir = Path(".").resolve()
+        
+        fits_file_path = None
+        possible_fits_paths = [base_dir / FILES_DIRECTORY / request.fitsFile, base_dir / request.fitsFile]
+        for path in possible_fits_paths:
+            if path.exists():
+                fits_file_path = str(path)
+                break
+        
+        psf_file_path = None
+        possible_psf_paths = [base_dir / PSF_DIRECTORY / request.psfFile, base_dir / request.psfFile]
+        for path in possible_psf_paths:
+            if path.exists():
+                psf_file_path = str(path)
+                break
+
+        catalog_file_path = None
+        if request.useSeparation and request.catalogFile:
+            possible_catalog_paths = [base_dir / CATALOGS_DIRECTORY / request.catalogFile, base_dir / request.catalogFile]
+            for path in possible_catalog_paths:
+                if path.exists():
+                    catalog_file_path = str(path)
+                    break
+
+        # Update the request object with the full paths
+        request.fitsFile = fits_file_path
+        request.psfFile = psf_file_path
+        request.catalogFile = catalog_file_path
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, inject_sources, request)
+        return JSONResponse(content=result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-pixel-scale/{filepath:path}")
+async def get_pixel_scale(filepath: str):
+    """
+    Calculates the pixel scale of a FITS file in arcseconds per pixel.
+    """
+    if ".." in filepath:
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+
+    base_files_dir = Path(FILES_DIRECTORY).resolve()
+    base_kernels_dir = Path(KERNELS_DIRECTORY).resolve()
+    base_psf_dir = Path(PSF_DIRECTORY).resolve()
+
+    possible_paths = [
+        Path(filepath),
+        Path(FILES_DIRECTORY) / filepath,
+        Path(KERNELS_DIRECTORY) / filepath,
+        Path(PSF_DIRECTORY) / filepath
+    ]
+    
+    full_path = None
+    for path in possible_paths:
+        if path.exists():
+            full_path = path.resolve()
+            break
+            
+    if full_path is None:
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+
+    if not (
+        str(full_path).startswith(str(base_files_dir)) or
+        str(full_path).startswith(str(base_kernels_dir)) or
+        str(full_path).startswith(str(base_psf_dir))
+    ):
+        raise HTTPException(status_code=403, detail="Access to this file path is forbidden.")
+
+    try:
+        with fits.open(full_path) as hdul:
+            # Find the first HDU with a valid WCS
+            header, wcs = None, None
+            # Find the first HDU with a valid header and data.
+            for hdu in hdul:
+                if hdu.header and hdu.data is not None and hdu.data.ndim >= 2:
+                    header = hdu.header
+                    try:
+                        wcs = WCSpy(header)
+                    except Exception:
+                        wcs = None
+                    # Stop at the first valid HDU
+                    break
+            
+            if header is None:
+                raise HTTPException(status_code=400, detail="No valid image HDU found in FITS file.")
+
+        pixel_scale = get_pixel_scale_from_header(header, wcs)
+        return {"filepath": filepath, "pixel_scale_arcsec": pixel_scale}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+@app.get("/load-catalog/{catalog_name}")
+async def load_catalog_endpoint(catalog_name: str):
+    """Load a catalog file and return info about it."""
+    try:
+        catalog_path = f"{CATALOGS_DIRECTORY}/{catalog_name}"  # Updated
+        
+        if not os.path.exists(catalog_path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Catalog file not found: {catalog_name}"}
+            )
+        
+        # Clear previously loaded catalogs to prevent issues
+        loaded_catalogs.clear()
+        print("Cleared previously loaded catalogs")
+        
+        # Load catalog data using the same function used elsewhere
+        try:
+            catalog_data = load_catalog_data(catalog_path)
+            if not catalog_data:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Failed to load catalog data"}
+                )
+            print(f"Loaded {len(catalog_data)} objects from catalog for plotting")
+            
+            # Get boolean flag columns from the catalog
+            # Load the catalog table if not already loaded
+            if catalog_name not in loaded_catalogs:
+                try:
+                    with fits.open(catalog_path) as hdul:
+                        # Find the first HDU with a table
+                        table_hdu = None
+                        for i, hdu in enumerate(hdul):
+                            if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                                table_hdu = hdu
+                                table_hdu_index = i
+                                break
+                        
+                        if table_hdu is None:
+                            print(f"No table found in FITS file: {catalog_path}")
+                            # Continue without boolean flags
+                        else:
+                            # Get the table data
+                            loaded_catalogs[catalog_name] = Table(table_hdu.data)
+                            print(f"Loaded catalog table for boolean flags: {catalog_name}")
+                except Exception as e:
+                    print(f"Error loading catalog table for boolean flags: {e}")
+                    # Continue without boolean flags
+            
+            # If we have the catalog table loaded, add boolean flags to the catalog data
+            if catalog_name in loaded_catalogs:
+                catalog_table = loaded_catalogs[catalog_name]
+                
+                # Find potential boolean columns
+                boolean_columns = []
+                
+                # Check first row to find boolean columns (if table is not empty)
+                if len(catalog_table) > 0:
+                    for col_name in catalog_table.colnames:
+                        try:
+                            val = catalog_table[col_name][0]
+                            # Check if value is a boolean type or looks like a boolean
+                            if isinstance(val, (bool, np.bool_)) or \
+                               (isinstance(val, (str, np.str_)) and val.lower() in ('true', 'false')) or \
+                               (isinstance(val, (int, np.integer)) and val in (0, 1)):
+                                boolean_columns.append(col_name)
+                        except Exception:
+                            continue
+                
+                # Add boolean properties to catalog data
+                if boolean_columns:
+                    print(f"Found boolean columns for filtering: {boolean_columns}")
+                    
+                    # Find RA and DEC columns
+                    ra_col = None
+                    dec_col = None
+                    
+                    for col_name in catalog_table.colnames:
+                        if col_name.lower() in RA_COLUMN_NAMES:  # Updated
+                            ra_col = col_name
+                        elif col_name.lower() in DEC_COLUMN_NAMES:  # Updated
+                            dec_col = col_name
+                    
+                    if ra_col and dec_col:
+                        # For each object in the catalog data
+                        for obj in catalog_data:
+                            ra = obj['ra']
+                            dec = obj['dec']
+                            
+                            # Calculate distances to find matching object in table
+                            ra_diff = np.abs(catalog_table[ra_col] - ra)
+                            dec_diff = np.abs(catalog_table[dec_col] - dec)
+                            distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                            closest_idx = np.argmin(distances)
+                            
+                            # Check if the match is close enough
+                            if distances[closest_idx] < 0.0003:  # ~1 arcsec threshold
+                                # Add boolean properties
+                                for col_name in boolean_columns:
+                                    try:
+                                        val = catalog_table[col_name][closest_idx]
+                                        # Convert to standard boolean
+                                        if isinstance(val, (bool, np.bool_)):
+                                            obj[col_name] = bool(val)
+                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'true':
+                                            obj[col_name] = True
+                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'false':
+                                            obj[col_name] = False
+                                        elif isinstance(val, (int, np.integer)):
+                                            obj[col_name] = bool(val)
+                                        else:
+                                            obj[col_name] = False
+                                    except Exception as e:
+                                        print(f"Error processing boolean column {col_name}: {e}")
+                                        obj[col_name] = False
+            
+        except Exception as e:
+            print(f"Error loading catalog data: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to load catalog data: {str(e)}"}
+            )
+        
+        return JSONResponse(content=catalog_data)
+    except Exception as e:
+        print(f"Error in load_catalog_endpoint: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to load catalog: {str(e)}"}
+        )
+
+
 @app.post("/upload-catalog/")
 async def upload_catalog(file: UploadFile = File(...)):
     """Uploads a FITS catalog file, adding a timestamp to avoid overwrites."""
@@ -191,11 +1056,11 @@ async def upload_catalog(file: UploadFile = File(...)):
         if file and hasattr(file, 'file') and not file.file.closed:
              file.file.close()
 
-# NEW ENDPOINT: Get Catalog Columns
+
 @app.get("/catalog-columns/")
 async def get_catalog_columns(catalog_name: str):
     """Reads a FITS catalog file and returns the column names from the first BinTableHDU."""
-    catalog_path = catalogs_dir / catalog_name
+    catalog_path = Path(CATALOGS_DIRECTORY) / catalog_name  # Updated
     if not catalog_path.is_file():
         raise HTTPException(status_code=404, detail=f"Catalog file not found: {catalog_name}")
 
@@ -260,8 +1125,423 @@ async def save_catalog_mapping(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save catalog mapping: {str(e)}")
 
 
+class SimpleTileGenerator:
+    def __init__(self, fits_file_path, hdu_index=0, image_data=None):
+        """Initialize simple tile generator with memory-mapped access."""
+        self.fits_file_path = fits_file_path
+        self.hdu_index = hdu_index
+        self.tile_size = IMAGE_TILE_SIZE_PX
+        self.overview_image = None
+        self.overview_generated = False
+        self.dynamic_range_calculated = False
+        self.min_value = None
+        self.max_value = None
+        self.wcs = None
+        self.color_map = 'grayscale'  # Default colormap
+        self.scaling_function = 'linear'  # Default scaling function
+        self._update_colormap_lut() # Initialize LUT
+        self._overview_lock = threading.Lock() # Lock for overview generation
+        self._dynamic_range_lock = threading.Lock() # DEFER: Lock for dynamic range calculation
+        
+        # Keep the FITS file open with memory mapping
+        self._hdul = fits.open(fits_file_path, memmap=True, lazy_load_hdus=True)
+        hdu = self._hdul[self.hdu_index] # Use self.hdu_index
+        self.header = hdu.header 
+
+        # Get reference to data without copying
+        self.image_data = image_data if image_data is not None else hdu.data
+        
+        # Handle different dimensionality
+        if self.image_data.ndim > 2:
+            if self.image_data.ndim == 3:
+                self.image_data = self.image_data[0, :, :]
+            elif self.image_data.ndim == 4:
+                self.image_data = self.image_data[0, 0, :, :]
+            # Higher dimensions are not directly processed further here for min/max,
+            # but the full self.image_data is kept for potential tile generation from other slices if customized later.
+        
+        self.height, self.width = self.image_data.shape[-2:] # Use last two dimensions for height/width
+        
+        # NOTE: Percentile calculation is deferred.
+        
+        # Calculate max zoom level (MUST REMAIN IN __init__)
+        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+        
+        # Get WCS if available (MUST REMAIN IN __init__)
+        try:
+            prepared_header = _prepare_jwst_header_for_wcs(hdu.header)
+            self.wcs = WCS(prepared_header)
+        except Exception as e:
+            print(f"Error initializing WCS for {self.fits_file_path}:{self.hdu_index}. WCS may be invalid. Error: {e}")
+            self.wcs = None
+        
+        print(f"SimpleTileGenerator initialized: {self.width}x{self.height}, max_level: {self.max_level}. Dynamic range calculation deferred.")
+    
+    def _calculate_initial_dynamic_range(self):
+        """Calculates and sets the initial dynamic range (min/max values) using percentiles."""
+        # MAX_SAMPLE_POINTS = 1_000_000  # Target for number of points to use for percentile <- REMOVE THIS
+
+        # self.image_data is expected to be 2D at this point due to __init__
+        current_image_data = self.image_data 
+
+        if not isinstance(current_image_data, np.ndarray) or current_image_data.size == 0:
+            print("Warning: Image data is not a non-empty NumPy array or is empty. Defaulting min/max.")
+            self.min_value = 0.0
+            self.max_value = 1.0
+            return
+
+        sampled_data_flat = None
+        if current_image_data.size > MAX_SAMPLE_POINTS_FOR_DYN_RANGE: # USE GLOBAL CONSTANT
+            if current_image_data.ndim == 2: # Primary path for large 2D images
+                ratio = current_image_data.size / MAX_SAMPLE_POINTS_FOR_DYN_RANGE # USE GLOBAL CONSTANT
+                # Ensure stride is at least 1
+                stride = max(1, int(np.sqrt(ratio))) 
+                
+                sampled_data = current_image_data[::stride, ::stride]
+                sampled_data_flat = sampled_data.ravel()
+                print(f"Strided sampling (stride={stride}) on 2D data ({current_image_data.shape}). Sampled ~{sampled_data_flat.size} points for dynamic range.")
+            else: # Fallback: if self.image_data wasn't 2D (e.g. 1D, or >4D not sliced in __init__)
+                  # This is less ideal as ravel() on large N-D memmap is slow.
+                  # But __init__ should make self.image_data 2D for common 3D/4D cases.
+                temp_flat = current_image_data.ravel()
+                num_to_sample = min(MAX_SAMPLE_POINTS_FOR_DYN_RANGE, temp_flat.size) # USE GLOBAL CONSTANT, ensure not asking for more than available
+                if num_to_sample > 0:
+                    indices = np.random.choice(temp_flat.size, size=num_to_sample, replace=False)
+                    sampled_data_flat = temp_flat[indices]
+                    print(f"Random sampling on non-2D/fallback data ({current_image_data.shape}). Sampled {sampled_data_flat.size} points for dynamic range.")
+        else: # Data size is <= MAX_SAMPLE_POINTS_FOR_DYN_RANGE
+            sampled_data_flat = current_image_data.ravel()
+            print(f"Using all {sampled_data_flat.size} points (data smaller than max sample size).")
+
+        if sampled_data_flat is None or sampled_data_flat.size == 0: # Check if sampling produced anything
+            print("Warning: Sampled data is empty (either from source or after sampling). Defaulting min/max.")
+            # Assign empty array to prevent error with np.isfinite if sampled_data_flat is None
+            data_for_percentile = np.array([])
+        else:
+            data_for_percentile = sampled_data_flat[np.isfinite(sampled_data_flat)]
+        
+        print(f"Using {data_for_percentile.size} finite points from sample for percentile calculation.")
+
+        if data_for_percentile.size > 0:
+            self.min_value = float(np.percentile(data_for_percentile, DYNAMIC_RANGE_PERCENTILES['q_min']))
+            self.max_value = float(np.percentile(data_for_percentile, DYNAMIC_RANGE_PERCENTILES['q_max']))
+            if self.min_value >= self.max_value:
+                # Fallback for noisy or flat data where percentiles are too close or inverted
+                print(f"Warning: Percentile min ({self.min_value}) >= max ({self.max_value}). Falling back to overall min/max of finite sample.")
+                self.min_value = float(np.min(data_for_percentile))
+                self.max_value = float(np.max(data_for_percentile))
+                if self.min_value >= self.max_value: # Handle case where all values in sample are identical
+                    # Ensure max_value is slightly greater than min_value to avoid division by zero in scaling
+                    self.max_value = self.min_value + (1e-6 if self.min_value != 0 else 1.0) # Add small epsilon, or use 1.0 if min is 0
+                    print(f"All finite sampled values are identical ({self.min_value}). Adjusted max to {self.max_value}.")
+        else:
+            print("Warning: No finite data available for percentile calculation after sampling. Defaulting min/max to 0.0/1.0")
+            self.min_value = 0.0
+            self.max_value = 1.0 # Default max_value if no finite data
+        print(f"Initial dynamic range set: min={self.min_value}, max={self.max_value}")
+    
+    def ensure_dynamic_range_calculated(self):
+        """Ensures the dynamic range is calculated, thread-safe."""
+        if self.min_value is None or self.max_value is None: 
+            with self._dynamic_range_lock:
+                if self.min_value is None or self.max_value is None: 
+                    print(f"Dynamic range for {self.fits_file_path}:{self.hdu_index} not calculated, calculating now...")
+                    self._calculate_initial_dynamic_range()
+                    print(f"Dynamic range for {self.fits_file_path}:{self.hdu_index} calculated.")
+    
+    def ensure_overview_generated(self):
+        """Ensures the overview is generated, thread-safe."""
+        self.ensure_dynamic_range_calculated() # ADDED: Ensure dynamic range is available first
+        if self.overview_image is None: 
+            with self._overview_lock:
+                if self.overview_image is None: 
+                    print(f"Overview for {self.fits_file_path}:{self.hdu_index} not found, generating...")
+                    self.overview_image = self._generate_overview()
+                    print(f"Overview for {self.fits_file_path}:{self.hdu_index} generated.")
+                else:
+                    print(f"Overview for {self.fits_file_path}:{self.hdu_index} was generated by another thread.")
+        else:
+            print(f"Overview for {self.fits_file_path}:{self.hdu_index} already generated.")
+    
+    def _generate_overview(self):
+        """Generate a downsampled overview image for quick display."""
+        try:
+            # Create a small overview (max 512x512)
+            target_size = 512
+            scale = max(1, max(self.width, self.height) / target_size)
+            overview_width = int(self.width / scale)
+            overview_height = int(self.height / scale)
+            
+            # Use very fast strided sampling for the overview
+            if scale > 1:
+                # Calculate stride for fast sampling
+                stride_y = max(1, int(self.height / overview_height))
+                stride_x = max(1, int(self.width / overview_width))
+                
+                # Use NumPy's advanced indexing for fast sampling
+                # This is much faster than resize for large images
+                y_indices = np.arange(0, self.height, stride_y)[:overview_height]
+                x_indices = np.arange(0, self.width, stride_x)[:overview_width]
+                
+                # Create mesh grid for indexing
+                y_grid, x_grid = np.meshgrid(y_indices, x_indices, indexing='ij')
+                
+                # Sample the data
+                overview_data = self.image_data[y_grid, x_grid]
+            else:
+                overview_data = np.array(self.image_data)  # Small image, use as-is
+            
+            # Handle NaN and infinity values
+            overview_data = np.nan_to_num(overview_data, nan=0, posinf=0, neginf=0)
+            
+            # Normalize to 0-1 range using selected scaling function
+            scaling_func = SCALING_FUNCTIONS_PY.get(self.scaling_function, SCALING_FUNCTIONS_PY['linear'])
+            
+            # Apply scaling to each pixel -> requires iterating or vectorized approach
+            # For overview, a simple loop is acceptable given smaller size
+            normalized_overview = np.zeros_like(overview_data, dtype=float)
+            for i in range(overview_data.shape[0]):
+                for j in range(overview_data.shape[1]):
+                    pixel_val = overview_data[i,j]
+                    # Clip pixel_val to [self.min_value, self.max_value] before scaling
+                    clipped_val = np.clip(pixel_val, self.min_value, self.max_value)
+                    normalized_overview[i,j] = scaling_func(clipped_val, self.min_value, self.max_value)
+            
+            # Clip normalized data to 0-1 just in case scaling function output is outside this range
+            normalized_overview = np.clip(normalized_overview, 0, 1)
+            
+            # Convert to 8-bit image based on normalized values (0-255)
+            img_data_8bit = (normalized_overview * 255).astype(np.uint8)
+
+            # Apply colormap using the LUT
+            rgb_img_data = self.lut[img_data_8bit]
+            
+            # Create PIL image and convert to base64
+            from PIL import Image
+            img = Image.fromarray(rgb_img_data, 'RGB') # Ensure mode is RGB
+            
+            # Use lower quality for faster encoding
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG', optimize=False, compress_level=1)
+            return base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+        except Exception as e:
+            logger.error(f"Error generating overview for {self.fits_file_path}: {e}", exc_info=True)
+            self.overview_image = None
+            self.overview_generated = False
+            return None
+    
+    def get_tile_info(self):
+        """Get tile information for the frontend."""
+        self.ensure_dynamic_range_calculated() # Ensure min/max values are available
+        
+        bunit = self.header.get('BUNIT', None)
+
+        # self.min_value and self.max_value are set by _calculate_initial_dynamic_range
+        # and represent the initial display range (e.g., 0.5 to 99.5 percentile)
+        initial_display_min = float(self.min_value) if self.min_value is not None else None
+        initial_display_max = float(self.max_value) if self.max_value is not None else None
+
+        return {
+            "width": self.width, # Use attributes initialized in __init__
+            "height": self.height, # Use attributes initialized in __init__
+            "tileSize": self.tile_size,
+            "maxLevel": self.max_level,
+            "initial_display_min": initial_display_min, 
+            "initial_display_max": initial_display_max, 
+            "bunit": bunit,
+            "color_map": self.color_map, # Correct attribute name
+            "scaling_function": self.scaling_function # Correct attribute name
+            # data_min and data_max (overall true data range) are removed for now to fix the error.
+            # If needed, these would require explicit calculation and storage in the generator.
+        }
+    
+    def get_tile(self, level, x, y):
+        """Generate a tile at the specified level and coordinates."""
+        self.ensure_dynamic_range_calculated() # ADDED: Ensure min/max values are available for scaling
+        try:
+            # Calculate the scale for this level
+            scale = 2 ** (self.max_level - level)
+            
+            # Calculate pixel coordinates in the original image
+            start_x = x * self.tile_size * scale
+            start_y = y * self.tile_size * scale
+            
+            # Check if the tile is out of bounds (top-left corner check)
+            if start_x >= self.width or start_y >= self.height:
+                # Create a blank tile as we are completely outside the image bounds
+                # print(f"Tile ({level},{x},{y}) out of bounds (top-left corner).")
+                # tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+                # The normalization below will handle this by producing a black image.
+                # To be safe, and ensure correct processing flow, let's return a PNG of a blank tile.
+                img = Image.new('L', (self.tile_size, self.tile_size), color=0) # Black tile
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=False, compress_level=1)
+                return buffer.getvalue()
+
+            # Handle full resolution (scale=1) and overzoom (scale<1)
+            if scale <= 1:
+                # Calculate the source region in the full-resolution image
+                # start_x, start_y are pixel coordinates on the original image
+                # corresponding to the top-left of the tile at the *current requested level*.
+                
+                # The dimensions of the source data to extract for this tile:
+                src_region_width_on_image = self.tile_size * scale
+                src_region_height_on_image = self.tile_size * scale
+
+                # Actual end coordinates for reading from source, clamped to image dimensions
+                read_start_x_exact = start_x
+                read_start_y_exact = start_y
+                read_end_x_exact = start_x + src_region_width_on_image
+                read_end_y_exact = start_y + src_region_height_on_image
+
+                # Integer pixel indices for slicing from self.image_data
+                # Ensure start coordinates are within bounds before int conversion
+                # Clamp read start/end to actual image dimensions to avoid invalid slices
+                int_start_x = int(np.floor(max(0, read_start_x_exact)))
+                int_start_y = int(np.floor(max(0, read_start_y_exact)))
+                int_end_x = int(np.ceil(min(self.width, read_end_x_exact)))
+                int_end_y = int(np.ceil(min(self.height, read_end_y_exact)))
+                
+                if int_start_x >= int_end_x or int_start_y >= int_end_y:
+                    # This means the calculated slice has zero width or height,
+                    # e.g., it's entirely off the image edge after clamping.
+                    # print(f"Tile ({level},{x},{y}) resulted in empty slice after clamping.")
+                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+                else:
+                    region_data = self.image_data[int_start_y:int_end_y, int_start_x:int_end_x]
+
+                    if region_data.size == 0:
+                        # print(f"Tile ({level},{x},{y}) extracted empty region_data.")
+                        tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+                    elif scale < 1:  # Overzooming: upscale the extracted region_data
+                        # order=1 for bilinear. preserve_range is important.
+                        tile_data = resize(region_data,
+                                           (self.tile_size, self.tile_size),
+                                           order=0,  # Changed to 0 for nearest-neighbor
+                                           preserve_range=True, 
+                                           anti_aliasing=False, # anti-aliasing not for upscaling or order < 2
+                                           mode='constant', 
+                                           cval=0)
+                        tile_data = tile_data.astype(self.image_data.dtype)
+                    elif region_data.shape[0] != self.tile_size or region_data.shape[1] != self.tile_size:
+                        # Native resolution (scale=1) but tile is partial (at image edge)
+                        # Pad to full tile_size
+                        padded_data = np.zeros((self.tile_size, self.tile_size), dtype=region_data.dtype)
+                        h, w = region_data.shape
+                        padded_data[:h, :w] = region_data
+                        tile_data = padded_data
+                    else:
+                        # Native resolution (scale=1) and full tile
+                        tile_data = np.array(region_data) # Ensure it's a copy
+            else:
+                # Downsampled - use strided sampling for speed (scale > 1)
+                # Calculate pixel coordinates in the original image for the larger region
+                region_start_x = x * self.tile_size * scale
+                region_start_y = y * self.tile_size * scale
+                region_end_x = min(region_start_x + self.tile_size * scale, self.width)
+                region_end_y = min(region_start_y + self.tile_size * scale, self.height)
+
+                stride = max(1, int(scale))
+                
+                # Ensure integer coordinates for arange start/stop
+                y_indices = np.arange(int(region_start_y), int(region_end_y), stride)
+                x_indices = np.arange(int(region_start_x), int(region_end_x), stride)
+                
+                # Limit to tile size if the sampled region is larger (can happen with arange and stride)
+                y_indices = y_indices[:self.tile_size]
+                x_indices = x_indices[:self.tile_size]
+                
+                if len(y_indices) > 0 and len(x_indices) > 0:
+                    # Create mesh grid for indexing
+                    y_grid, x_grid = np.meshgrid(y_indices, x_indices, indexing='ij')
+                    
+                    # Ensure indices are within bounds of self.image_data
+                    y_grid = np.clip(y_grid, 0, self.height - 1)
+                    x_grid = np.clip(x_grid, 0, self.width - 1)
+                    
+                    sampled_region = self.image_data[y_grid, x_grid]
+                    
+                    # Pad if necessary (if sampled_region is smaller than tile_size)
+                    if sampled_region.shape[0] < self.tile_size or sampled_region.shape[1] < self.tile_size:
+                        padded = np.zeros((self.tile_size, self.tile_size), dtype=sampled_region.dtype)
+                        padded[:sampled_region.shape[0], :sampled_region.shape[1]] = sampled_region
+                        tile_data = padded
+                    else:
+                        tile_data = sampled_region
+                else:
+                    # print(f"Tile ({level},{x},{y}) resulted in empty y_indices or x_indices for downsampling.")
+                    # If indices are empty, it means the tile is effectively off-image or calculation is problematic
+                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+
+            # Handle NaN and infinity values
+            tile_data = np.nan_to_num(tile_data, nan=0, posinf=self.max_value, neginf=self.min_value) # More robust nan handling
+            
+            # Normalize to 0-1 range using selected scaling function
+            scaling_func = SCALING_FUNCTIONS_PY.get(self.scaling_function, SCALING_FUNCTIONS_PY['linear'])
+            
+            # Vectorized application of scaling function after clipping
+            clipped_tile_data = np.clip(tile_data, self.min_value, self.max_value)
+            
+            # Need to handle cases where min_value == max_value for scaling function correctly
+            if self.min_value == self.max_value:
+                normalized_tile_data = np.full_like(clipped_tile_data, 0.5, dtype=float) # or 0, depending on desired behavior
+            else:
+                # Apply scaling function. This might need to be element-wise if not already.
+                # The lambda functions in SCALING_FUNCTIONS_PY are designed for single values.
+                # We need to vectorize this call or loop.
+                v_scaling_func = np.vectorize(lambda x: scaling_func(x, self.min_value, self.max_value))
+                normalized_tile_data = v_scaling_func(clipped_tile_data)
+
+            normalized_tile_data = np.clip(normalized_tile_data, 0, 1) # Ensure output is 0-1
+            
+            # Convert to 8-bit image
+            img_data_8bit = (normalized_tile_data * 255).astype(np.uint8)
+            
+            # Apply colormap using the LUT
+            rgb_img_data = self.lut[img_data_8bit]
+            
+            # Create PNG with minimal compression for speed
+            from PIL import Image
+            img = Image.fromarray(rgb_img_data, 'RGB') # Ensure mode is RGB
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG', optimize=False, compress_level=1)
+            return buffer.getvalue()
+            
+        except Exception as e:
+            print(f"Error generating tile ({level},{x},{y}): {e}")
+            return None
+    
+    def cleanup(self):
+        """Clean up resources."""
+        if hasattr(self, '_hdul'):
+            try:
+                self._hdul.close()
+            except:
+                pass
+        if hasattr(self, 'image_data'):
+            del self.image_data
+        import gc
+        gc.collect()
+    
+    def request_tiles(self, level, center_x, center_y, radius=2):
+        """Simple tile request method for compatibility. 
+        SimpleTileGenerator generates tiles on-demand, so this is just a placeholder."""
+        print(f"Tile request: level={level}, center=({center_x},{center_y}), radius={radius}")
+        return True  # Always successful since we generate on-demand
+
+    def _update_colormap_lut(self):
+        """Generate a Lookup Table (LUT) for the current colormap."""
+        color_map_func = COLOR_MAPS_PY.get(self.color_map, COLOR_MAPS_PY['grayscale'])
+        # Create a LUT: 256 entries, each with 3 (RGB) uint8 values
+        self.lut = np.zeros((256, 3), dtype=np.uint8)
+        for i in range(256):
+            self.lut[i] = color_map_func(i)
+        print(f"Colormap LUT updated for '{self.color_map}'")
+
+
 @app.get("/fits-histogram/")
-async def get_fits_histogram(bins: int = Query(100)):
+async def get_fits_histogram(bins: int = Query(FITS_HISTOGRAM_DEFAULT_BINS), min_val: float = Query(None), max_val: float = Query(None)):  # Updated default
     """Generate histogram data for the current FITS file."""
     try:
         # Check if a FITS file is loaded
@@ -276,70 +1556,150 @@ async def get_fits_histogram(bins: int = Query(100)):
         with fits.open(fits_file) as hdul:
             # Find the HDU with image data
             hdu = None
-            for i, hdu in enumerate(hdul):
-                if hasattr(hdu, 'data') and hdu.data is not None and len(getattr(hdu, 'shape', [])) >= 2:
-                    hdu = hdu
-                    break
+            # Use current_hdu_index from app.state if available
+            current_hdu_idx = getattr(app.state, "current_hdu_index", DEFAULT_HDU_INDEX)  # Updated
+            
+            if 0 <= current_hdu_idx < len(hdul) and \
+               hasattr(hdul[current_hdu_idx], 'data') and \
+               hdul[current_hdu_idx].data is not None and \
+               len(getattr(hdul[current_hdu_idx], 'shape', [])) >= 2:
+                hdu = hdul[current_hdu_idx]
+                print(f"Using HDU {current_hdu_idx} for histogram.")
+            else:
+                # Fallback to searching for the first valid HDU if current_hdu_idx is not suitable
+                print(f"HDU {current_hdu_idx} not suitable or not found, searching for first valid image HDU.")
+                for i, h in enumerate(hdul):
+                    if hasattr(h, 'data') and h.data is not None and len(getattr(h, 'shape', [])) >= 2:
+                        hdu = h
+                        print(f"Fallback: Found valid image data in HDU {i}.")
+                        break
             
             if hdu is None:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": "No image data found in FITS file"}
+                    content={"error": "No suitable image data found in FITS file for histogram"}
                 )
             
             # Get the image data
-            image_data = hdu.data
+            image_data_raw = hdu.data # Keep raw for original shape info
             
-            # Handle different dimensionality
-            if len(image_data.shape) > 2:
-                # For 3D data, take the first slice
-                if len(image_data.shape) == 3:
-                    image_data = image_data[0]
-                # For 4D data, take the first slice of the first volume
-                elif len(image_data.shape) == 4:
-                    image_data = image_data[0, 0]
+            # Handle different dimensionality - create a 2D working copy for histogram
+            image_data_processed = image_data_raw
+            if image_data_raw.ndim > 2:
+                if image_data_raw.ndim == 3:
+                    image_data_processed = image_data_raw[0, :, :]
+                elif image_data_raw.ndim == 4:
+                    image_data_processed = image_data_raw[0, 0, :, :]
+                else: 
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": f"Image data has {image_data_raw.ndim} dimensions, histogram supports 2D, 3D (first slice), or 4D (first slice)."}
+                    )
+
+            data_to_bin = None # This will hold the final data (sampled or full, and finite) for histogramming
+            sampled = False
             
-            # Calculate min and max values
-            valid_mask = np.isfinite(image_data)
-            if np.any(valid_mask):
-                min_value = float(np.min(image_data[valid_mask]))
-                max_value = float(np.max(image_data[valid_mask]))
+            # If data is large, sample it first.
+            if image_data_processed.size > MAX_POINTS_FOR_HISTOGRAM:
+                sampled_data_for_stats = None
+                if image_data_processed.ndim == 2: # Should always be 2D here
+                    ratio = image_data_processed.size / MAX_POINTS_FOR_HISTOGRAM
+                    stride = max(1, int(np.sqrt(ratio)))
+                    sampled_data_for_stats = image_data_processed[::stride, ::stride]
+                    print(f"Histogram: Strided sampling (stride={stride}) on 2D data ({image_data_processed.shape}). Sampled ~{sampled_data_for_stats.size} points for stats/binning.")
+                else: # Fallback, though image_data_processed should be 2D
+                    num_to_sample = MAX_POINTS_FOR_HISTOGRAM
+                    # Flatten for random choice, less ideal but a fallback
+                    flat_data = image_data_processed.ravel()
+                    if flat_data.size > 0: # Ensure there's data to sample from
+                        indices = np.random.choice(flat_data.size, size=min(num_to_sample, flat_data.size), replace=False)
+                        sampled_data_for_stats = flat_data[indices]
+                        print(f"Histogram: Random sampling on fallback data ({image_data_processed.shape}). Sampled {sampled_data_for_stats.size} points for stats/binning.")
+
+
+                if sampled_data_for_stats is not None and sampled_data_for_stats.size > 0:
+                    data_to_bin = sampled_data_for_stats[np.isfinite(sampled_data_for_stats)]
+                else: # If sampling resulted in nothing (e.g. source was empty)
+                    data_to_bin = np.array([]) 
+                sampled = True
+            else: # Data is small enough, use all of it
+                data_to_bin = image_data_processed[np.isfinite(image_data_processed)]
+                sampled = False
+                print(f"Histogram: Using all {data_to_bin.size} finite points (data smaller than max sample size).")
+
+            if data_to_bin.size == 0: # Check after potential sampling and finite filtering
+                 print("No finite data in the image (or sample) for histogram calculation.")
+                 # Use min_val, max_val if provided for the range, else 0,1
+                 # This ensures query_min/max are reflected if user sent them for an empty data situation
+                 hist_range_min = min_val if min_val is not None else 0.0
+                 hist_range_max = max_val if max_val is not None else 1.0
+                 if hist_range_min >= hist_range_max: hist_range_max = hist_range_min + 1e-6
+
+                 hist_counts, bin_edges = np.histogram([], bins=bins, range=(hist_range_min, hist_range_max))
+                 hist_data = {
+                     "counts": hist_counts.tolist(),
+                     "bin_edges": bin_edges.tolist(),
+                     "min_value": hist_range_min, # Reflects the range attempted
+                     "max_value": hist_range_max, # Reflects the range attempted
+                     "data_overall_min": hist_range_min, # No data, so use the attempted range
+                     "data_overall_max": hist_range_max,
+                     "width": image_data_processed.shape[1] if image_data_processed.ndim >=2 else 0,
+                     "height": image_data_processed.shape[0] if image_data_processed.ndim >=2 else 0,
+                     "sampled": sampled, 
+                     "query_min_val": min_val,
+                     "query_max_val": max_val,
+                     "notes": "No finite data found in image (or sample); used specified or default range for empty histogram."
+                 }
+                 return JSONResponse(content=hist_data)
+
+            # Determine the overall min/max from `data_to_bin` (which is now sampled if original was large, and finite)
+            # These are the actual min/max of the data being considered for histogram range default.
+            actual_data_min = float(np.min(data_to_bin))
+            actual_data_max = float(np.max(data_to_bin))
+            if actual_data_min >= actual_data_max: # If all values in data_to_bin are the same
+                actual_data_max = actual_data_min + 1e-6
+
+            # Determine the histogram range (current_min_val_hist, current_max_val_hist)
+            current_min_val_hist: float
+            current_max_val_hist: float
+            range_notes = ""
+
+            if min_val is None or max_val is None or min_val >= max_val:
+                current_min_val_hist = actual_data_min
+                current_max_val_hist = actual_data_max
+                range_notes = f"Used {'sampled ' if sampled else ''}data range."
+                print(f"Histogram: Using {'sampled ' if sampled else ''}data range for histogram: {current_min_val_hist} to {current_max_val_hist}")
             else:
-                min_value = 0
-                max_value = 1
+                current_min_val_hist = min_val
+                current_max_val_hist = max_val
+                range_notes = f"Used user-specified range: {current_min_val_hist} to {current_max_val_hist}."
+                print(f"Histogram: Using user-specified range for histogram: {current_min_val_hist} to {current_max_val_hist}")
             
-            # Calculate the histogram
-            # For large images, sample data instead of using all pixels
-            if image_data.size > 1000000:  # More than a million pixels
-                # Calculate sampling rate to get around 100,000 samples
-                sample_rate = max(1, int(np.sqrt(image_data.size / 100000)))
-                
-                # Sample the data
-                sampled_data = image_data[::sample_rate, ::sample_rate]
-                
-                # Calculate histogram on sampled data
-                hist, bin_edges = np.histogram(
-                    sampled_data[np.isfinite(sampled_data)],
-                    bins=bins,
-                    range=(min_value, max_value)
-                )
-            else:
-                # For smaller images, use all data
-                hist, bin_edges = np.histogram(
-                    image_data[np.isfinite(image_data)],
-                    bins=bins,
-                    range=(min_value, max_value)
-                )
+            # Ensure current_min_val_hist < current_max_val_hist for np.histogram
+            if current_min_val_hist >= current_max_val_hist:
+                current_max_val_hist = current_min_val_hist + 1e-6 # Add epsilon
+
+            print(f"Histogram: Generating histogram with {bins} bins for {data_to_bin.size} points over range [{current_min_val_hist}, {current_max_val_hist}]")
+            hist_counts, bin_edges_out = np.histogram(
+                data_to_bin, # This is already sampled and finite
+                bins=bins,
+                range=(current_min_val_hist, current_max_val_hist)
+            )
             
             # Convert to Python types for JSON serialization
             hist_data = {
-                "counts": hist.tolist(),
-                "bin_edges": bin_edges.tolist(),
-                "min_value": min_value,
-                "max_value": max_value,
-                "width": image_data.shape[1],
-                "height": image_data.shape[0],
-                "sampled": image_data.size > 1000000
+                "counts": hist_counts.tolist(),
+                "bin_edges": bin_edges_out.tolist(),
+                "min_value": float(current_min_val_hist), # Reflect the range used for histogram
+                "max_value": float(current_max_val_hist), # Reflect the range used for histogram
+                "data_overall_min": actual_data_min, # Actual min of (potentially sampled) finite data
+                "data_overall_max": actual_data_max, # Actual max of (potentially sampled) finite data
+                "width": image_data_processed.shape[1],
+                "height": image_data_processed.shape[0],
+                "sampled": sampled, # True if initial image_data_processed was sampled
+                "notes": range_notes,
+                "query_min_val": min_val, # Store original query parameters
+                "query_max_val": max_val
             }
             
             return JSONResponse(content=hist_data)
@@ -347,67 +1707,1189 @@ async def get_fits_histogram(bins: int = Query(100)):
     except Exception as e:
         # Log the error for debugging
         print(f"Error generating histogram: {e}")
-        # Optionally, include traceback:
-        # import traceback
-        # print(traceback.format_exc())
+        import traceback
+        print(traceback.format_exc())
         
         return JSONResponse(
             status_code=500,
             content={"error": f"Failed to generate histogram: {str(e)}"}
         )
-
-
+        
 @app.get("/fits-header/{filepath:path}")
 async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
     """Retrieve the header of a specific HDU from a FITS file."""
     try:
-        possible_base_dirs = [Path("files"), Path("uploads"), Path.cwd()]  # Add more if needed
+        # Construct the full path relative to the workspace or use absolute path
+        # This assumes 'files/' directory or allows absolute paths
+        if not os.path.isabs(filepath):
+             # Adjust base path if files are not in the root
+             base_path = Path(FILES_DIRECTORY) # Or Path(os.getcwd()) if files are elsewhere
+             full_path = base_path / filepath
+        else:
+             full_path = Path(filepath)
 
-        full_path = None
-        for base_dir in possible_base_dirs:
-            candidate = base_dir / filepath
-            if candidate.exists():
-                full_path = candidate
-                break
-
-        if full_path is None:
-            # Try absolute path as a last resort
-            abs_path = Path(filepath)
-            if abs_path.exists():
-                full_path = abs_path
-            else:
-                raise HTTPException(status_code=404, detail=f"FITS file not found in known locations for: {filepath}")
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
 
         with fits.open(full_path, memmap=False) as hdul:
             if hdu_index < 0 or hdu_index >= len(hdul):
-                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
             header = hdul[hdu_index].header
-            header_list = [
-                {"key": k, "value": repr(v), "comment": header.comments[k]}
-                for k, v in header.items() if k
-            ]
+            # Convert header to a list of key-value pairs for easier frontend handling
+            header_list = [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k] # Ensure key is not empty
 
-            return JSONResponse(content={
-                "header": header_list,
-                "hdu_index": hdu_index,
-                "filename": full_path.name
-            })
+            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
 
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
+         raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
     except HTTPException as http_exc:
+        # Re-raise HTTP exceptions
         raise http_exc
     except Exception as e:
+        # Log the error for debugging
         print(f"Error reading FITS header for {filepath}, HDU {hdu_index}: {e}")
+        # Optionally, include traceback:
+        # import traceback
+        # print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to read FITS header: {str(e)}")
 
+@app.get("/fits-hdu-info/{filepath:path}")
+async def get_fits_hdu_info(filepath: str):
+    """
+    Returns a list of HDUs and their basic information for a given FITS file.
+    """
+    if ".." in filepath:
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+
+    # The filepath from the frontend might not be prefixed with "files/", so we handle both cases.
+    full_path = Path(filepath)
+    if not full_path.exists():
+        if not filepath.startswith(FILES_DIRECTORY):
+            full_path = Path(FILES_DIRECTORY) / filepath
+
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail=f"FITS file not found at: {filepath}")
+
+    try:
+        with fits.open(full_path) as hdul:
+            hdu_list = []
+            # Determine which HDU is likely the main science image
+            recommended_index = -1
+            max_pixels = 0
+            
+            # First pass: find the best candidate for the "recommended" HDU
+            for i, hdu in enumerate(hdul):
+                if hdu.is_image and hdu.data is not None and hdu.data.ndim >= 2:
+                    num_pixels = hdu.data.size
+                    if num_pixels > max_pixels:
+                        max_pixels = num_pixels
+                        recommended_index = i
+
+            # Second pass: gather info for all HDUs
+            for i, hdu in enumerate(hdul):
+                # Basic info
+                info = {
+                    "index": i,
+                    "name": hdu.name or hdu.header.get('EXTNAME', f'HDU {i}'),
+                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if hdu.is_image else "Table"),
+                    "isRecommended": i == recommended_index
+                }
+
+                # Add specific details based on HDU type
+                if hdu.is_image and hdu.data is not None:
+                    info["dimensions"] = hdu.shape
+                    info["dataType"] = str(hdu.data.dtype)
+                    info["bunit"] = hdu.header.get('BUNIT', 'Unknown')
+                    try:
+                        wcs_info = WCS(hdu.header)
+                        info["hasWCS"] = wcs_info.has_celestial
+                    except Exception:
+                        info["hasWCS"] = False
+                elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                    info["rows"] = hdu.header.get('NAXIS2', 0)
+                    info["columns"] = hdu.header.get('TFIELDS', 0)
+
+                hdu_list.append(info)
+                
+            return JSONResponse(content={"hduList": hdu_list, "filename": full_path.name})
+    except Exception as e:
+        logger.error(f"Failed to read HDU info for {full_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to read HDU info: {str(e)}")
+
+
+# Helper functions for image processing
+import numpy
+
+def linear(inputArray, scale_min=None, scale_max=None):
+    """Performs linear scaling of the input numpy array."""
+    imageData = numpy.array(inputArray, copy=True)
+
+    if scale_min is None:
+        scale_min = imageData.min()
+    if scale_max is None:
+        scale_max = imageData.max()
+
+    imageData = imageData.clip(min=scale_min, max=scale_max)
+    imageData = (imageData - scale_min) / (scale_max - scale_min)
+    
+    # Ensure data is within the 0.0 to 1.0 range
+    imageData[imageData < 0] = 0.0
+    imageData[imageData > 1] = 1.0
+    
+    return imageData
+
+
+@app.get("/generate-sed/")
+
+async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galaxy_name: str = None):
+    """Optimized SED plot generation keeping ALL cutouts and RGB composites."""
+    try:
+        # Early validation
+        if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid RA/Dec coordinates"}
+            )
+        
+        # Debug logging
+        print(f"[[DEBUG]] generate_sed_optimized CALLED in main.py. ra: {ra} dec: {dec} catalog_name: {catalog_name} galaxy_name: {galaxy_name}")
+        
+        # 1. CATALOG LOADING (optimized)
+        catalog_table = loaded_catalogs.get(catalog_name)
+        if catalog_table is None:
+            print(f"SED: Loading catalog '{catalog_name}'...")
+            catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+            if catalog_table is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Failed to load catalog '{catalog_name}'"}
+                )
+            loaded_catalogs[catalog_name] = catalog_table
+        
+        # 2. COORDINATE MATCHING (vectorized)
+        ra_col = dec_col = None
+        for col_name in catalog_table.colnames:
+            lower_col = col_name.lower()
+            if not ra_col and lower_col in SED_RA_COLUMN_NAMES:
+                ra_col = col_name
+            elif not dec_col and lower_col in SED_DEC_COLUMN_NAMES:
+                dec_col = col_name
+            if ra_col and dec_col:
+                break
+        
+        if not ra_col or not dec_col:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Could not find RA and DEC columns in catalog"}
+            )
+        
+        # Vectorized distance calculation
+        ra_diff = np.abs(catalog_table[ra_col] - ra)
+        dec_diff = np.abs(catalog_table[dec_col] - dec)
+        distances = np.sqrt(ra_diff**2 + dec_diff**2)
+        closest_idx = np.argmin(distances)
+        
+        if distances[closest_idx] > SED_COORDINATE_TOLERANCE:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "No object found near specified coordinates"}
+            )
+        
+        closest_obj = catalog_table[closest_idx]
+        
+        # 3. FLUX EXTRACTION (batch processing)
+        # Pre-create column lookup set for O(1) access
+        available_cols = set(catalog_table.colnames)
+        
+        sed_fluxes = []
+        sed_fluxes_err = []
+        sed_fluxes_cigale = []
+        sed_fluxes_total = []
+
+        # HST filters
+        for filter_name in SED_HST_FILTERS:
+            flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
+            sed_fluxes.append(flux_val)
+            
+            bkg_col_name = f"{filter_name}_bkg"
+            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
+            sed_fluxes_total.append(flux_val + bkg_val)
+            
+            err_col_name = f"{filter_name}_err"
+            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
+            sed_fluxes_err.append(err_val)
+            
+            # CIGALE best fit - check multiple patterns efficiently
+            cigale_val = 0.0
+            for pattern in [f"best.hst.wfc3.{filter_name}", f"best.hst.wfc.{filter_name}", f"best.hst_{filter_name}"]:
+                if pattern in available_cols:
+                    cigale_val = float(closest_obj[pattern]) * SED_CIGALE_MULTIPLIER
+                    break
+            sed_fluxes_cigale.append(cigale_val)
+
+        # JWST NIRCam filters
+        for filter_name in SED_JWST_NIRCAM_FILTERS:
+            flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
+            sed_fluxes.append(flux_val)
+            
+            bkg_col_name = f"{filter_name}_bkg"
+            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
+            sed_fluxes_total.append(flux_val + bkg_val)
+            
+            err_col_name = f"{filter_name}_err"
+            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
+            sed_fluxes_err.append(err_val)
+            
+            cigale_col = f"best.jwst.nircam.{filter_name}"
+            cigale_val = float(closest_obj[cigale_col]) * SED_CIGALE_MULTIPLIER if cigale_col in available_cols else 0.0
+            sed_fluxes_cigale.append(cigale_val)
+
+        # JWST MIRI filters
+        for filter_name in SED_JWST_MIRI_FILTERS:
+            flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
+            sed_fluxes.append(flux_val)
+            
+            bkg_col_name = f"{filter_name}_bkg"
+            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
+            sed_fluxes_total.append(flux_val + bkg_val)
+            
+            err_col_name = f"{filter_name}_err"
+            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
+            sed_fluxes_err.append(err_val)
+            
+            cigale_col = f"best.jwst.miri.{filter_name}"
+            cigale_val = float(closest_obj[cigale_col]) * SED_CIGALE_MULTIPLIER if cigale_col in available_cols else 0.0
+            sed_fluxes_cigale.append(cigale_val)
+
+        
+        # 4. BASIC PLOT CREATION
+        fig = plt.figure(figsize=(SED_FIGURE_SIZE_WIDTH, SED_FIGURE_SIZE_HEIGHT))
+        ax = fig.add_subplot(111)
+        
+        # Plot observed fluxes with error bars
+        try:
+            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes_total, yerr=sed_fluxes_err, fmt='o', 
+                       ecolor='gray', color='purple', label='Observed', alpha=SED_ALPHA, 
+                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE)
+            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes, yerr=sed_fluxes_err, fmt='o', 
+                       ecolor='gray', color='blue', label='BKG-Subtracted', 
+                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
+        except:
+            filter_wavelengths_short = SED_FILTER_WAVELENGTHS[:-1]  # Remove last element
+            ax.errorbar(filter_wavelengths_short, sed_fluxes, yerr=sed_fluxes_err, fmt='o', 
+                       ecolor='gray', color='blue', label='BKG-Subtracted', 
+                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
+        
+        # Set plot properties
+        ax.set_xlabel(SED_X_LABEL, fontsize=SED_FONTSIZE_LABELS)
+        ax.set_ylabel(SED_Y_LABEL, fontsize=SED_FONTSIZE_LABELS)
+        ax.legend(loc='lower right', bbox_to_anchor=(0.67, 0.0))
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xticks(SED_FILTER_WAVELENGTHS)
+        ax.set_xticklabels([f'{w:.2f}' for w in SED_FILTER_WAVELENGTHS], rotation=45, fontsize=SED_FONTSIZE_TICKS)
+        ax.set_xlim(SED_X_LIM_MIN, SED_X_LIM_MAX)
+        
+        # Check if this is an ISM source
+        is_ism_source = bool(closest_obj.get(SED_COL_ISM_SOURCE, False)) if SED_COL_ISM_SOURCE in available_cols else False
+        
+        # Add information text box
+        galaxy_name_display = str(closest_obj.get(SED_COL_GALAXY, 'Unknown')).upper() if SED_COL_GALAXY in available_cols else "Unknown"
+        
+        # Get age, mass, chi, ebv if available
+        age = float(closest_obj[SED_COL_AGE]) if SED_COL_AGE in available_cols else 0.0
+        mass = float(closest_obj[SED_COL_MASS]) if SED_COL_MASS in available_cols else 0.0
+        chi = float(closest_obj[SED_COL_CHI]) if SED_COL_CHI in available_cols else 0.0
+        ebv_gas = float(closest_obj[SED_COL_EBV_GAS]) if SED_COL_EBV_GAS in available_cols else 0.0
+        
+        bbox = dict(boxstyle="round", alpha=0.7, facecolor="white")
+        text_str = f"Galaxy: {galaxy_name_display}\nRA: {ra:.4f}, DEC: {dec:.4f}"
+        
+        ax.text(SED_INFO_BOX_X, SED_INFO_BOX_Y, text_str, transform=ax.transAxes, 
+                ha="right", va="bottom", fontsize=SED_FONTSIZE_INFO, bbox=bbox)
+        
+        fig.canvas.draw()
+        transform = ax.transAxes.inverted()
+        
+        # 5. ENHANCED FILE SEARCH WITH GALAXY NAME
+        # Pre-compile all file patterns for faster lookup, including galaxy-specific patterns
+        filter_patterns = {}
+        for filter_name in SED_FILTER_NAMES:
+            patterns = [f"{FILES_DIRECTORY}/*{filter_name.lower()}*.fits"]
+            if filter_name == 'F438W':
+                patterns.append(f"{FILES_DIRECTORY}/*f435w*.fits")
+            
+            # Add galaxy-specific patterns if galaxy name is provided
+            if galaxy_name and galaxy_name != 'Unknown' and galaxy_name is not None:
+                galaxy_lower = galaxy_name.lower()
+                # Try various galaxy name formats in filenames
+                patterns.extend([
+                    f"{FILES_DIRECTORY}/*{galaxy_lower}*{filter_name.lower()}*.fits",
+                    f"{FILES_DIRECTORY}/*{galaxy_lower}*/*{filter_name.lower()}*.fits",
+                    f"{FILES_DIRECTORY}/{galaxy_lower}/*{filter_name.lower()}*.fits",
+                    f"{FILES_DIRECTORY}/*{galaxy_name}*{filter_name.lower()}*.fits",
+                    f"{FILES_DIRECTORY}/*{galaxy_name}*/*{filter_name.lower()}*.fits",
+                    f"{FILES_DIRECTORY}/{galaxy_name}/*{filter_name.lower()}*.fits"
+                ])
+            
+            filter_patterns[filter_name] = patterns
+        
+        # Find all matching files in parallel using ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        
+        file_matches = {}
+        file_lock = threading.Lock()
+        
+        def find_files_for_filter(filter_name, patterns):
+            """Enhanced function to exclude Ha files when searching for F555W and F814W filters and prioritize galaxy-specific files"""
+            for pattern in patterns:
+                matching_files = glob.glob(pattern)
+                if matching_files:
+                    # Filter out Ha files for F555W and F814W
+                    if filter_name.upper() in ['F555W', 'F814W']:
+                        # Exclude files that contain '_ha-img' or '_ha_' in their filename (more specific)
+                        filtered_files = [f for f in matching_files if not any(pattern in os.path.basename(f).lower() for pattern in ['_ha-img', '_ha_', '-ha-', '-ha.fits'])]
+                        if filtered_files:
+                            with file_lock:
+                                if filter_name not in file_matches:
+                                    # Sort by preference: galaxy-specific files first
+                                    if galaxy_name and galaxy_name != 'Unknown':
+                                        galaxy_files = [f for f in filtered_files if galaxy_name.lower() in f.lower()]
+                                        if galaxy_files:
+                                            file_matches[filter_name] = galaxy_files[0]
+                                        else:
+                                            file_matches[filter_name] = filtered_files[0]
+                                    else:
+                                        file_matches[filter_name] = filtered_files[0]
+                            return
+                    else:
+                        # For other filters, use the enhanced logic with galaxy preference
+                        with file_lock:
+                            if filter_name not in file_matches:
+                                # Sort by preference: galaxy-specific files first
+                                if galaxy_name and galaxy_name != 'Unknown':
+                                    galaxy_files = [f for f in matching_files if galaxy_name.lower() in f.lower()]
+                                    if galaxy_files:
+                                        file_matches[filter_name] = galaxy_files[0]
+                                    else:
+                                        file_matches[filter_name] = matching_files[0]
+                                else:
+                                    file_matches[filter_name] = matching_files[0]
+                        return
+        
+        # Search for files in parallel (this is safe to keep)
+        with ThreadPoolExecutor(max_workers=SED_MAX_WORKERS_FILES) as executor:
+            futures = [executor.submit(find_files_for_filter, fname, patterns) 
+                      for fname, patterns in filter_patterns.items()]
+            
+            # Wait for all searches to complete with timeout
+            for future in as_completed(futures, timeout=FIND_FILES_TIMEOUT):
+                try:
+                    future.result()
+                except:
+                    continue
+        
+        # Log found files for debugging
+        if galaxy_name and galaxy_name != 'Unknown':
+            print(f"Files found for galaxy '{galaxy_name}': {len(file_matches)} filters")
+            for filter_name, file_path in file_matches.items():
+                if galaxy_name.lower() in file_path.lower():
+                    print(f"  {filter_name}: {file_path} (galaxy-specific)")
+                else:
+                    print(f"  {filter_name}: {file_path} (generic)")
+        
+        # 6. PROCESS CUTOUTS SEQUENTIALLY (FIXED - NO MORE PARALLEL PROCESSING)
+        
+        # Storage for RGB composites - use dictionaries to ensure proper order
+        nircam_cutouts = {}  # NIRCam
+        miri_cutouts = {}    # MIRI 
+        hst_cutouts = {}     # HST
+        rgbsss = []          # CO data
+        rgbsss2 = []         # HST HA data
+        
+        nircam_header = None
+        miri_header = None
+        hst_header = None
+        
+        # Process cutouts SEQUENTIALLY to maintain order
+        for i, (wavelength, filter_name) in enumerate(zip(SED_FILTER_WAVELENGTHS_EXTENDED[:len(SED_FILTER_NAMES)], SED_FILTER_NAMES)):
+            if filter_name not in file_matches:
+                continue
+            
+            try:
+                fits_file = file_matches[filter_name]
+                print(f"Processing cutout for {filter_name} from {fits_file}")
+                
+                with fits.open(fits_file) as hdul:
+                    # Find image HDU quickly
+                    image_hdu = None
+                    for hdu in hdul:
+                        if (hdu.data is not None and 
+                            hasattr(hdu.data, 'shape') and 
+                            len(hdu.data.shape) >= 2):
+                            image_hdu = hdu
+                            break
+                    
+                    if image_hdu is None:
+                        print(f"No valid image HDU found in {fits_file}")
+                        continue
+                    
+                    # Get WCS and create cutout
+                    prepared_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                    wcs = WCS(prepared_header)
+                    
+                    if not wcs.has_celestial:
+                        print(f"No celestial WCS found for {filter_name}")
+                        continue
+                    
+                    image_data = image_hdu.data
+                    if len(image_data.shape) > 2:
+                        image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
+                    
+                    target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                    cutout_size = SED_CUTOUT_SIZE_ARCSEC * u.arcsec
+                    cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
+                    
+                    # Clean data
+                    cutout_data = cutout.data.copy()
+                    cutout_data[np.isnan(cutout_data)] = 0
+                    cutout_data[np.isinf(cutout_data)] = 0
+                    
+                    print(f"Successfully processed cutout for {filter_name}, data shape: {cutout_data.shape}")
+                    
+                    # 7. ADD CUTOUTS TO PLOT
+                    # Position cutout
+                    x_norm, _ = transform.transform(ax.transData.transform((wavelength, 0)))
+                    x_norm = max(min(x_norm, 1 - 0.05), 0.0)
+                    x_norm += SED_X_OFFSETS[i] if i < len(SED_X_OFFSETS) else 0
+                    
+                    # Create inset
+                    ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
+                                         bbox_to_anchor=(x_norm, 0.945, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                                         bbox_transform=fig.transFigure)
+                    
+                    # Display image with appropriate normalization
+                    if filter_name in SED_JWST_NIRCAM_FILTERS + [SED_MIRI_RED_FILTER, SED_MIRI_GREEN_FILTER, SED_MIRI_BLUE_FILTER]:
+                        ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP,
+                                       vmin=0, vmax=np.percentile(cutout_data, SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE))
+                    else:
+                        sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, SED_HST_CUTOUT_DISPLAY_MAX_PERCENTILE))
+                        ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
+                    
+                    # Add circle and formatting
+                    region_sky = CircleSkyRegion(center=target_coord, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                    reg = region_sky.to_pixel(cutout.wcs)
+                    reg.plot(ax=ax_inset, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+                    
+                    ax_inset.set_title(filter_name, fontsize=SED_FONTSIZE_TITLE)
+                    ax_inset.axis('off')
+                    
+                    # Store cutout data for RGB composites in correct order
+                    header = cutout.wcs.to_header()
+                    header['NAXIS1'] = cutout.data.shape[1]
+                    header['NAXIS2'] = cutout.data.shape[0]
+                    header['NAXIS'] = 2
+                    
+                    # Store data for RGB composites with specific filter mapping
+                    if filter_name == SED_NIRCAM_RED_FILTER:  # red for NIRCam
+                        nircam_cutouts['red'] = np.array(cutout_data)
+                        nircam_header = header.copy()
+                    elif filter_name == SED_NIRCAM_GREEN_FILTER:  # green for NIRCam
+                        nircam_cutouts['green'] = np.array(cutout_data)
+                        if nircam_header is None:
+                            nircam_header = header.copy()
+                    elif filter_name == SED_NIRCAM_BLUE_FILTER:  # blue for NIRCam
+                        nircam_cutouts['blue'] = np.array(cutout_data)
+                        if nircam_header is None:
+                            nircam_header = header.copy()
+                    
+                    # HST filters - fix the logic here
+                    elif filter_name.upper() == 'F814W':  # red for HST
+                        hst_cutouts['red'] = np.array(cutout_data)
+                        hst_header = header.copy()
+                    elif filter_name.upper() == 'F555W':  # green for HST
+                        hst_cutouts['green'] = np.array(cutout_data)
+                        if hst_header is None:
+                            hst_header = header.copy()
+                    elif filter_name.upper() in ['F438W', 'F435W']:  # blue for HST
+                        hst_cutouts['blue'] = np.array(cutout_data)
+                        if hst_header is None:
+                            hst_header = header.copy()
+                    
+                    elif filter_name == SED_MIRI_RED_FILTER:  # red for MIRI
+                        miri_cutouts['red'] = np.array(cutout_data)
+                        miri_header = header.copy()
+                    elif filter_name == SED_MIRI_GREEN_FILTER:  # green for MIRI
+                        miri_cutouts['green'] = np.array(cutout_data)
+                        if miri_header is None:
+                            miri_header = header.copy()
+                    elif filter_name == SED_MIRI_BLUE_FILTER:  # blue for MIRI
+                        miri_cutouts['blue'] = np.array(cutout_data)
+                        if miri_header is None:
+                            miri_header = header.copy()
+                        
+                        
+            except Exception as e:
+                print(f"Error processing {filter_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        print(f"Total cutouts processed: {len(nircam_cutouts) + len(miri_cutouts) + len(hst_cutouts)}")
+        
+        # 8. HST Ha PROCESSING (enhanced with galaxy-specific search)
+        ha_patterns = SED_HA_PATTERNS.copy()
+        
+        # Add galaxy-specific H-alpha patterns
+        if galaxy_name and galaxy_name != 'Unknown':
+            galaxy_lower = galaxy_name.lower()
+            ha_patterns.extend([
+                f"{FILES_DIRECTORY}/*{galaxy_lower}*ha-img.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_lower}*_ha-*.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_lower}*-ha-*.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_lower}*halpha*.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_name}*ha-img.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_name}*_ha-*.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_name}*-ha-*.fits",
+                f"{FILES_DIRECTORY}/*{galaxy_name}*halpha*.fits"
+            ])
+
+        ha_files = []
+        for pattern in ha_patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                # Prioritize galaxy-specific files
+                if galaxy_name and galaxy_name != 'Unknown':
+                    galaxy_matches = [f for f in matches if galaxy_name.lower() in f.lower()]
+                    if galaxy_matches:
+                        ha_files = galaxy_matches
+                        break
+                ha_files = matches
+                break
+
+        if ha_files:
+            try:
+                # Process first Ha file only for speed
+                ha_file = ha_files[0]
+                print(f"Processing H-alpha file: {ha_file}")
+                with fits.open(ha_file) as hdul:
+                    for hdu in hdul:
+                        if (hdu.data is not None and 
+                            hasattr(hdu.data, 'shape') and 
+                            len(hdu.data.shape) >= 2):
+                            
+                            prepared_header = _prepare_jwst_header_for_wcs(hdu.header)
+                            wcs = WCS(prepared_header)
+
+                            if not wcs.has_celestial:
+                                continue
+                            
+                            image_data = hdu.data
+                            if len(image_data.shape) > 2:
+                                image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
+                            
+                            target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                            cutout_size = SED_CUTOUT_SIZE_ARCSEC * u.arcsec
+                            cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
+                            
+                            cutout_data = cutout.data.copy()
+                            cutout_data[np.isnan(cutout_data)] = 0
+                            cutout_data[np.isinf(cutout_data)] = 0
+                            
+                            x_norm, _ = transform.transform(ax.transData.transform((SED_HA_WAVELENGTH, 0)))
+                            x_norm = max(min(x_norm, 1 - 0.05), 0.0)
+                            x_norm += SED_HA_X_OFFSET
+                            
+                            ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
+                                                 bbox_to_anchor=(x_norm, SED_HA_Y_POSITION, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                                                 bbox_transform=fig.transFigure)
+                            
+                            sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE))
+                            ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
+                            
+                            region_sky = CircleSkyRegion(center=target_coord, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                            reg = region_sky.to_pixel(cutout.wcs)
+                            reg.plot(ax=ax_inset, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+                            
+                            ax_inset.set_title(r'HST H$\alpha$', fontsize=SED_FONTSIZE_TITLE)
+                            ax_inset.axis('off')
+                            
+                            header = cutout.wcs.to_header()
+                            header['NAXIS1'] = cutout.data.shape[1]
+                            header['NAXIS2'] = cutout.data.shape[0]
+                            header['NAXIS'] = 2
+                            
+                            break
+            except Exception as e:
+                print(f"Error processing HST Ha: {e}")
+        
+        
+        # 9. RGB COMPOSITE CREATION (FIXED - using ordered dictionaries)
+        
+        # NIRCam RGB
+        if len(nircam_cutouts) == 3 and nircam_header is not None:
+            try:
+                imgs_nircam = np.zeros((nircam_cutouts['red'].shape[1], nircam_cutouts['red'].shape[0], 3))
+                imgs_nircam[:, :, 0] = linear(nircam_cutouts['red'], scale_min=np.percentile(nircam_cutouts['red'], SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE), scale_max=np.nanpercentile(nircam_cutouts['red'], SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE))
+                imgs_nircam[:, :, 1] = linear(nircam_cutouts['green'], scale_min=np.percentile(nircam_cutouts['green'], SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE), scale_max=np.nanpercentile(nircam_cutouts['green'], SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE))
+                imgs_nircam[:, :, 2] = linear(nircam_cutouts['blue'], scale_min=np.percentile(nircam_cutouts['blue'], SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE), scale_max=np.nanpercentile(nircam_cutouts['blue'], SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE))
+                
+                ax_nircam_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
+                                  bbox_to_anchor=(SED_RGB_NIRCAM_X, SED_RGB_NIRCAM_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
+                                  bbox_transform=fig.transFigure)
+                
+                target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                region_sky_nircam = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                reg_nircam = region_sky_nircam.to_pixel(WCS(nircam_header))
+                reg_nircam.plot(ax=ax_nircam_rgb, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+                
+                ax_nircam_rgb.imshow(imgs_nircam, origin='lower')
+                ax_nircam_rgb.text(SED_RGB_TEXT_X, SED_RGB_TEXT_Y, 'NIRCam', fontsize=SED_FONTSIZE_TITLE, color='white',
+                              transform=ax_nircam_rgb.transAxes, 
+                              horizontalalignment='right', verticalalignment='bottom')
+                ax_nircam_rgb.axis('off')
+                print("NIRCam RGB composite created successfully")
+            except Exception as e:
+                print(f"Error creating NIRCam RGB: {e}")
+        
+        # MIRI RGB
+        if len(miri_cutouts) == 3 and miri_header is not None:
+            try:
+                imgs_miri = np.zeros((miri_cutouts['red'].shape[1], miri_cutouts['red'].shape[0], 3))
+                imgs_miri[:, :, 0] = linear(miri_cutouts['red'], scale_min=np.percentile(miri_cutouts['red'], SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(miri_cutouts['red'], SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE))
+                imgs_miri[:, :, 1] = linear(miri_cutouts['green'], scale_min=np.percentile(miri_cutouts['green'], SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(miri_cutouts['green'], SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE))
+                imgs_miri[:, :, 2] = linear(miri_cutouts['blue'], scale_min=np.percentile(miri_cutouts['blue'], SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(miri_cutouts['blue'], SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE))
+                
+                ax_miri_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
+                                  bbox_to_anchor=(SED_RGB_MIRI_X, SED_RGB_MIRI_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
+                                  bbox_transform=fig.transFigure)
+                
+                target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                region_sky_miri = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                reg_miri = region_sky_miri.to_pixel(WCS(miri_header))
+                reg_miri.plot(ax=ax_miri_rgb, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+                
+                ax_miri_rgb.imshow(imgs_miri, origin='lower')
+                ax_miri_rgb.text(SED_RGB_TEXT_X_ALT, SED_RGB_TEXT_Y, 'MIRI', fontsize=SED_FONTSIZE_TITLE, color='white',
+                              transform=ax_miri_rgb.transAxes, 
+                              horizontalalignment='right', verticalalignment='bottom')
+                ax_miri_rgb.axis('off')
+                
+                # Add CO contours if available
+                if len(rgbsss) > 0:
+                    try:
+                        smoothed_data_co = rgbsss[0]
+                        smoothed_data_co[np.isnan(smoothed_data_co)] = 0
+                        p50_co = np.percentile(smoothed_data_co, SED_CO_CONTOUR_LOW_LEVEL_PERCENTILE)
+                        p60_co = np.percentile(smoothed_data_co, SED_CO_CONTOUR_MID_LEVEL_PERCENTILE)
+                        p75_co = np.percentile(smoothed_data_co, SED_CO_CONTOUR_HIGH_LEVEL_PERCENTILE)
+                        contour_levels_co = [p50_co, p60_co, p75_co]
+                        ax_miri_rgb.contour(smoothed_data_co, levels=contour_levels_co, colors='white', 
+                                          linewidths=SED_CONTOUR_LINEWIDTH, alpha=SED_CONTOUR_ALPHA)
+                    except Exception as e:
+                        print(f"Error adding CO contours: {e}")
+                print("MIRI RGB composite created successfully")
+            except Exception as e:
+                print(f"Error creating MIRI RGB: {e}")
+        
+        # HST RGB
+        if len(hst_cutouts) == 3 and hst_header is not None:
+            try:
+                imgs_hst = np.zeros((hst_cutouts['red'].shape[1], hst_cutouts['red'].shape[0], 3))
+                imgs_hst[:, :, 0] = linear(hst_cutouts['red'], scale_min=np.percentile(hst_cutouts['red'], SED_RGB_HST_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(hst_cutouts['red'], SED_RGB_HST_COMPOSITE_MAX_PERCENTILE))
+                imgs_hst[:, :, 1] = linear(hst_cutouts['green'], scale_min=np.percentile(hst_cutouts['green'], SED_RGB_HST_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(hst_cutouts['green'], SED_RGB_HST_COMPOSITE_MAX_PERCENTILE))
+                imgs_hst[:, :, 2] = linear(hst_cutouts['blue'], scale_min=np.percentile(hst_cutouts['blue'], SED_RGB_HST_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(hst_cutouts['blue'], SED_RGB_HST_COMPOSITE_MAX_PERCENTILE))
+                
+                ax_hst_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
+                                  bbox_to_anchor=(SED_RGB_HST_X, SED_RGB_HST_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
+                                  bbox_transform=fig.transFigure)
+                
+                target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                region_sky_hst = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                reg_hst = region_sky_hst.to_pixel(WCS(hst_header))
+                reg_hst.plot(ax=ax_hst_rgb, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+                
+                ax_hst_rgb.imshow(imgs_hst, origin='lower')
+                ax_hst_rgb.text(SED_RGB_TEXT_X_ALT, SED_RGB_TEXT_Y, 'HST', fontsize=SED_FONTSIZE_TITLE, color='white',
+                              transform=ax_hst_rgb.transAxes, 
+                              horizontalalignment='right', verticalalignment='bottom')
+                ax_hst_rgb.axis('off')
+                
+                # Add HST HA contours if available
+                if len(rgbsss2) > 0:
+                    try:
+                        from scipy.ndimage import gaussian_filter
+                        smoothed_data_ha = gaussian_filter(rgbsss2[0], SED_GAUSSIAN_FILTER_SIGMA)
+                        smoothed_data_ha[np.isnan(smoothed_data_ha)] = 0
+                        p50_ha = np.percentile(smoothed_data_ha, SED_CO_CONTOUR_LOW_LEVEL_PERCENTILE)
+                        p60_ha = np.percentile(smoothed_data_ha, SED_CO_CONTOUR_MID_LEVEL_PERCENTILE)
+                        p75_ha = np.percentile(smoothed_data_ha, SED_HA_CONTOUR_HIGH_LEVEL_PERCENTILE)
+                        contour_levels_ha = [p50_ha, p60_ha, p75_ha]
+                        ax_hst_rgb.contour(smoothed_data_ha, levels=contour_levels_ha, colors='white', 
+                                         linewidths=SED_CONTOUR_LINEWIDTH, alpha=SED_CONTOUR_ALPHA)
+                    except Exception as e:
+                        print(f"Error adding HST HA contours: {e}")
+                print("HST RGB composite created successfully")
+            except Exception as e:
+                print(f"Error creating HST RGB: {e}")
+        
+        
+        # 10. FINAL LAYOUT AND SAVE
+        
+        # Adjust layout
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", 
+                    category=UserWarning, 
+                    message="This figure includes Axes that are not compatible with tight_layout"
+                )
+                plt.tight_layout()
+        except Exception as e_layout:
+            print(f"Error during plt.tight_layout(): {e_layout}")
+        
+        # Generate filename and save
+        filename = f"SED_RA{ra:.4f}_DEC{dec:.4f}.png"
+        image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), IMAGE_DIR)
+        os.makedirs(image_dir, exist_ok=True)
+        filepath = os.path.join(image_dir, filename)
+        
+        # Save with optimized DPI
+        fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches='tight')
+        plt.close(fig)
+        
+        # Debug: Check if file was actually created
+        if os.path.exists(filepath):
+            file_size = os.path.getsize(filepath)
+            print(f"SED file created successfully: {filepath} (size: {file_size} bytes)")
+        else:
+            print(f"ERROR: SED file was not created at {filepath}")
+        
+        url_path = f"/{IMAGE_DIR}/{filename}"
+        return JSONResponse(
+            status_code=200,
+            content={"message": "SED saved successfully", "url": url_path, "filename": filename}
+        )
+    
+    except Exception as e:
+        import traceback
+        print(f"Error saving SED: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to save SED: {str(e)}"}
+        )
+
+# HELPER FUNCTION FOR CACHING FILE SEARCHES
+import functools
+from typing import List
+# HELPER FUNCTION FOR CACHING FILE SEARCHES
+import functools
+from typing import List
+
+
+
+
+
+
+
+@functools.lru_cache(maxsize=200)
+def cached_glob_search(pattern: str) -> List[str]:
+    """Cache glob search results to avoid repeated filesystem calls."""
+    return glob.glob(pattern)
+
+
+# OPTIMIZED BATCH CUTOUT PROCESSOR
+def process_cutouts_in_batches(file_matches: dict, ra: float, dec: float, batch_size: int = 4) -> dict:
+    """Process cutouts in parallel batches for optimal performance."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    
+    results_lock = threading.Lock()
+    all_results = {}
+    
+    def process_single_cutout(filter_name: str, fits_file: str):
+        """Process a single cutout file."""
+        try:
+            with fits.open(fits_file) as hdul:
+                # Quick HDU detection
+                image_hdu = next((hdu for hdu in hdul 
+                                if hdu.data is not None and 
+                                hasattr(hdu.data, 'shape') and 
+                                len(hdu.data.shape) >= 2), None)
+                
+                if image_hdu is None:
+                    return None
+                
+                # Fast WCS and cutout
+                prepared_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                wcs = WCS(prepared_header)
+                
+                if not wcs.has_celestial:
+                    return None
+                
+                # Handle dimensionality efficiently
+                image_data = image_hdu.data
+                while len(image_data.shape) > 2:
+                    image_data = image_data[0]
+                
+                # Create cutout
+                target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                cutout = Cutout2D(image_data, target_coord, 2.5 * u.arcsec, wcs=wcs)
+                
+                # Clean data in-place
+                cutout_data = cutout.data.copy()
+                mask = np.isnan(cutout_data) | np.isinf(cutout_data)
+                cutout_data[mask] = 0
+                
+                return {
+                    'cutout_data': cutout_data,
+                    'cutout': cutout,
+                    'target_coord': target_coord
+                }
+                
+        except Exception as e:
+            print(f"Error processing cutout {filter_name}: {e}")
+            return None
+    
+    # Process in batches using ThreadPoolExecutor
+    filter_items = list(file_matches.items())
+    
+    for i in range(0, len(filter_items), batch_size):
+        batch = filter_items[i:i+batch_size]
+        
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            future_to_filter = {
+                executor.submit(process_single_cutout, fname, fpath): fname 
+                for fname, fpath in batch
+            }
+            
+            for future in as_completed(future_to_filter, timeout=FIND_FILES_TIMEOUT):
+                filter_name = future_to_filter[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        with results_lock:
+                            all_results[filter_name] = result
+                except Exception as e:
+                    print(f"Batch processing error for {filter_name}: {e}")
+    
+    return all_results
+
+async def process_cutouts_async(ra: float, dec: float, filter_data: dict, fig, ax):
+    """Async cutout processing with optimizations."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # Pre-compile glob patterns
+    filter_patterns = {}
+    for filter_name in filter_data['names']:
+        patterns = [
+            f"{FILES_DIRECTORY}/*{filter_name.lower()}*.fits",
+            f"{FILES_DIRECTORY}/*f435w*.fits" if filter_name == 'F438W' else None
+        ]
+        filter_patterns[filter_name] = [p for p in patterns if p]
+    
+    # Find all matching files in parallel
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
+        for filter_name, patterns in filter_patterns.items():
+            for pattern in patterns:
+                future = executor.submit(glob.glob, pattern)
+                futures.append((filter_name, future))
+        
+        # Collect results
+        file_matches = {}
+        for filter_name, future in futures:
+            try:
+                matches = future.result(timeout=FIND_FILES_TIMEOUT)  # 500ms timeout per glob
+                if matches and filter_name not in file_matches:
+                    file_matches[filter_name] = matches[0]  # Take first match
+            except:
+                continue
+    
+    # Process only available cutouts
+    cutout_tasks = []
+    for filter_name in filter_data['names']:
+        if filter_name in file_matches:
+            task = process_single_cutout(
+                filter_name, file_matches[filter_name], ra, dec, fig, ax
+            )
+            cutout_tasks.append(task)
+    
+    # Process cutouts concurrently (limit to 3 to avoid memory issues)
+    semaphore = asyncio.Semaphore(3)
+    
+    async def limited_cutout(task):
+        async with semaphore:
+            return await task
+    
+    if cutout_tasks:
+        await asyncio.gather(*[limited_cutout(task) for task in cutout_tasks], 
+                           return_exceptions=True)
+
+
+async def process_single_cutout(filter_name: str, fits_file: str, ra: float, dec: float, fig, ax):
+    """Process a single cutout asynchronously."""
+    try:
+        # Use thread pool for I/O operations
+        loop = asyncio.get_event_loop()
+        
+        # Read FITS file in thread
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            hdul = await loop.run_in_executor(executor, fits.open, fits_file)
+        
+        # Find image HDU quickly
+        image_hdu = None
+        for hdu in hdul:
+            if (hdu.data is not None and 
+                hasattr(hdu.data, 'shape') and 
+                len(hdu.data.shape) >= 2):
+                image_hdu = hdu
+                break
+        
+        if image_hdu is None:
+            return
+        
+        # Quick WCS and cutout
+        prepared_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+        wcs = WCS(prepared_header)
+        
+        if not wcs.has_celestial:
+            return
+        
+        # Handle dimensionality
+        image_data = image_hdu.data
+        if len(image_data.shape) > 2:
+            image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
+        
+        # Create cutout
+        target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+        cutout_size = SED_CUTOUT_SIZE_ARCSEC * u.arcsec
+        cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
+        
+        # Clean data
+        cutout_data = cutout.data.copy()
+        cutout_data[np.isnan(cutout_data)] = 0
+        cutout_data[np.isinf(cutout_data)] = 0
+        
+        # Add to plot (simplified positioning)
+        wavelength = filter_data['wavelengths'][filter_data['names'].index(filter_name)]
+        x_norm = 0.1 + (filter_data['names'].index(filter_name) * 0.07)  # Simplified positioning
+        
+        ax_inset = inset_axes(ax, width='80%', height='80%', loc='center',
+                             bbox_to_anchor=(x_norm, 0.945, 0.19, 0.19),
+                             bbox_transform=fig.transFigure)
+        
+        # Quick normalization
+        if filter_name in ['F200W', 'F300M', 'F335M', 'F360M', 'F1000W', 'F1130W', 'F2100W']:
+            ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP,
+                           vmin=0, vmax=np.percentile(cutout_data, 99.5))
+        else:
+            sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, 99.9))
+            ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
+        
+        # Add circle and formatting
+        region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
+        reg = region_sky.to_pixel(cutout.wcs)
+        reg.plot(ax=ax_inset, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
+        
+        ax_inset.set_title(filter_name, fontsize=8)
+        ax_inset.axis('off')
+        
+        hdul.close()
+        
+    except Exception as e:
+        print(f"Error processing cutout {filter_name}: {e}")
+
+
+# Additional optimization: Cache frequently used data
+import functools
+
+@functools.lru_cache(maxsize=100)
+def get_cached_file_list(pattern: str):
+    """Cache file glob results to avoid repeated filesystem calls."""
+    return glob.glob(pattern)
+
+
+@app.get("/source-properties/")
+async def source_properties(ra: float, dec: float, catalog_name: str):
+    print(f"!!!!!!!!!! Entering /source-properties/ endpoint. Catalog: '{catalog_name}', RA: {ra}, Dec: {dec}")
+    """Get all properties for a specific source based on RA and DEC coordinates."""
+    try:
+        catalog_table = loaded_catalogs.get(catalog_name)
+        if catalog_table is None:
+            print(f"Catalog '{catalog_name}' not in loaded_catalogs cache. Attempting to load as Astropy Table.")
+            catalog_table = get_astropy_table_from_catalog(catalog_name, Path(CATALOGS_DIRECTORY))  # Updated
+            if catalog_table is None:
+                print(f"Failed to load catalog '{catalog_name}' for source properties.")
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Failed to load catalog '{catalog_name}' as Astropy Table."}
+                )
+            loaded_catalogs[catalog_name] = catalog_table # Cache it
+            print(f"Successfully loaded and cached Astropy Table for '{catalog_name}' in loaded_catalogs.")
+
+        print(f"Using (potentially newly loaded) catalog: {catalog_name} for source properties.")
+
+        ra_col = None
+        dec_col = None
+        available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
+
+        for potential_ra_name in RA_COLUMN_NAMES:  # Updated
+            if potential_ra_name.lower() in available_cols_lower:
+                ra_col = available_cols_lower[potential_ra_name.lower()]
+                break
+        
+        for potential_dec_name in DEC_COLUMN_NAMES:  # Updated
+            if potential_dec_name.lower() in available_cols_lower:
+                dec_col = available_cols_lower[potential_dec_name.lower()]
+                break
+
+        if not ra_col or not dec_col:
+            print(f"Could not find RA ('{ra_col}') or DEC ('{dec_col}') columns in catalog '{catalog_name}'. Available: {catalog_table.colnames}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Could not find RA/DEC columns in catalog '{catalog_name}'. Available: {catalog_table.colnames}"}
+            )
+        print(f"Using RA column: '{ra_col}', DEC column: '{dec_col}' for catalog '{catalog_name}'.")
+        
+        try:
+            table_ra_values = catalog_table[ra_col].astype(float)
+            table_dec_values = catalog_table[dec_col].astype(float)
+        except Exception as e:
+            print(f"Error converting RA/DEC columns to float for properties in catalog '{catalog_name}': {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error processing RA/DEC columns for properties in catalog '{catalog_name}'."}
+            )
+
+        ra_diff = np.abs(table_ra_values - ra)
+        dec_diff = np.abs(table_dec_values - dec)
+        ra_diff = np.where(ra_diff > 180, 360 - ra_diff, ra_diff) # Correct for RA wrap
+        distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + dec_diff**2) # More accurate distance
+
+        if len(distances) == 0:
+             return JSONResponse(
+                status_code=404,
+                content={"error": f"No data in catalog '{catalog_name}' to search for object near RA={ra}, Dec={dec} for properties."}
+            )
+            
+        closest_idx = np.argmin(distances)
+        closest_obj_row = catalog_table[closest_idx] # This is an Astropy Row object
+
+        if distances[closest_idx] > SOURCE_PROPERTIES_SEARCH_RADIUS_ARCSEC / 3600.0:  # Updated to use constant
+            print(f"No object found close enough for properties. Min distance: {distances[closest_idx]*3600:.2f} arcsec")
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"No object found within threshold near RA={ra}, Dec={dec} for properties. Closest at {distances[closest_idx]*3600:.2f} arcsec."}
+            )
+        
+        print(f"Found object for properties at index {closest_idx}, distance {distances[closest_idx]*3600:.2f} arcsec.")
+        
+        obj_dict = {}
+        for col_name in catalog_table.colnames:
+            value = closest_obj_row[col_name]
+            processed_value = None # Default to None
+            
+            # 1. Handle Astropy Quantities
+            if isinstance(value, u.Quantity):
+                if np.isscalar(value.value):
+                    # Attempt to get a Python native type from the .value attribute
+                    num_val = value.value
+                    if hasattr(num_val, 'item'): # For numpy scalars
+                        processed_value = num_val.item()
+                    else: # For Python scalars (int, float)
+                        processed_value = num_val
+                    # Check for NaN/Inf after potential conversion
+                    if isinstance(processed_value, float) and (np.isnan(processed_value) or np.isinf(processed_value)):
+                        processed_value = None
+                else: # For array quantities, convert to string representation
+                    processed_value = str(value)
+            # 2. Handle Astropy Time objects
+            elif isinstance(value, Time):
+                try:
+                    processed_value = value.isot # Standard ISO format string
+                except Exception:
+                    processed_value = str(value) # Fallback to string
+            # 3. Handle Astropy SkyCoord objects
+            elif isinstance(value, SkyCoord):
+                try:
+                    processed_value = f"RA:{value.ra.deg:.6f}, Dec:{value.dec.deg:.6f}" 
+                except Exception:
+                    processed_value = str(value) # Fallback to string
+            # 4. Handle Numpy scalars (float, int, bool, complex)
+            elif isinstance(value, (np.floating, np.integer, np.complexfloating)):
+                if np.isnan(value) or np.isinf(value):
+                    processed_value = None
+                else:
+                    processed_value = value.item()
+            elif isinstance(value, np.bool_):
+                processed_value = value.item()
+            # 5. Handle Numpy arrays
+            elif isinstance(value, np.ndarray):
+                if value.dtype.kind in 'fc': # float or complex arrays
+                    # Convert to list, replacing NaN/Inf with None
+                    temp_list = []
+                    for x in value.flat: # Iterate over all elements for multi-dim arrays
+                        if np.isnan(x) or np.isinf(x):
+                            temp_list.append(None)
+                        elif hasattr(x, 'item'):
+                            temp_list.append(x.item())
+                        else:
+                            temp_list.append(x)
+                    processed_value = temp_list
+                elif value.dtype.kind == 'S' or value.dtype.kind == 'U': # String arrays
+                     processed_value = [item.decode('utf-8', 'replace') if isinstance(item, bytes) else str(item) for item in value.tolist()]
+                else:
+                    processed_value = value.tolist()
+            # 6. Handle bytes (decode to string)
+            elif isinstance(value, bytes):
+                try:
+                    processed_value = value.decode('utf-8', errors='replace')
+                except Exception:
+                    processed_value = str(value) # Fallback to string representation of bytes
+            # 7. Handle Python floats specifically for NaN/Inf
+            elif isinstance(value, float):
+                if np.isnan(value) or np.isinf(value):
+                    processed_value = None
+                else:
+                    processed_value = value
+            # 8. Handle standard Python types that are directly JSON serializable
+            elif isinstance(value, (str, int, bool, list, dict)) or value is None:
+                processed_value = value
+            # 9. Fallback for other types
+            else:
+                try:
+                    processed_value = str(value)
+                    print(f"Warning: Converted unhandled type {type(value)} to string for column '{col_name}'. Value (first 100 chars): '{processed_value[:100]}'")
+                except Exception as e_str_conv:
+                    processed_value = f"Error converting value of type {type(value)} to string: {e_str_conv}"
+                    print(f"Critical Error: Could not convert value of type {type(value)} for column '{col_name}' to string: {e_str_conv}")
+            
+            obj_dict[col_name] = processed_value
+        
+        return JSONResponse(
+            status_code=200,
+            content={"properties": obj_dict}
+        )
+
+    except Exception as e:
+        print(f"Error in /source-properties/ endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to get source properties: {str(e)}"}
+        )
 @app.post("/upload-fits/")
 async def upload_fits_file(file: UploadFile = File(...)):
     """Upload a FITS file to the server."""
     try:
         # Create the 'uploads' directory if it doesn't exist
-        uploads_dir = Path("files/uploads")
+        uploads_dir = Path(UPLOADS_DIRECTORY)
         uploads_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate a safe filename
@@ -453,6 +2935,58 @@ import aiohttp
 import ssl
 import certifi
 from fastapi.responses import Response
+
+
+import requests
+from fastapi import Request, Response, HTTPException
+from urllib.parse import quote_plus
+from starlette.responses import StreamingResponse
+
+# Make sure to import 'requests' and other necessary modules at the top of main.py
+
+@app.get("/proxy-download/")
+async def proxy_download(url: str):
+    """
+    More robust proxy that handles redirects and content types for general file downloads.
+    This version uses the `requests` library for simplicity and robustness.
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://ned.ipac.caltech.edu/',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
+    try:
+        # Use a synchronous request which is simpler and fine for this proxy endpoint
+        response = requests.get(url, headers=headers, timeout=PROXY_DOWNLOAD_TIMEOUT, allow_redirects=True, verify=False, stream=True)
+        response.raise_for_status()
+
+        # Get content length for progress tracking
+        content_length = response.headers.get('Content-Length')
+        headers = {'Content-Length': content_length} if content_length else {}
+        
+        # For HTML content from NED, it must be returned as plain text for the frontend parser
+        media_type = response.headers.get('Content-Type', 'application/octet-stream')
+        if 'text/html' in media_type:
+            # Not streamed as we need to parse it on the frontend
+            return Response(content=response.content, media_type="text/plain")
+
+        # For FITS or other files, stream the response
+        return StreamingResponse(response.iter_content(chunk_size=4096), media_type=media_type, headers=headers)
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Proxy Download HTTP Error for {url}: {e.response.status_code}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"Failed to download from external URL. The server responded with status {e.response.status_code}.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Proxy Download RequestException for {url}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download from external URL due to a network error: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in the proxy download for {url}: {e}")
+        raise HTTPException(status_code=500, detail="An internal error occurred in the proxy download service.")
+
 
 # Enhanced proxy endpoint for NED requests
 @app.get("/ned-proxy/")
@@ -530,135 +3064,6 @@ async def ned_proxy(url: str):
             content={"error": f"NED proxy error: {str(e)}"}
         )
 
-# Enhanced proxy download for larger FITS files from NED
-@app.get("/ned-download/")
-async def ned_download(url: str, object_name: str = None):
-    """
-    Specialized endpoint for downloading FITS files from NED.
-    Includes proper handling of the file size and progress tracking.
-    """
-    try:
-        print(f"Downloading FITS file from NED: {url}")
-        
-        # Create custom headers that mimic a browser
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
-        }
-        
-        # Create a custom SSL context that's optimized for astronomy services
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE  # Disables certificate verification
-        
-        # Use aiohttp to make the request
-        conn = aiohttp.TCPConnector(ssl=ssl_context)
-        async with aiohttp.ClientSession(connector=conn) as session:
-            async with session.get(url, headers=headers, allow_redirects=True) as response:
-                if not response.ok:
-                    return JSONResponse(
-                        status_code=response.status,
-                        content={"error": f"NED download failed: HTTP {response.status}"}
-                    )
-                
-                # Read the content
-                content = await response.read()
-                
-                # Generate a unique filename
-                filename = url.split('/')[-1]
-                if not filename.lower().endswith('.fits'):
-                    if object_name:
-                        # Use the object name to create a meaningful filename
-                        filename = f"{object_name.replace(' ', '_')}.fits"
-                    else:
-                        # Use a generic name with timestamp
-                        import time
-                        timestamp = int(time.time())
-                        filename = f"ned_download_{timestamp}.fits"
-                
-                # Create the uploads directory if it doesn't exist
-                uploads_dir = Path("files/uploads")
-                uploads_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Construct the file path
-                file_path = uploads_dir / filename
-                
-                # Write the file
-                with open(file_path, "wb") as buffer:
-                    buffer.write(content)
-                
-                # Return the relative path for loading
-                return JSONResponse(content={
-                    "message": "File downloaded successfully from NED",
-                    "filepath": f"uploads/{filename}"
-                })
-                
-    except Exception as e:
-        print(f"Error in NED download: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"NED download error: {str(e)}"}
-        )
-@app.get("/proxy-download/")
-async def proxy_download(url: str, request: Request):
-    """
-    Proxy endpoint for downloading files from external URLs that may have SSL issues.
-    This is especially useful for astronomy data sources with self-signed certificates.
-    """
-    try:
-        print(f"Downloading file from: {url}")
-        
-        # Create a custom SSL context that's more permissive for astronomy data
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE  # Disables certificate verification
-        
-        # Get the file through our proxy with the custom SSL context
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
-        }
-        
-        try:
-            # First try with regular verification
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, allow_redirects=True) as response:
-                    if response.status != 200:
-                        raise aiohttp.ClientError(f"Failed to download: HTTP {response.status}")
-                    
-                    # Read the content
-                    content = await response.read()
-        except Exception as e:
-            print(f"Error in regular download: {e}")
-            print("Trying with SSL verification disabled...")
-            
-            # Fall back to disabled verification if regular download fails
-            conn = aiohttp.TCPConnector(ssl=ssl_context)
-            async with aiohttp.ClientSession(connector=conn) as session:
-                async with session.get(url, headers=headers, allow_redirects=True) as response:
-                    if response.status != 200:
-                        raise aiohttp.ClientError(f"Failed to download: HTTP {response.status}")
-                    
-                    # Read the content
-                    content = await response.read()
-        
-        # Return the content as binary response
-        return Response(
-            content=content,
-            media_type="application/octet-stream"
-        )
-    
-    except Exception as e:
-        print(f"Error in proxy download: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to download file: {str(e)}"}
-        )
-
-
-
 
 import numpy as np
 import requests
@@ -684,493 +3089,15 @@ import os
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
-class FitsTileGenerator:
-    def __init__(self, fits_data, min_value=None, max_value=None, num_processes=None):
-        """
-        Initialize with memory mapping when possible, or use the provided data.
-        
-        Args:
-            fits_data: Path to the FITS file, or a FITS HDU object, or a dict with 'data', 'header'
-            min_value: Optional minimum value for normalization
-            max_value: Optional maximum value for normalization
-            num_processes: Number of processes to use (defaults to CPU count)
-        """
-        from astropy.io import fits
-        
-        # Determine the type of input and extract data appropriately
-        if isinstance(fits_data, str):
-            # It's a file path
-            self.fits_file_path = fits_data
-            self.use_memmap = True
-            
-            # Open the file and get dimensions, but don't load all data
-            with fits.open(fits_data, memmap=True) as hdul:
-                self.width = hdul[0].header.get('NAXIS1', 0)
-                self.height = hdul[0].header.get('NAXIS2', 0)
-                self.wcs = fits.utils.WCS(hdul[0].header) if 'CRVAL1' in hdul[0].header else None
-                
-                # Sample the data to determine min/max if not provided
-                if min_value is None or max_value is None:
-                    # Sample a subset of the data for min/max calculation
-                    sample_size = min(1000, self.width * self.height)
-                    step = max(1, (self.width * self.height) // sample_size)
-                    
-                    flat_indices = np.arange(0, self.width * self.height, step)
-                    y_indices = flat_indices // self.width
-                    x_indices = flat_indices % self.width
-                    
-                    # Get sample values
-                    sample_values = hdul[0].data[y_indices, x_indices]
-                    valid_values = sample_values[np.isfinite(sample_values)]
-                    
-                    self.min_value = min_value if min_value is not None else np.min(valid_values)
-                    self.max_value = max_value if max_value is not None else np.max(valid_values)
-                else:
-                    self.min_value = min_value
-                    self.max_value = max_value
-        
-        elif hasattr(fits_data, 'data') and hasattr(fits_data, 'header'):
-            # It's an HDU object
-            self.use_memmap = False
-            self.fits_data = fits_data.data
-            
-            # Extract dimensions from the HDU
-            self.width = fits_data.header.get('NAXIS1', fits_data.data.shape[1] if len(fits_data.data.shape) >= 2 else 0)
-            self.height = fits_data.header.get('NAXIS2', fits_data.data.shape[0] if len(fits_data.data.shape) >= 2 else 0)
-            self.wcs = fits.utils.WCS(fits_data.header) if 'CRVAL1' in fits_data.header else None
-            
-            # Determine min/max values if not provided
-            if min_value is None or max_value is None:
-                # Use a sampling approach for large arrays
-                if self.width * self.height > 1_000_000:
-                    sample_size = min(1000, self.width * self.height)
-                    step = max(1, (self.width * self.height) // sample_size)
-                    
-                    flat_indices = np.arange(0, self.width * self.height, step)
-                    y_indices = flat_indices // self.width
-                    x_indices = flat_indices % self.width
-                    
-                    # Get sample values
-                    sample_values = self.fits_data[y_indices, x_indices]
-                    valid_values = sample_values[np.isfinite(sample_values)]
-                else:
-                    # For smaller arrays, use the full data
-                    valid_values = self.fits_data[np.isfinite(self.fits_data)]
-                
-                self.min_value = min_value if min_value is not None else np.min(valid_values)
-                self.max_value = max_value if max_value is not None else np.max(valid_values)
-            else:
-                self.min_value = min_value
-                self.max_value = max_value
-                
-        elif isinstance(fits_data, dict) and 'data' in fits_data:
-            # It's a dictionary with data and possibly header
-            self.use_memmap = False
-            self.fits_data = fits_data['data']
-            
-            # Extract dimensions from the data or header
-            if 'header' in fits_data and fits_data['header'] is not None:
-                header = fits_data['header']
-                self.width = header.get('NAXIS1', self.fits_data.shape[1] if len(self.fits_data.shape) >= 2 else 0)
-                self.height = header.get('NAXIS2', self.fits_data.shape[0] if len(self.fits_data.shape) >= 2 else 0)
-                self.wcs = fits.utils.WCS(header) if 'CRVAL1' in header else None
-            else:
-                self.width = self.fits_data.shape[1] if len(self.fits_data.shape) >= 2 else 0
-                self.height = self.fits_data.shape[0] if len(self.fits_data.shape) >= 2 else 0
-                self.wcs = None
-                
-            # Determine min/max values if not provided
-            if min_value is None or max_value is None:
-                # Use a sampling approach for large arrays
-                if self.width * self.height > 1_000_000:
-                    sample_size = min(1000, self.width * self.height)
-                    step = max(1, (self.width * self.height) // sample_size)
-                    
-                    flat_indices = np.arange(0, self.width * self.height, step)
-                    y_indices = flat_indices // self.width
-                    x_indices = flat_indices % self.width
-                    
-                    # Get sample values
-                    sample_values = self.fits_data[y_indices, x_indices]
-                    valid_values = sample_values[np.isfinite(sample_values)]
-                else:
-                    # For smaller arrays, use the full data
-                    valid_values = self.fits_data[np.isfinite(self.fits_data)]
-                
-                self.min_value = min_value if min_value is not None else np.min(valid_values)
-                self.max_value = max_value if max_value is not None else np.max(valid_values)
-            else:
-                self.min_value = min_value
-                self.max_value = max_value
-        else:
-            raise ValueError("Unsupported fits_data type. Must be a file path, HDU object, or dict with 'data' key.")
-        
-        # Calculate the number of zoom levels
-        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / 256))))
-        
-        # Set up multiprocessing
-        self.num_processes = num_processes if num_processes else mp.cpu_count()
-        self.pool = ProcessPoolExecutor(max_workers=self.num_processes)
-        
-        # Create tile cache directory
-        self.cache_dir = tempfile.mkdtemp(prefix="fits_tiles_")
-        self.memory_cache = {}
-        
-        # Generate overview image immediately using fast downsampling
-        self.overview = self._generate_quick_overview()
-        
-        # Create a queue for progressive loading
-        self.progressive_queue = queue.Queue()
-        
-        # Create a cache for pre-rendered overview levels
-        self.overview_cache = {}
-        
-        # Start a worker thread for progressive loading
-        self.worker_thread = threading.Thread(target=self._progressive_worker, daemon=True)
-        self.worker_thread.start()
-        
-        # Signal that higher-quality overviews should be generated
-        self.progressive_queue.put(('generate_better_overview', None))
-        
-        print(f"Initialized memory-mapped FITS Tile Generator with {self.num_processes} processes")
-        print(f"Image dimensions: {self.width}x{self.height}, Zoom levels: {self.max_level+1}")
-    
-    def _get_memmap(self):
-        """Get data either from memory-map or from loaded array"""
-        if hasattr(self, 'use_memmap') and self.use_memmap:
-            from astropy.io import fits
-            with fits.open(self.fits_file_path, memmap=True) as hdul:
-                return np.copy(hdul[0].data)
-        else:
-            # Return the already loaded data
-            return self.fits_data
-    
-    def _generate_quick_overview(self):
-        """Generate a very fast, low-quality overview for immediate display"""
-        # Create a heavily downsampled overview image (max 512x512 for immediate speed)
-        scale = max(1, max(self.width, self.height) / 512)
-        overview_width = int(self.width / scale)
-        overview_height = int(self.height / scale)
-        
-        try:
-            # Use memory mapping to access data
-            with ProcessPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._quick_overview_worker, overview_width, overview_height, scale)
-                result = future.result(timeout=10)  # Set timeout to ensure responsiveness
-                return result
-        except Exception as e:
-            print(f"Error generating quick overview: {e}")
-            # Fall back to a simple gray image if sampling fails
-            return self._generate_fallback_overview(overview_width, overview_height)
-    
-    def _quick_overview_worker(self, overview_width, overview_height, scale):
-        """Worker function to generate overview in a separate process"""
-        # Get memory-mapped data
-        data = self._get_memmap()
-        
-        # Use super-fast strided sampling
-        y_indices = np.linspace(0, self.height-1, overview_height, dtype=int)
-        x_indices = np.linspace(0, self.width-1, overview_width, dtype=int)
-        
-        # Extract the sampled points efficiently
-        sampled_data = data[y_indices[:, np.newaxis], x_indices]
-        
-        # Replace NaN and infinity with 0
-        sampled_data = np.nan_to_num(sampled_data, nan=0, posinf=0, neginf=0)
-        
-        # Normalize the data to 0-1 range
-        normalized_data = np.clip((sampled_data - self.min_value) / (self.max_value - self.min_value), 0, 1)
-        
-        # Convert to RGB image
-        rgb_data = (normalized_data * 255).astype(np.uint8)
-        image = Image.fromarray(rgb_data)
-        
-        # Convert to base64 encoded PNG
-        buffer = io.BytesIO()
-        image.save(buffer, format='PNG', optimize=True, compression_level=3)
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
-    def _generate_fallback_overview(self, width, height):
-        """Generate a fallback overview if sampling fails"""
-        image = Image.new('L', (width, height), color=128)
-        buffer = io.BytesIO()
-        image.save(buffer, format='PNG')
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
-    def _process_tile(self, level, x, y, tile_size=256):
-        """Process a single tile in a separate process"""
-        try:
-            # Calculate the scale for this level
-            scale = 2 ** (self.max_level - level)
-            
-            # Calculate pixel coordinates in the original image
-            start_x = x * tile_size * scale
-            start_y = y * tile_size * scale
-            end_x = min(start_x + tile_size * scale, self.width)
-            end_y = min(start_y + tile_size * scale, self.height)
-            
-            # Check if the tile is out of bounds
-            if start_x >= self.width or start_y >= self.height:
-                return None
-            
-            # Get memory-mapped data
-            data = self._get_memmap()
-            
-            # For direct sampling (faster but less accurate)
-            if scale > 1:
-                # Sample points for this tile
-                tile_width = min(tile_size, int(np.ceil((end_x - start_x) / scale)))
-                tile_height = min(tile_size, int(np.ceil((end_y - start_y) / scale)))
-                
-                # Create sample indices
-                y_indices = np.linspace(start_y, end_y - 1, tile_height, dtype=int)
-                x_indices = np.linspace(start_x, end_x - 1, tile_width, dtype=int)
-                
-                # Ensure indices are within bounds
-                y_indices = np.clip(y_indices, 0, self.height - 1)
-                x_indices = np.clip(x_indices, 0, self.width - 1)
-                
-                # Extract sampled data (much faster than loops)
-                tile_data = data[y_indices[:, np.newaxis], x_indices]
-            else:
-                # Direct extraction for highest zoom level
-                region_data = data[start_y:end_y, start_x:end_x]
-                
-                # Resize if necessary to match tile_size
-                if region_data.shape[0] != tile_size or region_data.shape[1] != tile_size:
-                    # Use simple nearest-neighbor resizing for speed
-                    h_ratio = region_data.shape[0] / tile_size
-                    w_ratio = region_data.shape[1] / tile_size
-                    
-                    tile_data = np.zeros((tile_size, tile_size), dtype=region_data.dtype)
-                    for i in range(tile_size):
-                        for j in range(tile_size):
-                            src_i = min(int(i * h_ratio), region_data.shape[0] - 1)
-                            src_j = min(int(j * w_ratio), region_data.shape[1] - 1)
-                            tile_data[i, j] = region_data[src_i, src_j]
-                else:
-                    tile_data = region_data
-            
-            # Replace NaN and infinity with 0
-            tile_data = np.nan_to_num(tile_data, nan=0, posinf=0, neginf=0)
-            
-            # Normalize the data to 0-1 range
-            normalized_data = np.clip((tile_data - self.min_value) / (self.max_value - self.min_value), 0, 1)
-            
-            # Convert to RGB image
-            rgb_data = (normalized_data * 255).astype(np.uint8)
-            image = Image.fromarray(rgb_data)
-            
-            # Convert to PNG bytes
-            buffer = io.BytesIO()
-            image.save(buffer, format='PNG')
-            return buffer.getvalue()
-                
-        except Exception as e:
-            print(f"Error generating tile ({level},{x},{y}): {e}")
-            return None
-    
-    def _generate_better_overview(self):
-        """Generate a better quality overview in the background using multiprocessing"""
-        futures = []
-        
-        # Create multiple resolution levels for progressive loading
-        for level in range(3):
-            size = 256 * (2 ** level)
-            scale = max(1, max(self.width, self.height) / size)
-            overview_width = min(size, int(self.width / scale))
-            overview_height = min(size, int(self.height / scale))
-            
-            # Skip if this level is too close to the full resolution
-            if scale < 2:
-                continue
-                
-            # Submit overview generation task to the process pool
-            futures.append((level, self.pool.submit(
-                self._generate_overview_level, level, overview_width, overview_height, scale)))
-        
-        # Collect results
-        for level, future in futures:
-            try:
-                result = future.result(timeout=60)  # Set timeout to prevent hanging
-                if result:
-                    self.overview_cache[level] = result
-                    print(f"Generated better overview at level {level}")
-            except Exception as e:
-                print(f"Error generating better overview at level {level}: {e}")
-    
-    def _generate_overview_level(self, level, width, height, scale):
-        """Generate a specific overview level in a separate process"""
-        try:
-            # Get memory-mapped data
-            data = self._get_memmap()
-            
-            # Pre-allocate the result array
-            result = np.zeros((height, width), dtype=np.float32)
-            
-            # Process in small chunks to avoid memory issues
-            chunk_size = 100  # Process 100 rows at a time
-            for chunk_start in range(0, height, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, height)
-                
-                for y in range(chunk_start, chunk_end):
-                    for x in range(width):
-                        # Calculate source region
-                        src_y_start = int(y * scale)
-                        src_y_end = min(self.height, int((y + 1) * scale))
-                        src_x_start = int(x * scale)
-                        src_x_end = min(self.width, int((x + 1) * scale))
-                        
-                        # Extract block
-                        block = data[src_y_start:src_y_end, src_x_start:src_x_end]
-                        
-                        # Average the valid values (ignoring NaN and Inf)
-                        valid_mask = np.isfinite(block)
-                        if np.any(valid_mask):
-                            result[y, x] = np.mean(block[valid_mask])
-                        else:
-                            result[y, x] = 0
-            
-            # Normalize and convert to image
-            normalized = np.clip((result - self.min_value) / (self.max_value - self.min_value), 0, 1)
-            img_data = (normalized * 255).astype(np.uint8)
-            img = Image.fromarray(img_data)
-            
-            # Convert to PNG
-            buffer = io.BytesIO()
-            img.save(buffer, format='PNG')
-            return buffer.getvalue()
-        except Exception as e:
-            print(f"Error in _generate_overview_level: {e}")
-            return None
-    
-    def _progressive_worker(self):
-        """Background worker for progressive loading tasks"""
-        while True:
-            try:
-                task, params = self.progressive_queue.get()
-                
-                if task == 'generate_better_overview':
-                    self._generate_better_overview()
-                elif task == 'generate_tiles':
-                    level, x_range, y_range = params
-                    self._prefetch_tiles(level, x_range, y_range)
-                
-                self.progressive_queue.task_done()
-            except Exception as e:
-                print(f"Error in progressive worker: {e}")
-    
-    def _prefetch_tiles(self, level, x_range, y_range):
-        """Prefetch tiles in the given range using multiprocessing"""
-        futures = {}
-        
-        # Submit tile generation tasks
-        for y in range(y_range[0], y_range[1] + 1):
-            for x in range(x_range[0], x_range[1] + 1):
-                # Only prefetch if not already in cache
-                tile_key = f"{level}/{x}/{y}"
-                if tile_key not in self.memory_cache:
-                    futures[tile_key] = self.pool.submit(self._process_tile, level, x, y)
-        
-        # Collect results as they complete
-        for tile_key, future in futures.items():
-            try:
-                result = future.result(timeout=30)  # Set timeout to prevent hanging
-                if result:
-                    self.memory_cache[tile_key] = result
-            except Exception as e:
-                print(f"Error prefetching tile {tile_key}: {e}")
-    
-    def get_better_overview(self, level=0):
-        """Get a better quality overview at the specified level"""
-        if level in self.overview_cache:
-            return self.overview_cache[level]
-        return None
-    
-    def get_tile(self, level, x, y, tile_size=256):
-        """Get a tile at the specified level and coordinates with caching"""
-        # Check cache first
-        tile_key = f"{level}/{x}/{y}"
-        if tile_key in self.memory_cache:
-            return self.memory_cache[tile_key]
-        
-        # Generate the tile in a separate process
-        future = self.pool.submit(self._process_tile, level, x, y, tile_size)
-        try:
-            result = future.result(timeout=10)  # Set timeout to ensure responsiveness
-            if result:
-                # Store in cache
-                self.memory_cache[tile_key] = result
-            return result
-        except Exception as e:
-            print(f"Error in get_tile for {tile_key}: {e}")
-            return None
-    
-    def get_tile_info(self):
-        """Get information about the tiles"""
-        return {
-            "width": self.width,
-            "height": self.height,
-            "tileSize": 256,
-            "maxLevel": self.max_level,
-            "minValue": float(self.min_value),
-            "maxValue": float(self.max_value),
-            "overview": self.overview
-        }
-    
-    def request_tiles(self, level, center_x, center_y, radius=2):
-        """Request prefetching of tiles around the given center"""
-        # Calculate tile coordinates
-        tile_size = 256
-        scale = 2 ** (self.max_level - level)
-        center_tile_x = center_x * scale // tile_size
-        center_tile_y = center_y * scale // tile_size
-        
-        # Calculate range with the given radius
-        x_min = max(0, center_tile_x - radius)
-        x_max = center_tile_x + radius
-        y_min = max(0, center_tile_y - radius)
-        y_max = center_tile_y + radius
-        
-        # Queue the prefetch task
-        self.progressive_queue.put(('generate_tiles', (level, (x_min, x_max), (y_min, y_max))))
-    
-    def cleanup(self):
-        """Clean up resources and properly release all references"""
-        # Stop the worker thread
-        try:
-            # Notify worker thread to exit
-            self.progressive_queue.put(('exit', None))
-            if self.worker_thread.is_alive():
-                self.worker_thread.join(timeout=1.0)  # Wait for thread to finish with timeout
-        except:
-            pass
-            
-        # Shutdown the process pool
-        try:
-            self.pool.shutdown(wait=False)
-        except:
-            pass
-            
-        # Clear memory caches
-        try:
-            self.memory_cache.clear()
-            self.overview_cache.clear()
-        except:
-            pass
-            
-        # Remove temporary directory
-        import shutil
-        try:
-            shutil.rmtree(self.cache_dir, ignore_errors=True)
-        except:
-            pass
-            
-        # Force garbage collection
-        import gc
-        gc.collect()
 
-        
+# =============================================================================
+# OLD FitsTileGenerator CLASS COMPLETELY REMOVED
+# =============================================================================
+# The original complex FitsTileGenerator class has been completely removed
+# because it was causing 'cannot pickle _thread.lock object' errors.
+# It has been replaced with SimpleTileGenerator (defined at end of file).
+# =============================================================================
+
 @app.post("/request-tiles/")
 async def request_tiles(request: Request):
     """Request prefetching of tiles for a specific region."""
@@ -1224,83 +3151,124 @@ async def request_tiles(request: Request):
         )
 
 
+@app.get("/fits-tile-info/")
+async def get_fits_tile_information():
+    """Returns tile information for the currently loaded FITS file."""
+    fits_file = getattr(app.state, "current_fits_file", None)
+    hdu_index = getattr(app.state, "current_hdu_index", 0)
+
+    if not fits_file:
+        raise HTTPException(status_code=400, detail="No FITS file currently loaded.")
+
+    file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+    tile_generator = active_tile_generators.get(file_id)
+
+    if not tile_generator:
+        # Attempt to initialize if not found, similar to /fits-tile/ endpoint logic
+        try:
+            print(f"Tile generator not found for {file_id} in /fits-tile-info/, attempting to initialize.")
+            generator_instance = SimpleTileGenerator(fits_file, hdu_index)
+            active_tile_generators[file_id] = generator_instance
+            tile_generator = generator_instance
+            print(f"Successfully initialized tile generator for {file_id} in /fits-tile-info/")
+        except Exception as e:
+            print(f"Error initializing tile generator for {file_id} in /fits-tile-info/: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
+
+    if tile_generator:
+        return JSONResponse(content=tile_generator.get_tile_info())
+    else:
+        # This case should ideally be covered by the initialization attempt or prior errors.
+        raise HTTPException(status_code=404, detail=f"Tile generator not available for {file_id}")
+
 
 @app.get("/fits-tile/{level}/{x}/{y}")
-async def get_fits_tile(level: int, x: int, y: int):
+async def get_fits_tile(level: int, x: int, y: int, request: Request):
     """Get a specific tile of the current FITS file."""
     try:
-        # Check if a FITS file is loaded
         fits_file = getattr(app.state, "current_fits_file", None)
+        hdu_index = getattr(app.state, "current_hdu_index", 0)
+        query_v = request.query_params.get('v', 'N/A')
+
+        logger.info(f"TILE_REQUEST: L{level}, X{x}, Y{y}, v={query_v}, app.state.fits_file='{fits_file}', app.state.hdu_index={hdu_index}")
+
         if not fits_file:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "No FITS file currently loaded"}
-            )
-        
-        # Get file ID
-        file_id = os.path.basename(fits_file)
-        
-        # Check if the tile generator exists
-        if file_id not in active_tile_generators:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Tile generator not initialized"}
-            )
-        
-        # Try to get the tile from cache first
-        tile_key = f"{file_id}/{level}/{x}/{y}"
+            logger.error("TILE_ERROR: No FITS file currently loaded in app.state.")
+            # Return a placeholder or error image. For now, let's assume error handling below covers it or returns empty.
+            # For a quick fix, returning a 404 might be better than letting it proceed to error out later.
+            return JSONResponse(status_code=400, content={"error": "No FITS file currently loaded in app.state"})
+
+        file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+        logger.info(f"TILE_INFO: Constructed file_id='{file_id}'")
+
+        tile_generator = active_tile_generators.get(file_id)
+        generator_status = "EXISTING"
+
+        if not tile_generator:
+            generator_status = "NEWLY_INITIALIZED"
+            logger.warning(f"TILE_INIT: No active generator for '{file_id}'. Initializing SimpleTileGenerator.")
+            try:
+                # Ensure fits_file path is valid before passing to generator
+                if not Path(fits_file).exists():
+                    logger.error(f"TILE_ERROR: FITS file path '{fits_file}' from app.state does not exist for new generator.")
+                    return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
+
+                tile_generator = SimpleTileGenerator(fits_file, hdu_index)
+                tile_generator.ensure_dynamic_range_calculated() # Sets initial min/max based on percentiles
+                active_tile_generators[file_id] = tile_generator
+                logger.info(f"TILE_INIT: Successfully initialized and stored generator for '{file_id}'. Initial min/max: {tile_generator.min_value}/{tile_generator.max_value}")
+            except Exception as e:
+                logger.exception(f"TILE_ERROR: Failed to initialize SimpleTileGenerator for '{file_id}': {e}")
+                # Return a placeholder or error image
+                # Consistent error response might be better.
+                return JSONResponse(status_code=500, content={"error": f"Failed to initialize tile generator: {str(e)}"})
+        else:
+            logger.info(f"TILE_INFO: Using {generator_status} generator for '{file_id}'.")
+
+        # Log the state of the generator *before* get_tile is called
+        logger.info(f"TILE_GENERATOR_STATE ({generator_status} for '{file_id}'): "
+                    f"min={getattr(tile_generator, 'min_value', 'N/A')}, "
+                    f"max={getattr(tile_generator, 'max_value', 'N/A')}, "
+                    f"scale='{getattr(tile_generator, 'scaling_function', 'N/A')}', "
+                    f"cmap='{getattr(tile_generator, 'color_map', 'N/A')}'")
+
+        # Caching logic
+        tile_key = f"{file_id}/{level}/{x}/{y}/{tile_generator.color_map}/{tile_generator.scaling_function}/{tile_generator.min_value}/{tile_generator.max_value}"
         cached_tile = tile_cache.get(tile_key)
-        
         if cached_tile:
-            # Return cached tile
-            return Response(
-                content=cached_tile,
-                media_type="image/png"
-            )
-        
-        # Generate the tile
-        tile_generator = active_tile_generators[file_id]
+            logger.info(f"TILE_CACHE: Hit for {tile_key}")
+            return Response(content=cached_tile, media_type="image/png")
+        logger.info(f"TILE_CACHE: Miss for {tile_key}")
+
         tile_data = tile_generator.get_tile(level, x, y)
-        
+
         if tile_data is None:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Tile ({level},{x},{y}) not found"}
-            )
-        
-        # Add to cache
+            logger.error(f"TILE_ERROR: get_tile returned None for L{level},X{x},Y{y} on file_id '{file_id}'")
+            return JSONResponse(status_code=404, content={"error": f"Tile ({level},{x},{y}) data not found or generation failed"})
+
         tile_cache.put(tile_key, tile_data)
-        
-        # Return the tile
-        return Response(
-            content=tile_data,
-            media_type="image/png"
-        )
-    
+        return Response(content=tile_data, media_type="image/png")
+
     except Exception as e:
-        print(f"Error getting tile ({level},{x},{y}): {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get tile: {str(e)}"}
-        )
+        logger.exception(f"TILE_ERROR: Unexpected error in get_fits_tile (L{level},X{x},Y{y}): {e}")
+        return JSONResponse(status_code=500, content={"error": f"Failed to get tile due to unexpected server error: {str(e)}"})
 
 
 
 
 # Add this new endpoint to list available files in the "files" directory
-@app.get("/list-files/")
-@app.get("/list-files/{path:path}")
-async def list_files(path: str = ""):
+@app.get("/list-files-for-frontend/")
+@app.get("/list-files-for-frontend/{path:path}")
+async def list_files_for_frontend(path: str = "", search: str = Query(None)):
     """List available FITS files and directories in the specified path.
     
     Args:
         path: Relative path within the files directory (optional)
+        search: Search term to filter files and folders (optional)
     """
     try:
         # Base directory is "files"
-        base_dir = Path("files")
+        base_dir = Path(FILES_DIRECTORY)
         
         # Construct the full directory path
         current_dir = base_dir / path if path else base_dir
@@ -1320,31 +3288,56 @@ async def list_files(path: str = ""):
             )
         
         items = []
-        
-        # Add directories first
-        for dir_path in current_dir.glob("*/"):
-            if dir_path.is_dir():
-                rel_path = str(dir_path.relative_to(base_dir))
-                items.append({
-                    "name": dir_path.name,
-                    "path": rel_path,
-                    "type": "directory",
-                    "modified": dir_path.stat().st_mtime
-                })
-        
-        # Add FITS files (with case-insensitive extension matching)
-        for extension in ["*.fits", "*.fit", "*.FITS", "*.FIT"]:
-            for file_path in current_dir.glob(extension):
-                if file_path.is_file():
-                    rel_path = str(file_path.relative_to(base_dir))
+
+        if search:
+            # Recursive search if a search term is provided
+            for entry in current_dir.rglob(f'*{search}*'):
+                if any(part.startswith('.') for part in entry.parts):
+                    continue
+
+                if entry.is_dir():
+                    rel_path = str(entry.relative_to(base_dir))
                     items.append({
-                        "name": file_path.name,
+                        "name": entry.name,
+                        "path": rel_path,
+                        "type": "directory",
+                        "modified": entry.stat().st_mtime
+                    })
+                elif entry.is_file() and entry.suffix.lower() in ['.fits', '.fit']:
+                    rel_path = str(entry.relative_to(base_dir))
+                    items.append({
+                        "name": entry.name,
                         "path": rel_path,
                         "type": "file",
-                        "size": file_path.stat().st_size,
-                        "modified": file_path.stat().st_mtime
+                        "size": entry.stat().st_size,
+                        "modified": entry.stat().st_mtime
                     })
-        
+        else:
+            # Original behavior: list contents of the current directory
+            # Add directories first
+            for dir_path in current_dir.glob("*/"):
+                if dir_path.is_dir():
+                    rel_path = str(dir_path.relative_to(base_dir))
+                    items.append({
+                        "name": dir_path.name,
+                        "path": rel_path,
+                        "type": "directory",
+                        "modified": dir_path.stat().st_mtime
+                    })
+            
+            # Add FITS files (with case-insensitive extension matching)
+            for extension in ["*.fits", "*.fit", "*.FITS", "*.FIT"]:
+                for file_path in current_dir.glob(extension):
+                    if file_path.is_file():
+                        rel_path = str(file_path.relative_to(base_dir))
+                        items.append({
+                            "name": file_path.name,
+                            "path": rel_path,
+                            "type": "file",
+                            "size": file_path.stat().st_size,
+                            "modified": file_path.stat().st_mtime
+                        })
+
         # Sort items: directories first, then files, both alphabetically
         items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
         
@@ -1359,17 +3352,470 @@ async def list_files(path: str = ""):
             status_code=500,
             content={"error": f"Failed to list files: {str(e)}"}
         )
-# Add endpoint to load a specific file
+# Add endpoint to
+
+
+
+def table_to_serializable(table: Table) -> list:
+    """Converts an Astropy Table to a list of dictionaries."""
+    sources_list = []
+    for row in table:
+        source_dict = {}
+        for col_name in table.colnames:
+            val = row[col_name]
+            if isinstance(val, (np.integer, np.floating)):
+                if np.isnan(val) or np.isinf(val):
+                    source_dict[col_name] = None
+                else:
+                    source_dict[col_name] = val.item()
+            elif isinstance(val, bytes):
+                source_dict[col_name] = val.decode('utf-8', errors='ignore')
+            elif isinstance(val, str) or isinstance(val, (int, float, bool)) or val is None:
+                if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+                    source_dict[col_name] = None
+                else:
+                    source_dict[col_name] = val
+            else:
+                source_dict[col_name] = str(val)
+        sources_list.append(source_dict)
+    return sources_list
+    
+
+@app.get("/cone-search/")
+async def cone_search(ra: float, dec: float, radius: float, catalog_name: str):
+    """
+    Performs a cone search in a given catalog.
+    """
+    catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
+    
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read catalog: {e}")
+
+    # Detect coordinate columns
+    ra_col_name, dec_col_name = detect_coordinate_columns(catalog_table.colnames)
+    if not ra_col_name or not dec_col_name:
+        raise HTTPException(status_code=500, detail="Could not detect RA/Dec columns in catalog")
+
+    # Ensure RA and Dec columns are float type for SkyCoord
+    try:
+        # Handle cases where columns might be bytes
+        if catalog_table[ra_col_name].dtype.kind == 'S':
+             catalog_table[ra_col_name] = np.char.decode(catalog_table[ra_col_name])
+        if catalog_table[dec_col_name].dtype.kind == 'S':
+             catalog_table[dec_col_name] = np.char.decode(catalog_table[dec_col_name])
+        
+        catalog_table[ra_col_name] = catalog_table[ra_col_name].astype(float)
+        catalog_table[dec_col_name] = catalog_table[dec_col_name].astype(float)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=500, detail=f"Could not convert coordinate columns to numeric type: {e}")
+
+    # Create SkyCoord objects for the catalog and the search position
+    catalog_coords = SkyCoord(ra=catalog_table[ra_col_name], dec=catalog_table[dec_col_name], unit=(u.deg, u.deg), frame='icrs')
+    search_coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
+
+    # Perform the cone search using separation method
+    separations = search_coord.separation(catalog_coords)
+    radius_angle = radius * u.arcsec
+    
+    # Find sources within the specified radius
+    mask = separations < radius_angle
+    idx = np.where(mask)[0]
+
+    if len(idx) == 0:
+        return {"sources": []}
+
+    # Create a new table with the found sources
+    nearby_sources_table = catalog_table[idx]
+    
+    # Add a column for the distance
+    nearby_sources_table['distance_arcsec'] = separations[mask].to(u.arcsec).value
+    
+    # Sort by distance
+    nearby_sources_table.sort('distance_arcsec')
+
+    # Convert the result to a list of dictionaries
+    sources_list = table_to_serializable(nearby_sources_table)
+
+    return {"sources": sources_list}
+
+@app.get("/flag-search/")
+async def flag_search(catalog_name: str, flag_column: str):
+    """
+    Searches a catalog for entries where a given flag column is true.
+    """
+    catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
+    
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read catalog: {e}")
+
+    if flag_column not in catalog_table.colnames:
+        raise HTTPException(status_code=400, detail=f"Flag column '{flag_column}' not found in catalog.")
+
+    try:
+        column_data = catalog_table[flag_column]
+        
+        if column_data.dtype.kind in ['b', 'i']: # Boolean or integer
+             mask = column_data.astype(bool)
+        elif column_data.dtype.kind in ['U', 'S']: # String
+             str_data_lower = np.char.lower(column_data.astype(str))
+             true_values = ['true', 't', 'yes', 'y', '1']
+             mask = np.isin(str_data_lower, true_values)
+        else:
+             mask = column_data.astype(bool)
+
+        flagged_sources_table = catalog_table[mask]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to filter by flag: {e}")
+
+    if len(flagged_sources_table) == 0:
+        return {"sources": []}
+
+    sources_list = table_to_serializable(flagged_sources_table)
+
+    return {"sources": sources_list}
+
+
+
+# FIND AND REPLACE these exact classes in your main.py file:
+
+from pydantic import BaseModel, validator
+from typing import List, Literal
+
+class RangeCondition(BaseModel):
+    column_name: str
+    operator: str
+    value: str  # ONLY STRING - NO UNION!
+    
+    @validator('operator')
+    def validate_operator(cls, v):
+        valid_operators = ['>', '<', '>=', '<=', '==', '!=']
+        if v not in valid_operators:
+            raise ValueError(f"Operator must be one of: {', '.join(valid_operators)}")
+        return v
+
+class RangeSearchRequest(BaseModel):
+    catalog_name: str
+    conditions: List[RangeCondition]
+    logical_operator: Literal['AND', 'OR']
+
+
+# ALSO UPDATE THE ENDPOINT FUNCTION:
+
+@app.post("/range-search/")
+async def range_search(request: RangeSearchRequest):
+    """
+    Searches a catalog for entries matching a set of numeric, boolean, or string range conditions.
+    Enhanced to handle dynamic type detection and validation.
+    """
+    catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
+    
+    try:
+        catalog_table = get_astropy_table_from_catalog(request.catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{request.catalog_name}'.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read catalog: {e}")
+
+    all_masks = []
+    
+    for condition in request.conditions:
+        if condition.column_name not in catalog_table.colnames:
+            raise HTTPException(status_code=400, detail=f"Column '{condition.column_name}' not found in catalog.")
+
+        column_data = catalog_table[condition.column_name]
+        column_name = condition.column_name
+        operator = condition.operator
+        value_str = condition.value.strip()
+
+        print(f"Processing condition: Column '{column_name}', Operator '{operator}', Value '{value_str}'")
+
+        # Special handling for known string columns
+        known_string_columns = ['galaxy', 'name', 'object_name', 'source_name', 'target', 'object_id']
+        is_known_string_column = column_name.lower() in known_string_columns or any(term in column_name.lower() for term in ['galaxy', 'name', 'object', 'target'])
+
+        # Step 1: Handle boolean columns
+        if column_data.dtype.kind == 'b':
+            # Convert string boolean values to actual booleans
+            if value_str.lower() in ['true', 't', 'yes', 'y', '1']:
+                value = True
+            elif value_str.lower() in ['false', 'f', 'no', 'n', '0']:
+                value = False
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid boolean value '{value_str}' for column '{column_name}'. Use true/false.")
+            
+            if operator != '==':
+                raise HTTPException(status_code=400, detail=f"Only '==' operator is supported for boolean column '{column_name}'.")
+            
+            mask = (column_data == value)
+            all_masks.append(mask)
+            continue
+
+        # Step 2: Handle explicit string columns or known string columns
+        if column_data.dtype.kind in 'SU' or is_known_string_column:
+            if operator not in ['==', '!=']:
+                raise HTTPException(status_code=400, detail=f"Only '==' and '!=' operators are supported for string column '{column_name}'.")
+            
+            try:
+                # Convert column data to string for comparison if needed
+                if column_data.dtype.kind == 'S':  # Byte strings
+                    str_column_data = np.char.decode(column_data, 'utf-8', errors='ignore')
+                else:  # Unicode strings or other types
+                    str_column_data = np.array([str(val) for val in column_data])
+                
+                # Perform case-insensitive comparison
+                condition_value_str = value_str.lower()
+                str_column_data_lower = np.char.lower(str_column_data.astype(str))
+                
+                if operator == '==':
+                    mask = str_column_data_lower == condition_value_str
+                else:  # !=
+                    mask = str_column_data_lower != condition_value_str
+                    
+                all_masks.append(mask)
+                continue
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to process string column '{column_name}': {e}")
+
+        # Step 3: Check if this looks like a string value being used on a potentially mixed column
+        # If the value contains letters and isn't a known number format, treat as string
+        is_string_value = bool(re.search(r'[a-zA-Z]', value_str)) and not re.match(r'^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$', value_str)
+        
+        if is_string_value:
+            # String value - only allow equality operators
+            if operator not in ['==', '!=']:
+                raise HTTPException(status_code=400, detail=f"String values like '{value_str}' can only use '==' or '!=' operators on column '{column_name}'.")
+            
+            try:
+                # Convert entire column to string for comparison
+                str_column_data = np.array([str(val) for val in column_data])
+                condition_value_lower = value_str.lower()
+                str_column_data_lower = np.char.lower(str_column_data)
+                
+                if operator == '==':
+                    mask = str_column_data_lower == condition_value_lower
+                else:  # !=
+                    mask = str_column_data_lower != condition_value_lower
+                    
+                all_masks.append(mask)
+                continue
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to process column '{column_name}' as text: {e}")
+
+        # Step 4: Handle numeric operations
+        # Try to convert string to number
+        try:
+            if '.' in value_str or 'e' in value_str.lower() or 'E' in value_str:
+                numeric_value = float(value_str)
+            else:
+                # Try int first, then float
+                try:
+                    numeric_value = int(value_str)
+                except ValueError:
+                    numeric_value = float(value_str)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Cannot convert '{value_str}' to a number for numeric operation on column '{column_name}'. Use '==' or '!=' for text values.")
+
+        # Check if column is actually numeric
+        if column_data.dtype.kind not in 'iufc':  # integers, unsigned integers, floats, complex
+            raise HTTPException(status_code=400, detail=f"Cannot use numeric operator '{operator}' on non-numeric column '{column_name}'. Use '==' or '!=' for text comparisons.")
+
+        try:
+            if operator == '>':
+                mask = column_data > numeric_value
+            elif operator == '<':
+                mask = column_data < numeric_value
+            elif operator == '>=':
+                mask = column_data >= numeric_value
+            elif operator == '<=':
+                mask = column_data <= numeric_value
+            elif operator == '==':
+                mask = column_data == numeric_value
+            elif operator == '!=':
+                mask = column_data != numeric_value
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid operator '{operator}'.")
+            
+            all_masks.append(mask)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to apply numeric condition on '{column_name}': {e}")
+
+    if not all_masks:
+        return {"sources": []}
+
+    try:
+        if request.logical_operator == 'AND':
+            final_mask = np.logical_and.reduce(all_masks)
+        elif request.logical_operator == 'OR':
+            final_mask = np.logical_or.reduce(all_masks)
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid logical operator '{request.logical_operator}'.")
+        
+        filtered_table = catalog_table[final_mask]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to combine filters: {e}")
+
+    if len(filtered_table) == 0:
+        return {"sources": []}
+
+    sources_list = table_to_serializable(filtered_table)
+    return {"sources": sources_list}
+
+@app.get("/list-files/")
+@app.get("/list-files/{path:path}")
+async def list_files(path: str = ""):
+    """List files and directories in a given path relative to the project root.
+    
+    Args:
+        path: Relative path within the allowed directories (optional)
+    """
+    try:
+        # Base directory is project root
+        base_dir = Path(__file__).parent.resolve()
+        
+        if not path:
+            # For the root, list key directories
+            key_dirs = ["files", "catalogs", "kernels"]
+            items = []
+            for dir_name in key_dirs:
+                dir_path = base_dir / dir_name
+                if dir_path.is_dir():
+                    items.append({
+                        "name": dir_name,
+                        "path": dir_name,
+                        "type": "dir",
+                        "size": 0,
+                        "modified": dir_path.stat().st_mtime,
+                    })
+            return JSONResponse(content={
+                "path": "",
+                "parent_path": "",
+                "current_path": "",
+                "files": items,
+                "items": items
+            })
+
+        # Security checks
+        if ".." in path.split(os.path.sep):
+            raise HTTPException(status_code=400, detail="Invalid path (contains '..')")
+
+        current_path = (base_dir / path).resolve()
+
+        # Enhanced security check
+        if not current_path.is_relative_to(base_dir):
+            raise HTTPException(status_code=403, detail="Access to this path is forbidden.")
+
+        if not current_path.exists():
+            raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+
+        if not current_path.is_dir():
+            raise HTTPException(status_code=400, detail="The specified path is not a directory.")
+
+        # List directory contents
+        items = []
+        
+        # Determine if we're in a files directory context
+        is_files_context = path == FILES_DIRECTORY or path.startswith(FILES_DIRECTORY)
+        
+        # Get all items in the directory
+        for item_path in current_path.iterdir():
+            if item_path.name.startswith('.'):  # Skip hidden files
+                continue
+
+            try:
+                stat_info = item_path.stat()
+                is_directory = item_path.is_dir()
+                
+                # Always include directories
+                if is_directory:
+                    item_data = {
+                        "name": item_path.name,
+                        "path": str(item_path.relative_to(base_dir)),
+                        "type": "dir",
+                        "modified": stat_info.st_mtime,
+                        "size": 0,
+                    }
+                    items.append(item_data)
+                else:
+                    # For files, apply filtering based on context
+                    if is_files_context:
+                        # In files directory, only show FITS files
+                        file_ext = item_path.suffix.lower()
+                        if file_ext in ['.fits', '.fit']:
+                            item_data = {
+                                "name": item_path.name,
+                                "path": str(item_path.relative_to(base_dir)),
+                                "type": "file",
+                                "modified": stat_info.st_mtime,
+                                "size": stat_info.st_size,
+                            }
+                            items.append(item_data)
+                    else:
+                        # In other directories, show all files
+                        item_data = {
+                            "name": item_path.name,
+                            "path": str(item_path.relative_to(base_dir)),
+                            "type": "file",
+                            "modified": stat_info.st_mtime,
+                            "size": stat_info.st_size,
+                        }
+                        items.append(item_data)
+                
+            except (FileNotFoundError, PermissionError) as e:
+                print(f"Skipping {item_path} due to error: {e}")
+                continue
+        
+        # Sort items: directories first, then files, both alphabetically
+        items.sort(key=lambda x: (x["type"] != "dir", x["name"].lower()))
+        
+        # Calculate parent path
+        parent = current_path.parent
+        parent_path = ""
+        # Check if parent is within base_dir and not the base_dir itself
+        if parent.is_relative_to(base_dir) and parent != base_dir:
+            parent_path = str(parent.relative_to(base_dir))
+        elif current_path != base_dir and parent == base_dir:
+            parent_path = ""  # at a key directory, parent is root
+
+        # Return response compatible with both formats
+        return JSONResponse(content={
+            "path": path,
+            "parent_path": parent_path,
+            "current_path": path,
+            "files": items,
+            "items": items
+        })
+        
+    except HTTPException:
+        raise  # Re-raise HTTPException to let FastAPI handle it
+    except Exception as e:
+        print(f"Error in list_files for path '{path}': {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred while listing files.")
+
+
+
 @app.get("/load-file/{filepath:path}")
-async def load_file(filepath: str):
-    """Set the active FITS file.
+async def load_file(filepath: str, hdu: int = Query(DEFAULT_HDU_INDEX)):  # Updated
+    """
+    Set the active FITS file and initialize its tile generator.
     
     Args:
         filepath: The path to the FITS file, relative to the files directory.
+        hdu: The HDU index of the FITS file to load.
     """
     try:
         # Base directory is "files"
-        base_dir = Path("files")
+        base_dir = Path(FILES_DIRECTORY)
         
         # Construct the full path
         file_path = base_dir / filepath
@@ -1388,11 +3834,37 @@ async def load_file(filepath: str):
                 content={"error": "Access denied: file is outside the files directory"}
             )
         
-        # Set the global file path
-        app.state.current_fits_file = str(file_path)
-        print(f"Set current FITS file to: {app.state.current_fits_file}")
+        # Verify the HDU index is valid
+        try:
+            with fits.open(file_path) as hdul:
+                if hdu < 0 or hdu >= len(hdul):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": f"Invalid HDU index: {hdu}. File has {len(hdul)} HDUs."}
+                    )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error checking HDU: {str(e)}"}
+            )
         
-        return JSONResponse(content={"message": f"File {filepath} set as active"})
+        # Set the global file path and HDU index
+        app.state.current_fits_file = str(file_path)
+        app.state.current_hdu_index = hdu
+        print(f"Set current FITS file to: {app.state.current_fits_file}, HDU: {app.state.current_hdu_index}")
+        
+        # Clear the tile cache for previous files
+        tile_cache.clear()
+        
+        # Initialize the tile generator
+        initialize_tile_generator(file_id=file_path, fits_data=None)
+        
+        # Return success
+        return JSONResponse(content={
+            "message": f"File {filepath} set as active, HDU: {hdu}",
+            "filepath": filepath,
+            "hdu": hdu
+        })
     except Exception as e:
         print(f"Error setting active file: {str(e)}")
         return JSONResponse(
@@ -1400,12 +3872,11 @@ async def load_file(filepath: str):
             content={"error": f"Failed to set active file: {str(e)}"}
         )
 
-
 @app.get("/catalog-info/")
 async def catalog_info(catalog_name: str):
     """Get information about a catalog file."""
     try:
-        catalog_path = f"catalogs/{catalog_name}"
+        catalog_path = f"{CATALOGS_DIRECTORY}/{catalog_name}"  # Updated
         
         if not os.path.exists(catalog_path):
             return JSONResponse(
@@ -1482,13 +3953,69 @@ async def catalog_info(catalog_name: str):
         )
 
 
-# Complete implementation of load_catalog_data function
+@app.post("/update-dynamic-range/")
+async def update_dynamic_range(request: Request):
+    data = await request.json()
+    min_value = data.get('min_value')
+    max_value = data.get('max_value')
+    color_map = data.get('color_map')
+    scaling_function = data.get('scaling_function') # Get the scaling function
+
+    if min_value is None or max_value is None:
+        raise HTTPException(status_code=400, detail="Missing min_value or max_value")
+    if color_map is None:
+        raise HTTPException(status_code=400, detail="Missing color_map")
+    if scaling_function is None: # Add check for scaling_function
+        raise HTTPException(status_code=400, detail="Missing scaling_function")
+
+    fits_file = getattr(app.state, "current_fits_file", None)
+    hdu_index = getattr(app.state, "current_hdu_index", 0)
+    file_id = f"{os.path.basename(fits_file)}:{hdu_index}" if fits_file else None
+
+    if not file_id or file_id not in active_tile_generators:
+        raise HTTPException(status_code=404, detail="Tile generator not found or no file loaded.")
+
+    tile_generator = active_tile_generators[file_id]
+    tile_generator.min_value = float(min_value)
+    tile_generator.max_value = float(max_value)
+    
+    if tile_generator.color_map != color_map:
+        tile_generator.color_map = color_map
+        tile_generator._update_colormap_lut() # Update LUT if colormap changes
+
+    # Update scaling function
+    if tile_generator.scaling_function != scaling_function:
+        tile_generator.scaling_function = scaling_function
+        print(f"Scaling function for {file_id} updated to: {scaling_function}")
+
+    # Clear overview as it depends on range, colormap, and scaling
+    tile_generator.overview_image = None 
+    print(f"Dynamic range for {file_id} updated: min={min_value}, max={max_value}, cmap={color_map}, scale={scaling_function}. Overview cleared.")
+
+    return {
+        "status": "success", 
+        "new_min": tile_generator.min_value, 
+        "new_max": tile_generator.max_value,
+        "color_map": tile_generator.color_map,
+        "scaling_function": tile_generator.scaling_function
+    }
+
+
+
+import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
+
+
+
+# Complete implementation of load_catalog_data function with WCS orientation analysis
 def load_catalog_data(catalog_path_str):
     """
     Load catalog data from a file.
     Supports FITS tables and CSV/TSV formats.
     Filters objects to match the loaded FITS image galaxy.
     Uses saved column mappings if available.
+    Incorporates WCS orientation analysis for proper coordinate handling.
     """
     catalog_path = Path(catalog_path_str) # Convert string path to Path object
     catalog_name = catalog_path.name # Get filename for mapping lookup
@@ -1523,10 +4050,11 @@ def load_catalog_data(catalog_path_str):
                 print(f"Extracted galaxy identifier from FITS filename: {target_galaxy}")
                 break
         
-        # Get WCS of the current image to filter by position
+        # Get WCS of the current image to filter by position and analyze orientation
         image_wcs = None
         image_center_ra = None
         image_center_dec = None
+        wcs_analysis_result = None
         try:
             with fits.open(fits_file) as hdul:
                 # Find the HDU with image data
@@ -1537,23 +4065,90 @@ def load_catalog_data(catalog_path_str):
                         break
                 
                 if image_hdu:
+                    # Analyze WCS orientation using the header
+                    print("Analyzing WCS orientation for coordinate system...")
+                    print('calling me???')
+                    wcs_analysis_result = analyze_wcs_orientation(image_hdu.header, image_hdu.data)
+                    
+                    if wcs_analysis_result:
+                        flip_y = wcs_analysis_result[0]
+                        determinant = wcs_analysis_result[1]
+                        flipped_data = wcs_analysis_result[2]
+                        
+                        print(f"WCS Analysis Results:")
+                        print(f"  Y-axis flip needed: {flip_y}")
+                        print(f"  Transformation determinant: {determinant}")
+                        
+                        # Store WCS analysis results for later use
+                        wcs_flip_info = {
+                            'flip_y': flip_y,
+                            'determinant': determinant,
+                            'coordinate_system_flipped': determinant < 0
+                        }
+                    else:
+                        print("WCS orientation analysis failed, proceeding with standard orientation")
+                        wcs_flip_info = {
+                            'flip_y': False,
+                            'determinant': 1.0,
+                            'coordinate_system_flipped': False
+                        }
+                    
                     # Get WCS from the HDU
-                    image_wcs = WCS(image_hdu.header)
+                    try:
+                        image_wcs = WCS(image_hdu.header)
+                        print("Successfully created WCS object from header")
+                        
+                        # Get transformation matrix elements for additional validation
+                        header = image_hdu.header
+                        if 'CD1_1' in header:
+                            cd11 = header.get('CD1_1', 0)
+                            cd12 = header.get('CD1_2', 0)
+                            cd21 = header.get('CD2_1', 0)
+                            cd22 = header.get('CD2_2', 0)
+                            print(f"CD matrix: [[{cd11}, {cd12}], [{cd21}, {cd22}]]")
+                        elif 'PC1_1' in header:
+                            pc11 = header.get('PC1_1', 1)
+                            pc12 = header.get('PC1_2', 0)
+                            pc21 = header.get('PC2_1', 0)
+                            pc22 = header.get('PC2_2', 1)
+                            cdelt1 = header.get('CDELT1', 1)
+                            cdelt2 = header.get('CDELT2', 1)
+                            print(f"PC matrix: [[{pc11}, {pc12}], [{pc21}, {pc22}]]")
+                            print(f"CDELT: [{cdelt1}, {cdelt2}]")
+                        
+                    except Exception as wcs_error:
+                        print(f"Error creating WCS object: {wcs_error}")
+                        image_wcs = None
                     
                     # Get the image center in pixel coordinates
-                    if hasattr(image_hdu, 'data'):
-                        height, width = image_hdu.data.shape[-2:]
-                        center_x = width // 2
-                        center_y = height // 2
-                        
-                        # Convert center to RA, DEC
-                        center_coords = image_wcs.pixel_to_world(center_x, center_y)
-                        if hasattr(center_coords, 'ra') and hasattr(center_coords, 'dec'):
-                            image_center_ra = center_coords.ra.deg
-                            image_center_dec = center_coords.dec.deg
-                            print(f"Image center: RA={image_center_ra}, DEC={image_center_dec}")
+                    if hasattr(image_hdu, 'data') and image_wcs:
+                        try:
+                            height, width = image_hdu.data.shape[-2:]
+                            center_x = width // 2
+                            center_y = height // 2
+                            
+                            # Apply Y-flip correction if needed for center calculation
+                            if wcs_flip_info['flip_y']:
+                                center_y_corrected = height - center_y - 1
+                                print(f"Applied Y-flip correction to center: {center_y} -> {center_y_corrected}")
+                                center_y = center_y_corrected
+                            
+                            # Convert center to RA, DEC
+                            center_coords = image_wcs.pixel_to_world(center_x, center_y)
+                            if hasattr(center_coords, 'ra') and hasattr(center_coords, 'dec'):
+                                image_center_ra = center_coords.ra.deg
+                                image_center_dec = center_coords.dec.deg
+                                print(f"Image center (corrected): RA={image_center_ra:.6f}, DEC={image_center_dec:.6f}")
+                            else:
+                                print("Warning: Could not extract RA/DEC from center coordinates")
+                        except Exception as center_error:
+                            print(f"Error calculating image center coordinates: {center_error}")
+                else:
+                    print("No image HDU found in FITS file")
         except Exception as e:
-            print(f"Error getting image WCS: {e}")
+            print(f"Error getting image WCS and orientation: {e}")
+            import traceback
+            print(traceback.format_exc())
         
         # --- Column Name Handling --- 
         ra_col = None
@@ -1574,200 +4169,227 @@ def load_catalog_data(catalog_path_str):
         # Check if it's a FITS file
         if catalog_path.suffix.lower() in ['.fits', '.fit']:
             print(f"Loading FITS catalog: {catalog_path}")
-            with fits.open(catalog_path) as hdul:
-                # Find the first HDU with a table
-                table_hdu = None
-                for hdu in hdul:
-                    if isinstance(hdu, fits.BinTableHDU) or isinstance(hdu, fits.TableHDU):
-                        table_hdu = hdu
-                        break
-                
-                if table_hdu is None:
-                    print(f"No table found in FITS file: {catalog_path}")
-                    return []
-                
-                # Get the table data
-                catalog_table = table_hdu.data
-                available_columns = [col.lower() for col in catalog_table.names]
-                
-                # Auto-detect columns ONLY if mapping wasn't found/used
-                if not ra_col:
-                    # Common names for RA and DEC columns
-                    ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
-                    for name in ra_names:
-                        if name in available_columns:
-                            ra_col = catalog_table.names[available_columns.index(name)] # Get original case
-                            print(f"Auto-detected RA column: {ra_col}")
+            try:
+                with fits.open(catalog_path) as hdul:
+                    # Find the first HDU with a table
+                    table_hdu = None
+                    for hdu in hdul:
+                        if isinstance(hdu, fits.BinTableHDU) or isinstance(hdu, fits.TableHDU):
+                            table_hdu = hdu
                             break
-                
-                if not dec_col:
-                    dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
-                    for name in dec_names:
-                        if name in available_columns:
-                            dec_col = catalog_table.names[available_columns.index(name)] # Get original case
-                            print(f"Auto-detected Dec column: {dec_col}")
+                    
+                    if table_hdu is None:
+                        print(f"No table found in FITS file: {catalog_path}")
+                        return []
+                    
+                    # Get the table data
+                    catalog_table = table_hdu.data
+                    available_columns = [col.lower() for col in catalog_table.names]
+                    print(f"FITS catalog columns: {catalog_table.names}")
+                    
+                    # Auto-detect columns ONLY if mapping wasn't found/used
+                    if not ra_col:
+                        # Common names for RA and DEC columns
+                        ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
+                        for name in ra_names:
+                            if name in available_columns:
+                                ra_col = catalog_table.names[available_columns.index(name)] # Get original case
+                                print(f"Auto-detected RA column: {ra_col}")
+                                break
+                    
+                    if not dec_col:
+                        dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
+                        for name in dec_names:
+                            if name in available_columns:
+                                dec_col = catalog_table.names[available_columns.index(name)] # Get original case
+                                print(f"Auto-detected Dec column: {dec_col}")
+                                break
+                    
+                    # Optional: Auto-detect resolution column if not mapped
+                    if not resolution_col:
+                        res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
+                        for name in res_names:
+                            if name in available_columns:
+                                resolution_col = catalog_table.names[available_columns.index(name)]
+                                print(f"Auto-detected Resolution column: {resolution_col}")
+                                break
+                                
+                    # Check if columns were successfully found (either mapped or auto-detected)
+                    if ra_col is None or dec_col is None:
+                        print(f"ERROR: RA ({ra_col}) or DEC ({dec_col}) column could not be determined in catalog: {catalog_path}")
+                        print(f"Available columns: {catalog_table.names}")
+                        return [] # Return empty if critical columns are missing
+                    
+                    print(f"Using columns - RA: {ra_col}, DEC: {dec_col}, Resolution: {resolution_col}")
+                    
+                    # Find galaxy column if it exists (for filtering)
+                    galaxy_col = None
+                    galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
+                    
+                    for col_name_candidate in galaxy_col_candidates:
+                        if col_name_candidate in available_columns:
+                            galaxy_col = catalog_table.names[available_columns.index(col_name_candidate)]
+                            print(f"Found potential galaxy column: {galaxy_col}")
                             break
-                
-                # Optional: Auto-detect resolution column if not mapped
-                if not resolution_col:
-                    res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
-                    for name in res_names:
-                        if name in available_columns:
-                            resolution_col = catalog_table.names[available_columns.index(name)]
-                            print(f"Auto-detected Resolution column: {resolution_col}")
-                            break
-                # Check if columns were successfully found (either mapped or auto-detected)
-                if ra_col is None or dec_col is None:
-                    print(f"RA ({ra_col}) or DEC ({dec_col}) column could not be determined in catalog: {catalog_path}")
-                    print(f"Available columns: {catalog_table.names}")
-                    # Optionally raise an error or return empty if critical columns are missing
-                    # return [] 
-                    # For now, proceed but coordinates might be wrong/missing
-                    pass
-                
-                # Find galaxy column if it exists (for filtering)
-                galaxy_col = None
-                galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
-                
-                for col_name_candidate in galaxy_col_candidates:
-                    if col_name_candidate in available_columns:
-                        galaxy_col = catalog_table.names[available_columns.index(col_name_candidate)]
-                        print(f"Found potential galaxy column: {galaxy_col}")
-                        break
-                
-                # Process each row - optimize by pre-filtering if possible
-                total_count = len(catalog_table)
-                filtered_count = 0
-                
-                # Filtering logic - use a combination of galaxy name and position filtering
-                process_rows = catalog_table # Start with all rows
-                
-                # First try galaxy name filtering if possible
-                if galaxy_col and target_galaxy:
-                    # Create a mask for matching rows
-                    mask = np.zeros(total_count, dtype=bool)
                     
-                    # Convert all galaxy names to lowercase for case-insensitive comparison
-                    galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                    # Process each row - optimize by pre-filtering if possible
+                    total_count = len(catalog_table)
+                    filtered_count = 0
                     
-                    # Set mask for rows that contain the target galaxy name
-                    mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
-                    filtered_count = np.sum(mask)
+                    # Filtering logic - use a combination of galaxy name and position filtering
+                    process_rows = catalog_table # Start with all rows
                     
-                    if filtered_count > 0:
-                        # Apply the mask to get only matching rows
-                        process_rows = catalog_table[mask]
-                        print(f"Filtered catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
-                    else:
-                        # If no matches by galaxy name, fall back to all rows (will filter by position later)
-                        print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
-                
-                # Apply distance-based filtering if we have image center coordinates
-                if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
-                    position_filtered_count = 0
-                    # Increased max_distance_deg for initial load to ensure context
-                    max_distance_deg = 0.5  # ~30 arcmin - adjust as needed
-                    
-                    try:
-                        # Create arrays for faster calculation (handle potential non-numeric data)
-                        ra_values = np.array([float(row[ra_col]) for row in process_rows if row[ra_col] is not None and np.isfinite(float(row[ra_col]))])
-                        dec_values = np.array([float(row[dec_col]) for row in process_rows if row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
-                        original_indices = np.array([i for i, row in enumerate(process_rows) if row[ra_col] is not None and np.isfinite(float(row[ra_col])) and row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
-                        
-                        if len(ra_values) > 0:
-                            # Calculate angular distance (simple approximation)
-                            cos_dec = np.cos(np.radians(image_center_dec))
-                            ra_diff = (ra_values - image_center_ra) * cos_dec
-                            dec_diff = dec_values - image_center_dec
-                            distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                    # First try galaxy name filtering if possible
+                    if galaxy_col and target_galaxy:
+                        try:
+                            # Create a mask for matching rows
+                            mask = np.zeros(total_count, dtype=bool)
                             
-                            # Create mask for objects within distance limit
-                            mask = distances <= max_distance_deg
-                            # Apply mask to the original indices
-                            final_indices = original_indices[mask]
-                            # Select the rows using the final indices
-                            process_rows = process_rows[final_indices]
-                            position_filtered_count = len(process_rows)
+                            # Convert all galaxy names to lowercase for case-insensitive comparison
+                            galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
                             
-                            print(f"Position-filtered from {len(ra_values)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees of image center")
-                        else:
-                            print("No valid RA/DEC values found for position filtering.")
-                            process_rows = np.array([]) # Empty array if no valid coords
-                    except (ValueError, TypeError) as coord_err:
-                        print(f"Warning: Could not perform position filtering due to non-numeric coordinate data: {coord_err}")
-                        # Continue without position filtering
-                else:
-                    print("Skipping position filtering (no image center or RA/Dec columns determined).")
-                
-                # Process the filtered rows
-                for row_idx, row in enumerate(process_rows):
-                    try:
-                        # Use determined RA/Dec columns, skip if not found
-                        if ra_col and dec_col:
-                             ra = float(row[ra_col])
-                             dec = float(row[dec_col])
-                        else:
-                             continue # Skip row if essential coordinates aren't identified
+                            # Set mask for rows that contain the target galaxy name
+                            mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                            filtered_count = np.sum(mask)
+                            
+                            if filtered_count > 0:
+                                # Apply the mask to get only matching rows
+                                process_rows = catalog_table[mask]
+                                print(f"Filtered catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                            else:
+                                # If no matches by galaxy name, fall back to all rows (will filter by position later)
+                                print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                        except Exception as galaxy_filter_error:
+                            print(f"Error in galaxy name filtering: {galaxy_filter_error}")
+                    
+                    # Apply distance-based filtering if we have image center coordinates
+                    if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
+                        position_filtered_count = 0
+                        # Increased max_distance_deg for initial load to ensure context
+                        max_distance_deg = MAX_DISTANCE_DEG  # ~30 arcmin - adjust as needed
                         
-                        # Skip if invalid coordinates
-                        if np.isnan(ra) or np.isnan(dec):
-                            continue
-                        
-                        # Create object data
-                        obj_data = {
-                            'ra': ra,
-                            'dec': dec,
-                            'x': 0,  # Will be set later
-                            'y': 0,  # Will be set later
-                            'radius_pixels': 5.0  # Default radius
-                        }
-                        
-                        # Add resolution/size if column exists and is valid
-                        if resolution_col and resolution_col in row.array.dtype.names:
-                             try:
-                                 res_value = float(row[resolution_col])
-                                 if np.isfinite(res_value) and res_value > 0:
-                                     obj_data['radius_pixels'] = res_value
-                             except (ValueError, TypeError):
-                                 pass # Ignore if conversion fails
-                        
-                        # Add magnitude if available
-                        mag_col_found = False
-                        for mag_col_candidate in ['mag', 'magnitude']:
-                            if mag_col_candidate in available_columns:
-                                mag_col = catalog_table.names[available_columns.index(mag_col_candidate)]
+                        try:
+                            # Create arrays for faster calculation (handle potential non-numeric data)
+                            valid_rows = []
+                            valid_indices = []
+                            
+                            for i, row in enumerate(process_rows):
                                 try:
-                                    mag_value = float(row[mag_col])
-                                    if np.isfinite(mag_value):
-                                        obj_data['magnitude'] = mag_value
-                                        mag_col_found = True
-                                        break # Found one, stop looking
+                                    ra_val = float(row[ra_col])
+                                    dec_val = float(row[dec_col])
+                                    if np.isfinite(ra_val) and np.isfinite(dec_val):
+                                        valid_rows.append((ra_val, dec_val, i))
+                                        valid_indices.append(i)
                                 except (ValueError, TypeError):
-                                    pass # Ignore if conversion fails
-                        
-                        catalog_data.append(obj_data)
-                    except Exception as e:
-                        print(f"Error processing FITS catalog row {row_idx}: {e}")
-                        continue
+                                    continue
+                            
+                            if len(valid_rows) > 0:
+                                ra_values = np.array([row[0] for row in valid_rows])
+                                dec_values = np.array([row[1] for row in valid_rows])
+                                
+                                # Calculate angular distance (simple approximation)
+                                cos_dec = np.cos(np.radians(image_center_dec))
+                                ra_diff = (ra_values - image_center_ra) * cos_dec
+                                dec_diff = dec_values - image_center_dec
+                                distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                                
+                                # Create mask for objects within distance limit
+                                distance_mask = distances <= max_distance_deg
+                                final_indices = np.array(valid_indices)[distance_mask]
+                                
+                                # Select the rows using the final indices
+                                process_rows = process_rows[final_indices]
+                                position_filtered_count = len(process_rows)
+                                
+                                print(f"Position-filtered from {len(valid_rows)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees of image center")
+                            else:
+                                print("No valid RA/DEC values found for position filtering.")
+                                process_rows = np.array([]) # Empty array if no valid coords
+                        except Exception as coord_err:
+                            print(f"Warning: Could not perform position filtering due to coordinate data issues: {coord_err}")
+                            # Continue without position filtering
+                    else:
+                        print("Skipping position filtering (no image center or RA/Dec columns determined).")
+                    
+                    # Process the filtered rows
+                    print(f"Processing {len(process_rows)} filtered FITS catalog rows...")
+                    for row_idx, row in enumerate(process_rows):
+                        try:
+                            # Use determined RA/Dec columns
+                            ra = float(row[ra_col])
+                            dec = float(row[dec_col])
+                            
+                            # Skip if invalid coordinates
+                            if not (np.isfinite(ra) and np.isfinite(dec)):
+                                continue
+                            
+                            # Create object data
+                            obj_data = {
+                                'ra': ra,
+                                'dec': dec,
+                                'x': 0,  # Will be set later
+                                'y': 0,  # Will be set later
+                                'radius_pixels': 5.0  # Default radius
+                            }
+                            
+                            # Add resolution/size if column exists and is valid
+                            if resolution_col and resolution_col in row.array.dtype.names:
+                                 try:
+                                     res_value = float(row[resolution_col])
+                                     if np.isfinite(res_value) and res_value > 0:
+                                         obj_data['radius_pixels'] = res_value
+                                 except (ValueError, TypeError):
+                                     pass # Ignore if conversion fails
+                            
+                            # Add magnitude if available
+                            mag_col_found = False
+                            for mag_col_candidate in ['mag', 'magnitude']:
+                                if mag_col_candidate in available_columns:
+                                    mag_col = catalog_table.names[available_columns.index(mag_col_candidate)]
+                                    try:
+                                        mag_value = float(row[mag_col])
+                                        if np.isfinite(mag_value):
+                                            obj_data['magnitude'] = mag_value
+                                            mag_col_found = True
+                                            break # Found one, stop looking
+                                    except (ValueError, TypeError):
+                                        pass # Ignore if conversion fails
+                            
+                            catalog_data.append(obj_data)
+                        except Exception as e:
+                            print(f"Error processing FITS catalog row {row_idx}: {e}")
+                            continue
+            except Exception as fits_error:
+                print(f"Error loading FITS catalog: {fits_error}")
+                import traceback
+                print(traceback.format_exc())
+                return []
         else:
             # Assume it's a CSV/TSV file
             print(f"Loading ASCII/CSV catalog: {catalog_path}")
             try:
                 from astropy.table import Table
                 # Try common formats
+                catalog_table = None
                 try:
                      catalog_table = Table.read(catalog_path, format='ascii')
+                     print("Successfully read as ASCII format")
                 except Exception:
                      try:
                          catalog_table = Table.read(catalog_path, format='csv')
+                         print("Successfully read as CSV format")
                      except Exception:
                          catalog_table = Table.read(catalog_path, format='tab') # Try tab-separated
+                         print("Successfully read as tab-separated format")
                          
             except Exception as e:
                 print(f"Error reading catalog as ASCII/CSV/TSV: {e}")
+                import traceback
+                print(traceback.format_exc())
                 return []
             
             available_columns = [col.lower() for col in catalog_table.colnames]
+            print(f"ASCII catalog columns: {catalog_table.colnames}")
             
             # Auto-detect columns ONLY if mapping wasn't found/used
             if not ra_col:
@@ -1797,11 +4419,11 @@ def load_catalog_data(catalog_path_str):
                         
             # Check if columns were successfully found
             if ra_col is None or dec_col is None:
-                print(f"RA or DEC column could not be determined in ASCII catalog: {catalog_path}")
+                print(f"ERROR: RA or DEC column could not be determined in ASCII catalog: {catalog_path}")
                 print(f"Available columns: {catalog_table.colnames}")
-                # Optionally raise an error or return empty
-                # return []
-                pass
+                return [] # Return empty if critical columns are missing
+                
+            print(f"Using columns - RA: {ra_col}, DEC: {dec_col}, Resolution: {resolution_col}")
                 
             # Find galaxy column if it exists
             galaxy_col = None
@@ -1819,53 +4441,66 @@ def load_catalog_data(catalog_path_str):
             
             # Apply filtering (similar logic as FITS)
             if galaxy_col and target_galaxy:
-                mask = np.zeros(total_count, dtype=bool)
-                galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
-                mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
-                filtered_count = np.sum(mask)
-                if filtered_count > 0:
-                    process_rows = catalog_table[mask]
-                    print(f"Filtered ASCII catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
-                else:
-                    print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                try:
+                    mask = np.zeros(total_count, dtype=bool)
+                    galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                    mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                    filtered_count = np.sum(mask)
+                    if filtered_count > 0:
+                        process_rows = catalog_table[mask]
+                        print(f"Filtered ASCII catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                    else:
+                        print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                except Exception as galaxy_filter_error:
+                    print(f"Error in galaxy name filtering for ASCII: {galaxy_filter_error}")
                     
             if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
-                max_distance_deg = 0.5 # Same larger distance for initial load
+                max_distance_deg = MAX_DISTANCE_DEG # Same larger distance for initial load
                 try:
-                    ra_values = np.array([float(row[ra_col]) for row in process_rows if row[ra_col] is not None and np.isfinite(float(row[ra_col]))])
-                    dec_values = np.array([float(row[dec_col]) for row in process_rows if row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
-                    original_indices = np.array([i for i, row in enumerate(process_rows) if row[ra_col] is not None and np.isfinite(float(row[ra_col])) and row[dec_col] is not None and np.isfinite(float(row[dec_col]))])
+                    valid_rows = []
+                    valid_indices = []
                     
-                    if len(ra_values) > 0:
+                    for i, row in enumerate(process_rows):
+                        try:
+                            ra_val = float(row[ra_col])
+                            dec_val = float(row[dec_col])
+                            if np.isfinite(ra_val) and np.isfinite(dec_val):
+                                valid_rows.append((ra_val, dec_val, i))
+                                valid_indices.append(i)
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if len(valid_rows) > 0:
+                        ra_values = np.array([row[0] for row in valid_rows])
+                        dec_values = np.array([row[1] for row in valid_rows])
+                        
                         cos_dec = np.cos(np.radians(image_center_dec))
                         ra_diff = (ra_values - image_center_ra) * cos_dec
                         dec_diff = dec_values - image_center_dec
                         distances = np.sqrt(ra_diff**2 + dec_diff**2)
-                        mask = distances <= max_distance_deg
-                        final_indices = original_indices[mask]
+                        distance_mask = distances <= max_distance_deg
+                        final_indices = np.array(valid_indices)[distance_mask]
                         process_rows = process_rows[final_indices]
                         position_filtered_count = len(process_rows)
-                        print(f"Position-filtered ASCII from {len(ra_values)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees")
+                        print(f"Position-filtered ASCII from {len(valid_rows)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees")
                     else:
                         print("No valid RA/DEC values found for position filtering.")
                         process_rows = np.array([]) # Empty array
-                except (ValueError, TypeError) as coord_err:
+                except Exception as coord_err:
                     print(f"Warning: Could not perform position filtering on ASCII data: {coord_err}")
             else:
                  print("Skipping position filtering (no image center or RA/Dec columns determined).")
                  
             # Process the filtered rows
+            print(f"Processing {len(process_rows)} filtered ASCII catalog rows...")
             for row_idx, row in enumerate(process_rows):
                 try:
                     # Use determined RA/Dec columns
-                    if ra_col and dec_col:
-                         ra = float(row[ra_col])
-                         dec = float(row[dec_col])
-                    else:
-                         continue # Skip if no coords
+                    ra = float(row[ra_col])
+                    dec = float(row[dec_col])
                     
                     # Skip if invalid coordinates
-                    if np.isnan(ra) or np.isnan(dec):
+                    if not (np.isfinite(ra) and np.isfinite(dec)):
                         continue
                     
                     # Create object data
@@ -1905,9 +4540,9 @@ def load_catalog_data(catalog_path_str):
                     print(f"Error processing ASCII catalog row {row_idx}: {e}")
                     continue
         
-        # Convert RA/DEC to pixel coordinates using the CURRENT image's WCS
+        # Convert RA/DEC to pixel coordinates using the CURRENT image's WCS with orientation correction
         if image_wcs and image_wcs.has_celestial and catalog_data:
-            print(f"Applying WCS transformation to {len(catalog_data)} catalog objects...")
+            print(f"Applying WCS transformation with orientation correction to {len(catalog_data)} catalog objects...")
             try:
                 # Extract RA/DEC arrays
                 ra_array = np.array([obj['ra'] for obj in catalog_data])
@@ -1917,33 +4552,59 @@ def load_catalog_data(catalog_path_str):
                 sky_coords = SkyCoord(ra_array, dec_array, unit='deg')
                 
                 # Convert all coordinates at once
-                pixel_coords = image_wcs.world_to_pixel(sky_coords)
+                pixel_coords = image_wcs.celestial.world_to_pixel(sky_coords)
+                
+                # Apply WCS orientation corrections if needed
+                if wcs_analysis_result and len(wcs_analysis_result) >= 3:
+                    flip_y = wcs_analysis_result[0]
+                    determinant = wcs_analysis_result[1]
+                    
+                    print(f"Applying WCS orientation corrections: flip_y={flip_y}, determinant={determinant}")
+                    
+                    # Get image dimensions for Y-flip correction
+                    if flip_y:
+                        try:
+                            with fits.open(fits_file) as hdul:
+                                for hdu in hdul:
+                                    if hasattr(hdu, 'data') and hdu.data is not None:
+                                        height = hdu.data.shape[-2]
+                                        # Apply Y-flip correction to pixel coordinates
+                                        pixel_coords = (pixel_coords[0], height - pixel_coords[1] - 1)
+                                        print(f"Applied Y-flip correction using image height: {height}")
+                                        break
+                        except Exception as flip_error:
+                            print(f"Warning: Could not apply Y-flip correction: {flip_error}")
                 
                 # Update object data with pixel coordinates
                 valid_conversion_count = 0
                 for i, obj in enumerate(catalog_data):
-                    px = float(pixel_coords[0][i])
-                    py = float(pixel_coords[1][i])
-                    # Only include if coordinates are finite (within image bounds)
-                    if np.isfinite(px) and np.isfinite(py):
-                        obj['x'] = px
-                        obj['y'] = py
-                        valid_conversion_count += 1
-                    else:
-                         # Mark objects outside the image bounds, maybe remove later
-                         obj['x'] = np.nan
-                         obj['y'] = np.nan 
+                    try:
+                        px = float(pixel_coords[0][i])
+                        py = float(pixel_coords[1][i])
+                        # Only include if coordinates are finite (within image bounds)
+                        if np.isfinite(px) and np.isfinite(py):
+                            obj['x'] = px
+                            obj['y'] = py
+                            valid_conversion_count += 1
+                        else:
+                             # Mark objects outside the image bounds
+                             obj['x'] = np.nan
+                             obj['y'] = np.nan 
+                    except Exception as coord_error:
+                        print(f"Error converting coordinates for object {i}: {coord_error}")
+                        obj['x'] = np.nan
+                        obj['y'] = np.nan
                 
                 # Filter out objects that fall outside the image after WCS conversion
                 original_count = len(catalog_data)
-                catalog_data = [obj for obj in catalog_data if np.isfinite(obj['x'])]
+                catalog_data = [obj for obj in catalog_data if np.isfinite(obj['x']) and np.isfinite(obj['y'])]
                 print(f"WCS conversion successful. Kept {len(catalog_data)} of {original_count} objects within image bounds.")
                 
             except Exception as e:
                 print(f"Error applying WCS to catalog: {e}")
                 import traceback
                 print(traceback.format_exc())
-                # If WCS conversion fails, potentially return empty or mark coords as invalid
+                # If WCS conversion fails, mark coords as invalid
                 for obj in catalog_data:
                     obj['x'] = np.nan
                     obj['y'] = np.nan
@@ -1963,214 +4624,6 @@ def load_catalog_data(catalog_path_str):
         print(traceback.format_exc())
         return [] # Return empty list on error
 
-
-# Corrected code to extract BUNIT from each specific HDU
-
-@app.get("/fits-hdu-info/{filepath:path}")
-async def get_fits_hdu_info(filepath: str):
-    """Get information about the HDUs in a FITS file, including BUNIT for each HDU."""
-    try:
-        # Base directory is "files"
-        base_dir = Path("files")
-        
-        # Construct the full path
-        file_path = base_dir / filepath
-        
-        # Ensure the file exists
-        if not file_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"File not found: {filepath}"}
-            )
-        
-        # Ensure the file is within the files directory
-        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Access denied: file is outside the files directory"}
-            )
-        
-        # Open the FITS file and analyze its structure
-        with fits.open(file_path) as hdul:
-            hdu_list = []
-            
-            # Look for HDUs with valid image or table data
-            for i, hdu in enumerate(hdul):
-                hdu_info = {
-                    "index": i,
-                    "name": hdu.name if hasattr(hdu, 'name') else "",
-                    "type": "Unknown"
-                }
-                
-                # Extract BUNIT from THIS HDU's header specifically
-                if hasattr(hdu, 'header'):
-                    # Print the entire header for debugging
-
-                    
-                    # Look for BUNIT in this HDU with case-insensitive search
-                    bunit = None
-                    for key in hdu.header:
-                        if key.upper() == 'BUNIT':
-                            bunit = hdu.header[key]
-                            break
-                    
-                    # If found, add to HDU info
-                    if bunit:
-                        hdu_info["bunit"] = bunit
-                    else:
-                        hdu_info["bunit"] = ""
-                else:
-                    hdu_info["bunit"] = ""
-                
-                # Check if this is an image HDU with data
-                if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)) and hasattr(hdu, 'data') and hdu.data is not None:
-                    hdu_info["type"] = "Image"
-                    # Get image dimensions
-                    if hasattr(hdu.data, 'shape'):
-                        hdu_info["dimensions"] = list(hdu.data.shape)
-                    # Get BITPIX
-                    if hasattr(hdu, 'header') and 'BITPIX' in hdu.header:
-                        hdu_info["bitpix"] = hdu.header['BITPIX']
-                    # Check for WCS
-                    try:
-                        wcs = WCS(hdu.header)
-                        hdu_info["hasWCS"] = wcs.has_celestial
-                    except:
-                        hdu_info["hasWCS"] = False
-                    
-                    # For Image HDUs, mark as recommended if it has dimensions and data
-                    has_sufficient_dimensions = (hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2)
-                    has_non_empty_data = has_sufficient_dimensions and hdu.data.size > 0
-                    
-                    hdu_info["isRecommended"] = (
-                        has_non_empty_data and 
-                        (hdu_info.get("hasWCS", False) or i == 0)
-                    )
-                
-                # Check if this is a table HDU
-                elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)) and hasattr(hdu, 'data') and hdu.data is not None:
-                    hdu_info["type"] = "Table"
-                    # Get number of rows
-                    if hasattr(hdu.data, '__len__'):
-                        hdu_info["rows"] = len(hdu.data)
-                    # Get number of columns
-                    if hasattr(hdu.data, 'names'):
-                        hdu_info["columns"] = len(hdu.data.names)
-                    
-                    # Tables are typically not recommended for display
-                    hdu_info["isRecommended"] = False
-                
-                # For other HDU types or empty HDUs
-                else:
-                    if isinstance(hdu, fits.PrimaryHDU):
-                        hdu_info["type"] = "Primary Header"
-                    elif isinstance(hdu, fits.ImageHDU):
-                        hdu_info["type"] = "Empty Image"
-                    elif isinstance(hdu, fits.BinTableHDU):
-                        hdu_info["type"] = "Binary Table"
-                    elif isinstance(hdu, fits.TableHDU):
-                        hdu_info["type"] = "ASCII Table"
-                    elif isinstance(hdu, fits.GroupsHDU):
-                        hdu_info["type"] = "Groups"
-                    
-                    # These HDUs are not recommended for display
-                    hdu_info["isRecommended"] = False
-                
-                hdu_list.append(hdu_info)
-            
-            # If no HDU has been marked as recommended yet, choose the best one
-            if not any(hdu["isRecommended"] for hdu in hdu_list):
-                # First, look for image HDUs
-                image_hdus = [hdu for hdu in hdu_list if hdu["type"] == "Image"]
-                
-                if image_hdus:
-                    # Prefer HDUs with WCS
-                    wcs_hdus = [hdu for hdu in image_hdus if hdu.get("hasWCS", False)]
-                    
-                    if wcs_hdus:
-                        # Choose the first HDU with WCS
-                        wcs_hdus[0]["isRecommended"] = True
-                    else:
-                        # Otherwise, choose the first image HDU
-                        image_hdus[0]["isRecommended"] = True
-                elif len(hdu_list) > 0:
-                    # If no image HDUs, mark the primary HDU as recommended
-                    hdu_list[0]["isRecommended"] = True
-            
-            print(f"Returning info for {len(hdu_list)} HDUs with their specific BUNIT values")
-            for i, hdu in enumerate(hdu_list):
-                bunit = hdu.get("bunit", "")
-            
-            return JSONResponse(content={"hduList": hdu_list})
-    
-    except Exception as e:
-        print(f"Error getting HDU info: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get HDU info: {str(e)}"}
-        )
-
-
-@app.get("/load-file/{filepath:path}")
-async def load_file(filepath: str, hdu: int = Query(0)):
-    """Set the active FITS file and HDU index."""
-    try:
-        # Base directory is "files"
-        base_dir = Path("files")
-        
-        # Construct the full path
-        file_path = base_dir / filepath
-        
-        # Ensure the file exists
-        if not file_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"File not found: {filepath}"}
-            )
-        
-        # Ensure the file is within the files directory (security check)
-        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Access denied: file is outside the files directory"}
-            )
-        
-        # Verify the HDU index is valid
-        try:
-            with fits.open(file_path) as hdul:
-                if hdu < 0 or hdu >= len(hdul):
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": f"Invalid HDU index: {hdu}. File has {len(hdul)} HDUs."}
-                    )
-        except Exception as e:
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Error checking HDU: {str(e)}"}
-            )
-        
-        # Set the global file path and HDU index
-        app.state.current_fits_file = str(file_path)
-        app.state.current_hdu_index = hdu
-        print(f"Set current FITS file to: {app.state.current_fits_file}, HDU: {app.state.current_hdu_index}")
-        
-        # Clear the tile cache for previous files
-        tile_cache.clear()
-        
-        # Return success
-        return JSONResponse(content={
-            "message": f"File {filepath} set as active, HDU: {hdu}",
-            "filepath": filepath,
-            "hdu": hdu
-        })
-    except Exception as e:
-        print(f"Error setting active file: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to set active file: {str(e)}"}
-        )
 
 @app.get("/fits-binary/")
 async def fits_binary(type: str = Query(None), ra: float = Query(None), 
@@ -2198,7 +4651,8 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
         # Use the specified HDU or fall back to the current HDU index
         hdu_index = hdu if hdu is not None else getattr(app.state, "current_hdu_index", 0)
         print(f"Using HDU index: {hdu_index}")
-        
+        app.state.current_hdu_index = hdu_index # Explicitly set app.state to the used HDU index
+
         # Check if the file exists
         if not os.path.exists(fits_file):
             return JSONResponse(
@@ -2211,54 +4665,84 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
             file_size = os.path.getsize(fits_file)
             is_large_file = file_size > 100 * 1024 * 1024  # 100 MB
             
-            if is_large_file and fast_loading:
-                print(f"Large file detected ({format_file_size(file_size)}), using fast loading mode")
-                # For very large files, we'll return a basic structure instead of full data
+            if fast_loading: # MODIFIED: Always use fast_loading path if true, regardless of is_large_file
+                print(f"File processing with fast_loading=True (size: {format_file_size(file_size)}). Using SimpleTileGenerator.")
                 
                 # First, check if we already have a tile generator
                 file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
-                if file_id in active_tile_generators:
-                    # We already have a tile generator, use the information from it
-                    tile_generator = active_tile_generators[file_id]
+                tile_generator = None # Ensure tile_generator is defined in this scope
+                
+                # Ensure we have a valid HDU index
+                if hdu_index is None:
+                    hdu_index = 0
                     
-                    # Return basic information for the client
-                    basic_info = {
+                try:
+                    # Check if a generator for this file_id already exists
+                    if file_id in active_tile_generators:
+                        generator_instance = active_tile_generators[file_id]
+                        logger.info(f"Reusing existing tile generator for {file_id}")
+                    else:
+                        # If not, create a new one
+                        logger.info(f"Initializing tile generator for fast loading: {file_id}")
+                        
+                        # IMPORTANT: We need to open the FITS file to pass image data to the generator
+                        with fits.open(fits_file) as hdul:
+                            if not (0 <= hdu_index < len(hdul)):
+                                raise HTTPException(status_code=400, detail=f"HDU index {hdu_index} is out of range.")
+                            
+                            image_data = hdul[hdu_index].data
+                            header = hdul[hdu_index].header
+                            
+                            # Check if image_data is valid before creating the generator
+                            if image_data is None:
+                                raise HTTPException(status_code=400, detail=f"No image data found in HDU {hdu_index}.")
+
+                            # Handle different dimensionality
+                            if image_data is not None and image_data.ndim > 2:
+                                print(f"Original image has {image_data.ndim} dimensions, taking first 2D slice for tile generator")
+                                if image_data.ndim == 3:
+                                    image_data = image_data[0, :, :]
+                                elif image_data.ndim == 4:
+                                    image_data = image_data[0, 0, :, :]
+
+                            # Apply Y-flip correction based on WCS orientation
+                            flip_y, determinant, corrected_data = analyze_wcs_orientation(header, image_data)
+                            if corrected_data is not None:
+                                image_data = corrected_data
+
+                        # Now create the generator with the corrected image data
+                        generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
+                        active_tile_generators[file_id] = generator_instance
+
+                    # Ensure the overview is generated (can be done in the background)
+                    if not generator_instance.overview_generated:
+                        generator_instance.ensure_overview_generated()
+
+                    # Get tile info from the generator
+                    tile_info = generator_instance.get_tile_info()
+
+                    # Return a JSON response indicating fast loading is active
+                    return JSONResponse(content={
                         "fast_loading": True,
-                        "width": tile_generator.width,
-                        "height": tile_generator.height,
-                        "min_value": float(tile_generator.min_value),
-                        "max_value": float(tile_generator.max_value),
-                        "overview": tile_generator.overview,
-                        "message": "Use tiled rendering for this large file",
-                        "hdu": hdu_index
-                    }
-                    
-                    # Add WCS info if available
-                    if tile_generator.wcs:
-                        try:
-                            header = tile_generator.wcs.to_header()
-                            wcs_info = {
-                                "ra_ref": float(header.get('CRVAL1', 0)),
-                                "dec_ref": float(header.get('CRVAL2', 0)),
-                                "x_ref": float(header.get('CRPIX1', 0)),
-                                "y_ref": float(header.get('CRPIX2', 0)),
-                                "cd1_1": float(header.get('CD1_1', header.get('CDELT1', 0))),
-                                "cd1_2": float(header.get('CD1_2', 0)),
-                                "cd2_1": float(header.get('CD2_1', 0)),
-                                "cd2_2": float(header.get('CD2_2', header.get('CDELT2', 0))),
-                                "bunit": ""
-                            }
-                            basic_info["wcs"] = wcs_info
-                        except Exception as e:
-                            print(f"Error extracting WCS info: {e}")
-                    
-                    # Return the JSON response instead of binary data
-                    return JSONResponse(content=basic_info)
+                        "file_id": file_id,
+                        "tile_info": tile_info,
+                        "message": "Fast loading enabled. Use tile endpoints to fetch image data."
+                    })
+
+                except Exception as e_init:
+                    logger.critical(f"Error initializing SimpleTileGenerator for {file_id}: {e_init}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e_init)}")
+
         except Exception as e:
-            print(f"Error checking file size: {e}")
-            # Continue with normal processing if file size check fails
+            print(f"Error during fast-loading section or FITS processing in /fits-binary: {e}") # Modified to be more general
+            import traceback
+            print(traceback.format_exc())
+            # Continue with normal processing if file size check fails or other init error
+            # This fall-through might be problematic if fast_loading was expected.
+            # Consider returning an error if fast_loading was true and failed.
+            pass # Original code had a pass here after printing "Error checking file size"
         
-        # Open the FITS file
+        # Open the FITS file (This part is for non-fast_loading or if fast_loading path had an issue and passed)
         with fits.open(fits_file) as hdul:
             # Validate the HDU index
             if hdu_index < 0 or hdu_index >= len(hdul):
@@ -2278,59 +4762,55 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
                 )
             
             # Handle different dimensionality
-            # If data has more than 2 dimensions, take the first 2D slice
             image_data = hdu.data
-            if image_data is not None and len(image_data.shape) > 2:
-                print(f"Original image has {len(image_data.shape)} dimensions, taking first 2D slice")
-                # For 3D data, take the first slice
-                if len(image_data.shape) == 3:
-                    image_data = image_data[0]
-                # For 4D data, take the first slice of the first volume
-                elif len(image_data.shape) == 4:
-                    image_data = image_data[0, 0]
+            if image_data is not None and image_data.ndim > 2:
+                print(f"Original image has {image_data.ndim} dimensions, taking first 2D slice for fits-binary output")
+                if image_data.ndim == 3:
+                    image_data = image_data[0, :, :]
+                elif image_data.ndim == 4:
+                    image_data = image_data[0, 0, :, :]
+                # else: higher dimensions are not explicitly sliced here, assuming they are rare for direct binary output
             
             # Get the header
             header = hdu.header
+            
+            # Apply Y-flip correction based on WCS orientation
+            flip_y, determinant, corrected_data = analyze_wcs_orientation(header, image_data)
+            if corrected_data is not None:
+                image_data = corrected_data
             
             # Check if data is valid
             if image_data is None:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": f"No data in HDU {hdu_index}"}
+                    content={"error": f"No data in HDU {hdu_index} after potential slicing."}
                 )
             
-            # Get dimensions
-            height, width = image_data.shape
+            # Get dimensions (use last two for multi-dim data after slicing)
+            height, width = image_data.shape[-2:]
             
-            # Calculate the file size in pixels to decide if tiled rendering is appropriate
-            pixel_count = width * height
-            is_large_file = pixel_count > 100000000  # 100 million pixels threshold
-            
-            if is_large_file and initialize_tiles:
-                print(f"Large file detected ({width}x{height} = {pixel_count} pixels), initializing tile generator")
-                # Initialize the tile generator in a background thread when needed
-                file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
-                if file_id not in active_tile_generators:
-                    # Prepare to initialize tile generator in background
-                    threading.Thread(
-                        target=initialize_tile_generator_background,
-                        args=(file_id, fits_file, image_data, header, hdu_index),
-                        daemon=True
-                    ).start()
-            
-            # Calculate min and max values
+            # Calculate min and max values using percentiles for initial display
             valid_data = image_data[np.isfinite(image_data)]
-            if len(valid_data) == 0:
-                min_value = 0
-                max_value = 1
+            if valid_data.size == 0:
+                print("Warning: No finite data in image for percentile calculation (fits-binary non-tiled). Defaulting min/max.")
+                min_value = 0.0
+                max_value = 1.0
             else:
-                min_value = float(np.min(valid_data))
-                max_value = float(np.max(valid_data))
+                min_value = float(np.percentile(valid_data, 0.5))
+                max_value = float(np.percentile(valid_data, 99.5))
+                if min_value >= max_value: # Fallback for noisy or flat data
+                    print(f"Warning: Percentile min ({min_value}) >= max ({max_value}) in fits-binary. Falling back to overall min/max.")
+                    min_value = float(np.min(valid_data))
+                    max_value = float(np.max(valid_data))
+                    if min_value >= max_value:
+                        max_value = min_value + 1e-6 # Add epsilon if still equal
             
+            print(f"Initial dynamic range for non-tiled fits-binary (0.5-99.5 percentile): min={min_value}, max={max_value}")
+
             # Extract WCS information if available
             wcs_info = None
             try:
-                w = WCS(header)
+                w = WCS(_prepare_jwst_header_for_wcs(header))
                 if w.has_celestial:
                     wcs_info = {
                         "ra_ref": float(header.get('CRVAL1', 0)),
@@ -2413,46 +4893,31 @@ async def fits_binary(type: str = Query(None), ra: float = Query(None),
             content={"error": str(e)}
         )
 
-
 def initialize_tile_generator_background(file_id, fits_file, image_data, header, hdu_index):
     try:
-        print(f"Initializing tile generator for {file_id} in background")
+        print(f"Initializing simple tile generator for {file_id} in background")
         
-        # Create simplified FITS data object for the tile generator
-        fits_data = SimpleNamespace()
-        fits_data.data = image_data
-        fits_data.width = image_data.shape[1]
-        fits_data.height = image_data.shape[0]
-        fits_data.hdu_index = hdu_index  # Store the HDU index
-        
-        # Calculate min and max values
-        valid_data = image_data[np.isfinite(image_data)]
-        if len(valid_data) > 0:
-            fits_data.min_value = float(np.min(valid_data))
-            fits_data.max_value = float(np.max(valid_data))
-        else:
-            fits_data.min_value = 0
-            fits_data.max_value = 1
-        
-        # Extract WCS
-        try:
-            fits_data.wcs = WCS(header)
-        except Exception as e:
-            print(f"Error extracting WCS for tile generator: {e}")
-            fits_data.wcs = None
-        
-        # Create the tile generator
-        active_tile_generators[file_id] = FitsTileGenerator(fits_data)
-        print(f"Tile generator initialized for {file_id}")
+        # Create simple tile generator using file path and HDU index
+        tile_generator = SimpleTileGenerator(fits_file, hdu_index)
+        active_tile_generators[file_id] = tile_generator
+        print(f"Simple tile generator initialized for {file_id}")
     except Exception as e:
-        print(f"Error initializing tile generator: {e}")
+        print(f"Error initializing simple tile generator: {e}")
         import traceback
         print(traceback.format_exc())
 
 def initialize_tile_generator(file_id, fits_data):
     try:
         print(f"Initializing tile generator for {file_id}")
-        active_tile_generators[file_id] = FitsTileGenerator(fits_data)
+        # Extract file path and HDU index from the fits_data
+        if hasattr(fits_data, 'fits_file_path') and hasattr(fits_data, 'hdu_index'):
+            active_tile_generators[file_id] = SimpleTileGenerator(fits_data.fits_file_path, fits_data.hdu_index)
+        else:
+            # Fallback - try to use current file info
+            fits_file = getattr(app.state, "current_fits_file", None)
+            hdu_index = getattr(app.state, "current_hdu_index", 0)
+            if fits_file:
+                active_tile_generators[file_id] = SimpleTileGenerator(fits_file, hdu_index)
         print(f"Tile generator initialized for {file_id}")
     except Exception as e:
         print(f"Error in tile generator initialization: {e}")
@@ -2462,204 +4927,856 @@ def initialize_tile_generator(file_id, fits_data):
 
 
 
-
 @app.get("/fits-overview/{quality}")
-async def get_fits_overview(quality: int = 0):
-    """Get a better quality overview image for progressive loading."""
-    try:
-        # Check if a FITS file is loaded
+async def get_fits_overview(quality: int = 0, file_id: str = Query(None)): # Added file_id query parameter
+    # if file_id is not provided, try to construct from app.state (legacy or direct calls)
+    if not file_id:
         fits_file = getattr(app.state, "current_fits_file", None)
         if not fits_file:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "No FITS file currently loaded"}
-            )
-        
-        # Get file ID
-        file_id = os.path.basename(fits_file)
-        
-        # Check if the tile generator exists
-        if file_id not in active_tile_generators:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Tile generator not initialized"}
-            )
-        
-        # Get a better quality overview
-        tile_generator = active_tile_generators[file_id]
-        overview_data = tile_generator.get_better_overview(quality)
-        
-        if overview_data is None:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Overview at quality level {quality} not available yet"}
-            )
-        
-        # Return the overview image
-        return Response(
-            content=overview_data,
-            media_type="image/png"
-        )
-    
-    except Exception as e:
-        print(f"Error getting overview: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get overview: {str(e)}"}
-        )
-
-
-
-@app.get("/catalog-with-flags/{catalog_name}")
-async def catalog_with_flags(catalog_name: str, prevent_auto_load: bool = Query(False)):
-    """Return catalog data with all flag information in a single response."""
-    try:
-        # Store the current catalog name to prevent duplicate loading
-        app.state.last_loaded_catalog = catalog_name
-        
-        # Find the catalog file
-        catalog_path = f"catalogs/{catalog_name}"
-        
-        if not os.path.exists(catalog_path):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog file not found: {catalog_name}"}
-            )
-        
-        # Load the catalog data first (using your existing function)
-        catalog_data = load_catalog_data(catalog_path)
-        
-        if not catalog_data:
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Failed to load catalog data"}
-            )
-        
-        # Get the flags from the FITS table
+            raise HTTPException(status_code=404, detail="No FITS file loaded and no file_id provided")
+        hdu_index = getattr(app.state, "current_hdu_index", 0)
+        file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+    else: # If file_id is provided, parse it (e.g., "filename.fits:0")
         try:
-            with fits.open(catalog_path) as hdul:
-                # Try HDU 1 first (most common for tables)
-                table_hdu = 1
-                
-                # If HDU 1 is not a table, try to find a table HDU
-                if not isinstance(hdul[table_hdu], (fits.BinTableHDU, fits.TableHDU)):
-                    for i, hdu in enumerate(hdul):
-                        if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                            table_hdu = i
-                            print(f"Found table in HDU {i}")
-                            break
-                
-                # Get table data
-                table = Table(hdul[table_hdu].data)
-                
-                # Find boolean columns
-                boolean_columns = []
-                for col_name in table.colnames:
-                    # Check first few rows to see if it's a boolean column
-                    sample_size = min(5, len(table))
-                    is_boolean = True
-                    
-                    for i in range(sample_size):
-                        try:
-                            val = table[col_name][i]
-                            # Check if it's a boolean type
-                            if not isinstance(val, (bool, np.bool_)) and \
-                               not (isinstance(val, (str, np.str_)) and val.lower() in ('true', 'false')) and \
-                               not (isinstance(val, (int, np.integer)) and val in (0, 1)):
-                                is_boolean = False
-                                break
-                        except:
-                            is_boolean = False
-                            break
-                    
-                    if is_boolean:
-                        boolean_columns.append(col_name)
-                
-                print(f"Found {len(boolean_columns)} boolean columns")
-                
-                # Find RA and DEC columns
-                ra_col = None
-                dec_col = None
-                
-                for col_name in table.colnames:
-                    if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
-                        ra_col = col_name
-                    elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
-                        dec_col = col_name
-                
-                if not ra_col or not dec_col:
-                    print(f"RA or DEC column not found, using default column names")
-                    # Try to use default column names
-                    ra_col = 'ra'
-                    dec_col = 'dec'
-                
-                # Add flag information to each catalog object
-                for obj in catalog_data:
-                    ra = obj['ra']
-                    dec = obj['dec']
-                    
-                    # Find the matching row in the table
-                    matches = []
-                    try:
-                        # Calculate distances to find matching object in table
-                        ra_diff = np.abs(table[ra_col] - ra)
-                        dec_diff = np.abs(table[dec_col] - dec)
-                        distances = np.sqrt(ra_diff**2 + dec_diff**2)
-                        closest_idx = np.argmin(distances)
-                        closest_dist = distances[closest_idx]
-                        
-                        # Use the closest match if it's within a reasonable distance
-                        if closest_dist < 0.0003:  # ~1 arcsec
-                            # Add all boolean properties to the object
-                            for col_name in boolean_columns:
-                                try:
-                                    val = table[col_name][closest_idx]
-                                    # Convert to standard boolean
-                                    if isinstance(val, (bool, np.bool_)):
-                                        obj[col_name] = bool(val)
-                                    elif isinstance(val, (str, np.str_)) and val.lower() == 'true':
-                                        obj[col_name] = True
-                                    elif isinstance(val, (str, np.str_)) and val.lower() == 'false':
-                                        obj[col_name] = False
-                                    elif isinstance(val, (int, np.integer)):
-                                        obj[col_name] = bool(val)
-                                    else:
-                                        obj[col_name] = False
-                                except Exception as e:
-                                    print(f"Error processing boolean column {col_name}: {e}")
-                                    obj[col_name] = False
-                    except Exception as e:
-                        print(f"Error matching object: {e}")
-        
-        except Exception as e:
-            print(f"Error processing flags: {e}")
-            import traceback
-            print(traceback.format_exc())
-            # Return basic catalog data without flags
-            print("Returning catalog data without flag information")
-        
-        return JSONResponse(content=catalog_data)
-        
+            # This assumes file_id from client is "actual_filename_on_server.fits:hdu_index"
+            # We need to ensure the tile_generator was initialized with the full path.
+            # The active_tile_generators keys are basename:hdu_index.
+            # So file_id from client should match this key format.
+            pass # file_id is already in the correct format for active_tile_generators lookup
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid file_id format: {file_id}. Expected 'filename:hdu_index'")
+
+    print(f"Requesting overview for file_id: {file_id}, quality: {quality}")
+
+    tile_generator = active_tile_generators.get(file_id)
+    if not tile_generator:
+        # This case should ideally be handled by client: /fits-binary should be called first.
+        # However, if a generator is missing, it's an issue.
+        print(f"Tile generator not found for {file_id} in /fits-overview. This might indicate an issue or a direct call without prior /fits-binary.")
+        # Attempt to re-initialize - this requires knowing the full_path and hdu_index from file_id
+        try:
+            base_filename, hdu_str = file_id.rsplit(':', 1)
+            hdu_idx_from_id = int(hdu_str)
+            # This is tricky: we only have base_filename. We need the full path.
+            # We'll assume current_fits_file corresponds to this if its basename matches.
+            current_full_path = getattr(app.state, "current_fits_file", None)
+            if current_full_path and os.path.basename(current_full_path) == base_filename:
+                print(f"Attempting to re-initialize generator for {file_id} using path {current_full_path}")
+                generator_instance = SimpleTileGenerator(current_full_path, hdu_idx_from_id)
+                active_tile_generators[file_id] = generator_instance
+                tile_generator = generator_instance
+            else:
+                # Search for the file in the "files" directory
+                found_path = None
+                for root, _, files_in_dir in os.walk("files"):
+                    if base_filename in files_in_dir:
+                        found_path = os.path.join(root, base_filename)
+                        break
+                if found_path:
+                    print(f"Attempting to re-initialize generator for {file_id} using found path {found_path}")
+                    generator_instance = SimpleTileGenerator(found_path, hdu_idx_from_id)
+                    active_tile_generators[file_id] = generator_instance
+                    tile_generator = generator_instance
+                else:
+                    print(f"Could not find full path for {base_filename} to re-initialize generator.")
+                    raise HTTPException(status_code=404, detail=f"Tile generator for {file_id} not found and could not be re-initialized.")
+        except Exception as e_reinit:
+            print(f"Error re-initializing generator for {file_id}: {e_reinit}")
+            raise HTTPException(status_code=500, detail=f"Failed to prepare tile generator for {file_id}")
+
+    try:
+        tile_generator.ensure_overview_generated() # Ensure overview is generated
+        if tile_generator.overview_image:
+            print(f"Successfully retrieved overview for {file_id}")
+            return Response(content=base64.b64decode(tile_generator.overview_image), media_type="image/png")
+        else:
+            print(f"Overview not generated or empty for {file_id} even after ensure_overview_generated.")
+            raise HTTPException(status_code=404, detail="Overview not available or empty")
     except Exception as e:
-        print(f"Error in catalog_with_flags: {e}")
+        print(f"Error serving overview for {file_id}: {e}")
         import traceback
         print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get catalog with flags: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Error serving overview: {str(e)}")
+
+
+
+def detect_coordinate_columns(colnames):
+    """Detect RA and DEC column names from a list of column names."""
+    ra_candidates = ra_columns
+    dec_candidates = dec_columns
+    
+    ra_col = None
+    dec_col = None
+    
+    # Find exact matches first
+    for col in colnames:
+        if col in ra_candidates and ra_col is None:
+            ra_col = col
+        if col in dec_candidates and dec_col is None:
+            dec_col = col
+    
+    # If no exact matches, try partial matches
+    if ra_col is None:
+        for col in colnames:
+            if any(candidate.lower() in col.lower() for candidate in ra_columns):
+                ra_col = col
+                break
+    
+    if dec_col is None:
+        for col in colnames:
+            if any(candidate.lower() in col.lower() for candidate in dec_columns):
+                dec_col = col
+                break
+    
+    return ra_col, dec_col
+
+
+import json
+import numpy as np
+
+
+from fastapi import Query, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+from pathlib import Path
+import numpy as np
+import json
+from typing import Optional, Dict, Any, List
+import gzip
+import io
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+
+
+import struct
+import json
+import gzip
+from io import BytesIO
+from fastapi import Query, Request, HTTPException
+from fastapi.responses import Response
+from pathlib import Path
+from typing import Optional
+import numpy as np
+
+@app.get("/catalog-binary/{catalog_name}")
+async def catalog_binary(
+    request: Request,
+    catalog_name: str,
+    prevent_auto_load: bool = Query(False),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(5000, ge=1, le=10000, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search term for filtering"),
+    sort_by: Optional[str] = Query(None, description="Column to sort by"),
+    sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+    columns: Optional[str] = Query(None, description="Comma-separated list of columns to return"),
+    filters: Optional[str] = Query(None, description="JSON string of column filters"),
+    stats: bool = Query(False, description="Include column statistics")
+):
+    """
+    Return catalog data in binary format for faster transfer.
+    
+    Binary format structure:
+    - Header (JSON metadata as UTF-8 bytes, length prefixed)
+    - Data section with fixed-size records
+    """
+    catalogs_dir = Path("catalogs")
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+        # Extract boolean columns (same logic as before)
+        boolean_columns = []
+        if len(catalog_table) > 0:
+            for col_name in catalog_table.colnames:
+                col = catalog_table[col_name]
+                if col.dtype.kind == 'b':
+                    boolean_columns.append(col_name)
+                elif col.dtype.kind in ('i', 'u'):
+                    unique_vals = np.unique(col[:min(len(col), 100)])
+                    if np.all(np.isin(unique_vals, [0, 1])):
+                        boolean_columns.append(col_name)
+                elif col.dtype.kind in ('S', 'U'):
+                    try:
+                        sample_vals = np.char.lower(col[:10].astype(str))
+                        true_false_vals = ['true', 'false', 't', 'f', 'yes', 'no', 'y', 'n', '1', '0']
+                        if np.any(np.isin(sample_vals, true_false_vals)):
+                            boolean_columns.append(col_name)
+                    except (TypeError, ValueError):
+                        continue
+
+        if prevent_auto_load:
+            return JSONResponse(content={"boolean_columns": boolean_columns})
+
+        # Load and process catalog data
+        catalog_data = load_catalog_data(str(catalogs_dir / catalog_name))
+        if not catalog_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to process catalog. An image with WCS may be required for full data."
+            )
+
+        # Convert to numpy arrays for efficient processing
+        # Define core numeric fields that will be sent as binary
+        numeric_fields = ['ra', 'dec', 'x_pixels', 'y_pixels', 'radius_pixels']
+        
+        # Prepare data arrays
+        num_items = len(catalog_data)
+        ra_array = np.zeros(num_items, dtype=np.float64)
+        dec_array = np.zeros(num_items, dtype=np.float64)
+        x_array = np.zeros(num_items, dtype=np.float32)
+        y_array = np.zeros(num_items, dtype=np.float32)
+        radius_array = np.zeros(num_items, dtype=np.float32)
+        
+        # Additional metadata for each object (stored as JSON strings)
+        metadata_list = []
+        
+        for i, item in enumerate(catalog_data):
+            ra_array[i] = item.get('ra', 0.0)
+            dec_array[i] = item.get('dec', 0.0)
+            x_array[i] = item.get('x_pixels', 0.0)
+            y_array[i] = item.get('y_pixels', 0.0)
+            radius_array[i] = item.get('radius_pixels', 5.0)
+            
+            # Store other fields as metadata
+            metadata = {k: v for k, v in item.items() 
+                       if k not in numeric_fields}
+            metadata_list.append(metadata)
+        
+        # Apply filters if needed
+        mask = np.ones(num_items, dtype=bool)
+        
+        if search:
+            # Simple text search in metadata
+            search_lower = search.lower()
+            for i, meta in enumerate(metadata_list):
+                if not any(search_lower in str(v).lower() for v in meta.values()):
+                    mask[i] = False
+        
+        if filters:
+            # Apply advanced filters
+            try:
+                filter_dict = json.loads(filters)
+                # Apply filter logic here...
+            except json.JSONDecodeError:
+                pass
+        
+        # Apply mask
+        filtered_indices = np.where(mask)[0]
+        
+        # Apply sorting if requested
+        if sort_by:
+            if sort_by == 'ra':
+                sort_indices = np.argsort(ra_array[filtered_indices])
+            elif sort_by == 'dec':
+                sort_indices = np.argsort(dec_array[filtered_indices])
+            else:
+                # For other fields, need to sort based on metadata
+                sort_values = []
+                for idx in filtered_indices:
+                    val = metadata_list[idx].get(sort_by, 0)
+                    try:
+                        sort_values.append(float(val))
+                    except (ValueError, TypeError):
+                        sort_values.append(0)
+                sort_indices = np.argsort(sort_values)
+            
+            if sort_order == 'desc':
+                sort_indices = sort_indices[::-1]
+            
+            filtered_indices = filtered_indices[sort_indices]
+        
+        # Apply pagination
+        total_filtered = len(filtered_indices)
+        start_idx = (page - 1) * limit
+        end_idx = min(start_idx + limit, total_filtered)
+        page_indices = filtered_indices[start_idx:end_idx]
+        
+        # Prepare binary data
+        binary_buffer = BytesIO()
+        
+        # Create header with metadata
+        header = {
+            "version": 1,
+            "catalog_name": catalog_name,
+            "boolean_columns": boolean_columns,
+            "num_records": len(page_indices),
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total_items": total_filtered,
+                "total_pages": (total_filtered + limit - 1) // limit,
+                "has_next": end_idx < total_filtered,
+                "has_prev": page > 1
+            },
+            "field_info": {
+                "ra": {"dtype": "float64", "offset": 0},
+                "dec": {"dtype": "float64", "offset": 8},
+                "x_pixels": {"dtype": "float32", "offset": 16},
+                "y_pixels": {"dtype": "float32", "offset": 20},
+                "radius_pixels": {"dtype": "float32", "offset": 24},
+                "metadata": {"dtype": "json", "offset": 28}
+            },
+            "record_size": 28  # bytes for numeric data
+        }
+        
+        # Write header
+        header_json = json.dumps(header).encode('utf-8')
+        binary_buffer.write(struct.pack('<I', len(header_json)))  # 4 bytes for header length
+        binary_buffer.write(header_json)
+        
+        # Write binary data for each record
+        for idx in page_indices:
+            # Pack numeric data (28 bytes total)
+            binary_buffer.write(struct.pack('<d', ra_array[idx]))        # 8 bytes
+            binary_buffer.write(struct.pack('<d', dec_array[idx]))       # 8 bytes
+            binary_buffer.write(struct.pack('<f', x_array[idx]))         # 4 bytes
+            binary_buffer.write(struct.pack('<f', y_array[idx]))         # 4 bytes
+            binary_buffer.write(struct.pack('<f', radius_array[idx]))    # 4 bytes
+            
+            # Pack metadata as length-prefixed JSON
+            meta_json = json.dumps(metadata_list[idx]).encode('utf-8')
+            binary_buffer.write(struct.pack('<I', len(meta_json)))       # 4 bytes for length
+            binary_buffer.write(meta_json)
+        
+        # Get binary data
+        binary_data = binary_buffer.getvalue()
+        
+        # Compress if client accepts gzip and data is large
+        accept_encoding = request.headers.get('accept-encoding', '')
+        if 'gzip' in accept_encoding and len(binary_data) > 5000:
+            compressed_buffer = BytesIO()
+            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=6) as gz:
+                gz.write(binary_data)
+            binary_data = compressed_buffer.getvalue()
+            
+            return Response(
+                content=binary_data,
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Encoding": "gzip",
+                    "X-Catalog-Format": "binary-v1"
+                }
+            )
+        
+        return Response(
+            content=binary_data,
+            media_type="application/octet-stream",
+            headers={
+                "X-Catalog-Format": "binary-v1"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in catalog_binary: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing catalog: {str(e)}")
+        
+             
+@app.get("/catalog-with-flags/{catalog_name}")
+async def catalog_with_flags(
+    request: Request,
+    catalog_name: str, 
+    prevent_auto_load: bool = Query(False),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(5000, ge=1, le=10000, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search term for filtering"),
+    sort_by: Optional[str] = Query(None, description="Column to sort by"),
+    sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+    columns: Optional[str] = Query(None, description="Comma-separated list of columns to return"),
+    filters: Optional[str] = Query(None, description="JSON string of column filters"),
+    stats: bool = Query(False, description="Include column statistics")
+):
+    """
+    Return catalog data with advanced filtering, pagination, and TopCat-like features.
+    """
+    catalogs_dir = Path("catalogs")
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+        # Extract boolean columns (unchanged logic)
+        boolean_columns = []
+        if len(catalog_table) > 0:
+            for col_name in catalog_table.colnames:
+                col = catalog_table[col_name]
+                if col.dtype.kind == 'b':
+                    boolean_columns.append(col_name)
+                elif col.dtype.kind in ('i', 'u'):
+                    unique_vals = np.unique(col[:min(len(col), 100)])
+                    if np.all(np.isin(unique_vals, [0, 1])):
+                        boolean_columns.append(col_name)
+                elif col.dtype.kind in ('S', 'U'):
+                    try:
+                        sample_vals = np.char.lower(col[:10].astype(str))
+                        true_false_vals = ['true', 'false', 't', 'f', 'yes', 'no', 'y', 'n', '1', '0']
+                        if np.any(np.isin(sample_vals, true_false_vals)):
+                            boolean_columns.append(col_name)
+                    except (TypeError, ValueError):
+                        continue
+
+        if prevent_auto_load:
+            return JSONResponse(content={"boolean_columns": boolean_columns})
+
+        # Load and process catalog data
+        catalog_data = load_catalog_data(str(catalogs_dir / catalog_name))
+        if not catalog_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to process catalog. An image with WCS may be required for full data."
+            )
+
+        full_data = table_to_serializable(catalog_table)
+        
+        # Create a dictionary for quick lookup of catalog data by RA
+        catalog_data_map = {f"{item['ra']:.6f}": item for item in catalog_data}
+
+        # Merge the data
+        for item in full_data:
+            ra_key = f"{item.get('ra', ''):.6f}"
+            if ra_key in catalog_data_map:
+                item.update(catalog_data_map[ra_key])
+        
+        total_items = len(full_data)
+        
+        # Apply advanced filters if provided
+        filtered_data = apply_advanced_filters(full_data, search, filters)
+        filtered_total = len(filtered_data)
+        
+        # Apply sorting if requested
+        if sort_by and filtered_data:
+            filtered_data = apply_sorting(filtered_data, sort_by, sort_order)
+        
+        # Select specific columns if requested
+        if columns:
+            selected_columns = [col.strip() for col in columns.split(',')]
+            available_columns = list(filtered_data[0].keys()) if filtered_data else []
+            valid_columns = [col for col in selected_columns if col in available_columns]
+            
+            if valid_columns:
+                filtered_data = [{col: item.get(col) for col in valid_columns} for item in filtered_data]
+        
+        # Apply pagination
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_data = filtered_data[start_idx:end_idx]
+        
+        # Calculate pagination metadata
+        total_pages = (filtered_total + limit - 1) // limit
+        has_next = page < total_pages
+        has_prev = page > 1
+        
+        response_data = {
+            "catalog_data": paginated_data,
+            "boolean_columns": boolean_columns,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total_items": filtered_total,
+                "total_pages": total_pages,
+                "has_next": has_next,
+                "has_prev": has_prev,
+                "showing_start": start_idx + 1 if paginated_data else 0,
+                "showing_end": min(end_idx, filtered_total)
+            },
+            "filters": {
+                "search": search,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "active_filters": filters
+            },
+            "message": f"Catalog loaded with flags (page {page} of {total_pages})"
+        }
+        
+        # Add column statistics if requested
+        if stats and paginated_data:
+            response_data["column_stats"] = calculate_column_stats(paginated_data)
+        
+        # Check if client accepts gzip and size warrants compression
+        response_size = len(json.dumps(response_data, separators=(',', ':')))
+        accept_encoding = request.headers.get('accept-encoding', '')
+        
+        # Only compress if response is large and client accepts gzip
+        if 'gzip' in accept_encoding and response_size > 5000:
+            return create_safe_compressed_response(response_data)
+        
+        return JSONResponse(content=response_data)
+
+    except Exception as e:
+        logger.error(f"Error in catalog_with_flags: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing catalog with flags: {str(e)}")
+
+
+def apply_advanced_filters(data: List[Dict], search: Optional[str], filters: Optional[str]) -> List[Dict]:
+    """Apply search and advanced column filters to data."""
+    filtered_data = data
+    
+    # Apply search filter
+    if search:
+        search_term = search.lower()
+        filtered_data = []
+        for item in data:
+            if any(search_term in str(value).lower() for value in item.values()):
+                filtered_data.append(item)
+    
+    # Apply advanced filters
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+            for column, filter_config in filter_dict.items():
+                filtered_data = apply_column_filter(filtered_data, column, filter_config)
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid filter JSON: {filters}")
+    
+    return filtered_data
+
+
+def apply_column_filter(data: List[Dict], column: str, filter_config: Dict) -> List[Dict]:
+    """Apply filter to a specific column."""
+    if not data or column not in data[0]:
+        return data
+    
+    filter_type = filter_config.get('type', 'contains')
+    filter_value = filter_config.get('value')
+    
+    if filter_value is None:
+        return data
+    
+    filtered = []
+    for item in data:
+        value = item.get(column)
+        if value is None:
+            continue
+            
+        try:
+            if filter_type == 'contains':
+                if str(filter_value).lower() in str(value).lower():
+                    filtered.append(item)
+            elif filter_type == 'equals':
+                if str(value) == str(filter_value):
+                    filtered.append(item)
+            elif filter_type == 'greater_than':
+                if float(value) > float(filter_value):
+                    filtered.append(item)
+            elif filter_type == 'less_than':
+                if float(value) < float(filter_value):
+                    filtered.append(item)
+            elif filter_type == 'range':
+                min_val = filter_config.get('min')
+                max_val = filter_config.get('max')
+                val = float(value)
+                if (min_val is None or val >= float(min_val)) and \
+                   (max_val is None or val <= float(max_val)):
+                    filtered.append(item)
+        except (ValueError, TypeError):
+            continue
+    
+    return filtered
+
+
+def apply_sorting(data: List[Dict], sort_by: str, sort_order: str) -> List[Dict]:
+    """Apply sorting to data."""
+    if not data or sort_by not in data[0]:
+        return data
+    
+    try:
+        # Try numeric sort first
+        return sorted(
+            data,
+            key=lambda x: float(x.get(sort_by, 0)) if x.get(sort_by) is not None else 0,
+            reverse=(sort_order == "desc")
+        )
+    except (ValueError, TypeError):
+        # Fall back to string sort
+        return sorted(
+            data,
+            key=lambda x: str(x.get(sort_by, "")),
+            reverse=(sort_order == "desc")
         )
 
 
+def calculate_column_stats(data: List[Dict]) -> Dict[str, Dict]:
+    """Calculate basic statistics for each column."""
+    if not data:
+        return {}
+    
+    stats = {}
+    columns = data[0].keys()
+    
+    for col in columns:
+        values = [item.get(col) for item in data if item.get(col) is not None]
+        if not values:
+            continue
+            
+        col_stats = {"count": len(values)}
+        
+        # Try to calculate numeric stats
+        try:
+            numeric_values = [float(v) for v in values]
+            col_stats.update({
+                "min": min(numeric_values),
+                "max": max(numeric_values),
+                "mean": sum(numeric_values) / len(numeric_values),
+                "type": "numeric"
+            })
+        except (ValueError, TypeError):
+            # String/categorical stats
+            unique_values = list(set(str(v) for v in values))
+            col_stats.update({
+                "unique_count": len(unique_values),
+                "unique_values": unique_values[:10],  # First 10 unique values
+                "type": "categorical"
+            })
+        
+        stats[col] = col_stats
+    
+    return stats
 
+
+def create_safe_compressed_response(data: Dict[Any, Any]) -> Response:
+    """Create a properly compressed response that avoids content-length issues."""
+    try:
+        # Serialize to JSON with minimal separators
+        json_str = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+        json_bytes = json_str.encode('utf-8')
+        
+        # Compress the JSON
+        compressed_data = gzip.compress(json_bytes)
+        
+        # Create response with proper headers - don't set Content-Length for gzip
+        response = Response(
+            content=compressed_data,
+            media_type="application/json",
+            headers={
+                'Content-Encoding': 'gzip',
+                'Vary': 'Accept-Encoding',
+                'X-Original-Size': str(len(json_bytes)),
+                'X-Compression-Ratio': f"{len(compressed_data) / len(json_bytes):.2f}"
+            }
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.warning(f"Compression failed: {e}, falling back to uncompressed")
+        return JSONResponse(content=data)
+
+
+@app.get("/catalog-metadata/{catalog_name}")
+async def catalog_metadata(catalog_name: str):
+    """
+    Return comprehensive catalog metadata similar to TopCat's table info.
+    """
+    catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+        # Extract detailed column information
+        columns_info = []
+        for col_name in catalog_table.colnames:
+            col = catalog_table[col_name]
+            col_info = {
+                "name": col_name,
+                "dtype": str(col.dtype),
+                "kind": col.dtype.kind,
+                "is_numeric": col.dtype.kind in ('i', 'u', 'f', 'c'),
+                "is_boolean": col.dtype.kind == 'b',
+                "is_string": col.dtype.kind in ('S', 'U', 'O'),
+                "unit": getattr(col, 'unit', None),
+                "description": getattr(col, 'description', ''),
+                "format": getattr(col, 'format', None)
+            }
+            
+            # Add sample values and basic stats
+            if len(catalog_table) > 0:
+                try:
+                    sample_size = min(10, len(col))
+                    sample_values = col[:sample_size]
+                    
+                    col_info["sample_values"] = [str(v) for v in sample_values]
+                    
+                    # Basic statistics for numeric columns
+                    if col_info["is_numeric"]:
+                        try:
+                            valid_data = col[~np.isnan(col.astype(float))]
+                            if len(valid_data) > 0:
+                                col_info["stats"] = {
+                                    "min": float(np.min(valid_data)),
+                                    "max": float(np.max(valid_data)),
+                                    "mean": float(np.mean(valid_data)),
+                                    "std": float(np.std(valid_data)),
+                                    "null_count": len(col) - len(valid_data)
+                                }
+                        except:
+                            pass
+                    
+                    # Unique value info for categorical columns
+                    elif col_info["is_string"] or col_info["is_boolean"]:
+                        try:
+                            unique_vals = np.unique(col[:100])  # Sample for performance
+                            col_info["unique_info"] = {
+                                "unique_count": len(unique_vals),
+                                "unique_sample": [str(v) for v in unique_vals[:5]]
+                            }
+                        except:
+                            pass
+                            
+                except Exception as e:
+                    logger.warning(f"Error processing column {col_name}: {e}")
+                    col_info["sample_values"] = []
+            
+            columns_info.append(col_info)
+
+        # Table-level metadata
+        table_info = {
+            "catalog_name": catalog_name,
+            "total_rows": len(catalog_table),
+            "total_columns": len(catalog_table.colnames),
+            "columns": columns_info,
+            "column_names": catalog_table.colnames,
+            "memory_usage_mb": catalog_table.nbytes / (1024 * 1024) if hasattr(catalog_table, 'nbytes') else None,
+            "table_meta": dict(catalog_table.meta) if hasattr(catalog_table, 'meta') else {}
+        }
+
+        return JSONResponse(content=table_info)
+
+    except Exception as e:
+        logger.error(f"Error getting catalog metadata: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting catalog metadata: {str(e)}")
+
+
+
+@app.get("/catalog-column-analysis/{catalog_name}/{column_name}")
+async def catalog_column_analysis(catalog_name: str, column_name: str, sample_size: int = Query(CATALOG_COLUMN_ANALYSIS_SAMPLE_SIZE)):  # Updated
+    """
+    Provide detailed analysis of a specific column, similar to TopCat's column info.
+    """
+    catalogs_dir = Path(CATALOGS_DIRECTORY)  # Updated
+    try:
+        catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if catalog_table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+
+        if column_name not in catalog_table.colnames:
+            raise HTTPException(status_code=400, detail=f"Column '{column_name}' not found in catalog.")
+
+        col_data = catalog_table[column_name]
+        
+        # Sample data for analysis
+        data_size = len(col_data)
+        if data_size > sample_size:
+            # Random sampling for better representation
+            indices = np.random.choice(data_size, sample_size, replace=False)
+            sample_data = col_data[indices]
+        else:
+            sample_data = col_data
+        
+        analysis = {
+            "column_name": column_name,
+            "total_rows": data_size,
+            "sample_size": len(sample_data),
+            "dtype": str(col_data.dtype),
+            "unit": str(getattr(col_data, 'unit', '')),
+            "description": str(getattr(col_data, 'description', ''))
+        }
+
+        # Numeric analysis
+        if col_data.dtype.kind in ('i', 'u', 'f'):
+            try:
+                valid_data = sample_data[~np.isnan(sample_data.astype(float))]
+                if len(valid_data) > 0:
+                    analysis["numeric_stats"] = {
+                        "count": len(valid_data),
+                        "null_count": len(sample_data) - len(valid_data),
+                        "min": float(np.min(valid_data)),
+                        "max": float(np.max(valid_data)),
+                        "mean": float(np.mean(valid_data)),
+                        "median": float(np.median(valid_data)),
+                        "std": float(np.std(valid_data)),
+                        "q25": float(np.percentile(valid_data, 25)),
+                        "q75": float(np.percentile(valid_data, 75)),
+                        "histogram": calculate_histogram(valid_data)
+                    }
+            except Exception as e:
+                analysis["error"] = f"Error calculating numeric stats: {str(e)}"
+        
+        # Categorical analysis
+        else:
+            try:
+                str_data = [str(x) for x in sample_data]
+                unique_values, counts = np.unique(str_data, return_counts=True)
+                
+                # Sort by frequency
+                sorted_indices = np.argsort(counts)[::-1]
+                unique_values = unique_values[sorted_indices]
+                counts = counts[sorted_indices]
+                
+                analysis["categorical_stats"] = {
+                    "unique_count": len(unique_values),
+                    "most_common": [
+                        {"value": str(val), "count": int(count)} 
+                        for val, count in zip(unique_values[:20], counts[:20])
+                    ],
+                    "diversity_index": len(unique_values) / len(sample_data) if len(sample_data) > 0 else 0
+                }
+            except Exception as e:
+                analysis["error"] = f"Error calculating categorical stats: {str(e)}"
+
+        return JSONResponse(content=analysis)
+
+    except Exception as e:
+        logger.error(f"Error analyzing column: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error analyzing column: {str(e)}")
+
+def calculate_histogram(data, bins=CATALOG_ANALYSIS_HISTOGRAM_BINS):  # Updated
+    """Calculate histogram data for numeric columns."""
+    try:
+        counts, bin_edges = np.histogram(data, bins=bins)
+        return {
+            "bins": [float(x) for x in bin_edges],
+            "counts": [int(x) for x in counts]
+        }
+    except:
+        return None
+# Endpoint for exporting filtered data
+@app.get("/catalog-export/{catalog_name}")
+async def export_catalog_data(
+    catalog_name: str,
+    format: str = Query(DEFAULT_EXPORT_FORMAT, regex="^(csv|json|fits)$"),
+    search: Optional[str] = Query(None),
+    filters: Optional[str] = Query(None),
+    columns: Optional[str] = Query(None),
+    max_rows: int = Query(MAX_EXPORT_ROWS, le=50000)
+):
+    """
+    Export catalog data in various formats with applied filters.
+    """
+    # This would implement export functionality
+    # For now, return a placeholder
+    return JSONResponse(content={
+        "message": f"Export functionality for {format} format",
+        "catalog_name": catalog_name,
+        "applied_filters": {"search": search, "filters": filters, "columns": columns},
+        "max_rows": max_rows
+    })
 
 @app.get("/file-size/{filepath:path}")
 async def get_file_size(filepath: str):
     """Get the size of a file in the files directory."""
     try:
         # Base directory is "files"
-        base_dir = Path("files")
+        base_dir = Path(FILES_DIRECTORY)  # Updated
         
         # Construct the full path
         file_path = base_dir / filepath
@@ -2716,13 +5833,1493 @@ def format_file_size(bytes):
 import subprocess
 import sys
 import os
-
+import json
 from fastapi import Form
+from fastapi.responses import JSONResponse
+
+# Helper function to load catalog as Astropy Table
+from astropy.table import Table # Ensure Table is imported
+
+
+from typing import Union, Optional
+from pathlib import Path
+from astropy.table import Table
+from astropy.io import fits
+
+def get_astropy_table_from_catalog(catalog_name: str, catalogs_dir_path: Path) -> Optional[Table]:
+   # catalog_file_path = catalogs_dir_path / catalog_name # Original line
+   # Try with the name as is (spaces might be legitimate or decoded from %20)
+   catalog_file_path_as_is = catalogs_dir_path / catalog_name
+   
+   if catalog_file_path_as_is.exists():
+       catalog_file_path = catalog_file_path_as_is
+       print(f"[get_astropy_table_from_catalog] Found catalog file directly: {catalog_file_path}")
+   else:
+       # If not found, try replacing spaces with '+' (common for URL-decoded query params)
+       catalog_name_with_plus = catalog_name.replace(' ', '+')
+       catalog_file_path_with_plus = catalogs_dir_path / catalog_name_with_plus
+       if catalog_file_path_with_plus.exists():
+           catalog_file_path = catalog_file_path_with_plus
+           print(f"[get_astropy_table_from_catalog] Found catalog file by replacing spaces with '+': {catalog_file_path}")
+       else:
+           # If still not found, report the original attempt (with spaces) as not existing
+           print(f"[get_astropy_table_from_catalog] Catalog file {catalog_file_path_as_is} (and with '+' replacements) does not exist.")
+           return None # Original failure path
+
+   try:
+       with fits.open(catalog_file_path) as hdul:
+           table_hdu_index = -1
+           # Prefer BinTableHDU, search all HDUs
+           for i, hdu_item in enumerate(hdul):
+               if isinstance(hdu_item, fits.BinTableHDU):
+                   table_hdu_index = i
+                   print(f"[get_astropy_table_from_catalog] Found BinTableHDU for '{catalog_name}' at index {i}.")
+                   break
+           
+           if table_hdu_index == -1: # Fallback if no BinTableHDU
+               if len(hdul) > 1 and isinstance(hdul[1], (fits.TableHDU, fits.BinTableHDU)): # Common for catalogs to be in HDU 1
+                   table_hdu_index = 1
+                   print(f"[get_astropy_table_from_catalog] No BinTableHDU found, using HDU 1 for '{catalog_name}'.")
+               elif isinstance(hdul[0], (fits.TableHDU, fits.BinTableHDU)): # If primary HDU is a table
+                   table_hdu_index = 0
+                   print(f"[get_astropy_table_from_catalog] No BinTableHDU found, using Primary HDU 0 for '{catalog_name}'.")
+               else: # Search all HDUs for any TableHDU as a last resort
+                   for i, hdu_item in enumerate(hdul):
+                       if isinstance(hdu_item, fits.TableHDU):
+                           table_hdu_index = i
+                           print(f"[get_astropy_table_from_catalog] Found TableHDU for '{catalog_name}' at index {i} (fallback).")
+                           break
+                   if table_hdu_index == -1:
+                       print(f"[get_astropy_table_from_catalog] No suitable TableHDU or BinTableHDU found in '{catalog_name}'.")
+                       return None
+           print(f"[get_astropy_table_from_catalog] Loading Astropy Table from '{catalog_name}', HDU index {table_hdu_index}")
+           table = Table(hdul[table_hdu_index].data)
+           return table
+   except Exception as e:
+       print(f"[get_astropy_table_from_catalog] Error loading catalog '{catalog_name}' as Astropy Table: {e}")
+       import traceback
+       traceback.print_exc()
+       return None
+# Helper function similar to parse_jwst_wcs from peak_finder.py
+def _prepare_jwst_header_for_wcs(header):
+    """
+    Prepares a FITS header for WCS processing, especially for JWST files.
+    - Handles potential conflicts between PC and CD matrix keywords.
+    - If CD matrix is present, it's preferred and PC keywords are removed.
+    - If only PC matrix is present, ensures off-diagonal terms are set (defaulting to 0).
+    """
+    new_header = header.copy()
+    
+    # # Standard FITS WCS keywords for matrix-based transformations
+    # pc_keys = ['PC1_1', 'PC1_2', 'PC2_1', 'PC2_2']
+    # cd_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']
+    # cdelt_keys = ['CDELT1', 'CDELT2']
+
+    # has_pc = any(key in new_header for key in pc_keys)
+    # has_cd = any(key in new_header for key in cd_keys)
+
+    # # Simple check for JWST data - can be made more specific if needed
+    # is_jwst = 'JWST' in str(new_header.get('TELESCOP', '')) or \
+    #           any(instr in str(new_header.get('INSTRUME', '')) for instr in ['NIRCAM', 'MIRI'])
+
+    # if not is_jwst:
+    #     return new_header # Return original header if not identified as JWST
+
+    # print("[_prepare_jwst_header_for_wcs] JWST header detected. Analyzing WCS keywords.")
+
+    # # Astropy's WCS processing prefers CDi_j over PCi_j + CDELTi.
+    # # If a CD matrix is present, we assume it's the intended representation.
+    # # To prevent conflicts, we can remove the PC matrix and CDELT values.
+    # if has_cd:
+    #     print("[_prepare_jwst_header_for_wcs] CD matrix found. Prioritizing it.")
+    #     # Remove PC and CDELT keys to avoid ambiguity for Astropy
+    #     keys_to_remove = []
+    #     for key in pc_keys + cdelt_keys:
+    #         if key in new_header:
+    #             keys_to_remove.append(key)
+        
+    #     if keys_to_remove:
+    #         print(f"[_prepare_jwst_header_for_wcs] Removing {keys_to_remove} to prevent conflict with CD matrix.")
+    #         for key in keys_to_remove:
+    #             del new_header[key]
+
+    # # If only a PC matrix is present, ensure it's complete for Astropy.
+    # # Some JWST products might omit zero-value off-diagonal terms.
+    # elif has_pc:
+    #     print("[_prepare_jwst_header_for_wcs] PC matrix found (and no CD matrix). Checking for completeness.")
+    #     if 'PC1_2' not in new_header:
+    #         new_header['PC1_2'] = 0.0
+    #         print("[_prepare_jwst_header_for_wcs] Added PC1_2 = 0.0 to complete PC matrix.")
+    #     if 'PC2_1' not in new_header:
+    #         new_header['PC2_1'] = 0.0
+    #         print("[_prepare_jwst_header_for_wcs] Added PC2_1 = 0.0 to complete PC matrix.")
+
+    # else:
+    #     print("[_prepare_jwst_header_for_wcs] No CD or PC matrix keywords found. No changes made.")
+        
+    return new_header
 
 
 
-# Add a new endpoint for running the peak finder
+def analyze_wcs_orientation(header, data=None):
+    """
+    Analyze WCS header to determine coordinate system orientation and optionally flip data
+    
+    Parameters:
+    -----------
+    header : astropy.io.fits.Header
+        FITS header containing WCS information
+    data : numpy.ndarray, optional
+        Image data array to flip if Y-axis is inverted
+        
+    Returns:
+    --------
+    flip_y : bool
+        True if Y-axis is flipped (dy should be multiplied by -1)
+    determinant : float
+        Determinant of the transformation matrix
+    flipped_data : numpy.ndarray or None
+        Flipped data array if data was provided and flip was needed, otherwise None
+    """
+    
+    try:
+        # Get coordinate system types for reference
+        ctype1 = header.get('CTYPE1', '').strip()
+        ctype2 = header.get('CTYPE2', '').strip()
+        
+        print(f"Coordinate types: CTYPE1={ctype1}, CTYPE2={ctype2}")
+        
+        # Get transformation matrix elements
+        # Check for both CD matrix and PC matrix formats
+        if 'CD1_1' in header:
+            # CD matrix format
+            cd11 = header.get('CD1_1', 0)
+            cd12 = header.get('CD1_2', 0)
+            cd21 = header.get('CD2_1', 0)
+            cd22 = header.get('CD2_2', 0)
+            print(f"Using CD matrix: CD11={cd11}, CD12={cd12}, CD21={cd21}, CD22={cd22}")
+        elif 'PC1_1' in header:
+            # PC matrix format with CDELT
+            pc11 = header.get('PC1_1', 1)
+            pc12 = header.get('PC1_2', 0)
+            pc21 = header.get('PC2_1', 0)
+            pc22 = header.get('PC2_2', 1)
+            cdelt1 = header.get('CDELT1', 1)
+            cdelt2 = header.get('CDELT2', 1)
+            
+            # Convert PC matrix to CD matrix
+            cd11 = pc11 * cdelt1
+            cd12 = pc12 * cdelt1
+            cd21 = pc21 * cdelt2
+            cd22 = pc22 * cdelt2
+            print(f"Using PC matrix: PC11={pc11}, PC12={pc12}, PC21={pc21}, PC22={pc22}")
+            print(f"CDELT1={cdelt1}, CDELT2={cdelt2}")
+            print(f"Equivalent CD matrix: CD11={cd11}, CD12={cd12}, CD21={cd21}, CD22={cd22}")
+        else:
+            # Simple CDELT format (like ALMA)
+            cdelt1 = header.get('CDELT1', 1)
+            cdelt2 = header.get('CDELT2', 1)
+            cd11 = cdelt1
+            cd12 = 0
+            cd21 = 0
+            cd22 = cdelt2
+            print(f"Using simple CDELT format: CDELT1={cdelt1}, CDELT2={cdelt2}")
+            print(f"Equivalent CD matrix: CD11={cd11}, CD12={cd12}, CD21={cd21}, CD22={cd22}")
+        
+        # Calculate determinant
+        determinant = cd11 * cd22 - cd12 * cd21
+        print(f"Transformation matrix determinant: {determinant}")
+        
+        # Initialize flip decision based on WCS properties
+        flip_y = False
+        
+        # Primary logic: check determinant for coordinate system handedness
+        if determinant < 0:
+            print("Negative determinant detected: coordinate system is flipped")
+            flip_y = True
+        else:
+            print("Positive determinant: standard coordinate system orientation")
+            flip_y = False
+        
+        # Secondary check: CD22 sign (Y-axis direction)
+        if cd22 < 0:
+            print("CD22 is negative: Y-axis is inverted")
+            # If determinant was positive but CD22 is negative, we might need to flip
+            if determinant > 0:
+                flip_y = True
+        
+        # Additional check for very small determinants (near rotation singularities)
+        if abs(determinant) < 1e-15:
+            print("Warning: Very small determinant, coordinate system may be near singular")
+            # Fall back to CD22 sign in this case
+            flip_y = cd22 < 0
+        
+        # Additional diagnostic information
+        print(f"CD22 (Y-axis scale): {cd22}")
+        if cd22 < 0:
+            print("CD22 is negative: Y-axis is inverted in WCS")
+        else:
+            print("CD22 is positive: Y-axis is normal in WCS")
+        
+        print(f"Final decision: flip_y = {flip_y}")
+        
+        # Handle data flipping if data is provided
+        flipped_data = None
+        if data is not None:
+            if flip_y:
+                flipped_data = np.flipud(data)  # Flip data upside down
+                print("Applied Y-flip to image data (flipped upside down)")
+            else:
+                flipped_data = data.copy()  # Return copy of original data
+                print("No Y-flip applied to image data")
+        
+        return flip_y, determinant, flipped_data
+        
+    except Exception as e:
+        print(f"Error in analyze_wcs_orientation: {e}")
+        import traceback
+        print(traceback.format_exc())
+        # Return standard orientation with original or copied data
+        flipped_data = data.copy() if data is not None else None
+        return False, 1.0, flipped_data
 
+def load_catalog_data(catalog_path_str):
+    """
+    Load catalog data from a file.
+    Supports FITS tables and CSV/TSV formats.
+    Filters objects to match the loaded FITS image galaxy.
+    Uses saved column mappings if available.
+    Incorporates WCS orientation analysis for proper coordinate handling.
+    """
+    catalog_path = Path(catalog_path_str) # Convert string path to Path object
+    catalog_name = catalog_path.name # Get filename for mapping lookup
+    print(f"load_catalog_data called for: {catalog_name}")
+    
+    try:
+        catalog_data = []
+        
+        # Use the currently selected FITS file
+        fits_file = getattr(app.state, "current_fits_file", None)
+        if not fits_file:
+            print("No FITS file currently selected")
+            return []
+            
+        print(f"Using WCS from current FITS file: {fits_file}")
+        fits_filename = os.path.basename(fits_file).lower()
+        fits_name_without_ext = os.path.splitext(fits_filename)[0]
+        
+        # Extract potential galaxy name from filename
+        galaxy_patterns = [
+            r'(ngc\d+)',  # NGC galaxies (e.g., ngc0628)
+            r'(m\d+)',    # Messier objects (e.g., m74)
+            r'(ic\d+)',   # IC catalog objects
+            r'([a-z]+\d+)'  # Any letter followed by numbers
+        ]
+        
+        target_galaxy = None
+        for pattern in galaxy_patterns:
+            matches = re.findall(pattern, fits_name_without_ext)
+            if matches:
+                target_galaxy = matches[0]
+                print(f"Extracted galaxy identifier from FITS filename: {target_galaxy}")
+                break
+        
+        # Get WCS of the current image to filter by position and analyze orientation
+        image_wcs = None
+        image_center_ra = None
+        image_center_dec = None
+        wcs_flip_info = {
+            'flip_y': False,
+            'determinant': 1.0,
+            'coordinate_system_flipped': False
+        }
+        
+        try:
+            with fits.open(fits_file) as hdul:
+                # Find the HDU with image data
+                image_hdu = None
+                for i, hdu in enumerate(hdul):
+                    if hasattr(hdu, 'data') and hdu.data is not None and len(getattr(hdu, 'shape', [])) >= 2:
+                        image_hdu = hdu
+                        break
+                
+                if image_hdu:
+                    # Analyze WCS orientation using the header
+                    print("Analyzing WCS orientation for coordinate system...")
+                    print('calling analyze_wcs_orientation...')
+                    try:
+                        wcs_analysis_result = analyze_wcs_orientation(image_hdu.header, image_hdu.data)
+                        
+                        if wcs_analysis_result and len(wcs_analysis_result) >= 3:
+                            flip_y = wcs_analysis_result[0]
+                            determinant = wcs_analysis_result[1]
+                            flipped_data = wcs_analysis_result[2]
+                            
+                            print(f"WCS Analysis Results:")
+                            print(f"  Y-axis flip needed: {flip_y}")
+                            print(f"  Transformation determinant: {determinant}")
+                            
+                            # Store WCS analysis results for later use
+                            wcs_flip_info = {
+                                'flip_y': flip_y,
+                                'determinant': determinant,
+                                'coordinate_system_flipped': determinant < 0
+                            }
+                        else:
+                            print("WCS orientation analysis returned invalid result, proceeding with standard orientation")
+                            wcs_flip_info = {
+                                'flip_y': False,
+                                'determinant': 1.0,
+                                'coordinate_system_flipped': False
+                            }
+                    except Exception as wcs_analysis_error:
+                        print(f"Error in WCS orientation analysis: {wcs_analysis_error}")
+                        import traceback
+                        print(traceback.format_exc())
+                        wcs_flip_info = {
+                            'flip_y': False,
+                            'determinant': 1.0,
+                            'coordinate_system_flipped': False
+                        }
+                    
+                    # Get WCS from the HDU and apply orientation corrections
+                    try:
+                        # Create a copy of the header for potential modifications
+                        corrected_header = image_hdu.header.copy()
+                        
+                        # Apply WCS corrections if needed
+                        if wcs_flip_info['flip_y']:
+                            print("Applying Y-flip correction to WCS header...")
+                            
+                            # Get image dimensions
+                            if hasattr(image_hdu, 'data'):
+                                height, width = image_hdu.data.shape[-2:]
+                                
+                                # Modify the WCS header to account for Y-flip
+                                # Update CRPIX2 to reflect the flipped coordinate system
+                                if 'CRPIX2' in corrected_header:
+                                    original_crpix2 = corrected_header['CRPIX2']
+                                    corrected_crpix2 = height + 1 - original_crpix2
+                                    corrected_header['CRPIX2'] = corrected_crpix2
+                                    print(f"Updated CRPIX2: {original_crpix2} -> {corrected_crpix2}")
+                                
+                                # Flip the Y-axis transformation matrix elements
+                                if 'CD2_2' in corrected_header:
+                                    corrected_header['CD2_2'] = -corrected_header['CD2_2']
+                                    print(f"Flipped CD2_2 sign: {corrected_header['CD2_2']}")
+                                if 'CD1_2' in corrected_header:
+                                    corrected_header['CD1_2'] = -corrected_header['CD1_2']
+                                    print(f"Flipped CD1_2 sign: {corrected_header['CD1_2']}")
+                                elif 'PC2_2' in corrected_header:
+                                    corrected_header['PC2_2'] = -corrected_header['PC2_2']
+                                    print(f"Flipped PC2_2 sign: {corrected_header['PC2_2']}")
+                                if 'PC1_2' in corrected_header:
+                                    corrected_header['PC1_2'] = -corrected_header['PC1_2']
+                                    print(f"Flipped PC1_2 sign: {corrected_header['PC1_2']}")
+                        
+                        # Create WCS object with corrected header
+                        image_wcs = WCS(corrected_header)
+                        print("Successfully created WCS object with orientation corrections")
+                        
+                        # Get transformation matrix elements for validation
+                        header = corrected_header
+                        if 'CD1_1' in header:
+                            cd11 = header.get('CD1_1', 0)
+                            cd12 = header.get('CD1_2', 0)
+                            cd21 = header.get('CD2_1', 0)
+                            cd22 = header.get('CD2_2', 0)
+                            print(f"Final CD matrix: [[{cd11}, {cd12}], [{cd21}, {cd22}]]")
+                        elif 'PC1_1' in header:
+                            pc11 = header.get('PC1_1', 1)
+                            pc12 = header.get('PC1_2', 0)
+                            pc21 = header.get('PC2_1', 0)
+                            pc22 = header.get('PC2_2', 1)
+                            cdelt1 = header.get('CDELT1', 1)
+                            cdelt2 = header.get('CDELT2', 1)
+                            print(f"Final PC matrix: [[{pc11}, {pc12}], [{pc21}, {pc22}]]")
+                            print(f"Final CDELT: [{cdelt1}, {cdelt2}]")
+                        
+                    except Exception as wcs_error:
+                        print(f"Error creating WCS object: {wcs_error}")
+                        import traceback
+                        print(traceback.format_exc())
+                        image_wcs = None
+                    
+                    # Get the image center in pixel coordinates (no additional Y-flip needed since WCS is corrected)
+                    if hasattr(image_hdu, 'data') and image_wcs:
+                        try:
+                            height, width = image_hdu.data.shape[-2:]
+                            center_x = width // 2
+                            center_y = height // 2
+                            
+                            # No additional Y-flip correction needed here since WCS is already corrected
+                            print(f"Using image center: x={center_x}, y={center_y}")
+                            
+                            # Convert center to RA, DEC using corrected WCS
+                            center_coords = image_wcs.pixel_to_world(center_x, center_y)
+                            if hasattr(center_coords, 'ra') and hasattr(center_coords, 'dec'):
+                                image_center_ra = center_coords.ra.deg
+                                image_center_dec = center_coords.dec.deg
+                                print(f"Image center (with corrected WCS): RA={image_center_ra:.6f}, DEC={image_center_dec:.6f}")
+                            else:
+                                print("Warning: Could not extract RA/DEC from center coordinates")
+                        except Exception as center_error:
+                            print(f"Error calculating image center coordinates: {center_error}")
+                            import traceback
+                            print(traceback.format_exc())
+                else:
+                    print("No image HDU found in FITS file")
+        except Exception as e:
+            print(f"Error getting image WCS and orientation: {e}")
+            import traceback
+            print(traceback.format_exc())
+        
+        # --- Column Name Handling --- 
+        ra_col = None
+        dec_col = None
+        resolution_col = None # Optional resolution/size column
+        
+        # Check for saved mapping first
+        if catalog_name in catalog_column_mappings:
+            mapping = catalog_column_mappings[catalog_name]
+            ra_col = mapping.get('ra_col')
+            dec_col = mapping.get('dec_col')
+            resolution_col = mapping.get('resolution_col') # Get resolution if mapped
+            print(f"Using saved mapping for {catalog_name}: RA={ra_col}, Dec={dec_col}, Res={resolution_col}")
+        else:
+             print(f"No saved mapping found for {catalog_name}. Attempting auto-detection.")
+        # --- End Column Name Handling --- 
+        
+        # Check if it's a FITS file
+        if catalog_path.suffix.lower() in ['.fits', '.fit']:
+            print(f"Loading FITS catalog: {catalog_path}")
+            try:
+                with fits.open(catalog_path) as hdul:
+                    # Find the first HDU with a table
+                    table_hdu = None
+                    for hdu in hdul:
+                        if isinstance(hdu, fits.BinTableHDU) or isinstance(hdu, fits.TableHDU):
+                            table_hdu = hdu
+                            break
+                    
+                    if table_hdu is None:
+                        print(f"No table found in FITS file: {catalog_path}")
+                        return []
+                    
+                    # Get the table data
+                    catalog_table = table_hdu.data
+                    available_columns = [col.lower() for col in catalog_table.names]
+                    print(f"FITS catalog columns: {catalog_table.names}")
+                    
+                    # Auto-detect columns ONLY if mapping wasn't found/used
+                    if not ra_col:
+                        # Common names for RA and DEC columns
+                        ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
+                        for name in ra_names:
+                            if name in available_columns:
+                                ra_col = catalog_table.names[available_columns.index(name)] # Get original case
+                                print(f"Auto-detected RA column: {ra_col}")
+                                break
+                    
+                    if not dec_col:
+                        dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
+                        for name in dec_names:
+                            if name in available_columns:
+                                dec_col = catalog_table.names[available_columns.index(name)] # Get original case
+                                print(f"Auto-detected Dec column: {dec_col}")
+                                break
+                    
+                    # Optional: Auto-detect resolution column if not mapped
+                    if not resolution_col:
+                        res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
+                        for name in res_names:
+                            if name in available_columns:
+                                resolution_col = catalog_table.names[available_columns.index(name)]
+                                print(f"Auto-detected Resolution column: {resolution_col}")
+                                break
+                                
+                    # Check if columns were successfully found (either mapped or auto-detected)
+                    if ra_col is None or dec_col is None:
+                        print(f"ERROR: RA ({ra_col}) or DEC ({dec_col}) column could not be determined in catalog: {catalog_path}")
+                        print(f"Available columns: {catalog_table.names}")
+                        return [] # Return empty if critical columns are missing
+                    
+                    print(f"Using columns - RA: {ra_col}, DEC: {dec_col}, Resolution: {resolution_col}")
+                    
+                    # Find galaxy column if it exists (for filtering)
+                    galaxy_col = None
+                    galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
+                    
+                    for col_name_candidate in galaxy_col_candidates:
+                        if col_name_candidate in available_columns:
+                            galaxy_col = catalog_table.names[available_columns.index(col_name_candidate)]
+                            print(f"Found potential galaxy column: {galaxy_col}")
+                            break
+                    
+                    # Process each row - optimize by pre-filtering if possible
+                    total_count = len(catalog_table)
+                    filtered_count = 0
+                    
+                    # Filtering logic - use a combination of galaxy name and position filtering
+                    process_rows = catalog_table # Start with all rows
+                    
+                    # First try galaxy name filtering if possible
+                    if galaxy_col and target_galaxy:
+                        try:
+                            # Create a mask for matching rows
+                            mask = np.zeros(total_count, dtype=bool)
+                            
+                            # Convert all galaxy names to lowercase for case-insensitive comparison
+                            galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                            
+                            # Set mask for rows that contain the target galaxy name
+                            mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                            filtered_count = np.sum(mask)
+                            
+                            if filtered_count > 0:
+                                # Apply the mask to get only matching rows
+                                process_rows = catalog_table[mask]
+                                print(f"Filtered catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                            else:
+                                # If no matches by galaxy name, fall back to all rows (will filter by position later)
+                                print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                        except Exception as galaxy_filter_error:
+                            print(f"Error in galaxy name filtering: {galaxy_filter_error}")
+                    
+                    # Apply distance-based filtering if we have image center coordinates
+                    if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
+                        position_filtered_count = 0
+                        # Increased max_distance_deg for initial load to ensure context
+                        max_distance_deg = MAX_DISTANCE_DEG  # ~30 arcmin - adjust as needed
+                        
+                        try:
+                            # Create arrays for faster calculation (handle potential non-numeric data)
+                            valid_rows = []
+                            valid_indices = []
+                            
+                            for i, row in enumerate(process_rows):
+                                try:
+                                    ra_val = float(row[ra_col])
+                                    dec_val = float(row[dec_col])
+                                    if np.isfinite(ra_val) and np.isfinite(dec_val):
+                                        valid_rows.append((ra_val, dec_val, i))
+                                        valid_indices.append(i)
+                                except (ValueError, TypeError):
+                                    continue
+                            
+                            if len(valid_rows) > 0:
+                                ra_values = np.array([row[0] for row in valid_rows])
+                                dec_values = np.array([row[1] for row in valid_rows])
+                                
+                                # Calculate angular distance (simple approximation)
+                                cos_dec = np.cos(np.radians(image_center_dec))
+                                ra_diff = (ra_values - image_center_ra) * cos_dec
+                                dec_diff = dec_values - image_center_dec
+                                distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                                
+                                # Create mask for objects within distance limit
+                                distance_mask = distances <= max_distance_deg
+                                final_indices = np.array(valid_indices)[distance_mask]
+                                
+                                # Select the rows using the final indices
+                                process_rows = process_rows[final_indices]
+                                position_filtered_count = len(process_rows)
+                                
+                                print(f"Position-filtered from {len(valid_rows)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees of image center")
+                            else:
+                                print("No valid RA/DEC values found for position filtering.")
+                                process_rows = np.array([]) # Empty array if no valid coords
+                        except Exception as coord_err:
+                            print(f"Warning: Could not perform position filtering due to coordinate data issues: {coord_err}")
+                            # Continue without position filtering
+                    else:
+                        print("Skipping position filtering (no image center or RA/Dec columns determined).")
+                    
+                    # Process the filtered rows
+                    print(f"Processing {len(process_rows)} filtered FITS catalog rows...")
+                    for row_idx, row in enumerate(process_rows):
+                        try:
+                            # Use determined RA/Dec columns
+                            ra = float(row[ra_col])
+                            dec = float(row[dec_col])
+                            
+                            # Skip if invalid coordinates
+                            if not (np.isfinite(ra) and np.isfinite(dec)):
+                                continue
+                            
+                            # Create object data
+                            obj_data = {
+                                'ra': ra,
+                                'dec': dec,
+                                'x': 0,  # Will be set later
+                                'y': 0,  # Will be set later
+                                'radius_pixels': 5.0  # Default radius
+                            }
+                            
+                            # Add resolution/size if column exists and is valid
+                            if resolution_col and resolution_col in row.array.dtype.names:
+                                 try:
+                                     res_value = float(row[resolution_col])
+                                     if np.isfinite(res_value) and res_value > 0:
+                                         obj_data['radius_pixels'] = res_value
+                                 except (ValueError, TypeError):
+                                     pass # Ignore if conversion fails
+                            
+                            # Add magnitude if available
+                            mag_col_found = False
+                            for mag_col_candidate in ['mag', 'magnitude']:
+                                if mag_col_candidate in available_columns:
+                                    mag_col = catalog_table.names[available_columns.index(mag_col_candidate)]
+                                    try:
+                                        mag_value = float(row[mag_col])
+                                        if np.isfinite(mag_value):
+                                            obj_data['magnitude'] = mag_value
+                                            mag_col_found = True
+                                            break # Found one, stop looking
+                                    except (ValueError, TypeError):
+                                        pass # Ignore if conversion fails
+                            
+                            catalog_data.append(obj_data)
+                        except Exception as e:
+                            print(f"Error processing FITS catalog row {row_idx}: {e}")
+                            continue
+            except Exception as fits_error:
+                print(f"Error loading FITS catalog: {fits_error}")
+                import traceback
+                print(traceback.format_exc())
+                return []
+        else:
+            # Assume it's a CSV/TSV file
+            print(f"Loading ASCII/CSV catalog: {catalog_path}")
+            try:
+                from astropy.table import Table
+                # Try common formats
+                catalog_table = None
+                try:
+                     catalog_table = Table.read(catalog_path, format='ascii')
+                     print("Successfully read as ASCII format")
+                except Exception:
+                     try:
+                         catalog_table = Table.read(catalog_path, format='csv')
+                         print("Successfully read as CSV format")
+                     except Exception:
+                         catalog_table = Table.read(catalog_path, format='tab') # Try tab-separated
+                         print("Successfully read as tab-separated format")
+                         
+            except Exception as e:
+                print(f"Error reading catalog as ASCII/CSV/TSV: {e}")
+                import traceback
+                print(traceback.format_exc())
+                return []
+            
+            available_columns = [col.lower() for col in catalog_table.colnames]
+            print(f"ASCII catalog columns: {catalog_table.colnames}")
+            
+            # Auto-detect columns ONLY if mapping wasn't found/used
+            if not ra_col:
+                ra_names = ['ra', 'alpha', 'alpha_j2000', 'raj2000', 'cen_ra']
+                for name in ra_names:
+                    if name in available_columns:
+                        ra_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected RA column: {ra_col}")
+                        break
+            
+            if not dec_col:
+                dec_names = ['dec', 'delta', 'delta_j2000', 'dej2000', 'cen_dec']
+                for name in dec_names:
+                    if name in available_columns:
+                        dec_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected Dec column: {dec_col}")
+                        break
+                        
+            # Optional: Auto-detect resolution column if not mapped
+            if not resolution_col:
+                res_names = ['radius', 'size', 'resolution', 'fwhm', 'radius_pixels']
+                for name in res_names:
+                    if name in available_columns:
+                        resolution_col = catalog_table.colnames[available_columns.index(name)]
+                        print(f"Auto-detected Resolution column: {resolution_col}")
+                        break
+                        
+            # Check if columns were successfully found
+            if ra_col is None or dec_col is None:
+                print(f"ERROR: RA or DEC column could not be determined in ASCII catalog: {catalog_path}")
+                print(f"Available columns: {catalog_table.colnames}")
+                return [] # Return empty if critical columns are missing
+                
+            print(f"Using columns - RA: {ra_col}, DEC: {dec_col}, Resolution: {resolution_col}")
+                
+            # Find galaxy column if it exists
+            galaxy_col = None
+            galaxy_col_candidates = ['galaxy', 'name', 'id', 'source_id', 'target', 'object']
+            for col_name_candidate in galaxy_col_candidates:
+                if col_name_candidate in available_columns:
+                    galaxy_col = catalog_table.colnames[available_columns.index(col_name_candidate)]
+                    print(f"Found potential galaxy column: {galaxy_col}")
+                    break
+            
+            # Process each row
+            total_count = len(catalog_table)
+            filtered_count = 0
+            process_rows = catalog_table # Start with all rows
+            
+            # Apply filtering (similar logic as FITS)
+            if galaxy_col and target_galaxy:
+                try:
+                    mask = np.zeros(total_count, dtype=bool)
+                    galaxy_names_lower = np.array([str(row[galaxy_col]).lower() for row in catalog_table])
+                    mask = np.core.defchararray.find(galaxy_names_lower, target_galaxy) != -1
+                    filtered_count = np.sum(mask)
+                    if filtered_count > 0:
+                        process_rows = catalog_table[mask]
+                        print(f"Filtered ASCII catalog by galaxy name '{target_galaxy}' from {total_count} to {filtered_count} objects.")
+                    else:
+                        print(f"No objects match galaxy: {target_galaxy}, using position filtering only")
+                except Exception as galaxy_filter_error:
+                    print(f"Error in galaxy name filtering for ASCII: {galaxy_filter_error}")
+                    
+            if image_center_ra is not None and image_center_dec is not None and ra_col and dec_col:
+                max_distance_deg = 0.5 # Same larger distance for initial load
+                try:
+                    valid_rows = []
+                    valid_indices = []
+                    
+                    for i, row in enumerate(process_rows):
+                        try:
+                            ra_val = float(row[ra_col])
+                            dec_val = float(row[dec_col])
+                            if np.isfinite(ra_val) and np.isfinite(dec_val):
+                                valid_rows.append((ra_val, dec_val, i))
+                                valid_indices.append(i)
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if len(valid_rows) > 0:
+                        ra_values = np.array([row[0] for row in valid_rows])
+                        dec_values = np.array([row[1] for row in valid_rows])
+                        
+                        cos_dec = np.cos(np.radians(image_center_dec))
+                        ra_diff = (ra_values - image_center_ra) * cos_dec
+                        dec_diff = dec_values - image_center_dec
+                        distances = np.sqrt(ra_diff**2 + dec_diff**2)
+                        distance_mask = distances <= max_distance_deg
+                        final_indices = np.array(valid_indices)[distance_mask]
+                        process_rows = process_rows[final_indices]
+                        position_filtered_count = len(process_rows)
+                        print(f"Position-filtered ASCII from {len(valid_rows)} to {position_filtered_count} objects within {max_distance_deg:.2f} degrees")
+                    else:
+                        print("No valid RA/DEC values found for position filtering.")
+                        process_rows = np.array([]) # Empty array
+                except Exception as coord_err:
+                    print(f"Warning: Could not perform position filtering on ASCII data: {coord_err}")
+            else:
+                 print("Skipping position filtering (no image center or RA/Dec columns determined).")
+                 
+            # Process the filtered rows
+            print(f"Processing {len(process_rows)} filtered ASCII catalog rows...")
+            for row_idx, row in enumerate(process_rows):
+                try:
+                    # Use determined RA/Dec columns
+                    ra = float(row[ra_col])
+                    dec = float(row[dec_col])
+                    
+                    # Skip if invalid coordinates
+                    if not (np.isfinite(ra) and np.isfinite(dec)):
+                        continue
+                    
+                    # Create object data
+                    obj_data = {
+                        'ra': ra,
+                        'dec': dec,
+                        'x': 0,  # Will be set later
+                        'y': 0,  # Will be set later
+                        'radius_pixels': 5.0  # Default radius
+                    }
+                    
+                    # Add resolution/size if column exists and is valid
+                    if resolution_col and resolution_col in catalog_table.colnames:
+                         try:
+                             res_value = float(row[resolution_col])
+                             if np.isfinite(res_value) and res_value > 0:
+                                 obj_data['radius_pixels'] = res_value
+                         except (ValueError, TypeError):
+                             pass # Ignore if conversion fails
+                             
+                    # Add magnitude if available
+                    mag_col_found = False
+                    for mag_col_candidate in ['mag', 'magnitude']:
+                        if mag_col_candidate in available_columns:
+                            mag_col = catalog_table.colnames[available_columns.index(mag_col_candidate)]
+                            try:
+                                mag_value = float(row[mag_col])
+                                if np.isfinite(mag_value):
+                                    obj_data['magnitude'] = mag_value
+                                    mag_col_found = True
+                                    break # Found one, stop looking
+                            except (ValueError, TypeError):
+                                pass # Ignore if conversion fails
+                    
+                    catalog_data.append(obj_data)
+                except Exception as e:
+                    print(f"Error processing ASCII catalog row {row_idx}: {e}")
+                    continue
+        
+        # Convert RA/DEC to pixel coordinates using the CORRECTED image WCS
+        if image_wcs and image_wcs.has_celestial and catalog_data:
+            print(f"Applying corrected WCS transformation to {len(catalog_data)} catalog objects...")
+            try:
+                # Extract RA/DEC arrays
+                ra_array = np.array([obj['ra'] for obj in catalog_data])
+                dec_array = np.array([obj['dec'] for obj in catalog_data])
+                
+                # Create SkyCoord object for all points at once
+                sky_coords = SkyCoord(ra_array, dec_array, unit='deg')
+                
+                # Convert all coordinates at once using the corrected WCS
+                pixel_coords = image_wcs.celestial.world_to_pixel(sky_coords)
+                
+                print(f"WCS transformation completed using {'corrected' if wcs_flip_info['flip_y'] else 'standard'} WCS")
+                
+                # Update object data with pixel coordinates
+                valid_conversion_count = 0
+                for i, obj in enumerate(catalog_data):
+                    try:
+                        px = float(pixel_coords[0][i])
+                        py = float(pixel_coords[1][i])
+                        # Only include if coordinates are finite (within image bounds)
+                        if np.isfinite(px) and np.isfinite(py):
+                            obj['x'] = px
+                            obj['y'] = py
+                            valid_conversion_count += 1
+                        else:
+                             # Mark objects outside the image bounds
+                             obj['x'] = np.nan
+                             obj['y'] = np.nan 
+                    except Exception as coord_error:
+                        print(f"Error converting coordinates for object {i}: {coord_error}")
+                        obj['x'] = np.nan
+                        obj['y'] = np.nan
+                
+                # Filter out objects that fall outside the image after WCS conversion
+                original_count = len(catalog_data)
+                catalog_data = [obj for obj in catalog_data if np.isfinite(obj['x']) and np.isfinite(obj['y'])]
+                print(f"WCS conversion successful. Kept {len(catalog_data)} of {original_count} objects within image bounds.")
+                
+            except Exception as e:
+                print(f"Error applying WCS to catalog: {e}")
+                import traceback
+                print(traceback.format_exc())
+                # If WCS conversion fails, mark coords as invalid
+                for obj in catalog_data:
+                    obj['x'] = np.nan
+                    obj['y'] = np.nan
+        elif not image_wcs or not image_wcs.has_celestial:
+             print("Skipping WCS conversion (no valid WCS found in current image).")
+             # Mark all coordinates as invalid if no WCS
+             for obj in catalog_data:
+                 obj['x'] = np.nan
+                 obj['y'] = np.nan
+        
+        print(f"Final loaded object count for {catalog_name}: {len(catalog_data)}")
+        return catalog_data
+        
+    except Exception as e:
+        print(f"Error loading catalog {catalog_name}: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return [] # Return empty list on error
+
+
+# RGB Display Creation Parameters
+
+
+def create_display_rgb(r_data, g_data, b_data, stretch_class=None, 
+                      q_min=RGB_DISPLAY_DEFAULT_Q_MIN, q_max=RGB_DISPLAY_DEFAULT_Q_MAX, 
+                      panel_type=RGB_PANEL_TYPE_DEFAULT, source_index=0):
+    """
+    Creates an RGB image for display using scaling that matches your original astronomical code.
+    
+    Parameters:
+    - r_data, g_data, b_data: Input data arrays (order: F814W, F555W, F438W for HST)
+    - stretch_class: Ignored, kept for compatibility
+    - q_min, q_max: Percentile cuts for scaling
+    - panel_type: "hst", "nircam", "miri", or "default" for instrument-specific scaling
+    - source_index: Used to determine which max percentile values to use (0 for first source, others for rest)
+    
+    Returns:
+    - RGB image as uint8 array ready for display
+    """
+    
+    if r_data is None and g_data is None and b_data is None:
+        return None
+    
+    # Find reference shape
+    ref_shape = next((d.shape for d in [r_data, g_data, b_data] if d is not None), None)
+    if ref_shape is None:
+        return None
+
+    # Initialize RGB image - note the shape order matches your original
+    rgb_image = np.zeros((ref_shape[1], ref_shape[0], RGB_IMAGE_CHANNELS), dtype=np.float32)
+    
+    # Handle different panel types with different scaling approaches
+    if panel_type.lower() == RGB_PANEL_TYPE_HST:
+        # HST-specific scaling - EXACTLY matching your original code
+        # Your original: hst_rgb order is [F438W, F555W, F814W] (indices 0, 1, 2)
+        # Your mapping: r_data=F814W, g_data=F555W, b_data=F438W
+        hst_rgb = [b_data, g_data, r_data]  # Reorder to match your original [F438W, F555W, F814W]
+        
+        # Calculate max values exactly like your original code
+        max_hst2 = np.percentile(hst_rgb[2], RGB_DISPLAY_HST_FIRST_SOURCE_MAX_PERCENTILE)  # F814W
+        max_hst1 = np.percentile(hst_rgb[1], RGB_DISPLAY_HST_FIRST_SOURCE_MAX_PERCENTILE)  # F555W  
+        max_hst0 = np.percentile(hst_rgb[0], RGB_DISPLAY_HST_FIRST_SOURCE_MAX_PERCENTILE)  # F438W
+
+        # Red channel (gets F814W data)
+        if hst_rgb[2] is not None:
+            channel_copy = hst_rgb[2].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_RED] = linear(channel_copy, 
+                                                     scale_min=np.percentile(channel_copy, RGB_DISPLAY_HST_MIN_PERCENTILE), 
+                                                     scale_max=max_hst2)
+        
+        # Green channel (gets F555W data)  
+        if hst_rgb[1] is not None:
+            channel_copy = hst_rgb[1].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_GREEN] = linear(channel_copy, 
+                                                       scale_min=np.percentile(channel_copy, RGB_DISPLAY_HST_MIN_PERCENTILE), 
+                                                       scale_max=max_hst1)
+        
+        # Blue channel (gets F438W data)
+        if hst_rgb[0] is not None:
+            channel_copy = hst_rgb[0].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_BLUE] = linear(channel_copy, 
+                                                      scale_min=np.percentile(channel_copy, RGB_DISPLAY_HST_MIN_PERCENTILE), 
+                                                      scale_max=max_hst0)
+            
+    elif panel_type.lower() == RGB_PANEL_TYPE_NIRCAM:
+        # NIRCam scaling - matching your original approach
+        # Order: F360M (r), F335M (g), F300M (b)
+        nircam_rgb = [b_data, g_data, r_data]  # Reorder to match [F300M, F335M, F360M]
+        
+        # Calculate max values for NIRCam
+        max_nircam2 = np.percentile(nircam_rgb[2], RGB_DISPLAY_NIRCAM_MAX_PERCENTILE)  # F360M
+        max_nircam1 = np.percentile(nircam_rgb[1], RGB_DISPLAY_NIRCAM_MAX_PERCENTILE)  # F335M
+        max_nircam0 = np.percentile(nircam_rgb[0], RGB_DISPLAY_NIRCAM_MAX_PERCENTILE)  # F300M
+        print(max_nircam2,max_nircam1,max_nircam0)
+        
+        # Apply scaling: R gets F360M, G gets F335M, B gets F300M
+        if nircam_rgb[2] is not None:  # F360M -> Red
+            channel_copy = nircam_rgb[2].astype(np.float32, copy=True)
+            # channel_copy[np.isinf(channel_copy)] = np.nan
+            # channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_RED] = linear(channel_copy, 
+                                                     scale_min=np.percentile(channel_copy, RGB_DISPLAY_NIRCAM_MIN_PERCENTILE), 
+                                                     scale_max=max_nircam2)
+        
+        if nircam_rgb[1] is not None:  # F335M -> Green
+            channel_copy = nircam_rgb[1].astype(np.float32, copy=True)
+            # channel_copy[np.isinf(channel_copy)] = np.nan
+            # channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_GREEN] = linear(channel_copy, 
+                                                       scale_min=np.percentile(channel_copy, RGB_DISPLAY_NIRCAM_MIN_PERCENTILE), 
+                                                       scale_max=max_nircam1)
+        
+        if nircam_rgb[0] is not None:  # F300M -> Blue
+            channel_copy = nircam_rgb[0].astype(np.float32, copy=True)
+            # channel_copy[np.isinf(channel_copy)] = np.nan
+            # channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_BLUE] = linear(channel_copy, 
+                                                      scale_min=np.percentile(channel_copy, RGB_DISPLAY_NIRCAM_MIN_PERCENTILE), 
+                                                      scale_max=max_nircam0)
+            
+    elif panel_type.lower() == RGB_PANEL_TYPE_MIRI:
+        # MIRI scaling - matching your original approach  
+        # Order: F2100W (r), F1000W (g), F770W (b)
+        miri_rgb = [b_data, g_data, r_data]  # Reorder to match [F770W, F1000W, F2100W]
+        
+        # Apply scaling: R gets F2100W, G gets F1000W, B gets F770W
+        if miri_rgb[2] is not None:  # F2100W -> Red
+            channel_copy = miri_rgb[2].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_RED] = linear(channel_copy, 
+                                                     scale_min=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MIN_PERCENTILE), 
+                                                     scale_max=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MAX_PERCENTILE))
+        
+        if miri_rgb[1] is not None:  # F1000W -> Green
+            channel_copy = miri_rgb[1].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_GREEN] = linear(channel_copy, 
+                                                       scale_min=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MIN_PERCENTILE), 
+                                                       scale_max=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MAX_PERCENTILE))
+        
+        if miri_rgb[0] is not None:  # F770W -> Blue
+            channel_copy = miri_rgb[0].astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            rgb_image[:, :, RGB_CHANNEL_BLUE] = linear(channel_copy, 
+                                                      scale_min=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MIN_PERCENTILE), 
+                                                      scale_max=np.percentile(channel_copy, RGB_DISPLAY_MIRI_MAX_PERCENTILE))
+            
+    else:
+        # Default scaling for other cases
+        channels = [r_data, g_data, b_data]
+        
+        for i, data_channel in enumerate(channels):
+            if data_channel is None:
+                continue
+                
+            if data_channel.shape != ref_shape:
+                continue
+            
+            # Clean the data
+            channel_copy = data_channel.astype(np.float32, copy=True)
+            channel_copy[np.isinf(channel_copy)] = np.nan
+            channel_copy[np.isnan(channel_copy)] = RGB_DISPLAY_NAN_REPLACEMENT_VALUE
+            
+            if not np.any(np.isfinite(channel_copy)) or np.all(channel_copy == 0):
+                continue
+            
+            # Use provided percentiles
+            scale_min = np.percentile(channel_copy, q_min)
+            scale_max = np.percentile(channel_copy, q_max)
+            
+            # Apply linear scaling
+            scaled_channel = linear(channel_copy, scale_min=scale_min, scale_max=scale_max)
+            rgb_image[:, :, i] = scaled_channel
+
+    # Convert to 8-bit image for display
+    return (rgb_image * RGB_DISPLAY_OUTPUT_SCALE_FACTOR).astype(np.uint8)
+# Function to add "Data N/A" text to an axes
+def plot_data_na(ax, title=""):
+    ax.text(0.5, 0.5, "Data N/A", ha='center', va='center', fontsize=10, color='#bbbbbb')
+    ax.set_title(title, fontsize=9, color='lightgray', pad=4)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_facecolor('#2c2c2c')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('#444444')
+
+
+
+
+# Add this import at the top of your main.py file with other imports
+from astropy.nddata.utils import NoOverlapError
+
+
+# Replace your existing _find_and_extract_cutout_via_glob function with this updated version
+def _find_and_extract_cutout_via_glob(
+    base_search_path: str,
+    filter_identifiers: list[str],
+    ra: float,
+    dec: float,
+    cutout_size_arcsec: float,
+    display_filter_name: str,
+    exclude_patterns: list[str] = None
+):
+    """
+    Finds a FITS file using glob patterns and extracts cutout data.
+    Now gracefully handles cases where target coordinates are outside image coverage.
+    
+    base_search_path: e.g., "files/"
+    filter_identifiers: List of strings to search for in filenames, e.g., ["f814w", "814"]
+    display_filter_name: Name for logging, e.g., "F814W"
+    exclude_patterns: List of patterns to exclude from filename matching, e.g., ["ha-img", "ha_img"]
+    
+    Returns:
+    - (cutout_data, cutout_wcs_header) if successful
+    - (None, None) if file not found or target outside coverage
+    """
+    if exclude_patterns is None:
+        exclude_patterns = []
+    
+    matching_files = []
+    for ident in filter_identifiers:
+        pattern = os.path.join(base_search_path, f"*{ident.lower()}*.fits")
+        found = glob.glob(pattern)
+        if found:
+            # Filter out files that match exclude patterns
+            filtered_found = []
+            for file_path in found:
+                filename = os.path.basename(file_path).lower()
+                # Check if any exclude pattern is in the filename
+                should_exclude = any(exclude_pattern.lower() in filename for exclude_pattern in exclude_patterns)
+                if not should_exclude:
+                    filtered_found.append(file_path)
+                else:
+                    print(f"Cutout [{display_filter_name}]: Excluding {file_path} (matches exclude pattern)")
+            
+            matching_files.extend(filtered_found)
+
+    if not matching_files:
+        excluded_info = f" (after excluding patterns: {exclude_patterns})" if exclude_patterns else ""
+        print(f"Cutout [{display_filter_name}]: No FITS file found using identifiers {filter_identifiers} in {base_search_path}{excluded_info}")
+        return None, None
+
+    fits_file_path = matching_files[0] # Use the first match
+    print(f"Cutout [{display_filter_name}]: Using FITS file {fits_file_path}")
+
+    try:
+        with fits.open(fits_file_path) as hdul:
+            for hdu_idx, hdu in enumerate(hdul):
+                if hdu.data is not None and hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2:
+                    try:
+                        header = hdu.header.copy()
+                        # Try to prepare header, especially for JWST WCS issues
+                        if any(tag in display_filter_name.upper() for tag in ["F200W", "F300M", "F335M", "F360M", "F770W", "F1000W", "F1130W", "F2100W"]):
+                            header = _prepare_jwst_header_for_wcs(header)
+
+                        wcs = WCS(header)
+
+                        if not wcs.has_celestial:
+                            print(f"Cutout [{display_filter_name}]: WCS for {fits_file_path} (HDU {hdu_idx}) lacks celestial. Skipping HDU.")
+                            continue
+
+                        image_data_full = hdu.data
+                        if image_data_full.ndim == 3:
+                            image_data_full = image_data_full[0, :, :]
+                        elif image_data_full.ndim == 4:
+                            image_data_full = image_data_full[0, 0, :, :]
+                        elif image_data_full.ndim != 2:
+                            print(f"Cutout [{display_filter_name}]: HDU {hdu_idx} has unsupported {image_data_full.ndim} dimensions. Skipping HDU.")
+                            continue
+
+                        if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
+                            print(f"Cutout [{display_filter_name}]: Invalid RA/Dec ({ra}, {dec}). Cannot create cutout.")
+                            return None, None
+
+                        target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
+                        
+                        try:
+                            cutout_obj = Cutout2D(
+                                image_data_full, 
+                                target_coord, 
+                                cutout_size_arcsec * u.arcsec, 
+                                wcs=wcs, 
+                                mode='partial', 
+                                fill_value=np.nan
+                            )
+                        except NoOverlapError:
+                            print(f"Cutout [{display_filter_name}]: Target position (RA={ra:.4f}, Dec={dec:.4f}) is outside image coverage area")
+                            return None, None
+
+                        cutout_data = cutout_obj.data.copy()
+
+                        cutout_wcs_header = cutout_obj.wcs.to_header()
+                        cutout_wcs_header['NAXIS1'] = cutout_data.shape[1]
+                        cutout_wcs_header['NAXIS2'] = cutout_data.shape[0]
+                        cutout_wcs_header['NAXIS'] = 2 # Ensure NAXIS is 2 for 2D cutout
+
+                        print(f"Cutout [{display_filter_name}]: Successfully extracted from HDU {hdu_idx}, shape {cutout_data.shape}")
+                        return cutout_data, cutout_wcs_header
+
+                    except NoOverlapError:
+                        # Handle NoOverlapError specifically at this level too
+                        print(f"Cutout [{display_filter_name}]: Target position (RA={ra:.4f}, Dec={dec:.4f}) is outside image coverage area")
+                        return None, None
+                    except Exception as wcs_cutout_e:
+                        print(f"Cutout [{display_filter_name}]: Error processing HDU {hdu_idx} in {fits_file_path}: {wcs_cutout_e}")
+                        # Only print full traceback for unexpected errors (not NoOverlapError)
+                        if not isinstance(wcs_cutout_e, NoOverlapError):
+                            import traceback
+                            print(f"Traceback for HDU processing error [{display_filter_name}]:")
+                            traceback.print_exc()
+                        continue
+
+            print(f"Cutout [{display_filter_name}]: No suitable HDU found in {fits_file_path}")
+            return None, None
+
+    except FileNotFoundError:
+        print(f"Cutout [{display_filter_name}]: FITS file {fits_file_path} not found.")
+        return None, None
+    except Exception as e:
+        print(f"Cutout [{display_filter_name}]: Error opening or processing FITS file {fits_file_path}: {e}")
+        # Only print full traceback for unexpected errors
+        if not isinstance(e, NoOverlapError):
+            import traceback
+            print(f"Traceback for FITS file processing error [{display_filter_name}]:")
+            traceback.print_exc()
+        return None, None
+
+@app.get("/generate-rgb-cutouts/")
+async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_name: str = Query("UnknownGalaxy")):
+    """
+    Generates a 1x4 panel of RGB and H-alpha cutouts for a given RA/Dec.
+    Uses file finding logic similar to /generate-sed.
+    Titles are added as text annotations. RA/Dec marker is plotted. Uses LinearStretch.
+    Applies custom scaling for each instrument panel to match original astronomical code.
+    """
+    BASE_FITS_PATH = FILES_DIRECTORY    # Base path for FITS files
+
+    target_galaxy_name = galaxy_name # Use provided galaxy_name as default
+
+    # Try to get galaxy name from catalog
+    try:
+        catalog_table = loaded_catalogs.get(catalog_name)
+        if catalog_table is None:
+            print(f"RGB Cutouts: Catalog '{catalog_name}' not in cache. Loading.")
+            catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+            if catalog_table is not None:
+                loaded_catalogs[catalog_name] = catalog_table
+            else:
+                print(f"RGB Cutouts: Failed to load catalog '{catalog_name}'.")
+
+        if catalog_table is not None:
+            ra_col, dec_col = None, None
+            available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
+            for potential_ra_name in RGB_RA_COLUMN_NAMES:
+                if potential_ra_name in available_cols_lower:
+                    ra_col = available_cols_lower[potential_ra_name]; break
+            for potential_dec_name in RGB_DEC_COLUMN_NAMES:
+                if potential_dec_name in available_cols_lower:
+                    dec_col = available_cols_lower[potential_dec_name]; break
+
+            if ra_col and dec_col:
+                try:
+                    table_ra = catalog_table[ra_col].astype(float)
+                    table_dec = catalog_table[dec_col].astype(float)
+                    ra_diff = table_ra - ra
+                    ra_diff = np.where(ra_diff > 180, ra_diff - 360, ra_diff)
+                    ra_diff = np.where(ra_diff < -180, ra_diff + 360, ra_diff)
+                    distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + (table_dec - dec)**2)
+                    if len(distances) > 0:
+                        closest_idx = np.argmin(distances)
+                        if distances[closest_idx] < ((CUTOUT_SIZE_ARCSEC / RGB_COORDINATE_TOLERANCE_FACTOR) / 3600.0): 
+                            closest_obj = catalog_table[closest_idx]
+                            for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
+                                if gal_col_name in closest_obj.colnames:
+                                    cat_galaxy_name = str(closest_obj[gal_col_name]).strip()
+                                    if cat_galaxy_name and cat_galaxy_name.lower() not in RGB_INVALID_GALAXY_NAMES:
+                                        target_galaxy_name = cat_galaxy_name
+                                        print(f"RGB Cutouts: Galaxy name from catalog ('{gal_col_name}'): {target_galaxy_name}")
+                                        break
+                except Exception as cat_e:
+                    print(f"RGB Cutouts: Error processing catalog for galaxy name: {cat_e}")
+    except Exception as e:
+        print(f"RGB Cutouts: Error loading/processing catalog '{catalog_name}': {e}")
+
+    print(f"RGB Cutouts: Generating for RA={ra}, Dec={dec}. Target Galaxy: {target_galaxy_name}")
+
+    fig, axes_list = plt.subplots(RGB_SUBPLOT_ROWS, RGB_SUBPLOT_COLS, 
+                                  figsize=(RGB_FIGURE_WIDTH, RGB_FIGURE_HEIGHT))
+    if not isinstance(axes_list, np.ndarray): axes_list = [axes_list]
+
+    plot_panels_info = [
+        {
+            "ax_idx": RGB_HST_PANEL_INDEX, 
+            "short_title": RGB_HST_SHORT_TITLE, 
+            "full_title": f"{RGB_HST_SHORT_TITLE} ({target_galaxy_name})", 
+            "filters": {
+                "r": {"id": RGB_FILTERS["HST"]["RED"][0], "name": RGB_FILTERS["HST"]["RED"][1]},
+                "g": {"id": RGB_FILTERS["HST"]["GREEN"][0], "name": RGB_FILTERS["HST"]["GREEN"][1]},
+                "b": {"id": RGB_FILTERS["HST"]["BLUE"][0], "name": RGB_FILTERS["HST"]["BLUE"][1]}
+            }
+        },
+        {
+            "ax_idx": RGB_NIRCAM_PANEL_INDEX, 
+            "short_title": RGB_NIRCAM_SHORT_TITLE, 
+            "full_title": f"{RGB_NIRCAM_SHORT_TITLE} ({target_galaxy_name})", 
+            "filters": {
+                "r": {"id": RGB_FILTERS["NIRCAM"]["RED"][0], "name": RGB_FILTERS["NIRCAM"]["RED"][1]},
+                "g": {"id": RGB_FILTERS["NIRCAM"]["GREEN"][0], "name": RGB_FILTERS["NIRCAM"]["GREEN"][1]},
+                "b": {"id": RGB_FILTERS["NIRCAM"]["BLUE"][0], "name": RGB_FILTERS["NIRCAM"]["BLUE"][1]}
+            }
+        },
+        {
+            "ax_idx": RGB_MIRI_PANEL_INDEX, 
+            "short_title": RGB_MIRI_SHORT_TITLE, 
+            "full_title": f"{RGB_MIRI_SHORT_TITLE} ({target_galaxy_name})", 
+            "filters": {
+                "r": {"id": RGB_FILTERS["MIRI"]["RED"][0], "name": RGB_FILTERS["MIRI"]["RED"][1]},
+                "g": {"id": RGB_FILTERS["MIRI"]["GREEN"][0], "name": RGB_FILTERS["MIRI"]["GREEN"][1]},
+                "b": {"id": RGB_FILTERS["MIRI"]["BLUE"][0], "name": RGB_FILTERS["MIRI"]["BLUE"][1]}
+            }
+        },
+        {
+            "ax_idx": RGB_HA_PANEL_INDEX, 
+            "short_title": RGB_HA_SHORT_TITLE, 
+            "full_title": f"HST {RGB_HA_SHORT_TITLE} ({target_galaxy_name})", 
+            "is_single_channel": True, 
+            "filters": {
+                "ha": {"id": RGB_FILTERS["HA"][0], "name": RGB_FILTERS["HA"][1]}
+            }
+        }
+    ]
+
+    all_data_found_flags = {}
+    panel_wcs_objects = [None] * len(axes_list)
+
+   
+    for panel_info in plot_panels_info:
+        ax_idx = panel_info["ax_idx"]
+        ax = axes_list[ax_idx]
+        ax.set_facecolor(RGB_PANEL_BACKGROUND_COLOR)
+        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False, 
+                       labelbottom=False, labelleft=False)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(RGB_PANEL_SPINE_COLOR)
+
+        channel_data = {}
+        panel_all_found = True
+        current_panel_wcs = None
+        data_for_shape_check = None
+
+        # Determine which instrument this panel belongs to
+        instrument = None
+        if panel_info["short_title"] == RGB_HST_SHORT_TITLE:
+            instrument = "HST"
+        elif panel_info["short_title"] == RGB_NIRCAM_SHORT_TITLE:
+            instrument = "NIRCAM"
+        elif panel_info["short_title"] == RGB_MIRI_SHORT_TITLE:
+            instrument = "MIRI"
+        
+        # Get exclude patterns for this instrument
+        exclude_patterns = RGB_FILTERS.get(instrument, {}).get("exclude_patterns", []) if instrument else []
+
+        if panel_info.get("is_single_channel"):
+            f_info = panel_info["filters"]["ha"]
+            # For H-alpha, don't use exclude patterns since we want to find H-alpha files
+            data, wcs_header = _find_and_extract_cutout_via_glob(BASE_FITS_PATH, f_info["id"], ra, dec, 
+                                                                CUTOUT_SIZE_ARCSEC, f_info["name"])
+            if data is not None:
+                channel_data["ha"] = data
+                data_for_shape_check = data
+                if wcs_header:
+                    try:
+                        current_panel_wcs = WCS(_prepare_jwst_header_for_wcs(wcs_header))
+                        if not current_panel_wcs.has_celestial: current_panel_wcs = None
+                    except Exception as e:
+                        print(f"Error creating WCS for panel {panel_info['short_title']}: {e}")
+                        current_panel_wcs = None
+            else:
+                panel_all_found = False
+        else: # RGB panel
+            r_wcs_header = None
+            for band in ["r", "g", "b"]:
+                f_info = panel_info["filters"][band]
+                # Pass exclude patterns to avoid H-alpha composite files
+                data, temp_wcs_header = _find_and_extract_cutout_via_glob(BASE_FITS_PATH, f_info["id"], ra, dec, 
+                                                                         CUTOUT_SIZE_ARCSEC, f_info["name"], 
+                                                                         exclude_patterns=exclude_patterns)
+                if data is not None:
+                    channel_data[band] = data
+                    if band == "r":
+                        data_for_shape_check = data
+                        if temp_wcs_header: r_wcs_header = temp_wcs_header
+                else:
+                    panel_all_found = False; break
+            if panel_all_found and r_wcs_header:
+                try:
+                    current_panel_wcs = WCS(_prepare_jwst_header_for_wcs(r_wcs_header))
+                    if not current_panel_wcs.has_celestial: current_panel_wcs = None
+                except Exception as e:
+                    print(f"Error creating WCS for panel {panel_info['short_title']} from R-band: {e}")
+                    current_panel_wcs = None
+        
+        panel_wcs_objects[ax_idx] = current_panel_wcs
+        all_data_found_flags[panel_info["full_title"]] = panel_all_found
+
+        ax.text(RGB_TITLE_X_POSITION, RGB_TITLE_Y_POSITION, panel_info["short_title"], 
+                transform=ax.transAxes, fontsize=RGB_TITLE_FONT_SIZE, color=RGB_TITLE_COLOR, 
+                fontweight=RGB_TITLE_FONT_WEIGHT, ha='right', va='top', 
+                bbox=dict(facecolor=RGB_TITLE_BBOX_FACECOLOR, alpha=RGB_TITLE_BBOX_ALPHA, edgecolor='none'))
+
+        if not panel_all_found:
+            plot_data_na(ax, title="")
+            print(f"RGB Cutouts: Not all data found for panel {panel_info['short_title']}")
+            continue
+
+        if panel_info.get("is_single_channel"):
+            ha_data = channel_data.get("ha")
+            if ha_data is not None:
+                norm = simple_norm(ha_data, stretch=RGB_HA_STRETCH, percent=RGB_HA_PERCENTILE)
+                ax.imshow(ha_data, origin='lower', cmap=RGB_HA_COLORMAP, norm=norm, aspect='equal')
+        else: # RGB
+            r_data, g_data, b_data = channel_data.get("r"), channel_data.get("g"), channel_data.get("b")
+            if r_data is not None and g_data is not None and b_data is not None:
+                # Handle different panel types with instrument-specific scaling
+                if panel_info["short_title"] == RGB_HST_SHORT_TITLE:
+                    print(f"Applying HST-specific scaling (matches original astronomical code)")
+                    rgb_image = create_display_rgb(
+                        r_data, g_data, b_data, 
+                        panel_type="hst",
+                        source_index=0  # Use 0 for first source, could be made dynamic if needed
+                    )
+                elif panel_info["short_title"] == RGB_NIRCAM_SHORT_TITLE:
+                    print(f"Applying NIRCam-specific scaling")
+                    rgb_image = create_display_rgb(
+                        r_data, g_data, b_data, 
+                        panel_type="nircam"
+                    )
+                elif panel_info["short_title"] == RGB_MIRI_SHORT_TITLE:
+                    print(f"Applying MIRI-specific scaling")
+                    rgb_image = create_display_rgb(
+                        r_data, g_data, b_data, 
+                        panel_type="miri"
+                    )
+                else:
+                    # Default scaling for any other panels
+                    print(f"Applying default scaling for {panel_info['short_title']}")
+                    rgb_image = create_display_rgb(
+                        r_data, g_data, b_data, 
+                        q_min=RGB_DEFAULT_Q_MIN, 
+                        q_max=RGB_DEFAULT_Q_MAX
+                    )
+                
+                if rgb_image is not None:
+                    ax.imshow(rgb_image, origin='lower', aspect='equal')
+                else:
+                    print(f"Warning: RGB image creation failed for {panel_info['short_title']}")
+                    plot_data_na(ax, title="")
+            else:
+                print(f"Warning: Missing channel data for {panel_info['short_title']} RGB panel")
+                plot_data_na(ax, title="")
+        
+        # Plot RA/Dec marker
+        retrieved_wcs = panel_wcs_objects[ax_idx]
+        if retrieved_wcs and data_for_shape_check is not None:
+            try:
+                pixel_coords = retrieved_wcs.world_to_pixel_values(ra, dec)
+                if 0 <= pixel_coords[0] < data_for_shape_check.shape[1] and \
+                   0 <= pixel_coords[1] < data_for_shape_check.shape[0]:
+                    ax.plot(pixel_coords[0], pixel_coords[1], RGB_MARKER_SYMBOL, 
+                           markersize=RGB_MARKER_SIZE, markeredgewidth=RGB_MARKER_EDGE_WIDTH, 
+                           alpha=RGB_MARKER_ALPHA)
+                else:
+                    print(f"RA/Dec marker for {panel_info['short_title']} is outside image bounds based on WCS.")
+            except Exception as e:
+                print(f"Error plotting RA/Dec marker for {panel_info['short_title']}: {e}")
+                
+    plt.tight_layout(pad=RGB_TIGHT_LAYOUT_PAD, w_pad=RGB_TIGHT_LAYOUT_W_PAD, h_pad=RGB_TIGHT_LAYOUT_H_PAD)
+
+    image_dir = Path(IMAGE_DIR)
+    image_dir.mkdir(exist_ok=True)
+    safe_galaxy_name = "".join(c if c in RGB_ALLOWED_FILENAME_CHARS else RGB_FILENAME_REPLACEMENT_CHAR 
+                              for c in target_galaxy_name).rstrip().replace(' ', RGB_FILENAME_REPLACEMENT_CHAR)
+    if not safe_galaxy_name or safe_galaxy_name.lower() == "unknown": 
+        safe_galaxy_name = RGB_DEFAULT_GALAXY_NAME
+    
+    timestamp = int(time.time())
+    filename = f"{RGB_FILENAME_PREFIX}_{safe_galaxy_name}_RA{ra:.4f}_DEC{dec:.4f}_{timestamp}.png"
+    filepath = image_dir / filename
+
+    try:
+        fig.savefig(str(filepath), dpi=RGB_OUTPUT_DPI)
+        plt.close(fig)
+        print(f"RGB Cutout panel saved to {filepath}")
+        url_path = f"/{IMAGE_DIR}/{filename}"
+        return JSONResponse(content={"message": "RGB cutouts generated successfully", "url": url_path, 
+                                   "filename": filename, "data_found_summary": all_data_found_flags})
+    except Exception as e:
+        plt.close(fig)
+        print(f"Error saving RGB cutouts plot: {e}")
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": f"Failed to save RGB cutouts plot: {str(e)}"})
 
 # Add this to your main.py file
 import subprocess
@@ -2732,1495 +7329,368 @@ import json
 from fastapi import Form
 from fastapi.responses import JSONResponse
 
-@app.post("/run-peak-finder/")
-async def run_peak_finder(
-    fits_file: str = Form(...),
-    pix_across_beam: float = Form(5.0),
-    min_beams: float = Form(1.0),
-    beams_to_search: float = Form(1.0),
-    delta_rms: float = Form(3.0),
-    minval_rms: float = Form(2.0)
+# Helper function to run the peak finder script in a blocking manner
+def _run_peak_finder_blocking(
+    full_file_path: str,
+    pix_across_beam: float,
+    min_beams: float,
+    beams_to_search: float,
+    delta_rms: float,
+    minval_rms: float,
+    edge_clip: int
 ):
-    """
-    Run the peak finder on a specified FITS file with configurable parameters
-    """
+    peak_finder_script = os.path.join(os.path.dirname(__file__), 'peak_finder.py')
+    cmd = [
+        sys.executable,
+        peak_finder_script,
+        full_file_path,
+        str(pix_across_beam),
+        str(min_beams),
+        str(beams_to_search),
+        str(delta_rms),
+        str(minval_rms),
+        str(edge_clip)
+    ]
+    print(f"Executing peak finder command: {' '.join(cmd)}")
     try:
-        # Verify the file exists and is a valid FITS file
-        full_file_path = os.path.join('files', fits_file)
-        
-        if not os.path.exists(full_file_path):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"File not found: {fits_file}"}
-            )
-        
-        # Ensure the script path is correct
-        peak_finder_script = os.path.join(os.path.dirname(__file__), 'peak_finder.py')
-        
-        # Prepare command with parameters
-        cmd = [
-            sys.executable, 
-            peak_finder_script, 
-            full_file_path,
-            str(pix_across_beam),
-            str(min_beams),
-            str(beams_to_search),
-            str(delta_rms),
-            str(minval_rms)
-        ]
-        
-        # Debug: Log the exact command being run
-        print(f"Running peak finder command: {' '.join(cmd)}")
-        
-        # Run the peak finder script using subprocess
-        try:
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True,
-                check=False,  # Don't raise exception on non-zero exit
-                timeout=120,  # 2-minute timeout
-                cwd=os.path.dirname(os.path.abspath(__file__))  # Set working directory
-            )
-        except subprocess.TimeoutExpired:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "error": "Peak finder script timed out",
-                    "ra": [],
-                    "dec": [],
-                    "source_count": 0
-                }
-            )
-        
-        # Debug: Log the full output
-        print("Peak Finder Script Output:")
-        print("STDOUT:", result.stdout)
-        print("STDERR:", result.stderr)
-        print(f"Return code: {result.returncode}")
-        
-        # Check for errors in subprocess execution
-        if result.returncode != 0:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "error": f"Peak finder script failed with return code {result.returncode}: {result.stderr or result.stdout}",
-                    "ra": [],
-                    "dec": [],
-                    "source_count": 0
-                }
-            )
-        
-        # Parse the output, handling potential mixed content
-        try:
-            # Look for JSON pattern in the output (starting with { and ending with })
-            import re
-            json_match = re.search(r'({.*"source_count":\s*\d+})', result.stdout, re.DOTALL)
-            
-            if json_match:
-                # Extract the JSON part
-                json_str = json_match.group(1)
-                output_data = json.loads(json_str)
-                
-                # Validate the output structure
-                if not isinstance(output_data, dict):
-                    raise ValueError("Invalid output format: expected JSON object")
-                
-                # Ensure output has expected fields
-                if "ra" not in output_data or "dec" not in output_data or "source_count" not in output_data:
-                    raise ValueError("Missing required fields in output")
-                
-                # Add debug info about the found sources
-                print(f"Successfully found {output_data['source_count']} sources")
-                
-                return JSONResponse(content=output_data)
-            else:
-                # No JSON found in the output
-                raise ValueError("No valid JSON data found in peak finder output")
-        
-        except (json.JSONDecodeError, ValueError) as e:
-            # Log the problematic output
-            print("JSON Parsing Error:", e)
-            print("Raw Output:", result.stdout)
-            
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "error": f"Invalid output from peak finder script: {str(e)}",
-                    "raw_output": result.stdout[:1000],  # Include part of the raw output for debugging
-                    "ra": [],
-                    "dec": [],
-                    "source_count": 0
-                }
-            )
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False, # Don't raise exception on non-zero exit status
+            timeout=PEAK_FINDER_TIMEOUT,  # 5-minute timeout, adjust as needed
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+    except subprocess.TimeoutExpired:
+        print("Peak finder script timed out")
+        return {
+            "error": "Peak finder script timed out after 5 minutes",
+            "ra": [], "dec": [], "source_count": 0, "status_code": 500
+        }
+
+    print(f"Peak Finder STDOUT: {result.stdout}")
+    print(f"Peak Finder STDERR: {result.stderr}")
+    print(f"Peak Finder return code: {result.returncode}")
+
+    if result.returncode != 0:
+        return {
+            "error": f"Peak finder script failed: {result.stderr or result.stdout}",
+            "ra": [], "dec": [], "source_count": 0, "status_code": 500
+        }
     
-    except Exception as e:
-        # Catch any unexpected errors
-        print(f"Unexpected error in peak finder endpoint: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(e),
-                "ra": [],
-                "dec": [],
-                "source_count": 0
-            }
-        )
-
-
-
-@app.post("/register-fits-data/")
-async def register_fits_data(request: Request):
-    """Register FITS data for tiling when client processes it."""
     try:
-        # Get the JSON data
-        data = await request.json()
-        
-        # Extract file ID and basic info
-        file_id = data.get("file_id")
-        width = data.get("width")
-        height = data.get("height")
-        min_value = data.get("min_value")
-        max_value = data.get("max_value")
-        
-        if not file_id or not width or not height:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Missing required FITS data parameters"}
-            )
-        
-        # Store the basic information to initialize the tile generator later
-        # We don't store the full pixel data as it's too large, but we'll use
-        # this information when generating tiles from the server-side FITS data
-        print(f"Registered FITS data for tiling: {file_id} ({width}x{height})")
-        
-        # Check if we have this file loaded
-        fits_file = getattr(app.state, "current_fits_file", None)
-        if fits_file and os.path.basename(fits_file) == file_id:
-            # Initialize the tile generator in a background thread
-            threading.Thread(
-                target=initialize_tile_generator_from_server,
-                args=(file_id, width, height, min_value, max_value),
-                daemon=True
-            ).start()
-        
-        return JSONResponse(content={"status": "success"})
-    except Exception as e:
-        print(f"Error registering FITS data: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to register FITS data: {str(e)}"}
-        )
-
-# Function to initialize a tile generator using server-side FITS data
-def initialize_tile_generator_from_server(file_id, width, height, min_value, max_value):
-    try:
-        # Get the current FITS file
-        fits_file = getattr(app.state, "current_fits_file", None)
-        if not fits_file or os.path.basename(fits_file) != file_id:
-            print(f"FITS file not loaded or doesn't match: {file_id}")
-            return
-            
-        print(f"Initializing server-side tile generator for {file_id}")
-        
-        # Load the FITS data directly from the file
-        with fits.open(fits_file) as hdul:
-            # Find the HDU with image data
-            data_hdu = None
-            for i, hdu in enumerate(hdul):
-                if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)) and hdu.data is not None:
-                    data_hdu = hdu
-                    break
-            
-            if data_hdu is None:
-                print(f"No image data found in FITS file: {fits_file}")
-                return
-                
-            # Create a simplified FITS data object for the tile generator
-            fits_data = SimpleNamespace()
-            fits_data.data = data_hdu.data
-            fits_data.width = width
-            fits_data.height = height
-            fits_data.min_value = min_value
-            fits_data.max_value = max_value
-            
-            # Try to get WCS information
-            try:
-                fits_data.wcs = WCS(data_hdu.header)
-            except:
-                fits_data.wcs = None
-                
-            # Create the tile generator
-            active_tile_generators[file_id] = FitsTileGenerator(fits_data)
-            print(f"Server-side tile generator initialized for {file_id}")
-    except Exception as e:
-        print(f"Error initializing server-side tile generator: {e}")
-        import traceback
-        print(traceback.format_exc())
-
-@app.get("/catalog-data/")
-async def catalog_data(catalog_name: str):
-    """Return catalog data in JSON format for client-side rendering."""
-    try:
-        catalog_path = f"catalogs/{catalog_name}"
-        print(f"Processing catalog data request for: {catalog_name}")
-        
-        if not os.path.exists(catalog_path):
-            print(f"Catalog file not found: {catalog_path}")
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog file not found: {catalog_name}"}
-            )
-        
-        # Load catalog data using the same function used elsewhere
-        try:
-            catalog_data = load_catalog_data(catalog_path)
-            print(f"Loaded {len(catalog_data)} objects from catalog")
-        except Exception as e:
-            print(f"Error loading catalog data: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Failed to load catalog data: {str(e)}"}
-            )
-        
-        
-        return JSONResponse(content=catalog_data)
-    except Exception as e:
-        print(f"Error in catalog_data: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get catalog data: {str(e)}"}
-        )
-
-@app.get("/load-catalog/{catalog_name}")
-async def load_catalog_endpoint(catalog_name: str):
-    """Load a catalog file and return info about it."""
-    try:
-        catalog_path = f"catalogs/{catalog_name}"
-        
-        if not os.path.exists(catalog_path):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog file not found: {catalog_name}"}
-            )
-        
-        # Clear previously loaded catalogs to prevent issues
-        loaded_catalogs.clear()
-        print("Cleared previously loaded catalogs")
-        
-        # Load catalog data using the same function used elsewhere
-        try:
-            catalog_data = load_catalog_data(catalog_path)
-            if not catalog_data:
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": f"Failed to load catalog data"}
-                )
-            print(f"Loaded {len(catalog_data)} objects from catalog for plotting")
-            
-            # Get boolean flag columns from the catalog
-            # Load the catalog table if not already loaded
-            if catalog_name not in loaded_catalogs:
-                try:
-                    with fits.open(catalog_path) as hdul:
-                        # Find the first HDU with a table
-                        table_hdu = None
-                        for i, hdu in enumerate(hdul):
-                            if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                                table_hdu = hdu
-                                table_hdu_index = i
-                                break
-                        
-                        if table_hdu is None:
-                            print(f"No table found in FITS file: {catalog_path}")
-                            # Continue without boolean flags
-                        else:
-                            # Get the table data
-                            loaded_catalogs[catalog_name] = Table(table_hdu.data)
-                            print(f"Loaded catalog table for boolean flags: {catalog_name}")
-                except Exception as e:
-                    print(f"Error loading catalog table for boolean flags: {e}")
-                    # Continue without boolean flags
-            
-            # If we have the catalog table loaded, add boolean flags to the catalog data
-            if catalog_name in loaded_catalogs:
-                catalog_table = loaded_catalogs[catalog_name]
-                
-                # Find potential boolean columns
-                boolean_columns = []
-                
-                # Check first row to find boolean columns (if table is not empty)
-                if len(catalog_table) > 0:
-                    for col_name in catalog_table.colnames:
-                        try:
-                            val = catalog_table[col_name][0]
-                            # Check if value is a boolean type or looks like a boolean
-                            if isinstance(val, (bool, np.bool_)) or \
-                               (isinstance(val, (str, np.str_)) and val.lower() in ('true', 'false')) or \
-                               (isinstance(val, (int, np.integer)) and val in (0, 1)):
-                                boolean_columns.append(col_name)
-                        except Exception:
-                            continue
-                
-                # Add boolean properties to catalog data
-                if boolean_columns:
-                    print(f"Found boolean columns for filtering: {boolean_columns}")
-                    
-                    # Find RA and DEC columns
-                    ra_col = None
-                    dec_col = None
-                    
-                    for col_name in catalog_table.colnames:
-                        if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
-                            ra_col = col_name
-                        elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
-                            dec_col = col_name
-                    
-                    if ra_col and dec_col:
-                        # For each object in the catalog data
-                        for obj in catalog_data:
-                            ra = obj['ra']
-                            dec = obj['dec']
-                            
-                            # Calculate distances to find matching object in table
-                            ra_diff = np.abs(catalog_table[ra_col] - ra)
-                            dec_diff = np.abs(catalog_table[dec_col] - dec)
-                            distances = np.sqrt(ra_diff**2 + dec_diff**2)
-                            closest_idx = np.argmin(distances)
-                            
-                            # Check if the match is close enough
-                            if distances[closest_idx] < 0.0003:  # ~1 arcsec
-                                # Add boolean properties
-                                for col_name in boolean_columns:
-                                    try:
-                                        val = catalog_table[col_name][closest_idx]
-                                        # Convert to standard boolean
-                                        if isinstance(val, (bool, np.bool_)):
-                                            obj[col_name] = bool(val)
-                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'true':
-                                            obj[col_name] = True
-                                        elif isinstance(val, (str, np.str_)) and val.lower() == 'false':
-                                            obj[col_name] = False
-                                        elif isinstance(val, (int, np.integer)):
-                                            obj[col_name] = bool(val)
-                                        else:
-                                            obj[col_name] = False
-                                    except Exception as e:
-                                        print(f"Error processing boolean column {col_name}: {e}")
-                                        obj[col_name] = False
-            
-        except Exception as e:
-            print(f"Error loading catalog data: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Failed to load catalog data: {str(e)}"}
-            )
-        
-        return JSONResponse(content=catalog_data)
-    except Exception as e:
-        print(f"Error in load_catalog_endpoint: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to load catalog: {str(e)}"}
-        )
-
-
-
-@app.get("/catalog-binary/")
-async def catalog_binary(catalog_name: str, prevent_auto_load: bool = Query(False)):
-    """
-    Return catalog data as binary for efficient transfer.
-    """
-    try:
-        # Find the catalog file
-        catalog_path = None
-        for file_pattern in ["catalogs/*.cat", "catalogs/*.fits", "catalogs/*.fit"]:
-            for file in glob.glob(file_pattern):
-                if os.path.basename(file).lower() == catalog_name.lower() or os.path.splitext(os.path.basename(file))[0].lower() == catalog_name.lower():
-                    catalog_path = file
-                    break
-            if catalog_path:
-                break
-        
-        if not catalog_path:
-            return {"error": f"Catalog '{catalog_name}' not found"}
-        
-        # Store the current catalog name to prevent duplicate loading
-        app.state.last_loaded_catalog = catalog_name
-        
-        # Clear previously loaded catalogs if not preventing auto-load
-        if not prevent_auto_load:
-            loaded_catalogs.clear()
-            print(f"Cleared previously loaded catalogs for loading {catalog_name}")
-        
-        # Load the catalog data
-        catalog_data = load_catalog_data(catalog_path)
-        if not catalog_data:
-            return {"error": f"Failed to load catalog '{catalog_name}'"}
-        
-        # Also load the catalog table for SED generation
-        try:
-            with fits.open(catalog_path) as hdul:
-                # Try HDU 1 first (most common for tables)
-                table_hdu = 1
-                
-                # If HDU 1 is not a table, try to find a table HDU
-                if not isinstance(hdul[table_hdu], (fits.BinTableHDU, fits.TableHDU)):
-                    for i, hdu in enumerate(hdul):
-                        if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                            table_hdu = i
-                            print(f"Found table in HDU {i}")
-                            break
-                
-                # Get table data and store it in the global dictionary
-                loaded_catalogs[catalog_name] = Table(hdul[table_hdu].data)
-                print(f"Stored catalog table for SED generation: {catalog_name}")
-        except Exception as e:
-            print(f"Error loading catalog table for SED: {e}")
-        
-        # Create a binary buffer
-        buffer = io.BytesIO()
-        
-        # Write the number of objects
-        num_objects = len(catalog_data)
-        buffer.write(struct.pack('!I', num_objects))
-        
-        # Write each object's data
-        for obj in catalog_data:
-            # Write x, y coordinates
-            buffer.write(struct.pack('!ff', obj['x'], obj['y']))
-            
-            # Write ra, dec coordinates
-            buffer.write(struct.pack('!ff', obj['ra'], obj['dec']))
-            
-            # Write radius in pixels (if available)
-            radius = obj.get('radius_pixels', 5.0)  # Default to 5 pixels if not specified
-            buffer.write(struct.pack('!f', radius))
-            
-            # Write magnitude (if available)
-            magnitude = obj.get('magnitude', 0.0)
-            buffer.write(struct.pack('!f', magnitude))
-        
-        # If catalog_data is empty but we have a table, try to create a minimal binary format
-        if not catalog_data and catalog_name in loaded_catalogs:
-            try:
-                catalog_table = loaded_catalogs[catalog_name]
-                print(f"No catalog data with RA/DEC, but we have a table. Creating minimal binary.")
-                
-                # Find RA and DEC columns
-                ra_col = None
-                dec_col = None
-                
-                for col_name in catalog_table.colnames:
-                    if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
-                        ra_col = col_name
-                    elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
-                        dec_col = col_name
-                
-                if ra_col and dec_col:
-                    # Reset buffer
-                    buffer = io.BytesIO()
-                    
-                    # Write the number of objects
-                    num_objects = len(catalog_table)
-                    buffer.write(struct.pack('!I', num_objects))
-                    
-                    # Write each row
-                    for row in catalog_table:
-                        # Default x, y (will be calculated by client)
-                        buffer.write(struct.pack('!ff', 0.0, 0.0))
-                        
-                        # Write ra, dec
-                        buffer.write(struct.pack('!ff', float(row[ra_col]), float(row[dec_col])))
-                        
-                        # Default radius and magnitude
-                        buffer.write(struct.pack('!ff', 5.0, 0.0))
-                    
-                    # Get the binary data
-                    binary_data = buffer.getvalue()
-                    print(f"Created binary data for {num_objects} objects using {ra_col}/{dec_col}")
-            except Exception as e:
-                print(f"Error creating minimal binary format: {e}")
-                # Continue with whatever binary_data we have
-        
-        # Get the binary data
-        binary_data = buffer.getvalue()
-        
-        # Return binary response
-        return Response(
-            content=binary_data,
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={catalog_name}.bin"}
-        )
-    except Exception as e:
-        print(f"Error in catalog_binary: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return {"error": str(e)}
-@app.get("/generate-sed/")
-async def generate_sed(ra: float, dec: float, catalog_name: str):
-    """Generate a SED plot for a specific region based on RA and DEC coordinates."""
-    try:
-        # Check if we have the catalog data loaded
-        if catalog_name not in loaded_catalogs:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog '{catalog_name}' not loaded. Please load the catalog first."}
-            )
-        
-        # Use the already loaded catalog data
-        catalog_table = loaded_catalogs[catalog_name]
-        print(f"Using already loaded catalog: {catalog_name}")
-        
-        # Find RA and DEC columns
-        ra_col = None
-        dec_col = None
-        
-        for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
-                ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
-                dec_col = col_name
-        
-        if not ra_col or not dec_col:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Could not find RA and DEC columns in catalog"}
-            )
-        
-        # Calculate angular distance to find closest object
-        ra_diff = np.abs(catalog_table[ra_col] - ra)
-        dec_diff = np.abs(catalog_table[dec_col] - dec)
-        distances = np.sqrt(ra_diff**2 + dec_diff**2)
-        closest_idx = np.argmin(distances)
-        
-        # Get the closest object
-        closest_obj = catalog_table[closest_idx]
-        
-        # Check if the object is close enough (within 1 arcsec)
-        if distances[closest_idx] > 0.0003:  # ~1 arcsec in degrees
-            return JSONResponse(
-                status_code=404,
-                content={"error": "No object found near the specified coordinates"}
-            )
-        
-        # Extract data for SED plot
-        filter_wavelengths = [0.275, 0.336, 0.438, 0.555, 0.814, 2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3, 21]
-        filter_names = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W', 'F200W', 'F300M', 'F335M', 'F360M', 'F770W', 'F1000W', 'F1130W', 'F2100W']
-        
-        # Get flux values
-        sed_fluxes = []
-        sed_fluxes_err = []
-        sed_fluxes_cigale = []
-        
-        # HST filters
-        for filter_name in ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']:
-            if filter_name in catalog_table.colnames:
-                sed_fluxes.append(float(closest_obj[filter_name]))
-                if f"{filter_name}_err" in catalog_table.colnames:
-                    sed_fluxes_err.append(float(closest_obj[f"{filter_name}_err"]))
-                else:
-                    sed_fluxes_err.append(0.0)
-            else:
-                sed_fluxes.append(0.0)
-                sed_fluxes_err.append(0.0)
-            
-            # CIGALE best fit
-            if f"best.hst.wfc3.{filter_name}" in catalog_table.colnames:
-                sed_fluxes_cigale.append(float(closest_obj[f"best.hst.wfc3.{filter_name}"]) * 1000)
-            elif f"best.hst.wfc.{filter_name}" in catalog_table.colnames:
-                sed_fluxes_cigale.append(float(closest_obj[f"best.hst.wfc.{filter_name}"]) * 1000)
-            elif f"best.hst_{filter_name}" in catalog_table.colnames:
-                sed_fluxes_cigale.append(float(closest_obj[f"best.hst_{filter_name}"]) * 1000)
-            else:
-                sed_fluxes_cigale.append(0.0)
-        
-        # JWST NIRCam filters
-        for filter_name in ['F200W', 'F300M', 'F335M', 'F360M']:
-            if filter_name in catalog_table.colnames:
-                sed_fluxes.append(float(closest_obj[filter_name]))
-                if f"{filter_name}_err" in catalog_table.colnames:
-                    sed_fluxes_err.append(float(closest_obj[f"{filter_name}_err"]))
-                else:
-                    sed_fluxes_err.append(0.0)
-            else:
-                sed_fluxes.append(0.0)
-                sed_fluxes_err.append(0.0)
-            
-            # CIGALE best fit
-            if f"best.jwst.nircam.{filter_name}" in catalog_table.colnames:
-                sed_fluxes_cigale.append(float(closest_obj[f"best.jwst.nircam.{filter_name}"]) * 1000)
-            else:
-                sed_fluxes_cigale.append(0.0)
-        
-        # JWST MIRI filters
-        for filter_name in ['F770W', 'F1000W', 'F1130W', 'F2100W']:
-            if filter_name in catalog_table.colnames:
-                sed_fluxes.append(float(closest_obj[filter_name]))
-                if f"{filter_name}_err" in catalog_table.colnames:
-                    sed_fluxes_err.append(float(closest_obj[f"{filter_name}_err"]))
-                else:
-                    sed_fluxes_err.append(0.0)
-            else:
-                sed_fluxes.append(0.0)
-                sed_fluxes_err.append(0.0)
-            
-            # CIGALE best fit
-            if f"best.jwst.miri.{filter_name}" in catalog_table.colnames:
-                sed_fluxes_cigale.append(float(closest_obj[f"best.jwst.miri.{filter_name}"]) * 1000)
-            else:
-                sed_fluxes_cigale.append(0.0)
-        
-        # Create the SED plot with the requested size
-        fig = plt.figure(figsize=(9, 3.5))
-        
-        # Create main plot
-        ax = fig.add_subplot(111)
-        
-        # Plot observed fluxes with error bars
-        ax.errorbar(filter_wavelengths, sed_fluxes, yerr=sed_fluxes_err, fmt='o', 
-                    ecolor='gray', color='blue', label='BKG-Subtracted', markersize=9, capsize=4)
-        
-        # Check if this is an ISM source
-        is_ism_source = False
-        if 'ISM_source' in catalog_table.colnames:
-            is_ism_source = bool(closest_obj['ISM_source'])
-        
-        # Plot CIGALE best fit if it's an ISM source
-        if is_ism_source:
-            ax.scatter(filter_wavelengths, sed_fluxes_cigale, s=140, marker="s", 
-                       facecolors='none', edgecolors='red', label=r'CIGALE Best Fit')
-            ax.plot(filter_wavelengths, sed_fluxes_cigale, '-', color='red')
-        
-        # Set plot labels and scales
-        ax.set_xlabel('Wavelength (μm)', fontsize=12)
-        ax.set_ylabel('Flux Density (μJy)', fontsize=12)
-        # Remove title as requested
-        ax.legend(loc='lower left', fontsize=12)
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.set_xticks(filter_wavelengths)
-        ax.set_xticklabels([f'{w:.2f}' for w in filter_wavelengths], rotation=45, fontsize=10)
-        ax.set_xlim(0.25, 23)
-        # Remove grid as requested
-        
-        # Add information text box in the bottom right corner of the plot
-        galaxy_name = "Unknown"
-        if 'galaxy' in catalog_table.colnames:
-            galaxy_name = str(closest_obj['galaxy']).upper()
-        
-        # Get age and mass if available
-        age = 0.0
-        mass = 0.0
-        chi = 0.0
-        ebv_gas = 0.0
-        
-        if 'best.stellar.age_m_star' in catalog_table.colnames:
-            age = float(closest_obj['best.stellar.age_m_star'])
-        
-        if 'best.stellar.m_star' in catalog_table.colnames:
-            mass = float(closest_obj['best.stellar.m_star'])
-        
-        if 'best.reduced_chi_square' in catalog_table.colnames:
-            chi = float(closest_obj['best.reduced_chi_square'])
-        
-        if 'best.attenuation.E_BV_lines' in catalog_table.colnames:
-            ebv_gas = float(closest_obj['best.attenuation.E_BV_lines'])
-        
-        # Create text for the information box
-        bbox = dict(boxstyle="round", alpha=0.7, facecolor="white")
-        if is_ism_source:
-            text_str = (
-                f"Galaxy: {galaxy_name}\n"
-                f"RA: {ra:.4f}, DEC: {dec:.4f}\n"
-                f"Age: {age:.1f} Myr, Mass: {mass:.1f} M$_{{\\odot}}$ \n"
-                f"Reduced $\\chi$: {chi:.1f}, E(B-V) gas: {ebv_gas:.1f}"
-            )
+        json_match = re.search(r'({.*"source_count":\s*\d+})', result.stdout, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+            output_data = json.loads(json_str)
+            if not isinstance(output_data, dict) or \
+               not all(k in output_data for k in ["ra", "dec", "source_count"]):
+                raise ValueError("Invalid JSON structure from peak_finder.py")
+            output_data["status_code"] = 200
+            return output_data
         else:
-            text_str = (
-                f"Galaxy: {galaxy_name}\n"
-                f"RA: {ra:.4f}, DEC: {dec:.4f}"
-            )
-        
-        # Position the text box in the bottom right corner of the plot
-        ax.text(0.98, 0.05, text_str, 
-                transform=ax.transAxes, 
-                ha="right", va="bottom", 
-                fontsize=12, bbox=bbox)
-        
-        # Finalize the plot to ensure accurate transformation
-        fig.canvas.draw()
-        
-        # Get transformation from data to axes coordinates
-        transform = ax.transAxes.inverted()
-        
-        # Define x-offsets for the cutout images
-        x_offsets = [0.002, 0.02, 0.023, 0.032, 0.009, -0.07, -0.083, -0.045, 0.001, -0.10, -0.0955, -0.06, 0.007, -0.7, -1, -0.885]
-
-        
-        # Store cutout data for RGB composites
-        rgbs = []  # NIRCam (F300M, F335M, F360M)
-        rgbs_1 = []  # MIRI (F770W, F1000W, F1130W)
-        rgbs_2 = []  # HST (F336W, F438W, F555W)
-        rgbsss = []  # CO data
-        rgbsss2 = []  # HST HA data
-        
-        # Headers for reprojection
-        nircam_header = None
-        miri_header = None
-        hst_header = None
-        filter_wavelengths2 = [0.275,0.336,0.438,0.555,0.814,2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3,11.4,11.5,21,21.5]  # Example values
-
-        # Find and display cutout images above their corresponding wavelength points
-        for i, (wavelength, filter_name) in enumerate(zip(filter_wavelengths2, filter_names)):
-            # Get normalized x position in axes space
-            x_norm, _ = transform.transform(ax.transData.transform((wavelength, 0)))
-            
-            # Ensure within visible bounds and apply offset
-            x_norm = max(min(x_norm, 1 - 0.05), 0.0)
-            x_norm += x_offsets[i]
-            
-            # Try to find a matching file
-            # First try exact match
-            filter_pattern = f"files/*{filter_name.lower()}*.fits"
-            matching_files = glob.glob(filter_pattern)
-            
-            # If F438W is not available, try F435W
-            if not matching_files and filter_name == 'F438W':
-                filter_pattern = f"files/*f435w*.fits"
-                matching_files = glob.glob(filter_pattern)
-            
-            # Try more flexible pattern matching if still no matches
-            if not matching_files:
-                # Try with just the filter number
-                filter_number = ''.join(filter(str.isdigit, filter_name))
-                if filter_number:
-                    filter_pattern = f"files/*{filter_number}*.fits"
-                    matching_files = glob.glob(filter_pattern)
-            
-            if matching_files:
-                try:
-                    # Use the first matching file
-                    fits_file = matching_files[0]
-                    
-                    with fits.open(fits_file) as hdul:
-                        # Find the HDU with image data
-                        for hdu_idx, hdu in enumerate(hdul):
-                            if hdu.data is not None and hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2:
-                                try:
-                                    # Get the WCS
-                                    wcs = WCS(hdu.header)
-                                    
-                                    # Get the image data
-                                    image_data = hdu.data
-                                    
-                                    # Handle different dimensionality
-                                    if len(image_data.shape) > 2:
-                                        # For 3D data, take the first slice
-                                        if len(image_data.shape) == 3:
-                                            image_data = image_data[0]
-                                        # For 4D data, take the first slice of the first volume
-                                        elif len(image_data.shape) == 4:
-                                            image_data = image_data[0, 0]
-                                    
-                                    # Create a SkyCoord object for the target position
-                                    target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-                                    
-                                    # Define cutout size (2.5 arcsec)
-                                    cutout_size = 2.5 * u.arcsec
-                                    
-                                    # Create a cutout
-                                    cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
-                                    
-                                    # Handle NaN and Inf values
-                                    cutout_data = cutout.data.copy()
-                                    cutout_data[np.isnan(cutout_data)] = 0
-                                    cutout_data[np.isinf(cutout_data)] = 0
-                                    
-                                    # Create inset axes for this cutout
-                                    ax_inset = inset_axes(ax, width='80%', height='80%', loc='center',
-                                                         bbox_to_anchor=(x_norm, 0.945, 0.19, 0.19),
-                                                         bbox_transform=fig.transFigure)
-                                    
-                                    # Display the image
-                                    if filter_name in ['F200W', 'F300M', 'F335M', 'F360M', 'F1000W', 'F1130W', 'F2100W']:
-                                        # Use ImageNormalize for these filters
-                                        norm = ImageNormalize(cutout_data)
-                                        ax_inset.imshow(cutout_data, origin='lower', cmap='gray',
-                                                       vmin=0, vmax=np.percentile(cutout_data, 99.5))
-                                    else:
-                                        # Use PowerNorm for other filters
-                                        sqrt_norm = PowerNorm(gamma=0.5, vmin=0, 
-                                                             vmax=np.percentile(cutout_data, 99.9))
-                                        ax_inset.imshow(cutout_data, origin='lower', cmap='gray', norm=sqrt_norm)
-                                    
-                                    # Add a circle to mark the target position
-                                    region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
-                                    reg = region_sky.to_pixel(cutout.wcs)
-                                    reg.plot(ax=ax_inset, color='red')
-                                    
-                                    # Set the title to the filter name
-                                    ax_inset.set_title(filter_name, fontsize=8)
-                                    
-                                    # Remove axis ticks and labels
-                                    ax_inset.axis('off')
-                                    
-                                    # Store cutout data for RGB composites
-                                    # Create header for the cutout
-                                    header = cutout.wcs.to_header()
-                                    header['NAXIS1'] = cutout.data.shape[1]
-                                    header['NAXIS2'] = cutout.data.shape[0]
-                                    header['NAXIS'] = 2
-                                    
-                                    # Store data for RGB composites
-                                    if filter_name == 'F300M':  # red for NIRCam
-                                        nircam_header = header.copy()
-                                        rgbs.append(np.array(cutout_data))
-                                    elif filter_name == 'F335M':  # green for NIRCam
-                                        rgbs.append(np.array(cutout_data))
-                                    elif filter_name == 'F360M':  # blue for NIRCam
-                                        rgbs.append(cutout_data)
-                                    elif filter_name == 'F336W':  # red for HST
-                                        hst_header = header.copy()
-                                        rgbs_2.append(np.array(cutout_data))
-                                    elif filter_name == 'F438W' or filter_name == 'F435W':  # green for HST
-                                        rgbs_2.append(np.array(cutout_data))
-                                    elif filter_name == 'F555W':  # blue for HST
-                                        rgbs_2.append(cutout_data)
-                                    elif filter_name == 'F770W':  # red for MIRI
-                                        miri_header = header.copy()
-                                        rgbs_1.append(np.array(cutout_data))
-                                    elif filter_name == 'F1000W':  # green for MIRI
-                                        rgbs_1.append(np.array(cutout_data))
-                                    elif filter_name == 'F1130W':  # blue for MIRI
-                                        rgbs_1.append(cutout_data)
-                                    
-                                    # Found and displayed the cutout, so break the loop
-                                    break
-                                except Exception as e:
-                                    print(f"Error creating cutout for {filter_name}: {e}")
-                                    # Continue to the next HDU
-                                    continue
-                except Exception as e:
-                    print(f"Error processing {filter_name} cutout: {e}")
-        
-        # Look for HST Ha data
-        ha_pattern = "files/*ha*.fits"
-        ha_files = glob.glob(ha_pattern)
-        if ha_files:
-            try:
-                for ha_file in ha_files:
-                    with fits.open(ha_file) as hdul:
-                        # Find the HDU with image data
-                        for hdu_idx, hdu in enumerate(hdul):
-                            if hdu.data is not None and hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2:
-                                try:
-                                    # Get the WCS
-                                    wcs = WCS(hdu.header)
-                                    
-                                    # Get the image data
-                                    image_data = hdu.data
-                                    
-                                    # Handle different dimensionality
-                                    if len(image_data.shape) > 2:
-                                        # For 3D data, take the first slice
-                                        if len(image_data.shape) == 3:
-                                            image_data = image_data[0]
-                                        # For 4D data, take the first slice of the first volume
-                                        elif len(image_data.shape) == 4:
-                                            image_data = image_data[0, 0]
-                                    
-                                    # Create a SkyCoord object for the target position
-                                    target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-                                    
-                                    # Define cutout size (2.5 arcsec)
-                                    cutout_size = 2.5 * u.arcsec
-                                    
-                                    # Create a cutout
-                                    cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
-                                    
-                                    # Handle NaN and Inf values
-                                    cutout_data = cutout.data.copy()
-                                    cutout_data[np.isnan(cutout_data)] = 0
-                                    cutout_data[np.isinf(cutout_data)] = 0
-                                    
-                                    # Create inset axes for this cutout - position for HST Ha
-                                    wavelength = 21.5  # Position for HST Ha
-                                    x_norm, _ = transform.transform(ax.transData.transform((wavelength, 0)))
-                                    x_norm = max(min(x_norm, 1 - 0.05), 0.0)
-                                    x_norm += -0.7  # Apply offset for HST Ha
-                                    
-                                    ax_inset = inset_axes(ax, width='80%', height='80%', loc='center',
-                                                         bbox_to_anchor=(x_norm, 0.735, 0.19, 0.19),
-                                                         bbox_transform=fig.transFigure)
-                                    
-                                    # Use PowerNorm for HST Ha
-                                    from astropy.visualization import simple_norm
-                                    import matplotlib.colors as mcolors
-                                    sqrt_norm = mcolors.PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, 99.9))
-                                    ax_inset.imshow(cutout_data, origin='lower', cmap='gray', norm=sqrt_norm)
-                                    
-                                    # Add a circle to mark the target position
-                                    region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
-                                    reg = region_sky.to_pixel(cutout.wcs)
-                                    reg.plot(ax=ax_inset, color='red')
-                                    
-                                    # Set the title to HST Ha
-                                    ax_inset.set_title('HST Ha', fontsize=8)
-                                    
-                                    # Remove axis ticks and labels
-                                    ax_inset.axis('off')
-                                    
-                                    # Store cutout data for HST Ha contours
-                                    header = cutout.wcs.to_header()
-                                    header['NAXIS1'] = cutout.data.shape[1]
-                                    header['NAXIS2'] = cutout.data.shape[0]
-                                    header['NAXIS'] = 2
-                                    
-                                    # if hst_header is not None:
-                                    #     from reproject import reproject_interp
-                                    #     fits_file = Projection(value=cutout.data, header=header, wcs=WCS(header))
-                                    #     fits_projected = fits_file.reproject(hst_header)
-                                    #     rgbsss2.append(np.array(fits_projected.data))
-                                    #     print("Added HST Ha data to rgbsss2 with reprojection")
-                                    # else:
-                                    #     rgbsss2.append(np.array(cutout_data))
-                                    #     print("Added HST Ha data to rgbsss2 without reprojection")
-                                    
-                                    break
-                                except Exception as e:
-                                    print(f"Error creating HST Ha cutout: {e}")
-                                    continue
-            except Exception as e:
-                print(f"Error processing HST Ha file: {e}")
-        
-        # Create RGB composite images if we have enough data
-        # NIRCam RGB
-        if len(rgbs) == 3 and nircam_header is not None:
-            try:
-                rgbs = np.array(rgbs)
-                imgs = np.zeros((rgbs[0].shape[1], rgbs[0].shape[0], 3))
-                imgs[:, :, 0] = linear(rgbs[2], scale_min=0, scale_max=np.nanpercentile(rgbs[2], 99))
-                imgs[:, :, 1] = linear(rgbs[1], scale_min=0, scale_max=np.nanpercentile(rgbs[1], 99))
-                imgs[:, :, 2] = linear(rgbs[0], scale_min=0, scale_max=np.nanpercentile(rgbs[0], 99))
-                
-                ax_inset2 = inset_axes(ax, width='40%', height='40%', loc='center',
-                                  bbox_to_anchor=(-0.17, 0.52, 0.62, 0.62),
-                                  bbox_transform=fig.transFigure)
-                
-                region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
-                reg = region_sky.to_pixel(WCS(nircam_header))
-                reg.plot(ax=ax_inset2, color='red')
-                
-                ax_inset2.imshow(imgs, origin='lower')
-                ax_inset2.text(0.63, 0.83, 'NIRCam', fontsize=9, color='white',
-                              transform=ax_inset2.transAxes, 
-                              horizontalalignment='right', verticalalignment='bottom')
-                ax_inset2.axis('off')
-            except Exception as e:
-                print(f"Error creating NIRCam RGB: {e}")
-        
-        # MIRI RGB
-        if len(rgbs_1) == 3 and miri_header is not None:
-            try:
-                rgbs_1 = np.array(rgbs_1)
-                imgs = np.zeros((rgbs_1[0].shape[1], rgbs_1[0].shape[0], 3))
-                imgs[:, :, 0] = linear(rgbs_1[2], scale_min=0, scale_max=np.percentile(rgbs_1[2], 99))
-                imgs[:, :, 1] = linear(rgbs_1[1], scale_min=0, scale_max=np.percentile(rgbs_1[1], 99))
-                imgs[:, :, 2] = linear(rgbs_1[0], scale_min=0, scale_max=np.percentile(rgbs_1[0], 99))
-                
-                ax_inset2 = inset_axes(ax, width='40%', height='40%', loc='center',
-                                  bbox_to_anchor=(-0.073, 0.52, 0.62, 0.62),
-                                  bbox_transform=fig.transFigure)
-                
-                region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
-                reg = region_sky.to_pixel(WCS(miri_header))
-                reg.plot(ax=ax_inset2, color='red')
-                
-                ax_inset2.imshow(imgs, origin='lower')
-                ax_inset2.text(0.4, 0.83, 'MIRI', fontsize=9, color='white',
-                              transform=ax_inset2.transAxes, 
-                              horizontalalignment='right', verticalalignment='bottom')
-                ax_inset2.axis('off')
-                
-                # Add CO contours if available
-                if len(rgbsss) > 0:
-                    try:
-                        smoothed_data = rgbsss[0]
-                        smoothed_data[np.isnan(smoothed_data)] = 0
-                        p50 = np.percentile(smoothed_data, 70)
-                        p60 = np.percentile(smoothed_data, 80)
-                        p75 = np.percentile(smoothed_data, 98)
-                        contour_levels = [p50, p60, p75]
-                        ax_inset2.contour(smoothed_data, levels=contour_levels, colors='white', linewidths=0.3, alpha=0.5)
-                    except Exception as e:
-                        print(f"Error adding CO contours: {e}")
-            except Exception as e:
-                print(f"Error creating MIRI RGB: {e}")
-        
-        # HST RGB
-        if len(rgbs_2) == 3 and hst_header is not None:
-            try:
-                rgbs_2 = np.array(rgbs_2)
-                imgs = np.zeros((rgbs_2[0].shape[1], rgbs_2[0].shape[0], 3))
-                imgs[:, :, 0] = linear(rgbs_2[2], scale_min=0, scale_max=np.percentile(rgbs_2[2], 99))
-                imgs[:, :, 1] = linear(rgbs_2[1], scale_min=0, scale_max=np.percentile(rgbs_2[1], 99))
-                imgs[:, :, 2] = linear(rgbs_2[0], scale_min=0, scale_max=np.percentile(rgbs_2[0], 99))
-                
-                ax_inset2 = inset_axes(ax, width='40%', height='40%', loc='center',
-                                  bbox_to_anchor=(-0.17, 0.28, 0.62, 0.62),
-                                  bbox_transform=fig.transFigure)
-                
-                region_sky = CircleSkyRegion(center=target_coord, radius=0.67 * u.arcsec)
-                reg = region_sky.to_pixel(WCS(hst_header))
-                reg.plot(ax=ax_inset2, color='red')
-                
-                ax_inset2.imshow(imgs, origin='lower')
-                ax_inset2.text(0.4, 0.83, 'HST', fontsize=9, color='white',
-                              transform=ax_inset2.transAxes, 
-                              horizontalalignment='right', verticalalignment='bottom')
-                ax_inset2.axis('off')
-                
-                # Add HST HA contours if available
-                if len(rgbsss2) > 0:
-                    try:
-                        from scipy.ndimage import gaussian_filter
-                        smoothed_data = gaussian_filter(rgbsss2[0], 4)
-                        smoothed_data[np.isnan(smoothed_data)] = 0
-                        p50 = np.percentile(smoothed_data, 70)
-                        p60 = np.percentile(smoothed_data, 80)
-                        p75 = np.percentile(smoothed_data, 99)
-                        contour_levels = [p50, p60, p75]
-                        ax_inset2.contour(smoothed_data, levels=contour_levels, colors='white', linewidths=0.3, alpha=0.5)
-                    except Exception as e:
-                        print(f"Error adding HST HA contours: {e}")
-            except Exception as e:
-                print(f"Error creating HST RGB: {e}")
-        
-        # Adjust layout
-        plt.tight_layout()
-        
-        # Generate a filename based on coordinates
-        filename = f"SED_RA{ra:.4f}_DEC{dec:.4f}.png"
-        
-        # Make sure the static directory exists
-        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-        os.makedirs(static_dir, exist_ok=True)
-        
-        # Full path to save the file
-        filepath = os.path.join(static_dir, filename)
-        
-        # Save the figure to disk with high DPI and including all cutouts
-        fig.savefig(filepath, format='png', dpi=400, bbox_inches='tight')
-
-        plt.close(fig)
-        
-        print(f"SED saved successfully as {filename} with DPI=400")
-        
-        # Use URL path instead of file system path for the response
-        url_path = f"/static/{filename}"
-        
-        return JSONResponse(
-            status_code=200,
-            content={"message": f"SED saved successfully", "url": url_path, "filename": filename}
-        )
-    
-    except Exception as e:
-        import traceback
-        print(f"Error saving SED: {e}")
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to save SED: {str(e)}"}
-        )
-
-@app.get("/source-properties/")
-async def source_properties(ra: float, dec: float, catalog_name: str):
-    """Get all properties for a specific source based on RA and DEC coordinates."""
-    try:
-        # Check if we have the catalog data loaded
-        if catalog_name not in loaded_catalogs:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog '{catalog_name}' not loaded. Please load the catalog first."}
-            )
-        
-        # Use the already loaded catalog data
-        catalog_table = loaded_catalogs[catalog_name]
-        print(f"Using already loaded catalog: {catalog_name}")
-        
-        # Find RA and DEC columns
-        ra_col = None
-        dec_col = None
-        
-        for col_name in catalog_table.colnames:
-            if col_name.lower() in ['ra', 'alpha', 'right_ascension', 'cen_ra']:
-                ra_col = col_name
-            elif col_name.lower() in ['dec', 'delta', 'declination', 'cen_dec']:
-                dec_col = col_name
-        
-        if not ra_col or not dec_col:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Could not find RA and DEC columns in catalog"}
-            )
-        
-        # Calculate angular distance to find closest object
-        ra_diff = np.abs(catalog_table[ra_col] - ra)
-        dec_diff = np.abs(catalog_table[dec_col] - dec)
-        distances = np.sqrt(ra_diff**2 + dec_diff**2)
-        closest_idx = np.argmin(distances)
-        
-        # Get the closest object
-        closest_obj = catalog_table[closest_idx]
-        
-        # Check if the object is close enough (within 1 arcsec)
-        if distances[closest_idx] > 0.0003:  # ~1 arcsec in degrees
-            return JSONResponse(
-                status_code=404,
-                content={"error": "No object found near the specified coordinates"}
-            )
-        
-        # Convert the object to a dictionary
-        obj_dict = {}
-        for col_name in catalog_table.colnames:
-            try:
-                # Try to convert to a Python native type
-                value = closest_obj[col_name]
-                if isinstance(value, (np.integer, np.floating, np.bool_)):
-                    value = value.item()  # Convert numpy types to Python native types
-                elif isinstance(value, np.ndarray):
-                    # Handle arrays more carefully
-                    try:
-                        value = value.tolist()  # Convert numpy arrays to lists
-                    except:
-                        value = str(value)  # Fall back to string representation
-                # Handle NaN, inf, and other special values
-                if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-                    value = None
-                obj_dict[col_name] = value
-            except Exception as e:
-                # If conversion fails, use string representation or None
-                try:
-                    obj_dict[col_name] = str(closest_obj[col_name])
-                except:
-                    obj_dict[col_name] = None
-                print(f"Warning: Could not convert column {col_name}: {e}")
-        
-        return JSONResponse(
-            status_code=200,
-            content={"properties": obj_dict}
-        )
-    
-    except Exception as e:
-        import traceback
-        print(f"Error getting source properties: {e}")
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get source properties: {str(e)}"}
-        )
+            raise ValueError("No valid JSON data found in peak finder output.")
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error parsing peak_finder.py output: {e}")
+        return {
+            "error": f"Error parsing output from peak finder: {str(e)}", 
+            "raw_output": result.stdout[:1000],
+            "ra": [], "dec": [], "source_count": 0, "status_code": 500
+        }
 
 
-@app.get("/catalog-boolean-columns/")
-async def catalog_boolean_columns(catalog_name: str):
-    """Get a list of boolean columns from the catalog for flag filtering."""
-    try:
-        catalog_path = f"catalogs/{catalog_name}"
-        
-        if not os.path.exists(catalog_path):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Catalog file not found: {catalog_name}"}
-            )
-        
-        # Read the FITS catalog - use HDU 1 for tables
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
+
+
+import psutil
+import json
+
+def get_system_stats_data(app_process_names=['python']):
+        # CPU
+    cpu_percent = psutil.cpu_percent(interval=None)  # Non-blocking
+
+    # RAM
+    ram = psutil.virtual_memory()
+    ram_total_gb = ram.total / (1024**3)
+    ram_available_gb = ram.available / (1024**3)
+    ram_used_gb = ram_total_gb - ram_available_gb
+    ram_percent_used = ram.percent
+
+    # Disk Usage for root directory '/'
+    disk = psutil.disk_usage('/')
+    disk_total_gb = disk.total / (1024**3)
+    disk_used_gb = disk.used / (1024**3)
+    disk_free_gb = disk.free / (1024**3)
+    disk_percent_used = disk.percent
+
+    # Top processes filtered by relevance to the app
+    processes = []
+    # This part for process filtering remains the same
+    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
         try:
-            with fits.open(catalog_path) as hdul:
-                # Try HDU 1 first (most common for tables)
-                table_hdu = 1
-                
-                # If HDU 1 is not a table, try to find a table HDU
-                if not isinstance(hdul[table_hdu], (fits.BinTableHDU, fits.TableHDU)):
-                    for i, hdu in enumerate(hdul):
-                        if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                            table_hdu = i
-                            print(f"Found table in HDU {i}")
-                            break
-                
-                # Get table data
-                table = Table(hdul[table_hdu].data)
-                print(f"Successfully loaded catalog info from HDU {table_hdu}: {catalog_name}")
-                
-                # Get column names
-                columns = table.colnames
-                
-                # Find boolean columns
-                boolean_columns = []
-                
-                # Process first few rows to identify boolean columns
-                sample_size = min(5, len(table))
-                
-                for col in columns:
-                    is_boolean = True
-                    
-                    # Check the first few rows
-                    for i in range(sample_size):
-                        val = table[col][i]
-                        
-                        # Check if value is a boolean type or looks like a boolean
-                        if isinstance(val, (bool, np.bool_)):
-                            continue
-                        elif isinstance(val, (str, np.str_)) and val.lower() in ('true', 'false'):
-                            continue
-                        elif isinstance(val, (int, np.integer)) and val in (0, 1):
-                            continue
-                        else:
-                            is_boolean = False
-                            break
-                    
-                    # If all checked rows appear to be boolean, add to list
-                    if is_boolean:
-                        boolean_columns.append(col)
-                
-                return JSONResponse(content={
-                    "boolean_columns": boolean_columns
-                })
-        except Exception as e:
-            print(f"Error in catalog_boolean_columns: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Failed to get boolean columns: {str(e)}"}
-            )
-            
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to get boolean columns: {str(e)}"}
-        )       
-@app.get("/save-sed/")
-async def save_sed(ra: float, dec: float, catalog_name: str):
-    """Save a SED plot for a specific region based on RA and DEC coordinates."""
-    try:
-        # Generate a filename based on coordinates
-        filename = f"SED_RA{ra:.4f}_DEC{dec:.4f}.png"
-        filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", filename)
-        
-        # Check if the file exists
-        if not os.path.exists(filepath):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"SED file not found. Please generate it first."}
-            )
-        
-        # Return success response
-        return JSONResponse(
-            status_code=200,
-            content={"message": f"SED saved successfully as {filename}", "filepath": filepath}
-        )
+            if app_process_names and any(name in proc.info['name'].lower() for name in app_process_names):
+                if proc.info['cpu_percent'] is not None and proc.info['cpu_percent'] > 0.1:
+                    processes.append({
+                        'pid': proc.info['pid'],
+                        'name': proc.info['name'],
+                        'cpu': proc.info['cpu_percent']
+                    })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
     
-    except Exception as e:
-        import traceback
-        print(f"Error saving SED: {e}")
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to save SED: {str(e)}"}
-        )
+    top_processes = sorted(processes, key=lambda p: p['cpu'], reverse=True)[:5]
 
-# Helper functions for image processing
-def linear(inputArray, scale_min=None, scale_max=None):
-    """Performs linear scaling of the input numpy array."""
-    imageData = np.array(inputArray, copy=True)
+    return {
+        'cpu_percent': cpu_percent,
+        'ram': {
+            'total_gb': ram_total_gb,
+            'available_gb': ram_available_gb,
+            'used_gb': ram_used_gb,
+            'percent_used': ram_percent_used,
+        },
+        'disk': {
+            'total_gb': disk_total_gb,
+            'used_gb': disk_used_gb,
+            'free_gb': disk_free_gb,
+            'percent_used': disk_percent_used,
+        },
+        'top_processes': top_processes
+    }
+async def system_stats_sender(manager: ConnectionManager):
+    """Periodically fetches and sends system stats to all connected clients."""
+    while True:
+        stats_data = await get_system_stats_data()
+        if stats_data:
+            await manager.broadcast(json.dumps(stats_data))
+        await asyncio.sleep(SYSTEM_STATS_UPDATE_INTERVAL)  # Updated from 2
+@app.on_event("startup")
+async def startup_event():
+    # Start the background task
+    asyncio.create_task(system_stats_sender(manager))
 
-    if scale_min is None:
-        scale_min = imageData.min()
-    if scale_max is None:
-        scale_max = imageData.max()
-
-    imageData = imageData.clip(min=scale_min, max=scale_max)
-    imageData = (imageData - scale_min) / (scale_max - scale_min)
-    indices = np.where(imageData < 0)
-    imageData[indices] = 0.0
-    indices = np.where(imageData > 1)
-    imageData[indices] = 1.0
-
-    return imageData
-
-def sky_median_sig_clip(input_arr, sig_fract, percent_fract, max_iter=100):
-    """Estimating sky value for a given number of iterations"""
-    work_arr = np.ravel(input_arr)
-    old_sky = np.median(work_arr)
-    sig = work_arr.std()
-    upper_limit = old_sky + sig_fract * sig
-    lower_limit = old_sky - sig_fract * sig
-    indices = np.where((work_arr < upper_limit) & (work_arr > lower_limit))
-    work_arr = work_arr[indices]
-    new_sky = np.median(work_arr)
-    iteration = 0
-    while ((math.fabs(old_sky - new_sky)/new_sky) > percent_fract) and (iteration < max_iter):
-        iteration += 1
-        old_sky = new_sky
-        sig = work_arr.std()
-        upper_limit = old_sky + sig_fract * sig
-        lower_limit = old_sky - sig_fract * sig
-        indices = np.where((work_arr < upper_limit) & (work_arr > lower_limit))
-        work_arr = work_arr[indices]
-        new_sky = np.median(work_arr)
-    return (new_sky, iteration)
-
-def sky_mean_sig_clip(input_arr, sig_fract, percent_fract, max_iter=100):
-    """Estimating sky value for a given number of iterations"""
-    work_arr = np.ravel(input_arr)
-    old_sky = np.mean(work_arr)
-    sig = work_arr.std()
-    upper_limit = old_sky + sig_fract * sig
-    lower_limit = old_sky - sig_fract * sig
-    indices = np.where((work_arr < upper_limit) & (work_arr > lower_limit))
-    work_arr = work_arr[indices]
-    new_sky = np.mean(work_arr)
-    iteration = 0
-    while ((math.fabs(old_sky - new_sky)/new_sky) > percent_fract) and (iteration < max_iter):
-        iteration += 1
-        old_sky = new_sky
-        sig = work_arr.std()
-        upper_limit = old_sky + sig_fract * sig
-        lower_limit = old_sky - sig_fract * sig
-        indices = np.where((work_arr < upper_limit) & (work_arr > lower_limit))
-        work_arr = work_arr[indices]
-        new_sky = np.mean(work_arr)
-    return (new_sky, iteration)
-
-def sqrt(inputArray, scale_min=None, scale_max=None):
-    """Performs sqrt scaling of the input numpy array."""
-    imageData = np.array(inputArray, copy=True)
-
-    if scale_min is None:
-        scale_min = imageData.min()
-    if scale_max is None:
-        scale_max = imageData.max()
-
-    imageData = imageData.clip(min=scale_min, max=scale_max)
-    imageData = imageData - scale_min
-    indices = np.where(imageData < 0)
-    imageData[indices] = 0.0
-    imageData = np.sqrt(imageData)
-    imageData = imageData / math.sqrt(scale_max - scale_min)
-
-    return imageData
-
-def log(inputArray, scale_min=None, scale_max=None):
-    """Performs log10 scaling of the input numpy array."""
-    imageData = np.array(inputArray, copy=True)
-
-    if scale_min is None:
-        scale_min = imageData.min()
-    if scale_max is None:
-        scale_max = imageData.max()
-    factor = math.log10(scale_max - scale_min)
-    indices0 = np.where(imageData < scale_min)
-    indices1 = np.where((imageData >= scale_min) & (imageData <= scale_max))
-    indices2 = np.where(imageData > scale_max)
-    imageData[indices0] = 0.0
-    imageData[indices2] = 1.0
+@app.websocket("/ws/system-stats")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
     try:
-        imageData[indices1] = np.log10(imageData[indices1])/factor
-    except:
-        print("Error on math.log10")
+        # Send initial data immediately on connection
+        initial_data = get_system_stats_data()
+        if initial_data:
+            await websocket.send_text(json.dumps(initial_data))
+            
+        while True:
+            # Keep the connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        print("Client disconnected from system stats WebSocket.")
 
-    return imageData
 
 
 
-def asinh(inputArray, scale_min=None, scale_max=None, non_linear=2.0):
-    """Performs asinh scaling of the input numpy array."""
-    imageData = np.array(inputArray, copy=True)
+async def system_stats_sender(manager: ConnectionManager):
+    """Periodically fetches and sends system stats to all connected clients."""
+    while True:
+        loop = asyncio.get_running_loop()
+        stats_data = await loop.run_in_executor(None, get_system_stats_data)
+        if stats_data:
+            await manager.broadcast(json.dumps(stats_data))
+        await asyncio.sleep(SYSTEM_STATS_UPDATE_INTERVAL) # Update interval
 
-    if scale_min is None:
-        scale_min = imageData.min()
-    if scale_max is None:
-        scale_max = imageData.max()
-    factor = np.arcsinh((scale_max - scale_min)/non_linear)
-    indices0 = np.where(imageData < scale_min)
-    indices1 = np.where((imageData >= scale_min) & (imageData <= scale_max))
-    indices2 = np.where(imageData > scale_max)
-    imageData[indices0] = 0.0
-    imageData[indices2] = 1.0
-    imageData[indices1] = np.arcsinh((imageData[indices1] - scale_min)/non_linear)/factor
 
-    return imageData
 
-# ---------------------------
-# Run FastAPI Server in a Thread
-# ---------------------------
-def run_server():
-    """Run FastAPI in a separate thread."""
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+# --- Peak Finder Background Task Management ---
+PEAK_FINDER_JOBS = {}
 
-def run_mac_app():
-    """Start the macOS app with a built-in browser."""
-    app = QApplication(sys.argv)
-    window = WebApp()
-    window.show()
-    sys.exit(app.exec())
+def peak_finder_worker(job_id: str, job_state: dict, params: dict):
+    """
+    This function runs in a separate process to perform peak finding.
+    """
+    try:
+        print(f"[Worker {job_id}] Starting peak finding for {params['full_file_path']}", file=sys.stderr)
+        
+        job_state['status'] = 'running'
+        job_state['progress'] = 0
+        job_state['eta'] = -1  # Use -1 to indicate "calculating..."
+        start_time = time.time()
+
+        def progress_reporter(progress, stage=""):
+            # This callback is passed to the long-running task
+            job_state['progress'] = progress
+            job_state['stage'] = stage
+            
+            # --- Correct ETA Calculation ---
+            if progress > 5 and progress < 100:
+                elapsed = time.time() - start_time
+                eta = (elapsed / progress) * (100 - progress) if progress > 0 else -1
+                job_state['eta'] = round(eta)
+            else:
+                job_state['eta'] = -1  # Use -1 when not actively calculating
+
+        # Call the actual peak finder (updated signature and args)
+        from peak_finder import find_sources
+        ra, dec, x, y = find_sources(
+            fits_file=params['full_file_path'],
+            pix_across_beam=params['pix_across_beam'],
+            min_beams=params['min_beams'],
+            beams_to_search=params['beams_to_search'],
+            delta_rms=params['delta_rms'],
+            minval_rms=params['minval_rms'],
+            edge_clip=params['edge_clip'],
+            filter_name=params.get('filterName'),
+            progress_reporter=progress_reporter
+        )
+        
+        # --- Final Update ---
+        job_state['progress'] = 100
+        job_state['eta'] = 0
+        job_state['stage'] = 'Complete'
+        job_state['result'] = {
+            "sources": {
+                "ra": ra, "dec": dec,
+                "x": x, "y": y,
+                "source_count": len(ra)
+            }
+        }
+        job_state['status'] = 'complete'
+        print(f"[Worker {job_id}] Peak finding complete.", file=sys.stderr)
+
+    except Exception as e:
+        print(f"[Worker {job_id}] Error during peak finding: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        job_state['status'] = 'error'
+        job_state['error'] = str(e)       
+
+
+
+@app.post("/start-peak-finder/")
+async def start_peak_finder(
+    fits_file: str = Form(...),
+    pix_across_beam: float = Form(PEAK_FINDER_DEFAULTS['pix_across_beam']),
+    min_beams: float = Form(PEAK_FINDER_DEFAULTS['min_beams']),
+    beams_to_search: float = Form(PEAK_FINDER_DEFAULTS['beams_to_search']),
+    delta_rms: float = Form(PEAK_FINDER_DEFAULTS['delta_rms']),
+    minval_rms: float = Form(PEAK_FINDER_DEFAULTS['minval_rms']),
+    edge_clip: int = Form(PEAK_FINDER_DEFAULTS['edge_clip']),
+    filterName: str = Form('Not JWST Filter'),
+):
+    job_id = str(uuid.uuid4())
+    
+    manager = Manager()
+    job_state = manager.dict({
+        'status': 'queued',
+        'progress': 0,
+        'eta': -1,
+        'stage': 'Initializing',
+        'result': None,
+        'error': None
+    })
+    
+    # Resolve the file path on the server
+    base_dir = Path(__file__).resolve().parent
+    full_file_path = base_dir / fits_file
+    
+    if not os.path.exists(full_file_path):
+        raise HTTPException(status_code=404, detail=f"File not found at {full_file_path}")
+
+    params = {
+        'full_file_path': str(full_file_path),
+        'pix_across_beam': pix_across_beam,
+        'min_beams': min_beams,
+        'beams_to_search': beams_to_search,
+        'delta_rms': delta_rms,
+        'minval_rms': minval_rms,
+        'edge_clip': edge_clip,
+        'filterName': filterName,  # pass through to find_sources for photometry
+    }
+
+    process = Process(target=peak_finder_worker, args=(job_id, job_state, params))
+    process.start()
+    
+    PEAK_FINDER_JOBS[job_id] = {'process': process, 'state': job_state}
+    
+    print(f"Started peak finder job: {job_id}", file=sys.stderr)
+    return {"job_id": job_id}
+
+# @app.post("/run-peak-finder/")
+# async def run_peak_finder(
+#     fits_file: str = Form(...),
+#     pix_across_beam: float = Form(PEAK_FINDER_DEFAULTS['pix_across_beam']),  # Updated
+#     min_beams: float = Form(PEAK_FINDER_DEFAULTS['min_beams']),  # Updated
+#     beams_to_search: float = Form(PEAK_FINDER_DEFAULTS['beams_to_search']),  # Updated
+#     delta_rms: float = Form(PEAK_FINDER_DEFAULTS['delta_rms']),  # Updated
+#     minval_rms: float = Form(PEAK_FINDER_DEFAULTS['minval_rms']),  # Updated
+#     edge_clip: int = Form(PEAK_FINDER_DEFAULTS['edge_clip'])  # Updated
+# ):
+#     import os
+#     loop = asyncio.get_running_loop()
+    
+#     # Check if the file exists before proceeding.
+#     # We construct an absolute path here to avoid ambiguity with the current working directory
+#     # and to robustly handle filenames with spaces or special characters.
+#     full_path = Path(os.getcwd()).joinpath(fits_file)
+    
+#     if not full_path.exists():
+#         raise HTTPException(status_code=404, detail={"error": f"File not found: {fits_file}"})
+    
+#     try:
+#         # Run the blocking function in a separate process
+#         with ProcessPoolExecutor() as executor:
+#             sources_found = await loop.run_in_executor(
+#                 executor,
+#                 _run_peak_finder_blocking,
+#                 str(full_path),  # Pass the full, absolute path as a string
+#                 pix_across_beam,
+#                 min_beams,
+#                 beams_to_search,
+#                 delta_rms,
+#                 minval_rms,
+#                 edge_clip
+#             )
+        
+#         # The result from _run_peak_finder_blocking is already a serializable list of lists
+#         return JSONResponse(content={"sources": sources_found})
+
+#     except Exception as e:
+#         logger.error(f"Error during peak finding process: {e}")
+#         logger.error(traceback.format_exc())
+#         raise HTTPException(status_code=500, detail={"error": "An internal error occurred during source detection."})
+
+
+@app.get("/peak-finder-status/{job_id}")
+async def get_peak_finder_status(job_id: str):
+    job = PEAK_FINDER_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    job_state = dict(job['state'])
+    
+    if job_state['status'] in ['complete', 'error']:
+        job['process'].join()
+        # To save memory, we can remove the job after some time
+        # For now, let's keep it for client retrieval
+        # del PEAK_FINDER_JOBS[job_id]
+
+    return JSONResponse(content=job_state)
+# --- End Peak Finder Background Task Management ---
+
 
 if __name__ == "__main__":
-    if RUNNING_ON_SERVER:
-        run_server()  # Run FastAPI if deployed online
-    else:
-        # Start FastAPI in a separate thread
-        server_thread = threading.Thread(target=run_server, daemon=True)
-        server_thread.start()
-
-        # Run macOS GUI
-        run_mac_app()
-
-# NEW ENDPOINT: Save Catalog Column Mapping
-@app.post("/save-catalog-mapping/")
-async def save_catalog_mapping(request: Request):
-    """Saves the user-defined mapping between standard fields (RA, Dec, etc.) and catalog columns."""
-    try:
-        mapping_data = await request.json()
-        catalog_name = mapping_data.get('catalog_name')
-        ra_col = mapping_data.get('ra_col')
-        dec_col = mapping_data.get('dec_col')
-        # Optional: Get other mapped columns like resolution/size if needed
-        resolution_col = mapping_data.get('resolution_col') 
-
-        if not catalog_name or not ra_col or not dec_col:
-            raise HTTPException(status_code=400, detail="Missing required mapping fields: catalog_name, ra_col, dec_col")
-
-        # Store the mapping
-        catalog_column_mappings[catalog_name] = {
-            "ra_col": ra_col,
-            "dec_col": dec_col
-        }
-        if resolution_col:
-            catalog_column_mappings[catalog_name]["resolution_col"] = resolution_col
-        
-        # Persist the mappings
-        save_mappings()
-        print(f"Saved mapping for {catalog_name}: {catalog_column_mappings[catalog_name]}")
-        
-        return JSONResponse(content={"message": "Catalog mapping saved successfully"})
-
-    except HTTPException as http_exc:
-        raise http_exc # Re-raise FastAPI specific exceptions
-    except Exception as e:
-        print(f"Error saving catalog mapping: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save catalog mapping: {str(e)}")
+    # Allow running the API with: python main.py
+    # Mirrors: uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

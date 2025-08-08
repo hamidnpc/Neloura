@@ -1,4 +1,5 @@
 // Global variables
+let currentDynamicRangeVersion = Date.now();
 let fitsData = null;
 let viewer = null;
 let performanceTimer;
@@ -12,6 +13,7 @@ let histogramUpdateQueue = [];
 let histogramUpdateTimer = null;
 let currentColorMap = 'grayscale'; // Default color map
 let currentScaling = 'linear'; // Default scaling function
+const GLOBAL_DATA_PRECISION = 3; // Number of decimal places for displaying float data values
 
 // NEW: State for interactive histogram
 let histogramScaleInfo = { padding: {}, histWidth: 0, dataMin: 0, dataRange: 1 };
@@ -19,6 +21,16 @@ let isDraggingLine = null; // Can be 'min', 'max', or null
 const DRAG_THRESHOLD = 5; // Pixel tolerance for clicking lines
 let throttledHistogramUpdate = null; // To be initialized later
 let debouncedApplyDynamicRange = null; // To be initialized later
+
+
+// static/main.js
+
+// ... (other global variables like isUpdatingHistogram, currentColorMap, etc.)
+let debouncedRequestHistogramUpdate = null; // For debouncing histogram updates
+let histogramOverviewPixelData = null; // <-- ADD THIS LINE: For caching overview pixels
+
+// NEW: State for line animation (if you have this section)
+// ...
 
 // NEW: State for line animation
 let currentMinLineX = null;
@@ -39,7 +51,7 @@ const ENV_DESCRIPTIONS = {
     10: "Disc"
 };
 
-
+let overviewLoadingStopped = false; // Added global flag
 
 function loadCatalogs() {
     fetch('/list-catalogs/')
@@ -53,9 +65,14 @@ function loadCatalogs() {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
+    // Create a main container for the app's primary content
+    const mainContainer = document.createElement('div');
+    mainContainer.id = 'main-container';
+    document.body.appendChild(mainContainer);
+
     // Create a circular progress indicator
     createProgressIndicator();
-    showProgress(true, "Loading FITS image...");
+    showNotification(true, "Loading FITS image...");
     
     // Load FITS data directly
     loadFitsData();
@@ -77,6 +94,19 @@ document.addEventListener("DOMContentLoaded", function () {
     // Add dynamic range control
     createDynamicRangeControl();
 
+    // Initialize the usage monitor icon and popup functionality
+    if (typeof initializeUsageMonitor === 'function') {
+        initializeUsageMonitor();
+    } else {
+        console.error('Usage monitor initialization function not found. Ensure usage.js is loaded correctly.');
+    }
+
+    // Initialize the credit button
+    if (typeof initializeCreditButton === 'function') {
+        initializeCreditButton();
+    } else {
+        console.error('Credit button initialization function not found. Ensure credit.js is loaded correctly.');
+    }
 });
 
 function createProgressIndicator() {
@@ -142,36 +172,362 @@ function createProgressIndicator() {
     startProgressSimulation();
 }
 
-function showProgress(show, message = '') {
-    console.log(`${show ? 'Showing' : 'Hiding'} progress indicator${message ? ': ' + message : ''}`);
-    const container = document.getElementById('progress-container');
-    const text = document.getElementById('progress-text');
+
+/**
+ * Show a progress bar notification to the user
+ * @param {string} message - The message to display
+ * @param {number} duration - How long to show the message in milliseconds
+ * @param {string} type - Type of notification ('info', 'success', 'error', 'warning')
+ */
+
+// Rate limiting storage
+const notificationRateLimit = {
+    messages: new Map(),
+    cleanupInterval: null,
     
-    if (container) {
-        container.style.display = show ? 'block' : 'none';
-        if (text && message) {
-            text.textContent = message;
-        } else if (text) {
-            text.textContent = '';
+    // Check if message should be shown (not rate limited)
+    canShow(message) {
+        const now = Date.now();
+        const lastShown = this.messages.get(message);
+        
+        // If message was shown less than 300ms ago, rate limit it
+        if (lastShown && (now - lastShown) < 300) {
+            return false;
         }
         
-        if (show) {
-            // Reset and start the progress simulation
-            const percentageElement = document.getElementById('progress-percentage');
-            if (percentageElement) {
-                percentageElement.textContent = '0%';
+        // Update last shown time
+        this.messages.set(message, now);
+        
+        // Start cleanup if not already running
+        if (!this.cleanupInterval) {
+            this.startCleanup();
+        }
+        
+        return true;
+    },
+    
+    // Clean up old entries every 5 seconds
+    startCleanup() {
+        this.cleanupInterval = setInterval(() => {
+            const now = Date.now();
+            const cutoff = now - 5000; // 5 seconds ago
+            
+            for (const [message, timestamp] of this.messages.entries()) {
+                if (timestamp < cutoff) {
+                    this.messages.delete(message);
+                }
             }
-            startProgressSimulation();
-        } else {
-            // When hiding, always set to 100% first
-            const percentageElement = document.getElementById('progress-percentage');
-            if (percentageElement) {
-                percentageElement.textContent = '100%';
+            
+            // Stop cleanup if no entries left
+            if (this.messages.size === 0) {
+                clearInterval(this.cleanupInterval);
+                this.cleanupInterval = null;
             }
-            stopProgressSimulation();
+        }, 5000);
+    }
+};
+
+function showNotification(message, duration = 1000, type = 'info') {
+    if(duration>1500){
+        duration = 1500;
+    }
+    // Convert message to string and handle special cases
+    if (message === true || message === false) {
+        message = 'Loading...';
+    } else {
+        message = String(message || '');
+        if (message.trim() === '') {
+            message = 'Loading...';
         }
     }
+    
+    // Rate limiting check
+    if (!notificationRateLimit.canShow(message)) {
+        console.log('Notification rate limited:', message);
+        return null;
+    }
+    
+    // console.log('Notification:', message);
+    
+    // Create notification container if it doesn't exist
+    let notificationContainer = document.getElementById('notification-container');
+    if (!notificationContainer) {
+        notificationContainer = document.createElement('div');
+        notificationContainer.id = 'notification-container';
+        notificationContainer.style.position = 'fixed';
+        notificationContainer.style.bottom = '20px';
+        notificationContainer.style.left = '20px';
+        notificationContainer.style.width = '320px';
+        notificationContainer.style.zIndex = '20000000000';
+        notificationContainer.style.display = 'flex';
+        notificationContainer.style.flexDirection = 'column';
+        notificationContainer.style.pointerEvents = 'none';
+        document.body.appendChild(notificationContainer);
+    }
+    
+    // Clear all existing notifications before showing the new one
+    const existingNotifications = notificationContainer.querySelectorAll('.notification');
+    existingNotifications.forEach(notif => {
+        // Clear any pending timers
+        if (notif.dataset.timerId) {
+            clearTimeout(notif.dataset.timerId);
+        }
+        // Remove immediately without animation for instant replacement
+        notif.remove();
+    });
+    
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.className = 'notification';
+    notification.style.position = 'relative';
+    notification.style.width = '100%';
+    notification.style.height = '60px';
+    notification.style.backgroundColor = 'rgba(33, 33, 33, 0.95)';
+    notification.style.color = 'white';
+    notification.style.display = 'flex';
+    notification.style.alignItems = 'center';
+    notification.style.fontFamily = 'Arial, sans-serif';
+    notification.style.fontSize = '14px';
+    notification.style.backdropFilter = 'blur(8px)';
+    notification.style.webkitBackdropFilter = 'blur(8px)';
+    notification.style.borderTop = '1px solid rgba(255, 255, 255, 0.1)';
+    notification.style.borderRadius = '8px';
+    notification.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    notification.style.overflow = 'hidden';
+    notification.style.transform = 'translateY(100%)';
+    notification.style.opacity = '0';
+    notification.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+    notification.style.pointerEvents = 'all';
+    
+    // Create progress bar background
+    const progressBackground = document.createElement('div');
+    progressBackground.style.position = 'absolute';
+    progressBackground.style.top = '0';
+    progressBackground.style.left = '0';
+    progressBackground.style.width = '100%';
+    progressBackground.style.height = '4px';
+    progressBackground.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    notification.appendChild(progressBackground);
+    
+    // Create progress bar fill
+    const progressFill = document.createElement('div');
+    progressFill.style.position = 'absolute';
+    progressFill.style.top = '0';
+    progressFill.style.left = '0';
+    progressFill.style.width = '0%';
+    progressFill.style.height = '4px';
+    progressFill.style.transition = `width ${duration}ms linear`;
+    
+    // Set type-specific colors, gradients and icons
+    let iconHtml = '';
+    let progressGradient = '';
+    if (type === 'success') {
+        progressGradient = 'linear-gradient(90deg, #4CAF50, #66BB6A, #4CAF50)';
+        iconHtml = `<div style="margin: 0 16px 0 20px; flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" stroke-width="2" class="success-icon">
+                <path d="M20 6L9 17l-5-5"/>
+            </svg>
+        </div>`;
+    } else if (type === 'error') {
+        progressGradient = 'linear-gradient(90deg, #F44336, #EF5350, #F44336)';
+        iconHtml = `<div style="margin: 0 16px 0 20px; flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F44336" stroke-width="2" class="error-icon">
+                <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+        </div>`;
+    } else if (type === 'warning') {
+        progressGradient = 'linear-gradient(90deg, #FF9800, #FFB74D, #FF9800)';
+        iconHtml = `<div style="margin: 0 16px 0 20px; flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF9800" stroke-width="2" class="warning-icon">
+                <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+        </div>`;
+    } else {
+        progressGradient = 'linear-gradient(90deg, #2196F3, #42A5F5, #2196F3)';
+        iconHtml = `<div style="margin: 0 16px 0 20px; flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2196F3" stroke-width="2" class="info-icon">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 8v4m0 4h.01"/>
+            </svg>
+        </div>`;
+    }
+    
+    progressFill.style.background = progressGradient;
+    progressFill.style.backgroundSize = '200% 100%';
+    progressFill.style.animation = 'shimmer 2s infinite';
+    progressBackground.appendChild(progressFill);
+    
+    // Add CSS animation for shimmer effect
+    if (!document.getElementById('notification-styles')) {
+        const style = document.createElement('style');
+        style.id = 'notification-styles';
+        style.textContent = `
+            @keyframes shimmer {
+                0% { background-position: 200% 0; }
+                100% { background-position: -200% 0; }
+            }
+            
+            @keyframes bounce {
+                0%, 20%, 53%, 80%, 100% { transform: translate3d(0, 0, 0); }
+                40%, 43% { transform: translate3d(0, -4px, 0); }
+                70% { transform: translate3d(0, -2px, 0); }
+                90% { transform: translate3d(0, -1px, 0); }
+            }
+            
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            
+            @keyframes shake {
+                0%, 100% { transform: translateX(0); }
+                10%, 30%, 50%, 70%, 90% { transform: translateX(-2px); }
+                20%, 40%, 60%, 80% { transform: translateX(2px); }
+            }
+            
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                50% { transform: scale(1.1); }
+                100% { transform: scale(1); }
+            }
+            
+            .success-icon {
+                animation: bounce 0.6s ease-out;
+            }
+            
+            .error-icon {
+                animation: shake 0.5s ease-in-out;
+            }
+            
+            .warning-icon {
+                animation: pulse 1s ease-in-out infinite;
+            }
+            
+            .info-icon {
+                animation: spin 2s linear infinite;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Create content container
+    const contentContainer = document.createElement('div');
+    contentContainer.style.display = 'flex';
+    contentContainer.style.alignItems = 'center';
+    contentContainer.style.width = '100%';
+    contentContainer.style.marginTop = '4px';
+    
+    // Create message content
+    const messageContainer = document.createElement('div');
+    messageContainer.style.flex = '1';
+    messageContainer.style.padding = '0 20px';
+    messageContainer.style.fontWeight = '500';
+    messageContainer.textContent = message;
+    
+    // Create close button
+    const closeButton = document.createElement('div');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.marginRight = '20px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.style.color = '#aaa';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.fontWeight = 'bold';
+    closeButton.style.padding = '5px';
+    closeButton.style.borderRadius = '50%';
+    closeButton.style.width = '30px';
+    closeButton.style.height = '30px';
+    closeButton.style.display = 'flex';
+    closeButton.style.alignItems = 'center';
+    closeButton.style.justifyContent = 'center';
+    closeButton.style.transition = 'background-color 0.2s ease';
+    closeButton.style.flexShrink = '0';
+    
+    closeButton.addEventListener('mouseenter', () => {
+        closeButton.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    });
+    
+    closeButton.addEventListener('mouseleave', () => {
+        closeButton.style.backgroundColor = 'transparent';
+    });
+    
+    closeButton.addEventListener('click', () => {
+        removeNotification(notification);
+    });
+    
+    // Assemble the content
+    contentContainer.innerHTML = iconHtml;
+    contentContainer.appendChild(messageContainer);
+    contentContainer.appendChild(closeButton);
+    notification.appendChild(contentContainer);
+    
+    // Append to container and show
+    notificationContainer.appendChild(notification);
+    
+    // Animate in
+    setTimeout(() => {
+        notification.style.transform = 'translateY(0)';
+        notification.style.opacity = '1';
+    }, 50);
+
+    // Set timeout to remove notification
+    const timerId = setTimeout(() => {
+        removeNotification(notification);
+    }, duration);
+    
+    // Store the timer ID for potential early removal
+    notification.dataset.timerId = timerId;
+    
+    // Function to remove notification with animation
+    function removeNotification(notif) {
+        if (!notif) return;
+        
+        // Clear the timeout to prevent duplicate removals
+        clearTimeout(notif.dataset.timerId);
+        
+        // Animate out
+        notif.style.transform = 'translateY(100%)';
+        notif.style.opacity = '0';
+        
+        // Wait for animation to finish, then remove
+        setTimeout(() => {
+            if (notif.parentNode) {
+                notif.parentNode.removeChild(notif);
+                
+                // If container is empty, remove it too
+                if (notificationContainer.children.length === 0) {
+                    notificationContainer.parentNode.removeChild(notificationContainer);
+                }
+            }
+        }, 300);
+    }
+    
+    return notification;
 }
+
+// Example usage:
+// showNotification("Task completed successfully!", 2000, "success");
+// showNotification("An error occurred while processing", 3000, "error");
+// showNotification("Please review your settings", 2500, "warning");
+// showNotification("Loading data...", 1500, "info");
+
+// Example usage:
+// showNotification("Task completed successfully!", 2000, "success");
+// showNotification("An error occurred while processing", 3000, "error");
+// showNotification("Please review your settings", 2500, "warning");
+// showNotification("Loading data...", 1500, "info");
+
+// Example usage:
+// showNotification("Task completed successfully!", 2000, "success");
+// showNotification("An error occurred while processing", 3000, "error");
+// showNotification("Please review your settings", 2500, "warning");
+// showNotification("Loading data...", 1500, "info");
+
+// Example usage:
+// showNotification("Task completed successfully!", 2000, "success");
+// showNotification("An error occurred while processing", 3000, "error");
+// showNotification("Please review your settings", 2500, "warning");
+// showNotification("Loading data...", 1500, "info");
+
 
 
 // Simulate progress percentage
@@ -229,182 +585,238 @@ function stopProgressSimulation() {
 
 function applyPercentile(percentileValue) {
     console.log(`Attempting to apply ${percentileValue * 100}% percentile`);
-    
-    // Check if FITS data exists in window scope
+    let viewerInitialized = false; // Keep track if any viewer update was initiated
+
+    // Check if FITS data global object exists (it should, if popup is visible)
     if (!window.fitsData) {
-        console.error('No FITS data available in global scope');
-        showNotification('No image data available. Please load an image first.', 3000, 'error');
+        console.error('No FITS data object available in global scope');
+        showNotification('Image metadata not loaded. Please load an image first.', 3000, 'error');
         return;
     }
-    
-    // Check if data array exists within FITS data
-    if (!window.fitsData.data) {
-        console.error('FITS data has no pixel array');
-        showNotification('Image data is incomplete. Try reloading the image.', 3000, 'error');
-        return;
-    }
-    
+
+    const isTiledViewActive = window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen();
+
     try {
-        console.log(`Applying ${percentileValue * 100}% percentile`);
-        
-        // Collect all valid pixel values with sampling for large images
-        const validPixels = [];
-        const height = window.fitsData.height;
-        const width = window.fitsData.width;
-        const maxSampleSize = 1000000; // Limit sample size for performance
-        const skipFactor = Math.max(1, Math.floor((width * height) / maxSampleSize));
-        
-        let pixelCount = 0;
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x += skipFactor) {
-                pixelCount++;
-                if (pixelCount % skipFactor !== 0) continue; // Sample only every Nth pixel
-                
-                // Safely access pixel value
-                try {
-                    const value = window.fitsData.data[y][x];
-                    if (!isNaN(value) && isFinite(value)) {
-                        validPixels.push(value);
+        showNotification(true, 'Applying percentile...'); // Show progress early
+
+        if (isTiledViewActive) {
+            viewerInitialized = true; // Assume we will attempt an update
+            console.log("Using tiled viewer for percentile application");
+            showNotification(true, 'Calculating percentile from server data...');
+
+            // 1. Fetch full range histogram from server
+            fetchServerHistogram(null, null, 256) // bins = 256, or any reasonable number
+                .then(histData => {
+                    if (!histData || typeof histData.data_overall_min === 'undefined' || typeof histData.data_overall_max === 'undefined') {
+                        throw new Error('Missing overall data range from server histogram.');
                     }
-                } catch (e) {
-                    console.warn(`Error accessing pixel data at (${x},${y})`, e);
-                    // Continue with other pixels
-                }
-            }
-        }
-        
-        if (validPixels.length === 0) {
-            console.error('No valid pixels found');
-            showNotification('No valid pixels found in image data', 2000, 'warning');
-            return;
-        }
-        
-        // Sort pixels for percentile calculation
-        validPixels.sort((a, b) => a - b);
-        
-        // Calculate min and max values based on percentile
-        const minIndex = 0;
-        const maxIndex = Math.floor(validPixels.length * percentileValue);
-        
-        if (maxIndex >= validPixels.length) {
-            console.error('Invalid percentile: index out of bounds');
-            showNotification('Error calculating percentile', 2000, 'error');
-            return;
-        }
-        
-        const minValue = validPixels[minIndex];
-        const maxValue = validPixels[maxIndex];
-        
-        console.log(`Percentile ${percentileValue * 100}%: min=${minValue}, max=${maxValue}`);
-        
-        // Apply the dynamic range directly
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
-        
-        if (minInput && maxInput) {
-            minInput.value = minValue.toFixed(2);
-            maxInput.value = maxValue.toFixed(2);
-        }
-        
-        // Update the FITS data with new range
-        window.fitsData.min_value = minValue;
-        window.fitsData.max_value = maxValue;
-        
-        // Show brief processing indicator
-        showProgress(true, 'Updating image...');
-        
-        // Check which viewer is active and update accordingly
-        let viewerInitialized = false;
-        
-        // Check for standard OpenSeadragon viewer
-        if (typeof viewer !== 'undefined' && viewer) {
-            viewerInitialized = true;
-            console.log("Using standard viewer");
-            
-            // Process the image with the new range
-            if (window.Worker) {
-                processImageInWorker();
-            } else {
-                processImageInMainThread();
-            }
-        }
-        // Check for window.viewer
-        else if (window.viewer) {
-            viewerInitialized = true;
-            console.log("Using window.viewer");
-            
-            // Process the image with the new range
-            if (window.Worker) {
-                processImageInWorker();
-            } else {
-                processImageInMainThread();
-            }
-        }
-        // Check for tiled viewer
-        else if (window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen()) {
-            viewerInitialized = true;
-            console.log("Using tiled viewer");
-            
-            // For tiled viewing, update the server-side settings
-            fetch('/update-dynamic-range/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    min_value: minValue,
-                    max_value: maxValue
+
+                    const overallMin = histData.data_overall_min;
+                    const overallMax = histData.data_overall_max;
+
+                    // 2. Calculate new min/max based on percentile and overall range
+                    // For percentile, minValue is typically the absolute min of the data
+                    let newMinValue = overallMin;
+                    let newMaxValue = overallMin + (overallMax - overallMin) * percentileValue;
+
+                    // Ensure newMaxValue does not exceed overallMax and newMinValue is not less than overallMin
+                    newMinValue = Math.max(overallMin, newMinValue);
+                    newMaxValue = Math.min(overallMax, newMaxValue);
+
+                    // Ensure min < max, handle flat data or edge cases
+                    if (newMinValue >= newMaxValue) {
+                        if (overallMin === overallMax) { // Flat data
+                            newMaxValue = newMinValue + 1e-6; // Add a tiny epsilon
+                        } else {
+                            // If calculation results in min >= max, default to a small fraction of the range
+                            // This might happen if percentileValue is very low or data is skewed
+                            newMaxValue = newMinValue + (overallMax - overallMin) * 0.01; // e.g., 1% of range above min
+                            if (newMinValue >= newMaxValue) newMaxValue = newMinValue + 1e-6; // fallback epsilon
+                        }
+                        newMaxValue = Math.min(overallMax, newMaxValue); // Re-clip to ensure it's not over overallMax
+                    }
+
+                    console.log(`Server overall range: ${overallMin}-${overallMax}. New percentile range for ${percentileValue*100}%: ${newMinValue} to ${newMaxValue}`);
+
+                    // 3. Update UI input fields
+                    const minInput = document.getElementById('min-range-input');
+                    const maxInput = document.getElementById('max-range-input');
+                    if (minInput && maxInput) {
+                        minInput.value = newMinValue.toFixed(2);
+                        maxInput.value = newMaxValue.toFixed(2);
+                    }
+
+                    // 4. Update client-side fitsData (for consistency, though server is truth for tiles)
+                    // Ensure window.fitsData exists, which it should if the popup is open.
+                    window.fitsData.min_value = newMinValue;
+                    window.fitsData.max_value = newMaxValue;
+                    // Also store the percentile values as initial if they are being set by this function
+                    window.fitsData.initial_min_value = newMinValue;
+                    window.fitsData.initial_max_value = newMaxValue;
+
+
+                    // 5. Update the server-side settings with the new calculated range
+                    return fetch('/update-dynamic-range/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            min_value: newMinValue,
+                            max_value: newMaxValue,
+                            color_map: window.currentColorMap,      // Send current colormap
+                            scaling_function: window.currentScaling // Send current scaling
+                        })
+                    });
                 })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    console.error('Error updating tiled view:', data.error);
-                } else {
-                    window.tiledViewer.forceRedraw();
+                .then(response => {
+                    if (!response) throw new Error('No response from /update-dynamic-range/ fetch.');
+                    if (!response.ok) {
+                        return response.json().then(errData => { // Try to parse error from server
+                            throw new Error(errData.error || `Server error: ${response.status}`);
+                        }).catch(() => { // Fallback if .json() fails or no .error field
+                            throw new Error(`Server error: ${response.status} ${response.statusText}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (!data) throw new Error('No data from /update-dynamic-range/ response.');
+                    if (data.error) { // Explicit error message from server's JSON response
+                        throw new Error(data.error);
+                    }
+                    
+                    console.log("Server dynamic range updated for percentile. Re-opening OpenSeadragon tile source.");
+                    currentDynamicRangeVersion = Date.now(); // Crucial for cache busting tile URLs
+
+                    if (window.tiledViewer && currentTileInfo) {
+                        const currentZoom = window.tiledViewer.viewport.getZoom();
+                        const currentPan = window.tiledViewer.viewport.getCenter();
+
+                        const newTileSourceOptions = {
+                            width: currentTileInfo.width,
+                            height: currentTileInfo.height,
+                            tileSize: currentTileInfo.tileSize,
+                            maxLevel: currentTileInfo.maxLevel,
+                            getTileUrl: function(level, x, y) {
+                                return `/fits-tile/${level}/${x}/${y}?v=${currentDynamicRangeVersion}`;
+                            },
+                            getLevelScale: function(level) { // Ensure this is present if needed
+                                return 1 / (1 << (this.maxLevel - level));
+                            }
+                        };
+                        window.tiledViewer.open(newTileSourceOptions);
+                        window.tiledViewer.addOnceHandler('open', function() {
+                            window.tiledViewer.viewport.zoomTo(currentZoom, null, true); // immediate
+                            window.tiledViewer.viewport.panTo(currentPan, true);       // immediate
+                            if (window.tiledViewer.drawer) {
+                                window.tiledViewer.drawer.setImageSmoothingEnabled(false);
+                            }
+                            console.log("Viewport restored after percentile update in tiled view.");
+                        });
+                        showNotification(`Applied ${percentileValue * 100}% percentile`, 1500, 'success');
+                    } else {
+                        throw new Error('Cannot re-open tile source: tiledViewer or currentTileInfo missing.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error applying percentile in tiled view:', error.message);
+                    showNotification(`Failed to apply percentile: ${error.message}`, 4000, 'error');
+                })
+                .finally(() => {
+                    showNotification(false);
+                    requestHistogramUpdate(); // Update histogram UI
+                });
+
+        } else { // Non-tiled view (original logic for local data)
+            if (!window.fitsData.data || (Array.isArray(window.fitsData.data) && window.fitsData.data.length === 0)) {
+                console.error('FITS data has no pixel array or is empty (non-tiled view).');
+                showNotification('Image data is incomplete. Try reloading the image (non-tiled).', 3000, 'error');
+                showNotification(false); // Hide progress shown at the start of try block
+                return;
+            }
+            viewerInitialized = true; // We will attempt local processing
+
+            console.log(`Applying ${percentileValue * 100}% percentile locally`);
+            const validPixels = [];
+            const height = window.fitsData.height;
+            const width = window.fitsData.width;
+            const maxSampleSize = 1000000;
+            const skipFactor = Math.max(1, Math.floor((width * height) / maxSampleSize));
+            let pixelCount = 0;
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x += skipFactor) {
+                    pixelCount++;
+                    if (pixelCount % skipFactor !== 0) continue;
+                    try {
+                        const value = window.fitsData.data[y][x];
+                        if (!isNaN(value) && isFinite(value)) {
+                            validPixels.push(value);
+                        }
+                    } catch (e) {
+                        console.warn(`Error accessing pixel data at (${x},${y})`, e);
+                    }
                 }
-                showProgress(false);
-            })
-            .catch(error => {
-                console.error('Error updating tiled view:', error);
-                showProgress(false);
-            });
-        }
-        
-        if (!viewerInitialized) {
-            console.error("No viewer found - trying direct refresh");
+            }
+
+            if (validPixels.length === 0) {
+                console.error('No valid pixels found for local percentile calculation');
+                showNotification('No valid pixels found in image data', 2000, 'warning');
+                showNotification(false);
+                return;
+            }
+
+            validPixels.sort((a, b) => a - b);
             
-            // Last resort: try direct image refresh
-            try {
-                refreshImage();
-                viewerInitialized = true;
-            } catch(e) {
-                console.error("Failed to refresh image:", e);
+            // For percentiles, min is typically the data's true min (0th percentile)
+            const newMinValue = validPixels[0]; 
+            // Max is the value at the chosen percentile
+            let maxIndex = Math.floor(validPixels.length * percentileValue) -1; // -1 because array is 0-indexed
+            maxIndex = Math.max(0, Math.min(maxIndex, validPixels.length - 1)); // Clamp index
+
+            let newMaxValue = validPixels[maxIndex];
+
+            if (newMinValue >= newMaxValue) { // Handle edge case where min >= max after percentile
+                 if (validPixels[0] === validPixels[validPixels.length -1]){ // flat data
+                    newMaxValue = newMinValue + 1e-6;
+                 } else {
+                    newMaxValue = validPixels[Math.min(maxIndex + 1, validPixels.length - 1)]; // Try next value
+                    if (newMinValue >= newMaxValue) newMaxValue = newMinValue + 1e-6; // fallback epsilon
+                 }
             }
-        }
-        
-        if (!viewerInitialized) {
-            showProgress(false);
-            showNotification('Unable to update image: viewer not initialized', 2000, 'error');
-        } else {
-            // Hide progress after a short delay for standard viewers
-            if (!window.tiledViewer || !window.tiledViewer.isOpen()) {
-                setTimeout(() => {
-                    showProgress(false);
-                    showNotification(`Applied ${percentileValue * 100}% percentile`, 1500, 'success');
-                }, 500);
+
+            console.log(`Local Percentile ${percentileValue * 100}%: min=${newMinValue}, max=${newMaxValue}`);
+
+            const minInput = document.getElementById('min-range-input');
+            const maxInput = document.getElementById('max-range-input');
+            if (minInput && maxInput) {
+                minInput.value = newMinValue.toFixed(2);
+                maxInput.value = newMaxValue.toFixed(2);
             }
+
+            window.fitsData.min_value = newMinValue;
+            window.fitsData.max_value = newMaxValue;
+            // Also store the percentile values as initial if they are being set by this function
+            window.fitsData.initial_min_value = newMinValue;
+            window.fitsData.initial_max_value = newMaxValue;
+
+
+            // Process the image with the new range (this logic might need to be adapted based on how non-tiled views are handled)
+            if (window.Worker) {
+                processImageInWorker();
+            } else {
+                processImageInMainThread();
+            }
+            // Hide progress after a short delay for local processing
+            setTimeout(() => {
+                showNotification(false);
+                showNotification(`Applied ${percentileValue * 100}% percentile`, 1500, 'success');
+            }, 500);
+            requestHistogramUpdate(); // Update histogram UI
         }
-        
-        // Update the histogram if the popup is visible
-        const popup = document.getElementById('dynamic-range-popup');
-        if (popup && popup.style.display !== 'none') {
-            // Use the safe update function
-            requestHistogramUpdate();
-        }
-    } catch (error) {
+
+    } catch (error) { // Catch errors from the main try block (e.g., local processing issues)
         console.error('Error applying percentile:', error);
-        showProgress(false);
+        showNotification(false); // Ensure progress is hidden on error
         showNotification(`Error: ${error.message}`, 3000, 'error');
     }
 }
@@ -416,7 +828,7 @@ function initializeViewerWithFitsData() {
     
     if (!window.fitsData) {
         console.error("Error: No FITS data available");
-        showProgress(false);
+        showNotification(false);
         showNotification("Error: No FITS data available", 3000);
         return;
     }
@@ -481,7 +893,7 @@ function initializeViewerWithFitsData() {
             `width: ${window.fitsData.width}, height: ${window.fitsData.height}, has data: ${!!window.fitsData.data}` : 
             "No FITS data");
         
-        showProgress(false);
+        showNotification(false);
         showNotification(`Error initializing viewer: ${error.message}. Trying fallback method...`, 3000, 'error');
         
         // Last resort fallback - if we have any FITS data at all, try the large image processor
@@ -497,7 +909,7 @@ function initializeViewerWithFitsData() {
 // Modified process binary data function
 function processBinaryData(arrayBuffer, filepath) {
     try {
-        showProgress(true, 'Processing FITS data...');
+        showNotification(true, 'Processing FITS data...');
         
         // Use a setTimeout to let the UI update before heavy processing
         setTimeout(() => {
@@ -592,7 +1004,7 @@ function processBinaryData(arrayBuffer, filepath) {
                 console.log(`Reading ${pixelCount} pixels from offset ${offset} (buffer size: ${arrayBuffer.byteLength})`);
                 
                 // Create data structure with chunked processing
-                showProgress(true, 'Creating image data structures...');
+                showNotification(true, 'Creating image data structures...');
                 
                 // Determine optimal chunk size based on image dimensions
                 // For very large images, use larger chunks to reduce overhead
@@ -611,7 +1023,7 @@ function processBinaryData(arrayBuffer, filepath) {
                     const endRow = Math.min(processedRows + chunkSize, height);
                     const progress = Math.round((processedRows / height) * 100);
                     
-                    showProgress(true, `Processing data: ${progress}%`);
+                    showNotification(true, `Processing data: ${progress}%`);
                     
                     // Process a chunk of rows
                     for (let y = processedRows; y < endRow; y++) {
@@ -649,11 +1061,16 @@ function processBinaryData(arrayBuffer, filepath) {
                         filename: filepath
                     };
 
+                    if (typeof clearAllCatalogs === 'function') {
+                        console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+                        clearAllCatalogs();
+                    }
+
                     // console.timeEnd('parseBinaryData');
                     
                     // Apply 99% percentile for better initial display
                     try {
-                        showProgress(true, 'Calculating optimal display range...');
+                        showNotification(true, 'Calculating optimal display range...');
                         
                         // Calculate and apply 99% percentile with sampling for efficiency
                         const validPixels = [];
@@ -693,12 +1110,12 @@ function processBinaryData(arrayBuffer, filepath) {
                     }
                     
                     // Initialize viewer with the data
-                    showProgress(true, 'Creating viewer...');
+                    showNotification(true, 'Creating viewer...');
                     setTimeout(() => {
                         if (typeof initializeViewerWithFitsData === 'function') {
                             initializeViewerWithFitsData();
                         } else {
-                            showProgress(false);
+                            showNotification(false);
                             showNotification('Error: Viewer initialization function not found', 3000, 'error');
                         }
                         
@@ -710,21 +1127,21 @@ function processBinaryData(arrayBuffer, filepath) {
                 
             } catch (error) {
                 console.error('Error processing binary data:', error);
-                showProgress(false);
+                showNotification(false);
                 showNotification(`Error: ${error.message}`, 5000, 'error');
             }
         }, 100); // Small delay to let the UI update
         
     } catch (error) {
         console.error('Error in processBinaryData:', error);
-        showProgress(false);
+        showNotification(false);
         showNotification(`Error: ${error.message}`, 5000, 'error');
     }
 }
 
 function processImageInMainThread() {
     // Show progress indicator
-    showProgress(true, 'Processing image...');
+    showNotification(true, 'Processing image...');
     
     // Store current viewport settings
     let currentZoom = 0;
@@ -828,8 +1245,13 @@ function processImageInMainThread() {
             viewer.viewport.panTo(currentPan);
             console.log("Restored viewport settings:", currentZoom, currentPan);
             
+            // Attempt to disable image smoothing again after new image is opened
+            if (viewer.drawer) {
+                viewer.drawer.setImageSmoothingEnabled(false);
+            }
+
             // Hide progress indicator once the image is loaded
-            showProgress(false);
+            showNotification(false);
         });
     } else {
         // Initialize a new viewer
@@ -854,7 +1276,7 @@ function processImageInWorker() {
     }
     
     // Show progress indicator
-    showProgress(true, 'Processing image...');
+    showNotification(true, 'Processing image...');
     
     try {
         // For very large images, use chunked processing in main thread
@@ -1114,7 +1536,7 @@ function processImageInWorker() {
             console.error('Error: No valid FITS data to send to worker');
             URL.revokeObjectURL(workerUrl);
             worker.terminate();
-            showProgress(false);
+            showNotification(false);
             showNotification('Error: No valid FITS data available', 3000, 'error');
             return;
         }
@@ -1176,7 +1598,7 @@ function processImageInWorker() {
                         console.log("Restored viewport settings:", viewportSettings);
                     }
                     // Hide progress indicator once the image is loaded
-                    showProgress(false);
+                    showNotification(false);
                 });
             } else {
                 // Initialize a new viewer
@@ -1202,7 +1624,7 @@ function processImageInWorker() {
 // Fixed large image processor to handle very large files better
 function processLargeImageInMainThread(viewportSettings) {
     console.log("Processing large image in main thread with safe chunking");
-    showProgress(true, 'Processing large image...');
+    showNotification(true, 'Processing large image...');
     
     try {
         // Validate FITS data first
@@ -1241,7 +1663,7 @@ function processLargeImageInMainThread(viewportSettings) {
         let currentRow = 0;
         
         function processNextChunk() {
-            showProgress(true, `Processing large image: ${Math.round((currentRow / window.fitsData.height) * 100)}%`);
+            showNotification(true, `Processing large image: ${Math.round((currentRow / window.fitsData.height) * 100)}%`);
             
             const endRow = Math.min(currentRow + chunkSize, window.fitsData.height);
             
@@ -1339,7 +1761,7 @@ function processLargeImageInMainThread(viewportSettings) {
                             console.log("Restored viewport settings:", viewportSettings);
                         }
                         // Hide progress indicator once the image is loaded
-                        showProgress(false);
+                        showNotification(false);
                     });
                 } else {
                     // Initialize a new viewer optimized for large images
@@ -1348,7 +1770,7 @@ function processLargeImageInMainThread(viewportSettings) {
                 }
             } catch (error) {
                 console.error("Error finalizing large image processing:", error);
-                showProgress(false);
+                showNotification(false);
                 showNotification('Error processing large image: ' + error.message, 5000, 'error');
             }
         }
@@ -1357,195 +1779,119 @@ function processLargeImageInMainThread(viewportSettings) {
         processNextChunk();
     } catch (error) {
         console.error("Critical error in large image processor:", error);
-        showProgress(false);
+        showNotification(false);
         showNotification(`Error processing image: ${error.message}. Please try a different file.`, 5000, 'error');
     }
 }
 
 
-function zoomIn() {
-    if (viewer) {
-        viewer.viewport.zoomBy(1.2);
-        viewer.viewport.applyConstraints();
-    }
-}
 
-function zoomOut() {
-    if (viewer) {
-        viewer.viewport.zoomBy(0.8);
-        viewer.viewport.applyConstraints();
-    }
-}
-
-function resetView() {
-    if (viewer) {
-        viewer.viewport.goHome();
-    }
-}
-
-// Show region info in a popup
-function showRegionInfo(dot, obj) {
-    const dotIndex = parseInt(dot.dataset.index);
-    
-    // Check if this dot already has a popup
-    let popup = findPopupByDotIndex(dotIndex);
-    
-    // If no popup exists for this dot, create a new one (if under the limit)
-    if (!popup) {
-        // Check if we've reached the maximum number of popups
-        if (infoPopups.length >= maxPopups) {
-            // Remove the oldest popup to make room for the new one
-            const oldestPopup = infoPopups.shift();
-            if (oldestPopup && oldestPopup.parentNode) {
-                oldestPopup.parentNode.removeChild(oldestPopup);
+// Helper function to close all popups
+function closeAllInfoPopups() {
+    if (window.infoPopups && window.infoPopups.length > 0) {
+        // Create a copy of the array to avoid issues with array modification during iteration
+        const popupsToClose = [...window.infoPopups];
+        popupsToClose.forEach(popup => {
+            if (popup && popup.style.display !== 'none') {
+                hideInfoPopup(popup);
             }
-        }
-        
-        // Create a new popup
-        popup = createInfoPopup(dotIndex);
-    }
-    
-    // Format coordinates with 6 decimal places
-    const ra = parseFloat(dot.dataset.ra).toFixed(6);
-    const dec = parseFloat(dot.dataset.dec).toFixed(6);
-    const x = parseFloat(dot.dataset.x).toFixed(2);
-    const y = parseFloat(dot.dataset.y).toFixed(2);
-    const radius = parseFloat(dot.dataset.radius).toFixed(2);
-    
-    // Get the content container
-    const contentContainer = popup.querySelector('.popup-content');
-    if (!contentContainer) return;
-    
-    // Create content
-    contentContainer.innerHTML = `
-        <div style="margin-bottom: 8px;">
-            <span style="color: #aaa;">Position (x, y):</span> ${x}, ${y}
-        </div>
-        <div style="margin-bottom: 8px;">
-            <span style="color: #aaa;">Coordinates (RA, Dec):</span> ${ra}°, ${dec}°
-        </div>
-        <div style="margin-bottom: 8px;">
-            <span style="color: #aaa;">Region Size:</span> ${radius} pixels
-        </div>
-        <div style="margin-top: 12px; text-align: center;">
-            <button id="show-sed-${dotIndex}" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px;">Show SED</button>
-            <button id="show-properties-${dotIndex}" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Show Properties</button>
-        </div>
-    `;
-    
-    // Only position the popup near the dot if it's not already visible
-    if (popup.style.display !== 'block') {
-        // Position popup near the dot
-        const dotRect = dot.getBoundingClientRect();
-        popup.style.left = `${dotRect.right + 10}px`;
-        popup.style.top = `${dotRect.top}px`;
-    }
-    
-    // Show popup
-    popup.style.display = 'block';
-    
-    // Highlight the selected dot
-    if (dot.style) {
-        dot.style.border = '2px solid yellow';
-        dot.style.zIndex = '1000';
-        
-        // Store the original style to restore later
-        dot.dataset.originalBorder = '1px solid rgba(255, 0, 0, 0.7)';
-        dot.dataset.originalZIndex = 'auto';
-    }
-    
-    // Store reference to the dot in the popup (for canvas implementation)
-    popup.tempDot = dot;
-    
-    // Add event listener for the SED button
-    const sedButton = document.getElementById(`show-sed-${dotIndex}`);
-    if (sedButton) {
-        sedButton.addEventListener('click', function() {
-            // Get the current catalog name from the loaded catalog
-            const catalogName = window.currentCatalogName;
-            
-            if (!catalogName) {
-                showNotification('Error: No catalog loaded', 3000);
-                return;
-            }
-            
-            // Show SED at the bottom of the screen
-            showSed(dot.dataset.ra, dot.dataset.dec, catalogName);
         });
     }
-    
-    // Add event listener for the Properties button
-    const propertiesButton = document.getElementById(`show-properties-${dotIndex}`);
-    if (propertiesButton) {
-        propertiesButton.addEventListener('click', function() {
-            // Get the current catalog name from the loaded catalog
-            const catalogName = window.currentCatalogName;
-            
-            if (!catalogName) {
-                showNotification('Error: No catalog loaded', 3000);
-                return;
-            }
-            
-            // Show properties in the left panel
-            showProperties(dot.dataset.ra, dot.dataset.dec, catalogName);
-        });
-    }
-    
-    // Add event listener to the popup's close button to clean up temp dot
-    const closeButton = popup.querySelector('div[style*="cursor: pointer"]');
-    if (closeButton) {
-        closeButton.addEventListener('click', function() {
-            if (dot.classList && dot.classList.contains('temp-dot') && dot.parentNode) {
-                dot.parentNode.removeChild(dot);
-            }
-        }, { once: true });
-    }
-}
-// Find a popup by dot index
-function findPopupByDotIndex(dotIndex) {
-    for (let i = 0; i < infoPopups.length; i++) {
-        if (parseInt(infoPopups[i].dataset.dotIndex) === dotIndex) {
-            return infoPopups[i];
-        }
-    }
-    return null;
 }
 
-// Replace the existing hideInfoPopup function
+// Modified hideInfoPopup that ensures proper cleanup for re-clicking
 function hideInfoPopup(popup) {
     if (!popup) return;
     
-    // Clean up the temporary dot if it exists
-    if (popup.tempDot && popup.tempDot.parentNode) {
-        popup.tempDot.parentNode.removeChild(popup.tempDot);
-    }
+    // Start the closing animation
+    popup.style.transition = 'opacity 0.2s ease-out';
+    popup.style.opacity = '0';
     
-    // Hide the popup
-    popup.style.display = 'none';
-    
-    // Restore original style of the highlighted dot
-    if (popup.dataset.dotIndex) {
-        const dotIndex = parseInt(popup.dataset.dotIndex);
-        if (window.catalogDots && dotIndex >= 0 && dotIndex < window.catalogDots.length) {
-            const dot = window.catalogDots[dotIndex];
-            dot.style.border = dot.dataset.originalBorder || '1px solid rgba(255, 0, 0, 0.7)';
-            dot.style.zIndex = dot.dataset.originalZIndex || 'auto';
+    // Complete the cleanup after animation finishes
+    setTimeout(() => {
+        // Clean up the temporary dot if it exists
+        if (popup.tempDot && popup.tempDot.parentNode) {
+            popup.tempDot.parentNode.removeChild(popup.tempDot);
         }
-    }
-    
-    // Remove from DOM and array
-    if (popup.parentNode) {
-        popup.parentNode.removeChild(popup);
-    }
-    
-    // Remove from array
-    const index = infoPopups.indexOf(popup);
-    if (index !== -1) {
-        infoPopups.splice(index, 1);
-    }
+        
+        // Hide the popup
+        popup.style.display = 'none';
+        
+        // IMPORTANT: Clear the highlighting to allow re-clicking
+        if (popup.dataset.dotIndex) {
+            const dotIndex = parseInt(popup.dataset.dotIndex);
+            
+            // Only clear if this popup's region is currently highlighted
+            if (window.currentHighlightedSourceIndex === dotIndex) {
+                window.currentHighlightedSourceIndex = -1;
+                
+                // Redraw canvas to remove highlighting
+                if (typeof canvasUpdateOverlay === 'function') {
+                    canvasUpdateOverlay();
+                }
+            }
+            
+            // Restore original style of the highlighted dot (for DOM dots if you're using them)
+            if (window.catalogDots && dotIndex >= 0 && dotIndex < window.catalogDots.length) {
+                const dot = window.catalogDots[dotIndex];
+                dot.style.border = dot.dataset.originalBorder || '1px solid rgba(255, 0, 0, 0.7)';
+                dot.style.zIndex = dot.dataset.originalZIndex || 'auto';
+            }
+        }
+        
+        // Remove from DOM and array
+        if (popup.parentNode) {
+            popup.parentNode.removeChild(popup);
+        }
+        
+        // Remove from array
+        const index = infoPopups.indexOf(popup);
+        if (index !== -1) {
+            infoPopups.splice(index, 1);
+        }
+    }, 200); // Match the transition duration
 }
 
+// Also add this function to handle clicks on regions
+function handleRegionClick(sourceIndex) {
+    // Always allow clicking, even if the same region is highlighted
+    // This ensures the popup can be reopened after closing
+    
+    // Set the new highlighted source
+    window.currentHighlightedSourceIndex = sourceIndex;
+    
+    // Trigger canvas redraw to show highlighting
+    if (typeof canvasUpdateOverlay === 'function') {
+        canvasUpdateOverlay();
+    }
+    
+    // Open the popup (your existing popup creation logic should go here)
+    // For example:
+    // showInfoPopup(sourceIndex);
+}
 
+// Alternative: If you want to ensure clicks always work, add this to your click handler
+function ensureClickable() {
+    // This function can be called before handling any region clicks
+    // to ensure the system is in a clean state
+    
+    // Close any existing popups first
+    if (window.infoPopups && window.infoPopups.length > 0) {
+        window.infoPopups.forEach(popup => {
+            if (popup.style.display !== 'none') {
+                hideInfoPopup(popup);
+            }
+        });
+    }
+    
+    // Clear highlighting
+    window.currentHighlightedSourceIndex = -1;
+    
+    // Redraw canvas
+    if (typeof canvasUpdateOverlay === 'function') {
+        canvasUpdateOverlay();
+    }
+}
 
 // Add this function to wrap the original hideInfoPopup function
 const originalHideInfoPopup = window.hideInfoPopup;
@@ -1650,36 +1996,39 @@ function createDynamicRangeControl() {
     }
 }
 
-// Modify the showDynamicRangePopup function to properly initialize min/max values
+// PASTE THE FOLLOWING CODE INTO static/main.js, REPLACING THE EXISTING showDynamicRangePopup function
+
 function showDynamicRangePopup() {
-    // First check if an image is loaded
-    if (!window.fitsData || !window.fitsData.data) {
-        showNotification('No image loaded. Please load an image first.', 3000, 'warning');
+    console.log("showDynamicRangePopup called.");
+    const isTiledViewActive = !!(window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen());
+    console.log(`isTiledViewActive: ${isTiledViewActive}`);
+
+    if (!window.fitsData || typeof window.fitsData.min_value === 'undefined' || typeof window.fitsData.max_value === 'undefined') {
+        showNotification('Image metadata not loaded. Please load an image first.', 3000, 'warning');
         return;
     }
-    
-    // Check if popup already exists
+
+    if (!isTiledViewActive && (!window.fitsData.data || (Array.isArray(window.fitsData.data) && window.fitsData.data.length === 0))) {
+        showNotification('Image pixel data not available for local histogram. Please wait or reload.', 3000, 'warning');
+        return;
+    }
+    console.log("All checks passed in showDynamicRangePopup, proceeding to show popup.");
+
     let popup = document.getElementById('dynamic-range-popup');
-    
+    const titleElementId = 'dynamic-range-popup-title'; // For drag handling
+
     if (popup) {
-        // If it exists, just show it
         popup.style.display = 'block';
-        
-        // Make sure the min/max inputs display the current values
         const minInput = document.getElementById('min-range-input');
         const maxInput = document.getElementById('max-range-input');
-        
         if (minInput && maxInput && window.fitsData) {
             minInput.value = window.fitsData.min_value.toFixed(2);
             maxInput.value = window.fitsData.max_value.toFixed(2);
         }
-        
-        // Update the histogram with current data using the safe method
         requestHistogramUpdate();
         return;
     }
-    
-    // Create popup container
+
     popup = document.createElement('div');
     popup.id = 'dynamic-range-popup';
     popup.style.position = 'fixed';
@@ -1691,11 +2040,12 @@ function showDynamicRangePopup() {
     popup.style.borderRadius = '5px';
     popup.style.padding = '15px';
     popup.style.zIndex = '1000';
-    popup.style.width = '500px';
+    popup.style.width = '500px'; // Keep reasonable width
+    popup.style.boxSizing = 'border-box';
     popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
-    
-    // Create title
+
     const title = document.createElement('h3');
+    title.id = titleElementId;
     title.textContent = 'Dynamic Range Control';
     title.style.margin = '0 0 15px 0';
     title.style.color = '#fff';
@@ -1704,8 +2054,8 @@ function showDynamicRangePopup() {
     title.style.fontWeight = 'bold';
     title.style.borderBottom = '1px solid #555';
     title.style.paddingBottom = '10px';
-    
-    // Create close button
+    title.style.cursor = 'grab'; // Indicate title is draggable
+
     const closeButton = document.createElement('button');
     closeButton.textContent = '×';
     closeButton.style.position = 'absolute';
@@ -1733,62 +2083,115 @@ function showDynamicRangePopup() {
     closeButton.addEventListener('click', () => {
         popup.style.display = 'none';
     });
-    
-    // Create histogram canvas container
+
+    // Draggable functionality for the entire popup
+    let offsetX, offsetY;
+    const dragMouseDown = (e) => {
+        if (e.button !== 0) return; // Only drag with left mouse button
+
+        let target = e.target;
+        let allowDrag = false;
+
+        // Allow dragging if mousedown is on the popup background or its title
+        if (target === popup || target === title) {
+            allowDrag = true;
+        }
+
+        // Prevent dragging if clicking on specific interactive child elements
+        const nonDragTags = ['INPUT', 'BUTTON', 'SELECT', 'CANVAS'];
+        if (nonDragTags.includes(target.tagName) || 
+            target.closest('.custom-dropdown-option') || 
+            target === closeButton || // Explicitly prevent drag on close button
+            (target.style && target.style.cursor === 'pointer') // General check for pointer cursor elements
+           ) {
+            allowDrag = false;
+        }
+        
+        if (!allowDrag) return;
+
+        e.preventDefault(); // Prevent text selection and other default behaviors
+
+        // If popup is centered with transform, convert to pixel values
+        if (popup.style.transform.includes('translate')) {
+            const rect = popup.getBoundingClientRect();
+            popup.style.top = `${rect.top}px`;
+            popup.style.left = `${rect.left}px`;
+            popup.style.transform = 'none';
+        }
+
+        offsetX = e.clientX - popup.offsetLeft;
+        offsetY = e.clientY - popup.offsetTop;
+        title.style.cursor = 'grabbing'; // Change cursor on title during drag
+        popup.style.cursor = 'grabbing'; // Change cursor on popup during drag
+
+
+        document.addEventListener('mousemove', elementDrag);
+        document.addEventListener('mouseup', closeDragElement);
+    };
+
+    const elementDrag = (e) => {
+        e.preventDefault();
+        popup.style.top = (e.clientY - offsetY) + 'px';
+        popup.style.left = (e.clientX - offsetX) + 'px';
+    };
+
+    const closeDragElement = () => {
+        document.removeEventListener('mouseup', closeDragElement);
+        document.removeEventListener('mousemove', elementDrag);
+        title.style.cursor = 'grab'; // Restore cursor
+        popup.style.cursor = 'default'; // Restore cursor
+    };
+
+    popup.addEventListener('mousedown', dragMouseDown);
+
+
     const canvasContainer = document.createElement('div');
     canvasContainer.style.width = '100%';
     canvasContainer.style.height = '200px';
     canvasContainer.style.marginBottom = '15px';
     canvasContainer.style.backgroundColor = '#222';
     canvasContainer.style.borderRadius = '3px';
-    canvasContainer.style.position = 'relative'; // Needed for absolute positioning of overlay
+    canvasContainer.style.position = 'relative';
 
-    // Create background canvas (bars, axes)
     const bgCanvas = document.createElement('canvas');
-    bgCanvas.id = 'histogram-bg-canvas'; // New ID
-    bgCanvas.width = 470;
+    bgCanvas.id = 'histogram-bg-canvas';
+    bgCanvas.width = 470; // Adjusted for padding within 500px popup
     bgCanvas.height = 200;
     bgCanvas.style.display = 'block';
     bgCanvas.style.position = 'absolute';
     bgCanvas.style.left = '0';
     bgCanvas.style.top = '0';
-    bgCanvas.style.zIndex = '1'; // Background layer
+    bgCanvas.style.zIndex = '1';
 
-    // Create foreground canvas (lines)
     const linesCanvas = document.createElement('canvas');
-    linesCanvas.id = 'histogram-lines-canvas'; // New ID
+    linesCanvas.id = 'histogram-lines-canvas';
     linesCanvas.width = 470;
     linesCanvas.height = 200;
     linesCanvas.style.display = 'block';
     linesCanvas.style.position = 'absolute';
     linesCanvas.style.left = '0';
     linesCanvas.style.top = '0';
-    linesCanvas.style.zIndex = '2'; // Foreground layer
-    linesCanvas.style.pointerEvents = 'auto'; // Allow mouse events on this layer
+    linesCanvas.style.zIndex = '2';
+    linesCanvas.style.pointerEvents = 'auto';
     linesCanvas.style.touchAction = 'none';
 
     canvasContainer.appendChild(bgCanvas);
     canvasContainer.appendChild(linesCanvas);
-    
-    // Create percentile buttons container
+
     const percentileContainer = document.createElement('div');
     percentileContainer.style.display = 'flex';
     percentileContainer.style.justifyContent = 'space-between';
     percentileContainer.style.marginBottom = '15px';
-    
-    // Create percentile buttons
+
     const percentiles = [
-        { label: '99.9%', value: 0.999 },
-        { label: '99%', value: 0.99 },
-        { label: '95%', value: 0.95 },
-        { label: '90%', value: 0.90 }
+        { label: '99.9%', value: 0.999 }, { label: '99%', value: 0.99 },
+        { label: '95%', value: 0.95 }, { label: '90%', value: 0.90 }
     ];
-    
-    percentiles.forEach(percentile => {
+    percentiles.forEach(p => {
         const button = document.createElement('button');
-        button.textContent = percentile.label;
+        button.textContent = p.label;
         button.style.flex = '1';
-        button.style.margin = '0 5px';
+        button.style.margin = '0 2px'; // Reduced margin
         button.style.padding = '8px 0';
         button.style.backgroundColor = '#444';
         button.style.color = '#fff';
@@ -1796,170 +2199,203 @@ function showDynamicRangePopup() {
         button.style.borderRadius = '3px';
         button.style.cursor = 'pointer';
         button.style.fontFamily = 'Arial, sans-serif';
-        button.style.fontSize = '14px';
-        
-        button.addEventListener('mouseover', () => {
-            button.style.backgroundColor = '#555';
-        });
-        button.addEventListener('mouseout', () => {
-            button.style.backgroundColor = '#444';
-        });
-        button.addEventListener('click', () => {
-            applyPercentile(percentile.value);
-        });
-        
+        button.style.fontSize = '13px'; // Slightly smaller font
+        button.addEventListener('mouseover', () => button.style.backgroundColor = '#555');
+        button.addEventListener('mouseout', () => button.style.backgroundColor = '#444');
+        button.addEventListener('click', () => applyPercentile(p.value));
         percentileContainer.appendChild(button);
     });
-    
-    // Create input container
+
     const inputContainer = document.createElement('div');
     inputContainer.style.display = 'flex';
     inputContainer.style.alignItems = 'center';
     inputContainer.style.marginBottom = '15px';
-    
-    // Min input
+
     const minLabel = document.createElement('label');
-    minLabel.textContent = 'Min:';
-    minLabel.style.color = '#aaa';
-    minLabel.style.marginRight = '5px';
-    minLabel.style.fontFamily = 'Arial, sans-serif';
-    minLabel.style.fontSize = '14px';
-    
+    minLabel.textContent = 'Min:'; minLabel.style.color = '#aaa'; minLabel.style.marginRight = '5px'; minLabel.style.fontSize = '14px';
     const minInput = document.createElement('input');
-    minInput.id = 'min-range-input';
-    minInput.type = 'text';
-    minInput.style.flex = '1';
-    minInput.style.backgroundColor = '#444';
-    minInput.style.color = '#fff';
-    minInput.style.border = '1px solid #555';
-    minInput.style.borderRadius = '3px';
-    minInput.style.padding = '5px';
-    minInput.style.marginRight = '15px';
-    minInput.style.fontFamily = 'monospace';
-    minInput.style.fontSize = '14px';
-    
-    // Max input
+    minInput.id = 'min-range-input'; minInput.type = 'text';
+    Object.assign(minInput.style, { flex: '1', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', padding: '5px', marginRight: '10px', fontFamily: 'monospace', fontSize: '14px' });
+
     const maxLabel = document.createElement('label');
-    maxLabel.textContent = 'Max:';
-    maxLabel.style.color = '#aaa';
-    maxLabel.style.marginRight = '5px';
-    maxLabel.style.fontFamily = 'Arial, sans-serif';
-    maxLabel.style.fontSize = '14px';
-    
+    maxLabel.textContent = 'Max:'; maxLabel.style.color = '#aaa'; maxLabel.style.marginRight = '5px'; maxLabel.style.fontSize = '14px';
     const maxInput = document.createElement('input');
-    maxInput.id = 'max-range-input';
-    maxInput.type = 'text';
-    maxInput.style.flex = '1';
-    maxInput.style.backgroundColor = '#444';
-    maxInput.style.color = '#fff';
-    maxInput.style.border = '1px solid #555';
-    maxInput.style.borderRadius = '3px';
-    maxInput.style.padding = '5px';
-    maxInput.style.fontFamily = 'monospace';
-    maxInput.style.fontSize = '14px';
-    
-    // Initialize min/max inputs with current FITS data values
+    maxInput.id = 'max-range-input'; maxInput.type = 'text';
+    Object.assign(maxInput.style, { flex: '1', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', padding: '5px', fontFamily: 'monospace', fontSize: '14px' });
+
     if (window.fitsData) {
         minInput.value = window.fitsData.min_value.toFixed(2);
         maxInput.value = window.fitsData.max_value.toFixed(2);
     }
-    
-    // --- MOVE THIS BLOCK --- 
-    // NEW: Add input event listeners to update histogram lines on manual change
-    // Use debounce to avoid excessive updates
     const debouncedHistogramUpdate = debounce(requestHistogramUpdate, 150);
-    minInput.addEventListener('input', () => {
-        // Optional: Add basic validation here if needed
-        debouncedHistogramUpdate();
-    });
-    maxInput.addEventListener('input', () => {
-        // Optional: Add basic validation here if needed
-        debouncedHistogramUpdate();
-    });
-    // --- END MOVE --- 
-    
-    // Add inputs to container
-    inputContainer.appendChild(minLabel);
-    inputContainer.appendChild(minInput);
-    inputContainer.appendChild(maxLabel);
-    inputContainer.appendChild(maxInput);
-    
-    // Create color map container
-    const colorMapContainer = document.createElement('div');
-    colorMapContainer.style.marginBottom = '15px';
-    colorMapContainer.style.display = 'flex';
-    colorMapContainer.style.alignItems = 'center';
-    colorMapContainer.style.flexDirection = 'column';
-    
-    // Color map label
-    const colorMapLabel = document.createElement('label');
-    colorMapLabel.textContent = 'Color Map:';
-    colorMapLabel.style.color = '#aaa';
-    colorMapLabel.style.marginRight = '10px';
-    colorMapLabel.style.fontFamily = 'Arial, sans-serif';
-    colorMapLabel.style.fontSize = '14px';
-    colorMapLabel.style.alignSelf = 'flex-start';
-    colorMapLabel.style.marginBottom = '5px';
-    
-    // Create a custom select container for colormap selection
-    const customSelectContainer = document.createElement('div');
-    customSelectContainer.style.width = '100%';
-    customSelectContainer.style.position = 'relative';
-    
-    // Create the selected option display
-    const selectedOption = document.createElement('div');
-    selectedOption.style.display = 'flex';
-    selectedOption.style.alignItems = 'center';
-    selectedOption.style.padding = '8px 10px';
-    selectedOption.style.backgroundColor = '#444';
-    selectedOption.style.color = '#fff';
-    selectedOption.style.border = '1px solid #555';
-    selectedOption.style.borderRadius = '3px';
-    selectedOption.style.cursor = 'pointer';
-    selectedOption.style.fontFamily = 'Arial, sans-serif';
-    selectedOption.style.fontSize = '14px';
-    selectedOption.style.justifyContent = 'space-between';
-    
-    // Create the preview swatch for the selected option
-    const selectedSwatch = document.createElement('div');
-    selectedSwatch.style.width = '60px';
-    selectedSwatch.style.height = '15px';
-    selectedSwatch.style.marginRight = '10px';
-    selectedSwatch.style.borderRadius = '2px';
-    selectedSwatch.style.background = 'linear-gradient(to right, #000, #fff)'; // Default grayscale
-    
-    // Create the text for the selected option
-    const selectedText = document.createElement('span');
-    selectedText.textContent = 'Grayscale';
-    selectedText.style.flex = '1';
-    
-    // Create the dropdown arrow
-    const dropdownArrow = document.createElement('span');
-    dropdownArrow.textContent = '▼';
-    dropdownArrow.style.marginLeft = '10px';
-    dropdownArrow.style.fontSize = '10px';
-    
-    // Add elements to the selected option display
-    selectedOption.appendChild(selectedSwatch);
-    selectedOption.appendChild(selectedText);
-    selectedOption.appendChild(dropdownArrow);
-    
-    // Create the dropdown options container
-    const optionsContainer = document.createElement('div');
-    optionsContainer.style.position = 'absolute';
-    optionsContainer.style.top = '100%';
-    optionsContainer.style.left = '0';
-    optionsContainer.style.width = '100%';
-    optionsContainer.style.backgroundColor = '#444';
-    optionsContainer.style.border = '1px solid #555';
-    optionsContainer.style.borderTop = 'none';
-    optionsContainer.style.borderRadius = '0 0 3px 3px';
-    optionsContainer.style.zIndex = '10';
-    optionsContainer.style.maxHeight = '200px';
-    optionsContainer.style.overflowY = 'auto';
-    optionsContainer.style.display = 'none';
-    
-    // Add color map options
+    minInput.addEventListener('input', debouncedHistogramUpdate);
+    maxInput.addEventListener('input', debouncedHistogramUpdate);
+
+    inputContainer.appendChild(minLabel); inputContainer.appendChild(minInput);
+    inputContainer.appendChild(maxLabel); inputContainer.appendChild(maxInput);
+
+    // Helper function to create searchable dropdown
+    function createSearchableDropdown(labelText, selectId, optionsArray, globalVarName, defaultSelectedValue, hasSwatches = false) {
+        const container = document.createElement('div');
+        container.style.marginBottom = '10px'; // Spacing between dropdowns
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+
+        const label = document.createElement('label');
+        label.textContent = labelText;
+        Object.assign(label.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '14px', alignSelf: 'flex-start', marginBottom: '5px' });
+
+        const customSelectContainer = document.createElement('div');
+        Object.assign(customSelectContainer.style, { width: '100%', position: 'relative' });
+
+        const selectedOptionDisplay = document.createElement('div');
+        Object.assign(selectedOptionDisplay.style, { display: 'flex', alignItems: 'center', padding: '8px 10px', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', cursor: 'pointer', fontFamily: 'Arial, sans-serif', fontSize: '14px', justifyContent: 'space-between' });
+
+        const selectedSwatch = document.createElement('div');
+        if (hasSwatches) {
+            Object.assign(selectedSwatch.style, { width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: 'linear-gradient(to right, #000, #fff)' });
+        }
+        const selectedText = document.createElement('span');
+        selectedText.style.flex = '1';
+        const dropdownArrow = document.createElement('span');
+        dropdownArrow.textContent = '▼'; dropdownArrow.style.marginLeft = '10px'; dropdownArrow.style.fontSize = '10px';
+
+        if (hasSwatches) selectedOptionDisplay.appendChild(selectedSwatch);
+        selectedOptionDisplay.appendChild(selectedText);
+        selectedOptionDisplay.appendChild(dropdownArrow);
+
+        const optionsOuterContainer = document.createElement('div'); // Needed for border around search + list
+        Object.assign(optionsOuterContainer.style, { position: 'absolute', top: '100%', left: '0', width: '100%', backgroundColor: '#3a3a3a', border: '1px solid #555', borderRadius: '0 0 3px 3px', zIndex: '20', display: 'none', borderTop:'none' });
+
+
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text'; searchInput.placeholder = `Search ${labelText.toLowerCase().replace(':', '')}...`;
+        Object.assign(searchInput.style, { width: 'calc(100% - 0px)', padding: '8px 10px', margin: '0', border: 'none', borderBottom: '1px solid #555', borderRadius: '0', backgroundColor: '#3a3a3a', color: '#fff', boxSizing: 'border-box' });
+        
+        const optionsListContainer = document.createElement('div');
+        Object.assign(optionsListContainer.style, { maxHeight: '150px', overflowY: 'auto' });
+
+
+        searchInput.addEventListener('input', () => {
+            const filter = searchInput.value.toLowerCase();
+            const options = optionsListContainer.querySelectorAll('.custom-dropdown-option');
+            options.forEach(option => {
+                const text = option.dataset.label.toLowerCase(); // Use data-label for searching
+                option.style.display = text.includes(filter) ? (hasSwatches ? 'flex' : 'block') : 'none';
+            });
+        });
+        
+        optionsOuterContainer.appendChild(searchInput);
+        optionsOuterContainer.appendChild(optionsListContainer);
+
+
+        const hiddenSelect = document.createElement('select');
+        hiddenSelect.id = selectId; hiddenSelect.style.display = 'none';
+
+        let currentSelectionValue = window[globalVarName] || defaultSelectedValue;
+        const initialSelection = optionsArray.find(opt => opt.value === currentSelectionValue) || optionsArray.find(opt => opt.value === defaultSelectedValue);
+        if (initialSelection) {
+            selectedText.textContent = initialSelection.label;
+            if (hasSwatches && initialSelection.gradient) selectedSwatch.style.background = initialSelection.gradient;
+        }
+
+
+        optionsArray.forEach(opt => {
+            const optionEl = document.createElement('option');
+            optionEl.value = opt.value; optionEl.textContent = opt.label;
+            if (opt.value === currentSelectionValue) optionEl.selected = true;
+            hiddenSelect.appendChild(optionEl);
+
+            const visualOption = document.createElement('div');
+            visualOption.classList.add('custom-dropdown-option');
+            visualOption.dataset.value = opt.value;
+            visualOption.dataset.label = opt.label; // Store label for search
+            Object.assign(visualOption.style, { padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid #505050', display: hasSwatches ? 'flex' : 'block', alignItems: hasSwatches ? 'center' : 'normal', color:'#fff' });
+            if (opt.value === currentSelectionValue) visualOption.style.backgroundColor = '#555';
+
+
+            if (hasSwatches) {
+                const swatch = document.createElement('div');
+                Object.assign(swatch.style, { minWidth: '60px', width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: opt.gradient || '#ccc' });
+                visualOption.appendChild(swatch);
+            }
+            const textSpan = document.createElement('span'); textSpan.textContent = opt.label;
+            visualOption.appendChild(textSpan);
+
+            visualOption.addEventListener('mouseover', () => visualOption.style.backgroundColor = '#555');
+            visualOption.addEventListener('mouseout', () => {
+                if (visualOption.dataset.value !== currentSelectionValue) visualOption.style.backgroundColor = 'transparent';
+            });
+            visualOption.addEventListener('click', () => {
+                hiddenSelect.value = opt.value;
+                selectedText.textContent = opt.label;
+                if (hasSwatches && opt.gradient) selectedSwatch.style.background = opt.gradient;
+                currentSelectionValue = opt.value;
+                window[globalVarName] = opt.value; // Update global variable
+
+                optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(vOpt => {
+                    vOpt.style.backgroundColor = vOpt.dataset.value === currentSelectionValue ? '#555' : 'transparent';
+                });
+                optionsOuterContainer.style.display = 'none';
+                const event = new Event('change');
+                hiddenSelect.dispatchEvent(event);
+                console.log(`${labelText} changed to: ${window[globalVarName]}`);
+            });
+            optionsListContainer.appendChild(visualOption);
+        });
+        // Remove border from last item
+        if(optionsListContainer.lastChild && optionsListContainer.lastChild.style) optionsListContainer.lastChild.style.borderBottom = 'none';
+
+
+        selectedOptionDisplay.addEventListener('click', () => {
+            const isOpen = optionsOuterContainer.style.display === 'block';
+            if (!isOpen) {
+                optionsOuterContainer.style.display = 'block';
+                searchInput.value = ''; // Clear search
+                optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(opt => opt.style.display = hasSwatches ? 'flex' : 'block'); // Show all
+                searchInput.focus();
+
+                // Dropdown position adjustment
+                optionsOuterContainer.style.top = '100%'; // Default open downwards
+                optionsOuterContainer.style.bottom = 'auto';
+                optionsOuterContainer.style.maxHeight = hasSwatches ? '240px' : '180px'; // Default max height
+
+                const parentRect = customSelectContainer.getBoundingClientRect();
+                const dropdownRect = optionsOuterContainer.getBoundingClientRect(); // Get rect after display block
+
+                if (dropdownRect.bottom > window.innerHeight) { // If overflows viewport bottom
+                    if (parentRect.top - dropdownRect.height > 0) { // Enough space to open upwards?
+                        optionsOuterContainer.style.top = 'auto';
+                        optionsOuterContainer.style.bottom = '100%';
+                    } else { // Not enough space upwards, adjust max-height to fit downwards
+                        const availableHeight = window.innerHeight - parentRect.bottom - 10; // 10px buffer
+                        optionsOuterContainer.style.maxHeight = `${Math.max(50, availableHeight)}px`; // Min 50px height
+                    }
+                }
+
+            } else {
+                optionsOuterContainer.style.display = 'none';
+            }
+        });
+        
+        customSelectContainer.appendChild(selectedOptionDisplay);
+        customSelectContainer.appendChild(optionsOuterContainer);
+        customSelectContainer.appendChild(hiddenSelect);
+        hiddenSelect.addEventListener('change', () => { // Ensure global var updates if changed externally
+            window[globalVarName] = hiddenSelect.value;
+             const selOpt = optionsArray.find(o => o.value === hiddenSelect.value);
+             if(selOpt) {
+                selectedText.textContent = selOpt.label;
+                if (hasSwatches && selOpt.gradient) selectedSwatch.style.background = selOpt.gradient;
+             }
+        });
+
+        container.appendChild(label);
+        container.appendChild(customSelectContainer);
+        return container;
+    }
+
+    // Define colormaps and scaling functions
     const colorMaps = [
         { value: 'grayscale', label: 'Grayscale', gradient: 'linear-gradient(to right, #000, #fff)' },
         { value: 'viridis', label: 'Viridis', gradient: 'linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)' },
@@ -1967,431 +2403,86 @@ function showDynamicRangePopup() {
         { value: 'inferno', label: 'Inferno', gradient: 'linear-gradient(to right, #000004, #320a5a, #781c6d, #bb3754, #ec6824, #fbb41a)' },
         { value: 'cividis', label: 'Cividis', gradient: 'linear-gradient(to right, #00204c, #213d6b, #555b6c, #7b7a77, #a59c74, #d9d57a)' },
         { value: 'hot', label: 'Hot', gradient: 'linear-gradient(to right, #000, #f00, #ff0, #fff)' },
-        { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' },
+        { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' }, // Corrected cool gradient
         { value: 'rainbow', label: 'Rainbow', gradient: 'linear-gradient(to right, #6e40aa, #be3caf, #fe4b83, #ff7847, #e2b72f, #aff05b)' },
         { value: 'jet', label: 'Jet', gradient: 'linear-gradient(to right, #00008f, #0020ff, #00ffff, #51ff77, #fdff00, #ff0000, #800000)' }
     ];
-    
-    // Create a hidden select element to store the actual value
-    const hiddenSelect = document.createElement('select');
-    hiddenSelect.id = 'color-map-select';
-    hiddenSelect.style.display = 'none';
-    
-    // Set the default value based on current color map
-    let currentSelection = currentColorMap || 'grayscale';
-    
-    // Add options to the hidden select and create visual options
-    colorMaps.forEach(colorMap => {
-        // Add to hidden select
-        const option = document.createElement('option');
-        option.value = colorMap.value;
-        option.textContent = colorMap.label;
-        if (colorMap.value === currentSelection) {
-            option.selected = true;
-            selectedSwatch.style.background = colorMap.gradient;
-            selectedText.textContent = colorMap.label;
-        }
-        hiddenSelect.appendChild(option);
-        
-        // Create visual option
-        const optionElement = document.createElement('div');
-        optionElement.style.display = 'flex';
-        optionElement.style.alignItems = 'center';
-        optionElement.style.padding = '8px 10px';
-        optionElement.style.cursor = 'pointer';
-        optionElement.style.borderBottom = '1px solid #555';
-        optionElement.dataset.value = colorMap.value;
-        
-        // Highlight the current selection
-        if (colorMap.value === currentSelection) {
-            optionElement.style.backgroundColor = '#555';
-        }
-        
-        // Add hover effect
-        optionElement.addEventListener('mouseover', () => {
-            optionElement.style.backgroundColor = '#555';
-        });
-        optionElement.addEventListener('mouseout', () => {
-            if (colorMap.value !== currentSelection) {
-                optionElement.style.backgroundColor = 'transparent';
-            }
-        });
-        
-        // Create swatch for this option
-        const swatch = document.createElement('div');
-        swatch.style.width = '60px';
-        swatch.style.height = '15px';
-        swatch.style.marginRight = '10px';
-        swatch.style.borderRadius = '2px';
-        swatch.style.background = colorMap.gradient;
-        
-        // Create text for this option
-        const text = document.createElement('span');
-        text.textContent = colorMap.label;
-        
-        // Add elements to the option
-        optionElement.appendChild(swatch);
-        optionElement.appendChild(text);
-        
-        // Add click handler
-        optionElement.addEventListener('click', () => {
-            // Update hidden select value
-            hiddenSelect.value = colorMap.value;
-            
-            // Update the selected display
-            selectedSwatch.style.background = colorMap.gradient;
-            selectedText.textContent = colorMap.label;
-            
-            // Update current selection
-            currentSelection = colorMap.value;
-            
-            // Update all option backgrounds
-            optionsContainer.querySelectorAll('div').forEach(opt => {
-                if (opt.dataset.value === currentSelection) {
-                    opt.style.backgroundColor = '#555';
-                } else {
-                    opt.style.backgroundColor = 'transparent';
-                }
-            });
-            
-            // Hide the options
-            optionsContainer.style.display = 'none';
-            
-            // Update the current color map
-            currentColorMap = colorMap.value;
-            console.log(`Color map changed to: ${currentColorMap}`);
-            
-            // Trigger change event on hidden select
-            const event = new Event('change');
-            hiddenSelect.dispatchEvent(event);
-        });
-        
-        // Add to options container
-        optionsContainer.appendChild(optionElement);
-    });
-    
-    // Toggle dropdown when clicking the selected option
-    selectedOption.addEventListener('click', () => {
-        if (optionsContainer.style.display === 'none') {
-            optionsContainer.style.display = 'block';
-        } else {
-            optionsContainer.style.display = 'none';
-        }
-    });
-    
-    // Close dropdown when clicking outside
-    document.addEventListener('click', (e) => {
-        if (!customSelectContainer.contains(e.target)) {
-            optionsContainer.style.display = 'none';
-        }
-    });
-    
-    // Add elements to the custom select container
-    customSelectContainer.appendChild(selectedOption);
-    customSelectContainer.appendChild(optionsContainer);
-    customSelectContainer.appendChild(hiddenSelect);
-    
-    // Add event listener to update color map when changed (using the hidden select)
-    hiddenSelect.addEventListener('change', () => {
-        currentColorMap = hiddenSelect.value;
-    });
-    
-    // Add color map elements to container
-    colorMapContainer.appendChild(colorMapLabel);
-    colorMapContainer.appendChild(customSelectContainer);
-    
-    // Create scaling container
-    const scalingContainer = document.createElement('div');
-    scalingContainer.style.marginBottom = '15px';
-    scalingContainer.style.display = 'flex';
-    scalingContainer.style.alignItems = 'center';
-    scalingContainer.style.flexDirection = 'column';
-    
-    // Scaling label
-    const scalingLabel = document.createElement('label');
-    scalingLabel.textContent = 'Scaling:';
-    scalingLabel.style.color = '#aaa';
-    scalingLabel.style.marginRight = '10px';
-    scalingLabel.style.fontFamily = 'Arial, sans-serif';
-    scalingLabel.style.fontSize = '14px';
-    scalingLabel.style.alignSelf = 'flex-start';
-    scalingLabel.style.marginBottom = '5px';
-    
-    // Create a custom select container for scaling
-    const scalingSelectContainer = document.createElement('div');
-    scalingSelectContainer.style.width = '100%';
-    scalingSelectContainer.style.position = 'relative';
-    
-    // Create the selected option display
-    const selectedScalingOption = document.createElement('div');
-    selectedScalingOption.style.display = 'flex';
-    selectedScalingOption.style.alignItems = 'center';
-    selectedScalingOption.style.padding = '8px 10px';
-    selectedScalingOption.style.backgroundColor = '#444';
-    selectedScalingOption.style.color = '#fff';
-    selectedScalingOption.style.border = '1px solid #555';
-    selectedScalingOption.style.borderRadius = '3px';
-    selectedScalingOption.style.cursor = 'pointer';
-    selectedScalingOption.style.fontFamily = 'Arial, sans-serif';
-    selectedScalingOption.style.fontSize = '14px';
-    selectedScalingOption.style.justifyContent = 'space-between';
-    
-    // Create the text for the selected option
-    const selectedScalingText = document.createElement('span');
-    selectedScalingText.textContent = 'Linear';
-    selectedScalingText.style.flex = '1';
-    
-    // Create the dropdown arrow
-    const scalingDropdownArrow = document.createElement('span');
-    scalingDropdownArrow.textContent = '▼';
-    scalingDropdownArrow.style.marginLeft = '10px';
-    scalingDropdownArrow.style.fontSize = '10px';
-    
-    // Add elements to the selected option display
-    selectedScalingOption.appendChild(selectedScalingText);
-    selectedScalingOption.appendChild(scalingDropdownArrow);
-    
-    // Create the dropdown options container
-    const scalingOptionsContainer = document.createElement('div');
-    scalingOptionsContainer.style.position = 'absolute';
-    scalingOptionsContainer.style.top = '100%';
-    scalingOptionsContainer.style.left = '0';
-    scalingOptionsContainer.style.width = '100%';
-    scalingOptionsContainer.style.backgroundColor = '#444';
-    scalingOptionsContainer.style.border = '1px solid #555';
-    scalingOptionsContainer.style.borderTop = 'none';
-    scalingOptionsContainer.style.borderRadius = '0 0 3px 3px';
-    scalingOptionsContainer.style.zIndex = '10';
-    scalingOptionsContainer.style.maxHeight = '200px';
-    scalingOptionsContainer.style.overflowY = 'auto';
-    scalingOptionsContainer.style.display = 'none';
-    
-    // Add scaling options
-    const scalingOptions = [
-        { value: 'linear', label: 'Linear' },
-        { value: 'logarithmic', label: 'Logarithmic' },
-        { value: 'sqrt', label: 'Square Root' },
-        { value: 'power', label: 'Power' },
+    const scalingFunctions = [
+        { value: 'linear', label: 'Linear' }, { value: 'logarithmic', label: 'Logarithmic' },
+        { value: 'sqrt', label: 'Square Root' }, { value: 'power', label: 'Power (10^x)' }, // Corrected Power label
         { value: 'asinh', label: 'Asinh' }
     ];
+
+    const colorMapDropdown = createSearchableDropdown('Color Map:', 'color-map-select', colorMaps, 'currentColorMap', 'grayscale', true);
+    const scalingDropdown = createSearchableDropdown('Scaling:', 'scaling-select', scalingFunctions, 'currentScaling', 'linear', false);
     
-    // Create a hidden select element to store the actual value
-    const hiddenScalingSelect = document.createElement('select');
-    hiddenScalingSelect.id = 'scaling-select';
-    hiddenScalingSelect.style.display = 'none';
-    
-    // Set the default value based on current scaling
-    let currentScalingSelection = currentScaling || 'linear';
-    
-    // Add options to the hidden select and create visual options
-    scalingOptions.forEach(option => {
-        // Add to hidden select
-        const selectOption = document.createElement('option');
-        selectOption.value = option.value;
-        selectOption.textContent = option.label;
-        if (option.value === currentScalingSelection) {
-            selectOption.selected = true;
-            selectedScalingText.textContent = option.label;
-        }
-        hiddenScalingSelect.appendChild(selectOption);
-        
-        // Create visual option
-        const optionElement = document.createElement('div');
-        optionElement.style.display = 'flex';
-        optionElement.style.alignItems = 'center';
-        optionElement.style.padding = '8px 10px';
-        optionElement.style.cursor = 'pointer';
-        optionElement.style.borderBottom = '1px solid #555';
-        optionElement.dataset.value = option.value;
-        
-        // Highlight the current selection
-        if (option.value === currentScalingSelection) {
-            optionElement.style.backgroundColor = '#555';
-        }
-        
-        // Add hover effect
-        optionElement.addEventListener('mouseover', () => {
-            optionElement.style.backgroundColor = '#555';
-        });
-        optionElement.addEventListener('mouseout', () => {
-            if (option.value !== currentScalingSelection) {
-                optionElement.style.backgroundColor = 'transparent';
-            }
-        });
-        
-        // Create text for this option
-        const text = document.createElement('span');
-        text.textContent = option.label;
-        text.style.flex = '1';
-        
-        // Add elements to the option
-        optionElement.appendChild(text);
-        
-        // Add click handler
-        optionElement.addEventListener('click', () => {
-            // Update hidden select value
-            hiddenScalingSelect.value = option.value;
-            
-            // Update the selected display
-            selectedScalingText.textContent = option.label;
-            
-            // Update current selection
-            currentScalingSelection = option.value;
-            
-            // Update all option backgrounds
-            scalingOptionsContainer.querySelectorAll('div').forEach(opt => {
-                if (opt.dataset.value === currentScalingSelection) {
-                    opt.style.backgroundColor = '#555';
-                } else {
-                    opt.style.backgroundColor = 'transparent';
-                }
-            });
-            
-            // Hide the options
-            scalingOptionsContainer.style.display = 'none';
-            
-            // Update the current scaling
-            currentScaling = option.value;
-            console.log(`Scaling changed to: ${currentScaling}`);
-            
-            // Trigger change event on hidden select
-            const event = new Event('change');
-            hiddenScalingSelect.dispatchEvent(event);
-        });
-        
-        // Add to options container
-        scalingOptionsContainer.appendChild(optionElement);
-    });
-    
-    // Toggle dropdown when clicking the selected option
-    selectedScalingOption.addEventListener('click', () => {
-        if (scalingOptionsContainer.style.display === 'none') {
-            scalingOptionsContainer.style.display = 'block';
-        } else {
-            scalingOptionsContainer.style.display = 'none';
-        }
-    });
-    
-    // Close dropdown when clicking outside
+    // Close dropdowns when clicking outside
     document.addEventListener('click', (e) => {
-        if (!scalingSelectContainer.contains(e.target)) {
-            scalingOptionsContainer.style.display = 'none';
+        const cmDropdown = colorMapDropdown.querySelector('.custom-select-container > div[style*="display: block"]'); // More specific selector
+        const scDropdown = scalingDropdown.querySelector('.custom-select-container > div[style*="display: block"]');
+        
+        if (cmDropdown && !colorMapDropdown.querySelector('.custom-select-container').contains(e.target)) {
+            cmDropdown.style.display = 'none';
+        }
+        if (scDropdown && !scalingDropdown.querySelector('.custom-select-container').contains(e.target)) {
+            scDropdown.style.display = 'none';
         }
     });
-    
-    // Add elements to the custom select container
-    scalingSelectContainer.appendChild(selectedScalingOption);
-    scalingSelectContainer.appendChild(scalingOptionsContainer);
-    scalingSelectContainer.appendChild(hiddenScalingSelect);
-    
-    // Add event listener to update scaling when changed
-    hiddenScalingSelect.addEventListener('change', () => {
-        currentScaling = hiddenScalingSelect.value;
-    });
-    
-    // Add scaling elements to container
-    scalingContainer.appendChild(scalingLabel);
-    scalingContainer.appendChild(scalingSelectContainer);
-    
-    // Create button container
-    const buttonContainer = document.createElement('div');
-    buttonContainer.style.display = 'flex';
-    buttonContainer.style.justifyContent = 'space-between';
-    
-    // Apply button
-    const applyButton = document.createElement('button');
-    applyButton.textContent = 'Apply';
-    applyButton.style.flex = '1';
-    applyButton.style.marginRight = '10px';
-    applyButton.style.padding = '8px 0';
-    applyButton.style.backgroundColor = '#4CAF50';
-    applyButton.style.color = '#fff';
-    applyButton.style.border = 'none';
-    applyButton.style.borderRadius = '3px';
-    applyButton.style.cursor = 'pointer';
-    applyButton.style.fontFamily = 'Arial, sans-serif';
-    applyButton.style.fontSize = '14px';
-    
-    applyButton.addEventListener('mouseover', () => {
-        applyButton.style.backgroundColor = '#45a049';
-    });
-    applyButton.addEventListener('mouseout', () => {
-        applyButton.style.backgroundColor = '#4CAF50';
-    });
-    applyButton.addEventListener('click', () => {
-        applyDynamicRange();
-    });
-    
-    // Reset button
+
+
+    const controlsContainer = document.createElement('div');
+    controlsContainer.style.display = 'flex';
+    controlsContainer.style.flexDirection = 'row'; // Arrange side-by-side
+    controlsContainer.style.justifyContent = 'space-between';
+    controlsContainer.style.gap = '15px'; // Add gap between dropdowns
+
+    const leftColumn = document.createElement('div');
+    leftColumn.style.flex = '1';
+    leftColumn.appendChild(colorMapDropdown);
+
+    const rightColumn = document.createElement('div');
+    rightColumn.style.flex = '1';
+    rightColumn.appendChild(scalingDropdown);
+
+    controlsContainer.appendChild(leftColumn);
+    controlsContainer.appendChild(rightColumn);
+
+
+    const buttonsContainer = document.createElement('div');
+    buttonsContainer.style.display = 'flex';
+    buttonsContainer.style.justifyContent = 'flex-end';
+    buttonsContainer.style.marginTop = '20px';
+
     const resetButton = document.createElement('button');
     resetButton.textContent = 'Reset';
-    resetButton.style.flex = '1';
-    resetButton.style.padding = '8px 0';
-    resetButton.style.backgroundColor = '#f44336';
-    resetButton.style.color = '#fff';
-    resetButton.style.border = 'none';
-    resetButton.style.borderRadius = '3px';
-    resetButton.style.cursor = 'pointer';
-    resetButton.style.fontFamily = 'Arial, sans-serif';
-    resetButton.style.fontSize = '14px';
-    
-    resetButton.addEventListener('mouseover', () => {
-        resetButton.style.backgroundColor = '#d32f2f';
-    });
-    resetButton.addEventListener('mouseout', () => {
-        resetButton.style.backgroundColor = '#f44336';
-    });
-    resetButton.addEventListener('click', () => {
-        resetDynamicRange();
-    });
-    
-    // Add buttons to container
-    buttonContainer.appendChild(applyButton);
-    buttonContainer.appendChild(resetButton);
-    
-    // Add all elements to popup
+    Object.assign(resetButton.style, { padding: '8px 15px', backgroundColor: '#555', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', marginRight: '10px', fontFamily: 'Arial, sans-serif', fontSize: '14px' });
+    resetButton.addEventListener('mouseover', () => resetButton.style.backgroundColor = '#666');
+    resetButton.addEventListener('mouseout', () => resetButton.style.backgroundColor = '#555');
+    resetButton.addEventListener('click', resetDynamicRange);
+
+    const applyButton = document.createElement('button');
+    applyButton.textContent = 'Apply';
+    Object.assign(applyButton.style, { padding: '8px 15px', backgroundColor: '#007bff', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontFamily: 'Arial, sans-serif', fontSize: '14px' });
+    applyButton.addEventListener('mouseover', () => applyButton.style.backgroundColor = '#0056b3');
+    applyButton.addEventListener('mouseout', () => applyButton.style.backgroundColor = '#007bff');
+    applyButton.addEventListener('click', applyDynamicRange);
+
+    buttonsContainer.appendChild(resetButton);
+    buttonsContainer.appendChild(applyButton);
+
     popup.appendChild(title);
     popup.appendChild(closeButton);
     popup.appendChild(canvasContainer);
     popup.appendChild(percentileContainer);
     popup.appendChild(inputContainer);
-    popup.appendChild(colorMapContainer);
-    popup.appendChild(scalingContainer);
-    popup.appendChild(buttonContainer);
-    
-    // Make popup draggable
-    makeDraggable(popup, title);
-    
-    // Add popup to document
+    popup.appendChild(controlsContainer); // Add new container for dropdowns
+    popup.appendChild(buttonsContainer);
     document.body.appendChild(popup);
-    
-    // Initialize min/max values if we have FITS data
-    if (window.fitsData && window.fitsData.data) {
-        // Use current values
-        minInput.value = window.fitsData.min_value.toFixed(2);
-        maxInput.value = window.fitsData.max_value.toFixed(2);
-        
-        // Update the histogram
-        requestHistogramUpdate();
-    } else {
-        // If no data, just update the histogram
-        requestHistogramUpdate();
-    }
 
-    // NEW: Initialize throttled/debounced functions if not already done
-    if (!throttledHistogramUpdate) {
-        throttledHistogramUpdate = throttle(requestHistogramUpdate, 50); // Update histogram max 20fps during drag
-    }
-    if (!debouncedApplyDynamicRange) {
-        debouncedApplyDynamicRange = debounce(applyDynamicRange, 250); // Apply changes 250ms after drag stops
-    }
-
-    // NEW: Add event listeners for interactive histogram lines
     addHistogramInteraction(linesCanvas, minInput, maxInput);
-
-    // Initialize the histogram display (will call background + lines drawing)
-    requestHistogramUpdate();
+    requestHistogramUpdate(); // Initial histogram draw
 }
+// END OF REPLACEMENT CODE
 // Function to apply the new dynamic range
 function applyDynamicRange() {
     const minInput = document.getElementById('min-range-input');
@@ -2408,25 +2499,24 @@ function applyDynamicRange() {
     const maxValue = parseFloat(maxInput.value);
     
     if (isNaN(minValue) || isNaN(maxValue)) {
-        showNotification('Invalid min/max values', 2000);
+        showNotification('Invalid min/max values', 2000, 'error');
         return;
     }
     
     if (minValue >= maxValue) {
-        showNotification('Min value must be less than max value', 2000);
+        showNotification('Min value must be less than max value', 2000, 'error');
         return;
     }
     
     console.log(`Applying dynamic range: ${minValue} to ${maxValue}`);
     
-    // Check if fitsData exists in window scope
     if (!window.fitsData) {
-        console.error('No FITS data available in global scope');
-        showNotification('No image data available. Please load an image first.', 3000);
+        console.error('No FITS data available in global scope for applyDynamicRange');
+        showNotification('No image data available. Please load an image first.', 3000, 'error');
         return;
     }
     
-    // Update the dynamic range in the FITS data
+    // Update the dynamic range in the FITS data (client-side copy)
     window.fitsData.min_value = minValue;
     window.fitsData.max_value = maxValue;
     
@@ -2439,90 +2529,214 @@ function applyDynamicRange() {
     if (scalingSelect) {
         window.currentScaling = scalingSelect.value;
     }
+
+    const isTiledViewActive = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
+
+    if (isTiledViewActive) {
+        console.log("Applying dynamic range to tiled viewer");
+        showNotification(true, 'Updating tiled view...');
+        fetch('/update-dynamic-range/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                min_value: minValue,
+                max_value: maxValue,
+                color_map: window.currentColorMap,
+                scaling_function: window.currentScaling,
+                file_id: window.currentLoadedFitsFileId 
+            })
+        })
+        .then(response => {
+            if (!response.ok) { // Check if response status is indicative of an error
+                throw new Error(`Server error: ${response.status} ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            // The original server endpoint might not return a JSON with an 'error' field
+            // if it's a simple 200 OK. The check above is more important.
+            if (data.error) { // This is if the server *successfully* responds with a JSON containing an error message
+                console.error('Error updating tiled view dynamic range:', data.error);
+                showNotification('Error updating tiled view: ' + data.error, 3000, 'error');
+            } else {
+                console.log("Server dynamic range updated. Re-opening OpenSeadragon tile source to reflect changes.");
+                currentDynamicRangeVersion = Date.now(); // Update the version for new tile URLs
+
+                if (window.tiledViewer && currentTileInfo) {
+                    // Store current viewport
+                    const currentZoom = window.tiledViewer.viewport.getZoom();
+                    const currentPan = window.tiledViewer.viewport.getCenter();
+                    console.log("Storing viewport:", { zoom: currentZoom, pan: currentPan });
+
+                    const newTileSourceOptions = {
+                        width: currentTileInfo.width,
+                        height: currentTileInfo.height,
+                        tileSize: currentTileInfo.tileSize,
+                        maxLevel: currentTileInfo.maxLevel,
+                        getTileUrl: function(level, x, y) {
+                            // Ensure this function uses the LATEST currentDynamicRangeVersion
+                            return `/fits-tile/${level}/${x}/${y}?v=${currentDynamicRangeVersion}`;
+                        },
+                        getLevelScale: function(level) { // Copied from initializeTiledViewer
+                            return 1 / (1 << (this.maxLevel - level));
+                        }
+                        // Ensure other necessary tileSource properties from initializeTiledViewer are included
+                        // if they are essential for it to work correctly.
+                    };
+                    window.tiledViewer.open(newTileSourceOptions);
+
+                    // Restore viewport after new tile source is opened
+                    window.tiledViewer.addOnceHandler('open', function() {
+                        console.log("New tile source opened, restoring viewport:", { zoom: currentZoom, pan: currentPan });
+                        window.tiledViewer.viewport.zoomTo(currentZoom, null, true); // true for immediate
+                        window.tiledViewer.viewport.panTo(currentPan, true);       // true for immediate
+                        
+                        // Re-apply image smoothing
+                        if (window.tiledViewer.drawer) {
+                            window.tiledViewer.drawer.setImageSmoothingEnabled(false);
+                        }
+                        console.log("Viewport restored and image smoothing re-applied.");
+                    });
+
+                    showNotification('Dynamic range applied.', 1000, 'success');
+                } else {
+                    console.error("Cannot re-open tile source: tiledViewer or currentTileInfo missing.");
+                    showNotification('Error refreshing tiled view display. Viewer or tile info missing.', 3000, 'error');
+                    // Fallback: Try force redraw if open fails to be set up
+                    if (window.tiledViewer) {
+                        window.tiledViewer.forceRedraw();
+                    }
+                }
+            }
+            showNotification(false);
+        })
+        .catch(error => { // This catches network errors or the error thrown from !response.ok
+            console.error('Error updating tiled view dynamic range:', error);
+            showNotification(false);
+            showNotification(`Failed to update dynamic range on server: ${error.message}`, 4000, 'error');
+        });
+    } else {
+        // For non-tiled views, refresh the image locally
+        console.log("Applying dynamic range to non-tiled viewer");
+        refreshImage(); // This will use window.fitsData.min_value, max_value, currentColorMap, currentScaling
+    }
     
-    // Refresh the image
-    refreshImage();
-    
-    // Update the histogram
+    // Update the histogram display (this should now work for both modes)
     requestHistogramUpdate();
 }
 
 function resetDynamicRange() {
-    // FIX: Explicitly check window.fitsData and its properties
-    if (!window.fitsData || !window.fitsData.data || !window.fitsData.width || !window.fitsData.height) {
-        showNotification('No image data available or data is incomplete', 2000);
+    if (!window.fitsData) {
+        showNotification('Image metadata not loaded. Cannot reset dynamic range.', 3000, 'warning');
         return;
     }
-    
-    try {
-        // Collect all valid pixel values with sampling for performance
-        const validPixels = [];
-        const maxSampleSize = 500000; // Limit sample size for performance
-        // FIX: Use window.fitsData consistently
-        const skipFactor = Math.max(1, Math.floor((window.fitsData.width * window.fitsData.height) / maxSampleSize));
-        
-        let pixelCount = 0;
-        // FIX: Use window.fitsData consistently
-        for (let y = 0; y < window.fitsData.height; y++) {
-            // FIX: Use window.fitsData consistently
-            for (let x = 0; x < window.fitsData.width; x += skipFactor) {
-                pixelCount++;
-                if (pixelCount % skipFactor !== 0) continue; // Sample only every Nth pixel
-                
-                // FIX: Use window.fitsData consistently
-                const value = window.fitsData.data[y][x];
-                if (!isNaN(value) && isFinite(value)) {
-                    validPixels.push(value);
+
+    let minValue, maxValue;
+    const isTiledViewActive = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
+
+    if (!isTiledViewActive && window.fitsData.data && window.fitsData.data.length > 0) {
+        // For non-tiled views with local pixel data, calculate percentiles
+        console.log("Resetting dynamic range using local pixel data percentiles.");
+        try {
+            const validPixels = [];
+            const maxSampleSize = 500000;
+            const skipFactor = Math.max(1, Math.floor((window.fitsData.width * window.fitsData.height) / maxSampleSize));
+            let pixelCount = 0;
+            for (let y = 0; y < window.fitsData.height; y++) {
+                for (let x = 0; x < window.fitsData.width; x += skipFactor) {
+                    pixelCount++;
+                    if (pixelCount % skipFactor !== 0) continue;
+                    const value = window.fitsData.data[y][x];
+                    if (!isNaN(value) && isFinite(value)) {
+                        validPixels.push(value);
+                    }
                 }
             }
+            if (validPixels.length === 0) {
+                showNotification('No valid pixels found for percentile calculation.', 2000, 'warning');
+                return; // Or use initial min/max as fallback
+            }
+            validPixels.sort((a, b) => a - b);
+            const lowerPercentile = 0.005;
+            const upperPercentile = 0.995;
+            minValue = validPixels[Math.floor(lowerPercentile * (validPixels.length - 1))];
+            maxValue = validPixels[Math.ceil(upperPercentile * (validPixels.length - 1))];
+        } catch (error) {
+            console.error('Error calculating percentiles for reset:', error);
+            showNotification(`Error calculating reset range: ${error.message}`, 3000, 'error');
+            // Fallback to initial min/max if percentile calculation fails
+            if (window.fitsData.initial_min_value !== undefined && window.fitsData.initial_max_value !== undefined) {
+                 minValue = window.fitsData.initial_min_value;
+                 maxValue = window.fitsData.initial_max_value;
+            } else {
+                return; // Cannot proceed
+            }
         }
-        
-        if (validPixels.length === 0) {
-            console.error('No valid pixels found');
-            showNotification('No valid pixels found', 2000);
-            return;
-        }
-        
-        // --- CHANGE: Calculate Percentiles instead of Min/Max ---
-        // Sort the pixel values
-        validPixels.sort((a, b) => a - b);
-
-        // Calculate indices for 0.5% and 99.5% percentiles
-        const lowerPercentile = 0.005;
-        const upperPercentile = 0.995;
-        const lowerIndex = Math.floor(lowerPercentile * (validPixels.length - 1));
-        const upperIndex = Math.ceil(upperPercentile * (validPixels.length - 1));
-
-        // Get the values at these percentiles
-        const minValue = validPixels[lowerIndex];
-        const maxValue = validPixels[upperIndex];
-        // --- End CHANGE ---
-
-        console.log(`Resetting to 99% range: min=${minValue.toFixed(2)}, max=${maxValue.toFixed(2)}`);
-
-        // Apply the calculated percentile range
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
-        
-        if (minInput && maxInput) {
-            minInput.value = minValue.toFixed(2);
-            maxInput.value = maxValue.toFixed(2);
-        }
-        
-        // Update the dynamic range in the FITS data
-        if (window.fitsData && viewer) {
-            window.fitsData.min_value = minValue;
-            window.fitsData.max_value = maxValue;
-
-            refreshImage();
-        }
-        
-        requestHistogramUpdate();
-        
-    } catch (error) {
-        console.error('Error resetting dynamic range:', error);
-        showNotification(`Error: ${error.message}`, 3000);
+    } else if (window.fitsData.initial_min_value !== undefined && window.fitsData.initial_max_value !== undefined) {
+        // For tiled views OR if local data is unavailable, use initial min/max fetched from server (if stored)
+        // This assumes 'initial_min_value' and 'initial_max_value' are stored when /fits-tile-info or /fits-binary is loaded.
+        // If not, this part needs adjustment based on how original/default range is known.
+        console.log("Resetting dynamic range to initial server-provided or calculated min/max values.");
+        minValue = window.fitsData.initial_min_value;
+        maxValue = window.fitsData.initial_max_value;
+    } else {
+        // Absolute fallback if no other range is determinable
+        showNotification('Initial image range not available for reset.', 3000, 'warning');
+        return;
     }
+
+    console.log(`Resetting to range: min=${minValue}, max=${maxValue}`);
+
+    const minInput = document.getElementById('min-range-input');
+    const maxInput = document.getElementById('max-range-input');
+    if (minInput && maxInput) {
+        minInput.value = minValue.toFixed(2);
+        maxInput.value = maxValue.toFixed(2);
+    }
+
+    // Update client-side FITS data (this is important for subsequent applyDynamicRange calls)
+    window.fitsData.min_value = minValue;
+    window.fitsData.max_value = maxValue;
+
+    // Now, apply these reset values using the same logic as applyDynamicRange
+    if (isTiledViewActive) {
+        console.log("Applying reset dynamic range to tiled viewer");
+        showNotification(true, 'Resetting tiled view range...');
+        fetch('/update-dynamic-range/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ min_value: minValue, max_value: maxValue })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Error resetting tiled view dynamic range:', data.error);
+                showNotification('Error resetting tiled view: ' + data.error, 3000, 'error');
+            } else {
+                window.tiledViewer.forceRedraw();
+                showNotification('Tiled view dynamic range reset.', 1500, 'success');
+            }
+            showNotification(false);
+        })
+        .catch(error => {
+            console.error('Error resetting tiled view dynamic range:', error);
+            showNotification(false);
+            showNotification('Error communicating with server to reset dynamic range.', 3000, 'error');
+        });
+    } else if (window.fitsData.data && window.fitsData.data.length > 0) {
+        // For non-tiled views with local pixel data
+        console.log("Applying reset dynamic range to non-tiled viewer (local refresh)");
+        refreshImage();
+    } else {
+        console.warn("Cannot visually apply reset: No tiled viewer and no local data to refresh.");
+        // Values are set in inputs and window.fitsData, histogram will update.
+    }
+
+    requestHistogramUpdate();
 }
 
 /**
@@ -2543,125 +2757,95 @@ function applyColorMap(colorMapName) {
 
 
 // Updated OpenSeadragon initialization with better large image handling
-function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
-    console.log("Initializing OpenSeadragon viewer");
-    console.log("Light mode");
+async function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
+    console.log('[initializeOpenSeadragonViewer] Initializing OpenSeadragon viewer...');
+    console.log('[initializeOpenSeadragonViewer] Data URL:', dataUrl ? dataUrl.substring(0, 100) + '...' : 'null');
+    console.log('[initializeOpenSeadragonViewer] Is Large Image:', isLargeImage);
 
-    // Determine if we're working with a large image
-    isLargeImage = isLargeImage || (window.fitsData && (window.fitsData.width * window.fitsData.height) > 100000000);
+    const mainContainer = document.getElementById('openseadragon');
+    const navigatorContainer = document.getElementById('navigatorDiv');
+
+    // --- ROBUSTNESS CHECK ---
+    // Wait for the main container to be available, with a timeout.
+    const maxRetries = 10;
+    let retries = 0;
+    while (!mainContainer && retries < maxRetries) {
+        console.warn(`[initializeOpenSeadragonViewer] Main container 'openseadragon' not found. Retrying... (${retries + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms before retrying
+        mainContainer = document.getElementById('openseadragon');
+        retries++;
+    }
+
+    if (!mainContainer) {
+        const errorMsg = "Critical Error: Could not find the 'openseadragon' container element after multiple retries. The viewer cannot be initialized.";
+        console.error(errorMsg);
+        showNotification(errorMsg, 5000, 'error');
+        return; // Stop execution if container is missing
+    }
+    // --- END ROBUSTNESS CHECK ---
+
+    // Ensure the container is empty before initializing a new viewer
+    mainContainer.innerHTML = '';
     
-    // Configure options based on image size
+    // Destroy the previous viewer instance if it exists
+    if (viewer) {
+        viewer.destroy();
+        viewer = null;
+    }
+
     const viewerOptions = {
-        id: "openseadragon",
+        id: 'openseadragon',
+        prefixUrl: '/static/vendor/openseadragon/images/',
         tileSources: {
             type: 'image',
-            url: dataUrl,
-            buildPyramid: false
+            url: dataUrl
         },
-        prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-        showNavigator: true,
-        navigatorPosition: "TOP_LEFT",
-        showZoomControl: false,
-        showHomeControl: false,
-        showFullPageControl: false,
-        showRotationControl: false,
-        defaultZoomLevel: isLargeImage ? 0.2 : 0.8, // Start more zoomed out for large images
-        minZoomLevel: 0.02, // Allow zooming out more for large images
-        maxZoomLevel: 20,
-        immediateRender: !isLargeImage, // Disable immediate render for large images
-        blendTime: 0, // No blend for better performance
-        placeholderFillStyle: "#000000",
-        backgroundColor: "#000000",
-        navigatorBackground: "#000000",
-        timeout: 120000, // Increased timeout for large images
-        
-        // Performance optimizations for large images
-        animationTime: isLargeImage ? 0.3 : 1.2,
-        // springStiffness: isLargeImage ? 15 : 5.5,
-        // visibilityRatio: 0.05, // Only load what's visible
+        animationTime: 0.5,
+        blendTime: 0.1,
         constrainDuringPan: true,
-        wrapHorizontal: false,
-        wrapVertical: false,
-        
-        // Additional performance tweaks for very large images
-        degrees: 0,
-        navigatorAutoFade: false, // Keep navigator visible
-        
-                // Add or modify these options:
-        minPixelRatio: 1.0, // Increase from 0.5 or 0.8 to 1.0 for better quality
-        immediateRender: true, // Force immediate render for small files
-        blendTime: 0, // No blend for crisp transitions
-        preserveViewport: true,             // Maintain current view when switching images
-        immediateRender: true,              // Don't defer rendering (better quality)
-        blendTime: 0,                       // Disable blending for sharper transitions
-        wrapHorizontal: false,
-        wrapVertical: false,
-
-        springStiffness: 5,                 // More gentle animations for clearer viewing
-        visibilityRatio: 0.1, 
-    // Memory management for large images
-        maxImageCacheCount: 500,            // Cache more images in memory
-        subPixelRoundingForTransparency: 1, // Best subpixel rounding
-
-        // Better interpolation:
-        placeholderFillStyle: "#000000",
-        subPixelRoundingForTransparency: 1, // Improved sub-pixel rendering
-        
-        // Setup appropriate rendering parameters for large images
-        pixelsPerWheelLine: isLargeImage ? 120 : 40, // Faster zooming for large images
-        gestureSettingsMouse: {
-            clickToZoom: !isLargeImage, // Disable click-to-zoom for large images
-            flickEnabled: false, // Disable flick as it can cause performance issues
-            scrollToZoom: true,
-            pinchToZoom: true
-        }
+        maxZoomPixelRatio: 2,
+        visibilityRatio: 1,
+        zoomPerClick: 1.4,
+        showNavigator: true,
+        navigatorId: 'navigatorDiv', // Explicitly provide the ID for the navigator
+        navigatorPosition: 'TOP_RIGHT',
+        imageSmoothingEnabled: false
     };
-    
-    // Initialize the viewer
-    viewer = OpenSeadragon(viewerOptions);
-    
-    // Hide loading indicator when image is loaded
-    viewer.addHandler('open', function() {
-        console.log("OpenSeadragon viewer opened successfully");
-        showProgress(false);
-    updateAllCanvases();
-        
-        
-        // For large images, add a notification with tips
-        if (isLargeImage) {
-            showNotification(
-                `Large image loaded successfully (${window.fitsData.width}x${window.fitsData.height}). ` +
-                'Use mouse wheel to zoom and drag to pan.', 
-                4000, 'success'
-            );
-        }
-    });
-    
-    // Add optimizations for large images
-    if (isLargeImage) {
-        // Throttle mouse move events to improve performance
-        viewer.addHandler('canvas-drag', function(event) {
-            event.preventDefaultAction = true;
-            // This creates a smoother drag experience for large images
-            viewer.viewport.panBy(viewer.viewport.deltaPointsFromPixels(event.delta));
-        });
-        
-        // Use simpler animation for large images
-        viewer.addHandler('animation', function(event) {
-            if (event.userData && event.userData === 'wheel') {
-                event.frame = event.frames; // Complete animation immediately
-            }
-        });
-    }
-    
-    // Handle errors during loading
-    viewer.addHandler('open-failed', function(event) {
-        console.error("Failed to open image:", event);
-        showProgress(false);
-        showNotification(`Error loading image: ${event.message || 'Unknown error'}`, 3000, 'error');
-    });
-    // updateAllCanvases();
 
+    console.log('[initializeOpenSeadragonViewer] Viewer options:', viewerOptions);
+
+    try {
+        viewer = OpenSeadragon(viewerOptions);
+        window.viewer = viewer; 
+        
+        // Hide the welcome screen if it's still visible
+        const welcomeScreen = document.querySelector('.welcome-screen');
+        if (welcomeScreen) {
+            welcomeScreen.style.display = 'none';
+        }
+
+        // Add event handlers for zoom and pan
+        viewer.addHandler('zoom', updateHistogram);
+        viewer.addHandler('pan', updateHistogram);
+
+        // Add a handler to know when the image is fully loaded and ready
+        viewer.addHandler('open', function() {
+            console.log('[OpenSeadragon] Viewer is open and image is loaded.');
+            // Any actions to perform after the image is displayed can go here.
+            
+            // For example, trigger an initial histogram update.
+            requestHistogramUpdate();
+        });
+
+        // After the viewer is initialized, add the custom buttons
+        if (typeof window.addPeakFinderButton === 'function') {
+            window.addPeakFinderButton();
+        }
+
+    } catch (error) {
+        console.error('[initializeOpenSeadragonViewer] Error initializing OpenSeadragon:', error);
+        showNotification('Critical Error: Could not initialize image viewer. Please check console and refresh.', 5000, 'error');
+    }
 }
 
 // === ADD THIS HELPER FUNCTION ===
@@ -2722,7 +2906,7 @@ function refreshImage() {
     }
     
     // Show a brief processing indicator
-    showProgress(true, 'Updating image...');
+    showNotification(true, 'Updating image...');
     
     // Use worker if available, otherwise process in main thread
     if (window.Worker) {
@@ -2733,154 +2917,19 @@ function refreshImage() {
     
     // Add a success notification
     setTimeout(() => {
-        showProgress(false);
+        showNotification(false);
         showNotification('Image updated successfully', 1500, 'success');
     }, 500);
 }
 
-/**
- * Show a notification message to the user
- * @param {string} message - The message to display
- * @param {number} duration - How long to show the message in milliseconds
- */
-function showNotification(message, duration = 2000, type = 'info') {
-    console.log('Notification:', message);
-    
-    // Create notification container if it doesn't exist
-    let notificationContainer = document.getElementById('notification-container');
-    if (!notificationContainer) {
-        notificationContainer = document.createElement('div');
-        notificationContainer.id = 'notification-container';
-        notificationContainer.style.position = 'fixed';
-        notificationContainer.style.bottom = '20px';
-        notificationContainer.style.left = '20px';
-        notificationContainer.style.zIndex = '2000';
-        notificationContainer.style.display = 'flex';
-        notificationContainer.style.flexDirection = 'column';
-        notificationContainer.style.gap = '10px';
-        notificationContainer.style.maxWidth = '300px';
-        document.body.appendChild(notificationContainer);
-    }
-    
-    // Create notification element
-    const notification = document.createElement('div');
-    notification.className = 'notification';
-    notification.style.backgroundColor = 'rgba(33, 33, 33, 0.9)';
-    notification.style.color = 'white';
-    notification.style.padding = '12px 16px';
-    notification.style.borderRadius = '6px';
-    notification.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.2)';
-    notification.style.fontFamily = 'Arial, sans-serif';
-    notification.style.fontSize = '14px';
-    notification.style.opacity = '0';
-    notification.style.transform = 'translateY(20px)';
-    notification.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-    notification.style.display = 'flex';
-    notification.style.alignItems = 'center';
-    notification.style.backdropFilter = 'blur(4px)';
-    notification.style.webkitBackdropFilter = 'blur(4px)';
-    notification.style.borderLeft = '4px solid';
-    
-    // Set type-specific styles
-    let iconHtml = '';
-    if (type === 'success') {
-        notification.style.borderLeftColor = '#4CAF50';
-        iconHtml = '<div style="margin-right: 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>';
-    } else if (type === 'error') {
-        notification.style.borderLeftColor = '#F44336';
-        iconHtml = '<div style="margin-right: 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F44336" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></div>';
-    } else if (type === 'warning') {
-        notification.style.borderLeftColor = '#FF9800';
-        iconHtml = '<div style="margin-right: 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FF9800" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg></div>';
-    } else {
-        notification.style.borderLeftColor = '#2196F3';
-        iconHtml = '<div style="margin-right: 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2196F3" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg></div>';
-    }
-    
-    // Create content with icon
-    notification.innerHTML = iconHtml + '<div>' + message + '</div>';
-    
-    // Add close button
-    const closeButton = document.createElement('div');
-    closeButton.innerHTML = '&times;';
-    closeButton.style.marginLeft = 'auto';
-    closeButton.style.marginRight = '-5px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.style.color = '#aaa';
-    closeButton.style.fontSize = '18px';
-    closeButton.style.fontWeight = 'bold';
-    closeButton.style.padding = '0 5px';
-    closeButton.addEventListener('click', () => {
-        removeNotification(notification);
-    });
-    notification.appendChild(closeButton);
-    
-    // Add to container
-    notificationContainer.appendChild(notification);
-    
-    // Trigger animation
-    setTimeout(() => {
-        notification.style.opacity = '1';
-        notification.style.transform = 'translateY(0)';
-    }, 10);
-    
-    // Auto-remove after duration
-    const timerId = setTimeout(() => {
-        removeNotification(notification);
-    }, duration);
-    
-    // Store the timer ID for potential early removal
-    notification.dataset.timerId = timerId;
-    
-    // Function to remove notification with animation
-    function removeNotification(notif) {
-        // Clear the timeout to prevent duplicate removals
-        clearTimeout(notif.dataset.timerId);
-        
-        // Animate out
-        notif.style.opacity = '0';
-        notif.style.transform = 'translateY(20px)';
-        
-        // Remove after animation completes
-        setTimeout(() => {
-            if (notif.parentNode) {
-                notif.parentNode.removeChild(notif);
-                
-                // If container is empty, remove it too
-                if (notificationContainer.children.length === 0) {
-                    notificationContainer.parentNode.removeChild(notificationContainer);
-                }
-            }
-        }, 300);
-    }
-    
-    return notification;
-}
 
-/**
- * Request a histogram update in a safe way that prevents multiple simultaneous updates
- */
-function requestHistogramUpdate() {
-    // If we're already updating the histogram, queue this request
-    if (isUpdatingHistogram) {
-        console.log('Histogram update already in progress, queueing request');
-        histogramUpdateRequested = true;
-        return;
-    }
-    
-    // If there's a pending timer, clear it
-    if (histogramUpdateTimer) {
-        clearTimeout(histogramUpdateTimer);
-        histogramUpdateTimer = null;
-    }
-    
-    // Start a new update
-    updateHistogram();
-}
 
-/**
- * Update the histogram display with the current data
- */
+// Example usage:
+// showNotification("Task completed successfully!", 3000, "success");
+// showNotification("An error occurred while processing", 4000, "error");
+// showNotification("Please review your settings", 3000, "warning");
+// showNotification("New message received", 2500, "info");
+
 /**
  * Update the histogram display with the current data
  */
@@ -3203,179 +3252,365 @@ function drawEmptyHistogram(canvas, message) {
  * Fetch histogram data from the server for tiled mode
  */
 function fetchServerHistogram() {
-    console.log('Fetching histogram data from server');
+    const canvas = document.getElementById('histogram-bg-canvas'); // Target BG canvas
+    if (!canvas) {
+        console.warn("Histogram background canvas not found for fetchServerHistogram.");
+        return;
+    }
+
+    const minInput = document.getElementById('min-range-input');
+    const maxInput = document.getElementById('max-range-input');
+    let uiMin = null;
+    let uiMax = null;
+
+    if (minInput && maxInput) {
+        uiMin = parseFloat(minInput.value);
+        uiMax = parseFloat(maxInput.value);
+        // Validate that uiMin and uiMax are numbers and min < max
+        if (isNaN(uiMin) || isNaN(uiMax) || uiMin >= uiMax) {
+            console.warn("Invalid Min/Max values from UI for server histogram request. uiMin:", uiMin, "uiMax:", uiMax, ". Fetching default range.");
+            uiMin = null; // Fallback to server default if UI values are bad
+            uiMax = null;
+        }
+    } else {
+        console.warn("Min/Max input fields not found. Fetching default range for server histogram.");
+    }
     
-    const canvas = document.getElementById('histogram-canvas');
-    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('Loading histogram data...', canvas.width / 2, canvas.height / 2);
     
-    // Show a loading message
-    drawEmptyHistogram(canvas, 'Loading histogram data...');
-    
-    // Fetch histogram data from the server
-    fetch('/fits-histogram/')
+    let fetchUrl = '/fits-histogram/';
+    if (uiMin !== null && uiMax !== null) {
+        fetchUrl += `?min_val=${encodeURIComponent(uiMin)}&max_val=${encodeURIComponent(uiMax)}`;
+    }
+    console.log("Fetching server histogram from:", fetchUrl);
+
+    fetch(fetchUrl)
         .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to fetch histogram data');
+            if (!response.ok) { // Check if response status is indicative of an error
+                return response.text().then(text => { // Try to get error text from server
+                    throw new Error(`Server error: ${response.status} ${response.statusText}. ${text}`);
+                });
             }
             return response.json();
         })
         .then(data => {
-            if (data.error) {
-                throw new Error(data.error);
+            if (data.error) { // This is if the server *successfully* responds with a JSON containing an error message
+                console.error("Server returned error for histogram:", data.error);
+                throw new Error(data.error); // Propagate as an error to be caught by .catch
             }
+            drawServerHistogram(data); // Draw the received data (assumes this draws on bg-canvas)
             
-            // Draw the histogram with the server data
-            drawServerHistogram(data);
+            // After drawing background, draw lines based on current inputs
+            // (which might be different from the range server used if server doesn't support min/max params)
+            if (minInput && maxInput) {
+                const currentMin = parseFloat(minInput.value);
+                const currentMax = parseFloat(maxInput.value);
+                if (!isNaN(currentMin) && !isNaN(currentMax)) {
+                    drawHistogramLines(currentMin, currentMax, false); 
+                }
+            }
         })
-        .catch(error => {
-            console.error('Error fetching histogram:', error);
-            drawEmptyHistogram(canvas, 'Error: ' + error.message);
+        .catch(error => { // This catches network errors or errors thrown from !response.ok or data.error
+            console.error('Error fetching or processing server histogram:', error);
+            const message = error.message || 'Unknown error';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+            // Wrap text if too long
+            const maxTextWidth = canvas.width - 20;
+            const lines = [];
+            let currentLine = '';
+            const words = `Error: ${message}`.split(' ');
+            for (const word of words) {
+                const testLine = currentLine + word + ' ';
+                if (ctx.measureText(testLine).width > maxTextWidth && currentLine.length > 0) {
+                    lines.push(currentLine.trim());
+                    currentLine = word + ' ';
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            lines.push(currentLine.trim());
+            
+            let yPos = canvas.height / 2 - (lines.length -1) * 7; // Adjust start Y for multi-line
+            for (const line of lines) {
+                ctx.fillText(line, canvas.width / 2, yPos);
+                yPos += 15; // Line height
+            }
         });
 }
 
 /**
  * Draw a histogram with data from the server
  */
+/**
+ * Draw a histogram with data from the server
+ */
 function drawServerHistogram(histData) {
-    const canvas = document.getElementById('histogram-canvas');
+    const canvas = document.getElementById('histogram-bg-canvas');
     if (!canvas) return;
     
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
     
-    // Clear the canvas
     ctx.clearRect(0, 0, width, height);
     
-    // Extract data
     const bins = histData.counts;
-    const binEdges = histData.bin_edges;
     const minValue = histData.min_value;
     const maxValue = histData.max_value;
-    
-    // Find the maximum bin count for scaling
+    const range = maxValue - minValue;
+
+    if (range <= 0 || !isFinite(range)) {
+        console.log('Invalid data range from server histogram:', minValue, maxValue);
+        drawEmptyHistogram(canvas, 'Invalid data range from server');
+        return;
+    }
+
     let maxBinCount = 0;
     for (let i = 0; i < bins.length; i++) {
         maxBinCount = Math.max(maxBinCount, bins[i]);
     }
     
-    // If no bins, show a message
-    if (maxBinCount === 0) {
-        drawEmptyHistogram(canvas, 'No pixels in the selected range');
+    if (maxBinCount === 0 && bins.length > 0) {
+         console.log('Server histogram has bins, but all counts are zero.');
+    } else if (bins.length === 0) {
+        drawEmptyHistogram(canvas, 'No histogram data from server');
         return;
     }
     
-    // Calculate logarithmic scale
-    const logMaxBinCount = Math.log(maxBinCount + 1);
+    const logMaxBinCount = Math.log(maxBinCount + 1); 
     
-    // Draw the histogram (using the same drawing code as regular updateHistogram)
     const padding = { top: 30, right: 20, bottom: 40, left: 60 };
     const histHeight = height - padding.top - padding.bottom;
-    
-    // Draw axes, labels, etc. (same as in updateHistogram)
-    // ...
-    
-    // Draw histogram bars
-    ctx.fillStyle = '#4CAF50';
-    const barWidth = (width - padding.left - padding.right) / bins.length;
-    
-    for (let i = 0; i < bins.length; i++) {
-        const binCount = bins[i];
-        if (binCount === 0) continue;
-        
-        // Use log scale for height
-        const logHeight = Math.log(binCount + 1) / logMaxBinCount * histHeight;
-        
-        const x = padding.left + i * barWidth;
-        const y = height - padding.bottom - logHeight;
-        
-        ctx.fillRect(x, y, barWidth - 1, logHeight);
-    }
-    
-    // Draw min/max markers and statistics (same as in updateHistogram)
-    // ...
-    
-    // Add server-side indicator
+    const histWidth = width - padding.left - padding.right;
+
+    // Draw Axes
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); 
+    ctx.moveTo(padding.left, padding.top);
+    ctx.lineTo(padding.left, height - padding.bottom);
+    ctx.stroke();
+    ctx.beginPath(); 
+    ctx.moveTo(padding.left, height - padding.bottom);
+    ctx.lineTo(width - padding.right, height - padding.bottom);
+    ctx.stroke();
+
+    // Y Ticks & Labels
     ctx.fillStyle = '#aaa';
     ctx.font = '10px Arial';
     ctx.textAlign = 'right';
-    ctx.fillText('Server-side histogram', width - padding.right, height - 5);
+    const numYTicks = 5;
+    for (let i = 0; i <= numYTicks; i++) {
+        const y = height - padding.bottom - (i / numYTicks) * histHeight;
+        ctx.beginPath();
+        ctx.moveTo(padding.left - 5, y);
+        ctx.lineTo(padding.left, y);
+        ctx.stroke();
+        const logValue = logMaxBinCount > 0 ? (i / numYTicks) * logMaxBinCount : 0;
+        const actualValue = Math.round(Math.exp(logValue) - 1);
+        ctx.fillText(actualValue.toLocaleString(), padding.left - 8, y + 4);
+    }
+
+    // X Ticks & Labels
+    ctx.textAlign = 'center';
+    const numXTicks = 5;
+    const numBins = bins.length;
+    for (let i = 0; i <= numXTicks; i++) {
+        const x = padding.left + (i / numXTicks) * histWidth;
+        ctx.beginPath();
+        ctx.moveTo(x, height - padding.bottom);
+        ctx.lineTo(x, height - padding.bottom + 5);
+        ctx.stroke();
+        const value = minValue + (i / numXTicks) * range;
+        ctx.fillText(value.toFixed(2), x, height - padding.bottom + 20);
+    }
+
+    // Axis Labels
+    ctx.save();
+    ctx.translate(padding.left / 2 - 5, height / 2); 
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Pixel Count (log)', 0, 0);
+    ctx.restore();
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    
+    // Use bunit from window.fitsData if available, otherwise use a generic label
+    const unitString = (window.fitsData && window.fitsData.bunit && String(window.fitsData.bunit).trim() !== '') ? String(window.fitsData.bunit).trim() : 'Value';
+    const xAxisLabelText = `Pixel Values (${unitString})`;
+    ctx.fillText(xAxisLabelText, width / 2, height - padding.bottom + 35);
+
+
+    // Stats Texts
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Min: ${minValue.toExponential(2)}`, padding.left, padding.top - 10);
+    ctx.textAlign = 'right';
+    ctx.fillText(`Max: ${maxValue.toExponential(2)}`, width - padding.right, padding.top - 10);
+    if (histData.total_pixels_in_range) { 
+        ctx.textAlign = 'center';
+        ctx.fillText(`Pixels in Range: ${histData.total_pixels_in_range.toLocaleString()}`, width / 2, padding.top - 10);
+    }
+
+    // Draw histogram bars
+    ctx.fillStyle = '#4CAF50'; 
+    const barWidth = histWidth / numBins;
+    for (let i = 0; i < numBins; i++) {
+        const binCount = bins[i];
+        if (binCount === 0) continue;
+        const logHeight = logMaxBinCount > 0 ? (Math.log(binCount + 1) / logMaxBinCount * histHeight) : 0;
+        if (logHeight <= 0) continue; 
+
+        const x = padding.left + i * barWidth;
+        const y = height - padding.bottom - logHeight;
+        ctx.fillRect(x, y, barWidth -1, logHeight); 
+    }
+
+    if (maxBinCount === 0 && bins.length > 0) {
+        ctx.fillStyle = '#ccc'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('Counts are zero in this range', width / 2, padding.top + histHeight / 2);
+    }
+    
+    ctx.fillStyle = '#aaa';
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'right';
+    ctx.fillText('', width - padding.right, height - 5);
+
+    histogramScaleInfo = {
+        padding: padding,
+        histWidth: histWidth,
+        histHeight: histHeight,
+        dataMin: minValue, 
+        dataRange: range,   
+        canvasWidth: width,
+        canvasHeight: height
+    };
+    if (histogramScaleInfo.histWidth <= 0 || !isFinite(histogramScaleInfo.dataRange) || histogramScaleInfo.dataRange <= 0) {
+        console.warn('Invalid histogram scale parameters from server data:', histogramScaleInfo);
+    }
 }
 
-// Add this to static.js in the appropriate location
 
-// The local filtering function that uses the cached data
+// REPLACE your existing applyLocalFilter function in main.js with this fixed version
 
-// Modify applyLocalFilter to handle the env filter case
 function applyLocalFilter(flagColumn) {
-    // If this is an env filter with a specific value, use applyEnvFilter instead
-    if (flagColumn === 'env' && currentEnvValue !== null) {
-        applyEnvFilter(currentEnvValue);
-        return;
-    }
+    console.log('applyLocalFilter called with:', flagColumn);
     
-    if (!window.catalogDataWithFlags || !window.catalogDots) {
+    if (!window.catalogDataWithFlags || !window.catalogDataForOverlay) {
         console.warn('No catalog data available for filtering');
+        showNotification('No catalog data available for filtering', 3000, 'warning');
         return;
     }
     
-    showProgress(true, 'Applying filter...');
+    showNotification(true, 'Applying filter...');
     
     let visibleCount = 0;
-    const totalDots = window.catalogDots.length;
     
-    // Process all dots at once using the cached data
-    window.catalogDots.forEach((dot, i) => {
-        // Get the object index from the dot's dataset
-        const dotIndex = parseInt(dot.dataset.index);
+    // Create a set of indices that should be visible
+    const visibleIndices = new Set();
+    
+    // Check each object for the flag
+    for (let i = 0; i < window.catalogDataWithFlags.length; i++) {
+        const flagObj = window.catalogDataWithFlags[i];
         
-        if (isNaN(dotIndex) || dotIndex >= window.catalogDataWithFlags.length) {
-            // If we can't match the dot to data, hide it
-            dot.style.display = 'none';
-            return;
+        if (!flagObj || !(flagColumn in flagObj)) {
+            continue;
         }
         
-        // Get the corresponding data object
-        const objData = window.catalogDataWithFlags[dotIndex];
-        
-        // Check if the flag property exists and is true
-        let isFlagSet = false;
-        
-        if (objData && flagColumn in objData) {
-            const flagValue = objData[flagColumn];
-            
-            // Handle different formats of boolean values
-            isFlagSet = (flagValue === true || 
-                         flagValue === 'True' || 
-                         flagValue === 'true' || 
-                         flagValue === 1);
-        }
-        
-        // Debug: Log information for a few dots to check values
-        if (i < 5) {
-            console.log(`Dot ${i} (index ${dotIndex}): ${flagColumn} = ${objData[flagColumn]}, isFlagSet = ${isFlagSet}`);
-        }
-        
-        // Explicitly set the display style based on the flag
-        dot.style.display = isFlagSet ? 'block' : 'none';
-        
-        // Also set the dataset property for tracking
-        dot.dataset.passesFilter = isFlagSet ? 'true' : 'false';
+        const flagValue = flagObj[flagColumn];
+        const isFlagSet = flagValue === true || flagValue === 1 || flagValue === 'true';
         
         if (isFlagSet) {
+            visibleIndices.add(i);
             visibleCount++;
         }
-    });
+        
+        // Debug first few
+        if (i < 5) {
+            console.log(`Object ${i}: ${flagColumn} = ${flagValue} (${typeof flagValue}), isFlagSet = ${isFlagSet}`);
+        }
+    }
     
-    // Force a redraw of the overlay
-    updateOverlay();
+    console.log(`Found ${visibleCount} objects with ${flagColumn} = true out of ${window.catalogDataWithFlags.length} total objects`);
     
-    showProgress(false);
+    // FIXED: Update the canvas overlay data with filter information
+    if (window.catalogDataForOverlay && typeof canvasUpdateOverlay === 'function') {
+        console.log('Applying filter to canvas overlay data');
+        
+        // Mark each object in the overlay data with filter status
+        window.catalogDataForOverlay.forEach((obj, index) => {
+            if (index < window.catalogDataWithFlags.length) {
+                const flagObj = window.catalogDataWithFlags[index];
+                if (flagObj && flagColumn in flagObj) {
+                    const flagValue = flagObj[flagColumn];
+                    const isFlagSet = flagValue === true || flagValue === 1 || flagValue === 'true';
+                    obj.passesFilter = isFlagSet;
+                } else {
+                    obj.passesFilter = false;
+                }
+            } else {
+                obj.passesFilter = false;
+            }
+        });
+        
+        // Update the global filter state
+        window.flagFilterEnabled = true;
+        window.currentFlagColumn = flagColumn;
+        window.visibleObjectIndices = visibleIndices;
+        
+        // Set the filter state variables
+        flagFilterEnabled = true;
+        currentFlagColumn = flagColumn;
+        currentEnvValue = null;
+        
+        // Force canvas redraw with updated filter data
+        console.log('Calling canvasUpdateOverlay to refresh display with filter');
+        canvasUpdateOverlay();
+        
+    } else if (window.catalogDots && window.catalogDots.length > 0) {
+        // Fallback for DOM-based overlay (original logic)
+        console.log('Applying filter to DOM dots (fallback)');
+        
+        window.catalogDots.forEach(dot => {
+            const dotIndex = parseInt(dot.dataset.index);
+            if (isNaN(dotIndex) || dotIndex >= window.catalogDataWithFlags.length) {
+                dot.style.display = 'none';
+                dot.dataset.passesFilter = 'false';
+                return;
+            }
+            
+            const flagObj = window.catalogDataWithFlags[dotIndex];
+            let isFlagSet = false;
+            
+            if (flagObj && flagColumn in flagObj) {
+                const flagValue = flagObj[flagColumn];
+                isFlagSet = flagValue === true || flagValue === 1 || flagValue === 'true';
+            }
+            
+            dot.style.display = isFlagSet ? 'block' : 'none';
+            dot.dataset.passesFilter = isFlagSet ? 'true' : 'false';
+        });
+        
+        // Update DOM overlay if function exists
+        if (typeof updateOverlay === 'function') {
+            updateOverlay();
+        }
+    }
+    
+    showNotification(false);
     
     if (visibleCount === 0) {
-        showNotification(`No objects match the "${flagColumn}" filter criteria`, 3000);
+        showNotification(`No objects match the "${flagColumn}" filter criteria`, 3000, 'warning');
     } else {
-        // showNotification(`Showing ${visibleCount} objects with "${flagColumn}" flag`, 2000);
+        showNotification(`Showing ${visibleCount} objects with "${flagColumn}" flag`, 2000, 'success');
     }
 }
 
@@ -3437,7 +3672,7 @@ function applyEnvFilter(envValue) {
     
     console.log(`Applying env filter with value: ${envValue} (${typeof envValue})`);
     
-    showProgress(true, 'Applying environment filter...');
+    showNotification(true, 'Applying environment filter...');
     
     let visibleCount = 0;
     const totalDots = window.catalogDots.length;
@@ -3525,7 +3760,7 @@ function applyEnvFilter(envValue) {
     console.log(`  Objects matching env=${targetEnvValue}: ${objectsWithMatchingEnv}`);
     console.log(`  Visible dots after filtering: ${visibleCount}`);
     
-    showProgress(false);
+    showNotification(false);
     
     if (visibleCount === 0) {
         showNotification(`No objects match Environment ${targetEnvValue} filter criteria`, 3000);
@@ -3543,7 +3778,7 @@ function applyFlagFilter(flagColumn) {
     }
     
     // Show loading indicator
-    showProgress(true, 'Applying flag filter...');
+    showNotification(true, 'Applying flag filter...');
     
     // First, reset all dots to be visible
     if (window.catalogDots) {
@@ -3599,7 +3834,7 @@ function applyFlagFilter(flagColumn) {
             
             if (!flagExists) {
                 showNotification(`Flag column "${flagColumn}" not found or is not a boolean`, 3000);
-                showProgress(false);
+                showNotification(false);
                 return;
             }
             
@@ -3609,7 +3844,7 @@ function applyFlagFilter(flagColumn) {
         .catch(error => {
             console.error('Error checking flag existence:', error);
             showNotification('Error applying filter', 3000);
-            showProgress(false);
+            showNotification(false);
         });
 }
 
@@ -3685,14 +3920,14 @@ function applyFilterToAllDots(flagColumn) {
                 
                 // Update progress
                 const progress = Math.min(100, Math.round((processedCount / totalDots) * 100));
-                showProgress(true, `Filtering: ${progress}% complete...`);
+                showNotification(true, `Filtering: ${progress}% complete...`);
                 
                 // If there are more dots to process, schedule the next batch
                 if (endIndex < totalDots) {
                     setTimeout(() => processBatch(endIndex), 100);
                 } else {
                     // All done
-                    showProgress(false);
+                    showNotification(false);
                     updateOverlay();
                     console.log(`Filter complete: ${visibleCount} of ${totalDots} objects visible`);
                     
@@ -3705,7 +3940,7 @@ function applyFilterToAllDots(flagColumn) {
             })
             .catch(error => {
                 console.error('Error processing batch:', error);
-                showProgress(false);
+                showNotification(false);
                 showNotification('Error applying filter', 3000);
             });
     }
@@ -3736,12 +3971,13 @@ document.addEventListener("DOMContentLoaded", function () {
     loadCatalogs();
     
     // Add dynamic range control
-    createDynamicRangeControl();
+    // createDynamicRangeControl();
     createWelcomeScreen();
 
 });
 
 // Create a welcome screen for initial view
+
 function createWelcomeScreen() {
     const container = document.getElementById('openseadragon');
     if (!container) return;
@@ -3749,6 +3985,21 @@ function createWelcomeScreen() {
     // Clear any content
     container.innerHTML = '';
     
+    // Add styles for the animation
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .welcome-logo {
+            animation: fadeIn 1s ease-out;
+            max-width: 150px;
+        }
+    `;
+    document.head.appendChild(style);
+
     // Create welcome message
     const welcomeDiv = document.createElement('div');
     welcomeDiv.className = 'welcome-screen';
@@ -3762,8 +4013,24 @@ function createWelcomeScreen() {
     welcomeDiv.style.maxWidth = '80%';
     
     welcomeDiv.innerHTML = `
-        <h2>Welcome to Neloura</h2>
-        <p>Please select a FITS file to open using the folder icon 📁 in the top-right corner.</p>
+    <img src="static/logo/logo.png" alt="Neloura Logo" class="welcome-logo">
+    <h2 style="margin-top: 0px;">Welcome to Neloura</h2>
+    <p>Please select a FITS file to open using the folder icon 📁 in the top toolbar.</p>
+<a href="https://neloura.com/app.zip" target="_blank" rel="noopener noreferrer" aria-label="Download Neloura for macOS" style="display:inline-block; margin-top: 12px; text-decoration: none;">
+  <svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48">
+    <defs>
+      <linearGradient id="cosmicGradient" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#4A3B5C"/>
+        <stop offset="50%" stop-color="#8B5C9B"/>
+        <stop offset="100%" stop-color="#A875B8"/>
+      </linearGradient>
+    </defs>
+    <rect width="240" height="48" rx="6" fill="url(#cosmicGradient)" stroke="none"/>
+    <path fill="white" transform="translate(16,14) scale(0.5)" d="M16.365 12.265c-.019-2.241 1.186-4.281 3.003-5.412-1.093-1.572-2.904-2.78-4.835-2.942-2.056-.204-4.06 1.216-5.112 1.216-1.07 0-2.724-1.19-4.48-1.158-2.304.037-4.449 1.337-5.63 3.388-2.41 4.172-.613 10.341 1.73 13.725 1.145 1.64 2.493 3.471 4.27 3.403 1.732-.07 2.381-1.108 4.47-1.108 2.07 0 2.676 1.108 4.487 1.07 1.863-.03 3.038-1.64 4.17-3.29.73-1.063 1.03-1.597 1.614-2.796-4.247-1.606-4.925-7.637-1.717-10.096zM13.8 2.3c.96-1.163 1.6-2.79 1.43-4.3-1.39.057-3.07.923-4.06 2.07-.89 1.028-1.65 2.69-1.44 4.27 1.53.12 3.1-.77 4.07-2.04z"/>
+    <text x="120" y="22" text-anchor="middle" font-size="16" fill="white">Download for MacOS</text>
+    <text x="120" y="36" text-anchor="middle" font-size="11" fill="white" opacity="0.8">(ARM version)</text>
+  </svg>
+</a>
     `;
     
     // Add animated arrow pointing to the file browser button
@@ -3775,6 +4042,22 @@ function createWelcomeScreen() {
     container.appendChild(pointerDiv);
 }
 
+function loadFitsFromUrl() {
+    const urlInput = document.getElementById('fits-url-input');
+    const fileUrl = urlInput.value.trim();
+    if (fileUrl) {
+        console.log(`[loadFitsFromUrl] Loading FITS from URL: ${fileUrl}`);
+        
+        const welcomeScreen = document.getElementById('welcome-screen');
+        if (welcomeScreen) {
+            welcomeScreen.style.display = 'none';
+        }
+        
+        loadFitsFileWithHduSelection(fileUrl);
+    } else {
+        showNotification('Please enter a valid FITS file URL.', 3000, 'warning');
+    }
+}
 // Override the loadFitsData function to create welcome screen instead of automatically loading
 function loadFitsData() {
     // Don't show loading indicator
@@ -3793,170 +4076,315 @@ function loadFitsData() {
 let tiledViewer = null;
 let currentTileInfo = null;
 
-// Initialize tiled viewer
-function initializeTiledViewer() {
-    console.log("Initializing tiled viewer");
-    
-    // Hide loading indicator
-    showProgress(true, 'Loading tile information...');
-    
-    // Fetch tile information
-    fetch('/fits-tile-info/')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`Failed to get tile info: ${response.statusText}`);
+
+        // static/main.js
+
+        // Helper function to show an immediate, basic placeholder in the viewer area
+        function showImmediatePlaceholder(message = 'Loading image preview...') {
+            let mainContainer = document.getElementById('main-container');
+            if (!mainContainer) return; // Cannot show if main container doesn't exist
+
+            let placeholder = document.getElementById('immediate-placeholder');
+            if (!placeholder) {
+                placeholder = document.createElement('div');
+                placeholder.id = 'immediate-placeholder';
+                // Basic styles, assuming CSS will handle the rest
+                mainContainer.appendChild(placeholder);
             }
-            return response.json();
-        })
-        .then(tileInfo => {
-            // Store tile info globally
-            currentTileInfo = tileInfo;
-            console.log("Tile info:", tileInfo);
+            placeholder.textContent = message;
+            placeholder.style.display = 'flex';
+        }
+
+        function hideImmediatePlaceholder() {
+            const placeholder = document.getElementById('immediate-placeholder');
+            if (placeholder) {
+                placeholder.style.display = 'none';
+            }
+        }
+
+// In static/main.js
+
+// Also update the initializeTiledViewer function in main.js:
+
+// Initialize tiled viewer
+async function initializeTiledViewer() {
+    console.log("Initializing tiled viewer");
+
+    showImmediatePlaceholder('Preparing image preview...');
+    showNotification(true, 'Loading detailed image information...');
+
+    try {
+        const response = await fetch('/fits-tile-info/');
+        if (!response.ok) {
+            let errorText = response.statusText;
+            try {
+                const errorData = await response.json();
+                if (errorData && errorData.error) {
+                    errorText = errorData.error;
+                }
+            } catch (e) { /* ignore if response is not json */ }
+            throw new Error(`Failed to get tile info: ${errorText} (status: ${response.status})`);
+        }
+        const tileInfo = await response.json();
+
+        currentTileInfo = tileInfo;
+        console.log("Tile info received:", tileInfo);
+        
+        // Ensure window.fitsData exists
+        if (!window.fitsData) window.fitsData = {};
+
+
+        if (typeof clearAllCatalogs === 'function') {
+            console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+            clearAllCatalogs();
+        }
+
+        // Store BUNIT if available
+        window.fitsData.bunit = tileInfo.bunit || null;
+
+        // Store overall data min/max for reference
+        window.fitsData.data_min = tileInfo.data_min;
+        window.fitsData.data_max = tileInfo.data_max;
+
+        // Store initial display min/max from server (priority)
+        if (typeof tileInfo.initial_display_min !== 'undefined' && typeof tileInfo.initial_display_max !== 'undefined') {
+            window.fitsData.initial_min_value = tileInfo.initial_display_min;
+            window.fitsData.initial_max_value = tileInfo.initial_display_max;
+            window.fitsData.min_value = tileInfo.initial_display_min;
+            window.fitsData.max_value = tileInfo.initial_display_max;
+        } else if (typeof window.fitsData.data_min !== 'undefined' && typeof window.fitsData.data_max !== 'undefined') {
+            console.warn("initial_display_min/max not in tileInfo. Using data_min/max for initial and current dynamic range.");
+            window.fitsData.min_value = window.fitsData.data_min;
+            window.fitsData.max_value = window.fitsData.data_max;
+            window.fitsData.initial_min_value = window.fitsData.data_min; 
+            window.fitsData.initial_max_value = window.fitsData.data_max;
+        } else {
+            console.error("Critical: Cannot determine initial dynamic range. Neither initial_display_min/max nor data_min/max were provided in tileInfo.");
+            window.fitsData.min_value = 0;
+            window.fitsData.max_value = 1;
+            window.fitsData.initial_min_value = 0;
+            window.fitsData.initial_max_value = 1;
+        }
+
+        // Update UI input fields for min/max
+        const minInputEl = document.getElementById('min-range-input');
+        const maxInputEl = document.getElementById('max-range-input');
+        if (minInputEl && maxInputEl) {
+            minInputEl.value = window.fitsData.min_value.toFixed(GLOBAL_DATA_PRECISION || 2);
+            maxInputEl.value = window.fitsData.max_value.toFixed(GLOBAL_DATA_PRECISION || 2);
+        }
+
+        // Set global current colormap and scaling from server or defaults, and update UI
+        window.currentColorMap = tileInfo.color_map || 'grayscale';
+        window.currentScaling = tileInfo.scaling_function || 'linear';
+
+        const colorMapSelect = document.getElementById('color-map-select');
+        if (colorMapSelect) {
+            colorMapSelect.value = window.currentColorMap;
+        }
+        const scalingSelect = document.getElementById('scaling-select');
+        if (scalingSelect) {
+            scalingSelect.value = window.currentScaling;
+        }
+
+        hideImmediatePlaceholder();
+
+        if (tileInfo.overview) {
+            showOverviewImage(tileInfo.overview);
+        } else {
+            console.warn("No tileInfo.overview received. The view might be blank until tiles load.");
+        }
+
+        const tileSource = {
+            width: tileInfo.width,
+            height: tileInfo.height,
+            tileSize: tileInfo.tileSize,
+            maxLevel: tileInfo.maxLevel,
+            minLevel: tileInfo.minLevel === undefined ? 0 : tileInfo.minLevel,
+            getTileUrl: function(level, x, y) {
+                return `/fits-tile/${level}/${x}/${y}?v=${currentDynamicRangeVersion}`;
+            }
+        };
+        
+        const viewerOptions = {
+            id: "openseadragon",
+            tileSources: tileSource,
+            prefixUrl: "/static/vendor/openseadragon/images/",
+            showNavigator: true,
+            navigatorPosition: "TOP_LEFT",
+            showZoomControl: false,
+            showHomeControl: false,
+            showFullPageControl: false,
+            showRotationControl: false,
+            defaultZoomLevel: tileInfo.defaultZoomLevel || 0.8,
+            minZoomLevel: tileInfo.minZoomLevel || 0.05,
+            maxZoomLevel:75,
+            immediateRender: true,
+            blendTime: 0.1,
+            placeholderFillStyle: "#000000",
+            backgroundColor: "#000000",
+            navigatorBackground: "#000000",
+            timeout: 120000,
+            springStiffness: 7,
+            visibilityRatio: 0.1,
+            constrainDuringPan: true,
+            imageSmoothingEnabled: false 
+        };
+
+        if (!window.tiledViewer) {
+            window.tiledViewer = OpenSeadragon(viewerOptions);
+            window.viewer = window.tiledViewer; // ADD THIS LINE
+            window.tiledViewer.addHandler('open', function() {
+                console.log("Tiled viewer opened. Hiding overview image.");
+                showNotification(false);
+                hideOverviewImage(); 
+                hideImmediatePlaceholder(); 
+                requestHistogramUpdate(); 
+            });
+
+            window.tiledViewer.addHandler('open-failed', function(event) {
+                console.error("Failed to open tiled image (window.tiledViewer):", event);
+                showNotification(false);
+                hideImmediatePlaceholder();
+                hideOverviewImage(); 
+                showNotification(`Error loading tiled image: ${event.message || 'Unknown error'}`, 5000, 'error');
+            });
+
+        } else {
+            console.log("Existing window.tiledViewer found, opening new tileSource.");
+            hideImmediatePlaceholder();
+            hideOverviewImage(); 
+            window.tiledViewer.open(tileSource);
+        }
+
+    } catch (error) {
+        console.error("Error initializing tiled viewer:", error);
+        showNotification(false);
+        hideImmediatePlaceholder();
+        hideOverviewImage();
+        showNotification(`Error during tiled viewer setup: ${error.message}`, 5000, 'error');
+    }
+}
+
+        // static/main.js
+
+        // MODIFIED showOverviewImage function (replace existing one)
+        function showOverviewImage(base64Image) {
+            console.log("showOverviewImage called.");
+            let overviewContainer = document.getElementById('overview-container');
+            if (!overviewContainer) {
+                overviewContainer = document.createElement('div');
+                overviewContainer.id = 'overview-container';
+                overviewContainer.style.position = 'absolute';
+                overviewContainer.style.top = '0';
+                overviewContainer.style.left = '0';
+                overviewContainer.style.width = '100%';
+                overviewContainer.style.height = '100%';
+                overviewContainer.style.display = 'flex';
+                overviewContainer.style.justifyContent = 'center';
+                overviewContainer.style.alignItems = 'center';
+                overviewContainer.style.backgroundColor = '#000';
+                overviewContainer.style.zIndex = '999'; // Ensure it's above viewer but below popups
+                
+                const osdContainer = document.getElementById('openseadragon');
+                if (osdContainer) {
+                    osdContainer.appendChild(overviewContainer);
+        } else {
+                    console.error("OpenSeadragon container not found for overview image.");
+                    // If osdContainer is not found, we can't display or process the image.
+                    window.histogramOverviewPixelData = null; // Clear any old cache
+                    return; 
+                }
+            }
             
-            // Show loading indicator while initializing OpenSeadragon
-            showProgress(true, 'Initializing tiled viewer...');
-            
-            // Create a custom tile source for OpenSeadragon
-            const tileSource = {
-                width: tileInfo.width,
-                height: tileInfo.height,
-                tileSize: tileInfo.tileSize,
-                maxLevel: tileInfo.maxLevel,
-                getTileUrl: function(level, x, y) {
-                    return `/fits-tile/${level}/${x}/${y}`;
-                },
-                // Add image data for initial low-resolution overview
-                getLevelScale: function(level) {
-                    return 1 / (1 << (this.maxLevel - level));
+            const img = document.createElement('img');
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '100%';
+        
+            img.onload = function() {
+                console.log("Overview image loaded in showOverviewImage, attempting to cache for histogram.");
+                try {
+                    const offscreenCanvas = document.createElement('canvas');
+                    const imgWidth = img.naturalWidth;
+                    const imgHeight = img.naturalHeight;
+        
+                    if (imgWidth === 0 || imgHeight === 0) {
+                        console.warn("Overview image has zero dimensions, cannot cache for histogram.");
+                        window.histogramOverviewPixelData = null;
+                        return;
+                    }
+        
+                    offscreenCanvas.width = imgWidth;
+                    offscreenCanvas.height = imgHeight;
+                    // Use { willReadFrequently: true } for potential performance benefits
+                    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+                    if (!offscreenCtx) {
+                         console.error("Could not get 2D context for offscreen canvas in showOverviewImage.");
+                         window.histogramOverviewPixelData = null;
+                         return;
+                    }
+                    offscreenCtx.drawImage(img, 0, 0);
+                    const imageData = offscreenCtx.getImageData(0, 0, imgWidth, imgHeight);
+                    const rawPixels = imageData.data;
+                    
+                    const overviewPixels2D = [];
+                    for (let y = 0; y < imgHeight; y++) {
+                        const row = [];
+                        for (let x = 0; x < imgWidth; x++) {
+                            // Assuming overview is grayscale, take the Red channel (index 0).
+                            row.push(rawPixels[(y * imgWidth + x) * 4]); 
+                        }
+                        overviewPixels2D.push(row);
+                    }
+        
+                    // IMPORTANT: Ensure window.fitsData and its min/max values are populated
+                    // when this overview is being shown, or update this cache later if they arrive later.
+                    // The initializeTiledViewer now attempts to set window.fitsData.min_value/max_value from tileInfo.
+                    if (window.fitsData && typeof window.fitsData.min_value !== 'undefined' && typeof window.fitsData.max_value !== 'undefined') {
+                        window.histogramOverviewPixelData = {
+                            pixels: overviewPixels2D,
+                            width: imgWidth,
+                            height: imgHeight,
+                            dataMin: window.fitsData.min_value, 
+                            dataMax: window.fitsData.max_value,
+                            pixelNativeMin: 0, // Assuming overview is 0-255 range after decoding
+                            pixelNativeMax: 255
+                        };
+                        console.log("Cached overview pixel data for histogram:", window.histogramOverviewPixelData);
+                    } else {
+                        console.warn("window.fitsData or its min/max not available when caching overview in showOverviewImage. Histogram dataMin/dataMax might be incorrect or missing.");
+                        window.histogramOverviewPixelData = {
+                            pixels: overviewPixels2D,
+                            width: imgWidth,
+                            height: imgHeight,
+                            dataMin: null, // Explicitly null if not available
+                            dataMax: null, // Explicitly null if not available
+                            pixelNativeMin: 0,
+                            pixelNativeMax: 255
+                        };
+                    }
+                } catch (e) {
+                    console.error("Error processing and caching overview image for histogram in showOverviewImage:", e);
+                    window.histogramOverviewPixelData = null; // Clear if error
                 }
             };
-            
-            // Configure OpenSeadragon options
-            const viewerOptions = {
-                id: "openseadragon",
-                tileSources: tileSource,
-                prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/images/",
-                showNavigator: true,
-                navigatorPosition: "TOP_LEFT",
-                showZoomControl: true,
-                showHomeControl: true,
-                showFullPageControl: false,
-                showRotationControl: false,
-                defaultZoomLevel: 0.8,
-                minZoomLevel: 0.05,
-                maxZoomLevel: 20,
-                immediateRender: false,
-                blendTime: 0.1,
-                placeholderFillStyle: "#000000",
-                backgroundColor: "#000000",
-                navigatorBackground: "#000000",
-                timeout: 60000,
-                springStiffness: 7,
-                visibilityRatio: 0.1,
-                constrainDuringPan: true,
-                wrapHorizontal: false,
-                wrapVertical: false,
-                minPixelRatio: 0.8,
-                crossOriginPolicy: 'Anonymous',
-                pixelsPerWheelLine: 40,
-                debugMode: false,
-                // Add custom loading image - low-resolution overview
-                loadTilesWithAjax: true,
-                ajaxHeaders: {}
+        
+            img.onerror = function() {
+                console.error("Error loading overview image in showOverviewImage. Cannot cache for histogram.");
+                window.histogramOverviewPixelData = null; // Clear on error
             };
             
-            // If we have an overview image, show it immediately
-            if (tileInfo.overview) {
-                viewerOptions.loadTilesWithAjax = true;
-                // Show the overview image while tiles are loading
-                showOverviewImage(tileInfo.overview);
-            }
+            // Setting src should be done after onload/onerror are attached.
+            img.src = `data:image/png;base64,${base64Image}`; 
             
-            // Initialize OpenSeadragon
-            if (!tiledViewer) {
-                tiledViewer = OpenSeadragon(viewerOptions);
-                
-                // Add event handlers
-                tiledViewer.addHandler('open', function() {
-                    console.log("Tiled viewer opened successfully");
-                    showProgress(false);
-                    
-                    // Hide the overview image once tiles start loading
-                    hideOverviewImage();
-                });
-                
-                tiledViewer.addHandler('open-failed', function(event) {
-                    console.error("Failed to open tiled image:", event);
-                    showProgress(false);
-                    showNotification(`Error loading tiled image: ${event.message || 'Unknown error'}`, 3000, 'error');
-                });
-                
-                // Add a loading indicator for tiles
-                tiledViewer.addHandler('tile-load-failed', function(event) {
-                    console.warn(`Tile load failed: level=${event.tile.level}, x=${event.tile.x}, y=${event.tile.y}`);
-                });
-                
-                // Add an error handler
-                tiledViewer.addHandler('error', function(event) {
-                    console.error("Tiled viewer error:", event);
-                });
-            } else {
-                // Update the tile source if the viewer already exists
-                tiledViewer.open(tileSource);
-            }
-        })
-        .catch(error => {
-            console.error("Error initializing tiled viewer:", error);
-            showProgress(false);
-            showNotification(`Error initializing tiled viewer: ${error.message}`, 3000, 'error');
-            
-            // Fall back to regular viewer
-            if (!viewer && window.fitsData) {
-                console.log("Falling back to regular viewer");
-                initializeViewerWithFitsData();
-            }
-        });
-}
-
-// Show overview image while tiles are loading
-function showOverviewImage(base64Image) {
-    // Create or get the overview container
-    let overviewContainer = document.getElementById('overview-container');
-    if (!overviewContainer) {
-        overviewContainer = document.createElement('div');
-        overviewContainer.id = 'overview-container';
-        overviewContainer.style.position = 'absolute';
-        overviewContainer.style.top = '0';
-        overviewContainer.style.left = '0';
-        overviewContainer.style.width = '100%';
-        overviewContainer.style.height = '100%';
-        overviewContainer.style.display = 'flex';
-        overviewContainer.style.justifyContent = 'center';
-        overviewContainer.style.alignItems = 'center';
-        overviewContainer.style.backgroundColor = '#000';
-        overviewContainer.style.zIndex = '999';
-        
-        // Add to the openseadragon container
-        const osdContainer = document.getElementById('openseadragon');
-        if (osdContainer) {
-            osdContainer.appendChild(overviewContainer);
+            overviewContainer.innerHTML = ''; // Clear previous image if any
+            overviewContainer.appendChild(img);
+            overviewContainer.style.display = 'flex'; // Ensure it's visible
+            overviewContainer.style.opacity = '1';
         }
-    }
-    
-    // Create image element
-    const img = document.createElement('img');
-    img.src = `data:image/png;base64,${base64Image}`;
-    img.style.maxWidth = '100%';
-    img.style.maxHeight = '100%';
-    
-    // Clear and add the image
-    overviewContainer.innerHTML = '';
-    overviewContainer.appendChild(img);
-    overviewContainer.style.display = 'flex';
-}
-
 // Hide overview image once tiles start loading
 function hideOverviewImage() {
+    overviewLoadingStopped = true; // Set flag to stop overview loading
     const overviewContainer = document.getElementById('overview-container');
     if (overviewContainer) {
         // Fade out animation
@@ -4001,6 +4429,10 @@ function updateOverviewImage(url, quality) {
 
 // Load overview at specified quality level
 function loadOverviewAtQuality(quality) {
+    if (overviewLoadingStopped) { // Check flag
+        console.log("Overview loading stopped because main tiles are loading.");
+        return;
+    }
     fetch(`/fits-overview/${quality}`)
         .then(response => {
             if (!response.ok) {
@@ -4018,8 +4450,10 @@ function loadOverviewAtQuality(quality) {
                 const url = URL.createObjectURL(blob);
                 updateOverviewImage(url, quality);
                 
-                // Load the next quality level
-                setTimeout(() => loadOverviewAtQuality(quality + 1), 1000);
+                // Load the next quality level if below max and not stopped
+                if (quality < 100 && !overviewLoadingStopped) { // Added condition to stop recursion
+                    setTimeout(() => loadOverviewAtQuality(quality + 1), 1000);
+                }
             }
         })
         .catch(error => {
@@ -4028,374 +4462,183 @@ function loadOverviewAtQuality(quality) {
 }
 
 
-// Function to check if valid WCS information is available
-function checkValidWCS() {
-    // First check if fitsData exists and has WCS information
-    if (!window.fitsData || !window.fitsData.wcs) {
-        console.warn("No WCS information available in FITS data");
-        return false;
-    }
-    
-    // Parse the WCS properly
-    const wcs = parseWCS(window.fitsData.wcs);
-    
-    // Store the properly parsed WCS for future use
-    window.parsedWCS = wcs;
-    
-    // Log WCS information for debugging
-    console.log("Parsed WCS information:", wcs);
-    
-    return wcs.hasWCS;
-}
-
 
 function parseWCS(header) {
-    if (!header) return null;
-    
-    // console.log("Parsing WCS from header with properties:", Object.keys(header));
-    
-    // Create an empty WCS object with default values
-    const wcs = {
-        hasWCS: false
-    };
-    
-    // Helper function to get properties safely, checking both camelCase and UPPERCASE formats
+    if (!header) {
+        console.error("No FITS header provided to parseWCS.");
+        return { hasWCS: false, worldToPixels: () => null, pixelsToWorld: () => null };
+    }
+
     function getProperty(obj, propName) {
-        // Try different case variations
-        const variations = [
-            propName.toLowerCase(),             // lowercase (crval1)
-            propName.toUpperCase(),             // uppercase (CRVAL1)
-            propName,                           // as provided (crval1)
-            propName.charAt(0).toUpperCase() + propName.slice(1) // Title case (Crval1)
-        ];
-        
-        // Check all variations
-        for (const variant of variations) {
-            if (obj[variant] !== undefined) {
-                return obj[variant];
+        if (!obj || typeof propName !== 'string') return undefined;
+        const upperCasePropName = propName.toUpperCase();
+        if (obj.hasOwnProperty(upperCasePropName)) {
+            return obj[upperCasePropName];
+        }
+        const lowerCasePropName = propName.toLowerCase();
+        for (const key in obj) {
+            if (key.toLowerCase() === lowerCasePropName) {
+                return obj[key];
             }
         }
-        
-        // Special case for properties that might have different naming
-        if (propName.includes('_')) {
-            // Try without underscore (cd1_1 -> cd11)
-            const withoutUnderscore = propName.replace('_', '');
-            return getProperty(obj, withoutUnderscore);
-        }
-        
         return undefined;
     }
-    
-    // Get basic WCS parameters
-    wcs.crval1 = getProperty(header, 'crval1');
-    wcs.crval2 = getProperty(header, 'crval2');
-    wcs.crpix1 = getProperty(header, 'crpix1');
-    wcs.crpix2 = getProperty(header, 'crpix2');
-    wcs.cdelt1 = getProperty(header, 'cdelt1');
-    wcs.cdelt2 = getProperty(header, 'cdelt2');
-    
-    // Get transformation matrix elements - CD matrix
-    wcs.cd1_1 = getProperty(header, 'cd1_1');
-    wcs.cd1_2 = getProperty(header, 'cd1_2');
-    wcs.cd2_1 = getProperty(header, 'cd2_1');
-    wcs.cd2_2 = getProperty(header, 'cd2_2');
-    
-    // Get transformation matrix elements - PC matrix
-    wcs.pc1_1 = getProperty(header, 'pc1_1');
-    wcs.pc1_2 = getProperty(header, 'pc1_2');
-    wcs.pc2_1 = getProperty(header, 'pc2_1');
-    wcs.pc2_2 = getProperty(header, 'pc2_2');
-    
-    // Get ORIENTAT if available
-    wcs.orientat = getProperty(header, 'orientat');
-    
-    // Get coordinate types
-    wcs.ctype1 = getProperty(header, 'ctype1');
-    wcs.ctype2 = getProperty(header, 'ctype2');
 
-    // Fix for JWST MIRI and similar images - use ra_ref/dec_ref/x_ref/y_ref if available
-    if (!wcs.crval1 && header.ra_ref !== undefined) wcs.crval1 = header.ra_ref;
-    if (!wcs.crval2 && header.dec_ref !== undefined) wcs.crval2 = header.dec_ref;
-    if (!wcs.crpix1 && header.x_ref !== undefined) wcs.crpix1 = header.x_ref;
-    if (!wcs.crpix2 && header.y_ref !== undefined) wcs.crpix2 = header.y_ref;
-    
-    // // Log what we found
-    // console.log("Found WCS parameters:", {
-    //     crval1: wcs.crval1, 
-    //     crval2: wcs.crval2,
-    //     crpix1: wcs.crpix1,
-    //     crpix2: wcs.crpix2,
-    //     cd1_1: wcs.cd1_1,
-    //     cd2_2: wcs.cd2_2,
-    //     pc1_1: wcs.pc1_1,
-    //     pc2_2: wcs.pc2_2,
-    //     orientat: wcs.orientat
-    // });
-    
-    // Calculate CD matrix if it's not provided but PC matrix and CDELT are available
-    if (wcs.cd1_1 === undefined && wcs.pc1_1 !== undefined && wcs.cdelt1 !== undefined) {
-        wcs.cd1_1 = wcs.pc1_1 * wcs.cdelt1;
-        wcs.cd1_2 = (wcs.pc1_2 || 0) * wcs.cdelt1;
-        wcs.cd2_1 = (wcs.pc2_1 || 0) * wcs.cdelt2;
-        wcs.cd2_2 = wcs.pc2_2 * wcs.cdelt2;
-        console.log("Calculated CD matrix from PC and CDELT");
+    const wcsInfo = {
+        hasWCS: false,
+        crval1: getProperty(header, 'CRVAL1'),
+        crval2: getProperty(header, 'CRVAL2'),
+        crpix1: getProperty(header, 'CRPIX1'),
+        crpix2: getProperty(header, 'CRPIX2'),
+        cd11: getProperty(header, 'CD1_1') || getProperty(header, 'CDELT1') || 1,
+        cd12: getProperty(header, 'CD1_2') || 0,
+        cd21: getProperty(header, 'CD2_1') || 0,
+        cd22: getProperty(header, 'CD2_2') || getProperty(header, 'CDELT2') || 1,
+        ctype1: getProperty(header, 'CTYPE1') || '',
+        ctype2: getProperty(header, 'CTYPE2') || '',
+        naxis1: getProperty(header, 'NAXIS1'),
+        naxis2: getProperty(header, 'NAXIS2')
+    };
+
+    if (wcsInfo.crval1 !== undefined && wcsInfo.crval2 !== undefined &&
+        wcsInfo.crpix1 !== undefined && wcsInfo.crpix2 !== undefined) {
+        wcsInfo.hasWCS = true;
+    } else {
+        return { hasWCS: false, worldToPixels: () => null, pixelsToWorld: () => null };
     }
-    
-    // Check if we have enough information for coordinate transformation
-    wcs.hasWCS = (wcs.crval1 !== undefined && wcs.crval2 !== undefined &&
-                 wcs.crpix1 !== undefined && wcs.crpix2 !== undefined &&
-                 ((wcs.cd1_1 !== undefined && wcs.cd2_2 !== undefined) ||
-                  (wcs.cdelt1 !== undefined && wcs.cdelt2 !== undefined)));
-    
-    // console.log("WCS is valid:", wcs.hasWCS);
-    
-    // Calculate effective transformation matrix and determine orientation
-    if (wcs.hasWCS) {
-        // Prioritize CD matrix over PC matrix if both are available
-        let m11, m12, m21, m22;
-        
-        if (wcs.cd1_1 !== undefined) {
-            // Use CD matrix
-            m11 = wcs.cd1_1;
-            m12 = wcs.cd1_2 || 0;
-            m21 = wcs.cd2_1 || 0;
-            m22 = wcs.cd2_2;
-            // console.log("Using CD matrix for transformation");
-        } else {
-            // Use PC matrix with CDELT
-            m11 = wcs.pc1_1 * wcs.cdelt1;
-            m12 = (wcs.pc1_2 || 0) * wcs.cdelt1;
-            m21 = (wcs.pc2_1 || 0) * wcs.cdelt2;
-            m22 = wcs.pc2_2 * wcs.cdelt2;
-            console.log("Using PC matrix with CDELT for transformation");
+
+    wcsInfo.worldToPixels = (ra, dec) => {
+        if (wcsInfo.ctype1.includes('RA---TAN') && wcsInfo.ctype2.includes('DEC--TAN')) {
+            const D2R = Math.PI / 180.0;
+            const R2D = 180.0 / Math.PI;
+
+            const ra_rad = ra * D2R;
+            const dec_rad = dec * D2R;
+
+            const ra0_rad = wcsInfo.crval1 * D2R;
+            const dec0_rad = wcsInfo.crval2 * D2R;
+
+            const cos_dec = Math.cos(dec_rad);
+            const cos_dec0 = Math.cos(dec0_rad);
+            const sin_dec = Math.sin(dec_rad);
+            const sin_dec0 = Math.sin(dec0_rad);
+
+            const A = cos_dec * Math.cos(ra_rad - ra0_rad);
+            const F = 1 / (sin_dec * sin_dec0 + A * cos_dec0);
+
+            const X = F * cos_dec * Math.sin(ra_rad - ra0_rad);
+            const Y = F * (sin_dec * cos_dec0 - A * sin_dec0);
+
+            const xi = X * R2D;
+            const eta = Y * R2D;
+
+            const det = wcsInfo.cd11 * wcsInfo.cd22 - wcsInfo.cd12 * wcsInfo.cd21;
+            const inv_det = 1.0 / det;
+            const inv_cd11 = wcsInfo.cd22 * inv_det;
+            const inv_cd12 = -wcsInfo.cd12 * inv_det;
+            const inv_cd21 = -wcsInfo.cd21 * inv_det;
+            const inv_cd22 = wcsInfo.cd11 * inv_det;
+
+            let x = wcsInfo.crpix1 + inv_cd11 * xi + inv_cd12 * eta;
+            let y = wcsInfo.crpix2 + inv_cd21 * xi + inv_cd22 * eta;
+
+            // Adjust for 1-based FITS indexing
+            x = x - 1;
+            y = y - 1;
+
+            return { x: x, y: y };
         }
-        
-        // Calculate determinant to check for coordinate flips
-        const det = m11 * m22 - m12 * m21;
-        
-        // Calculate rotation angle correctly for astronomical images:
-        // The position angle (East of North) is given by atan2(CD2_1, CD1_1)
-        let theta = Math.atan2(m21, m11);
-        
-        // Convert to degrees
-        let thetaDegrees = (theta * 180 / Math.PI);
-        
-        // Check against ORIENTAT if available
-        if (wcs.orientat !== undefined) {
-            const orientatDiff = Math.abs(thetaDegrees - wcs.orientat) % 360;
-            console.log(`Calculated rotation: ${thetaDegrees.toFixed(2)}°, ORIENTAT: ${wcs.orientat}°, difference: ${orientatDiff.toFixed(2)}°`);
-            
-            // If more than 1 degree difference, issue a warning
-            if (orientatDiff > 1 && orientatDiff < 359) {
-                console.warn(`Calculated rotation angle differs from ORIENTAT by ${orientatDiff.toFixed(2)}°`);
-            }
+        return null;
+    };
+
+    wcsInfo.pixelsToWorld = (x, y) => {
+        if (wcsInfo.ctype1.includes('RA---TAN') && wcsInfo.ctype2.includes('DEC--TAN')) {
+            const D2R = Math.PI / 180.0;
+
+            const x_prime = x - wcsInfo.crpix1 + 1;
+            const y_prime = y - wcsInfo.crpix2 + 1;
+
+            const xi = (wcsInfo.cd11 * x_prime + wcsInfo.cd12 * y_prime) * D2R;
+            const eta = (wcsInfo.cd21 * x_prime + wcsInfo.cd22 * y_prime) * D2R;
+
+            const ra0_rad = wcsInfo.crval1 * D2R;
+            const dec0_rad = wcsInfo.crval2 * D2R;
+
+            const cos_dec0 = Math.cos(dec0_rad);
+            const sin_dec0 = Math.sin(dec0_rad);
+
+            const H = Math.sqrt(xi * xi + eta * eta);
+            const delta = Math.atan(H);
+            const sin_delta = Math.sin(delta);
+            const cos_delta = Math.cos(delta);
+
+            const dec_rad = Math.asin(cos_delta * sin_dec0 + (eta * sin_delta * cos_dec0) / H);
+            const ra_rad = ra0_rad + Math.atan2(xi * sin_delta, H * cos_dec0 * cos_delta - eta * sin_dec0 * sin_delta);
+
+            return { ra: ra_rad * 180 / Math.PI, dec: dec_rad * 180 / Math.PI };
         }
-        
-        // Store the transformation info
-        wcs.transformInfo = {
-            det: det,
-            isFlipped: det < 0,
-            theta: theta,
-            thetaDegrees: thetaDegrees,
-            m11: m11,
-            m12: m12,
-            m21: m21,
-            m22: m22
-        };
-        
-        // console.log(`WCS matrix transform: rotation=${thetaDegrees.toFixed(2)}°, flipped=${det < 0}`);
-    }
-    
-    return wcs;
+        return null;
+    };
+
+    return wcsInfo;
 }
 
 
 
-function celestialToPixel(ra, dec, wcs) {
-    if (!wcs || !wcs.hasWCS) return { x: 0, y: 0 };
-    
-    try {
-        // Get reference points
-        const crpix1 = wcs.crpix1;
-        const crpix2 = wcs.crpix2;
-        const crval1 = wcs.crval1;
-        const crval2 = wcs.crval2;
-        
-        // Calculate deltas in sky coordinates
-        const dra = (ra - crval1) * Math.cos(crval2 * Math.PI / 180);
-        const ddec = dec - crval2;
-        
-        // Use the transformation matrix from the WCS object
-        const transform = wcs.transformInfo;
-        if (!transform) {
-            console.warn("No transformation matrix available in WCS object");
-            return { x: 0, y: 0 };
-        }
-        
-        // PC Matrix information logging
-        const pcInfo = {
-            pc1_1: wcs.pc1_1 !== undefined ? wcs.pc1_1 : 'N/A',
-            pc1_2: wcs.pc1_2 !== undefined ? wcs.pc1_2 : 'N/A',
-            pc2_1: wcs.pc2_1 !== undefined ? wcs.pc2_1 : 'N/A',
-            pc2_2: wcs.pc2_2 !== undefined ? wcs.pc2_2 : 'N/A'
-        };
-        
-        // Check for negative PC matrix values
-        const negativePCs = Object.entries(pcInfo)
-            .filter(([key, value]) => value !== 'N/A' && value < 0)
-            .map(([key, value]) => `${key}: ${value}`);
-        
-        // Modify transformation if PC1_1 is negative
-        let reflectedX = false;
-        if (wcs.pc1_1 < 0) {
-            reflectedX = true;
-        }
-        
-        // Compute matrix determinant
-        const det = transform.m11 * transform.m22 - transform.m12 * transform.m21;
-        
-        if (Math.abs(det) < 1e-10) {
-            console.warn("Transformation matrix is singular");
-            return { x: 0, y: 0 };
-        }
-        
-        // Standard coordinate transformation
-        const dx = (transform.m22 * dra - transform.m12 * ddec) / det;
-        const dy = (-transform.m21 * dra + transform.m11 * ddec) / det;
-        
-        // Calculate pixel coordinates
-        let x = crpix1 + dx;
-        let y = crpix2 + dy;
-        
-        // Apply X-axis reflection if needed
-        if (reflectedX) {
-            x = (wcs.width || 2 * crpix1) - x;
-        }
-        
-        
-        return { x, y };
-    } catch (error) {
-        console.error("Error in celestial to pixel conversion:", error);
-        return { x: 0, y: 0 };
-    }
-}
 
-function pixelToCelestial(x, y, wcs) {
-    // Early exit if WCS info is missing or invalid
-    if (!wcs || !wcs.hasWCS) return { ra: 0, dec: 0 };
-    
-    try {
-        // Get reference points
-        const crpix1 = wcs.crpix1;
-        const crpix2 = wcs.crpix2;
-        const crval1 = wcs.crval1;
-        const crval2 = wcs.crval2;
-        
-        // Apply X-axis reflection if needed
-        let adjustedX = x;
-        if (wcs.pc1_1 !== undefined && wcs.pc1_1 < 0) {
-            adjustedX = (wcs.width || 2 * crpix1) - x;
-            // console.log('Applying X-axis reflection in pixelToCelestial');
-        }
-        
-        // Calculate pixel offsets from reference pixel
-        const dx = adjustedX - crpix1;
-        const dy = y - crpix2;
-        
-        // Use the transformation matrix from the WCS object
-        const transform = wcs.transformInfo;
-        if (!transform) {
-            // console.warn("No transformation matrix available in WCS object");
-            return { ra: 0, dec: 0 };
-        }
-        
-        // Compute matrix determinant
-        const det = transform.m11 * transform.m22 - transform.m12 * transform.m21;
-        
-        if (Math.abs(det) < 1e-10) {
-            console.warn("Transformation matrix is singular");
-            return { ra: 0, dec: 0 };
-        }
-        
-        // Apply the transformation matrix to get sky coordinate offsets
-        // This is the inverse of the transformation used in celestialToPixel
-        const dra = (transform.m11 * dx + transform.m12 * dy);
-        const ddec = (transform.m21 * dx + transform.m22 * dy);
-        
-        // Calculate celestial coordinates
-        // Note: We need to divide RA by cos(dec) to account for spherical projection
-        let ra = crval1 + dra / Math.cos(crval2 * Math.PI / 180);
-        let dec = crval2 + ddec;
-        
-        // Normalize RA to be in the range [0, 360)
-        ra = ((ra % 360) + 360) % 360;
-        
-        // Clamp Dec to valid range [-90, 90]
-        dec = Math.max(-90, Math.min(90, dec));
-        
-        return { ra, dec };
-    } catch (error) {
-        console.error("Error in pixel to celestial conversion:", error);
-        return { ra: 0, dec: 0 };
-    }
-}
-
-
-
-// Add this initialization function where appropriate in your code
-function initializeWCSTransformation() {
-    if (!window.fitsData || !window.fitsData.wcs) {
-        console.warn("No WCS information available");
-        return false;
-    }
-    
-    // Parse the WCS data
-    const wcs = parseWCS(window.fitsData.wcs);
-    
-    // Store the parsed WCS data globally
-    window.parsedWCS = wcs;
-    
-    return wcs.hasWCS;
-}
-
-
-// Handle fast loading mode for large FITS files
+// THIS IS THE NEW ENTRY POINT for tiled/fast loading
 function handleFastLoadingResponse(data, filepath) {
-    console.log("Handling fast loading mode response:", data);
-    
-    // Hide the progress indicator
-    showProgress(false);
-    
-    // Store basic FITS information globally
+    if (!data || !data.tile_info) {
+        console.error("Fast loading response is missing tile_info.", data);
+        showNotification("Error: Invalid response from server for tiled loading.", 5000, 'error');
+        return;
+    }
+
+    // Set the global filepath variable. THIS IS THE FIX.
+    window.currentFitsFile = filepath;
+
+    // Store basic FITS information globally. THIS IS THE 2ND FIX.
+    // The data is now nested inside the tile_info object from the server.
+    const tileInfo = data.tile_info;
     window.fitsData = {
-        width: data.width,
-        height: data.height,
-        min_value: data.min_value,
-        max_value: data.max_value,
-        overview: data.overview,
-        wcs: data.wcs,
+        width: tileInfo.width,
+        height: tileInfo.height,
+        min_value: tileInfo.min_value,
+        max_value: tileInfo.max_value,
+        overview: tileInfo.overview, // This might be an object or a base64 string
+        wcs: tileInfo.wcs,
         filename: filepath
     };
 
+    // Hide any previous notifications
+    showNotification(false);
 
-    
-    // Add the debug function call right here
-    if (window.fitsData && window.fitsData.filename && 
-        (window.fitsData.filename.includes('jwst') || window.fitsData.filename.includes('miri'))) {
-        console.log("JWST image detected - running debug functions");
-        dumpWCSInfo();
+    console.log("Handling fast loading mode response:", data);
+
+    if (typeof clearAllCatalogs === 'function') {
+        console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+        clearAllCatalogs();
     }
-    
-    // Show notification
-    showNotification(`Fast loading mode: ${data.width}×${data.height} pixels`, 3000, 'info');
-    
-    // Initialize the tiled viewer immediately
-    initializeTiledViewer();
-    
-    // Start progressive loading of better quality overviews
-    loadProgressiveOverviews();
-}
 
+    // Initialize the tiled viewer with the received tile info
+    initializeTiledViewer(tileInfo, filepath)
+        .then(() => {
+            console.log("Tiled viewer initialized successfully after fast loading.");
+
+            // Update UI elements now that the viewer is ready
+            updateDynamicRangeButtonVisibility(true);
+
+            // Fetch the full histogram from the server
+            fetchServerHistogram();
+            
+            // Start loading overview images progressively
+            loadProgressiveOverviews();
+        })
+        .catch(error => {
+            console.error("Error initializing tiled viewer:", error);
+            showNotification(`Error: ${error.message}`, 5000, 'error');
+        });
+}
 // Load progressively better quality overviews
 function loadProgressiveOverviews() {
     // Start with quality level 0
@@ -4405,12 +4648,13 @@ function loadProgressiveOverviews() {
 
 
 
+
 // Add this function to hide/show dynamic range controls based on image availability
 function updateDynamicRangeButtonVisibility(show) {
-    const dynamicRangeButton = document.querySelector('.dynamic-range-button');
-    if (dynamicRangeButton) {
-        dynamicRangeButton.style.display = show ? 'block' : 'none';
-    }
+    // const dynamicRangeButton = document.querySelector('.dynamic-range-button');
+    // if (dynamicRangeButton) {
+    //     dynamicRangeButton.style.display = show ? 'block' : 'none';
+    // }
 }
 
 // Call this initially to hide the button when the app first loads
@@ -4424,9 +4668,9 @@ document.addEventListener("DOMContentLoaded", function() {
 function dumpWCSInfo() {
     if (!window.fitsData || !window.fitsData.wcs) {
       console.log("No WCS data available");
-      return;
-    }
-    
+                return;
+            }
+
     console.log("Raw WCS data:", window.fitsData.wcs);
     
     // If you've parsed the WCS
@@ -4452,8 +4696,6 @@ function dumpWCSInfo() {
 
 
   
-
-
 
 
   // Function to create HDU selection popup
@@ -4674,88 +4916,37 @@ function getBitpixDescription(bitpix) {
 }
 
 // Function to select a specific HDU
-function selectHdu(hduIndex, filepath) {
-    console.log(`Selected HDU ${hduIndex} from ${filepath}`);
-    
-    // Show loading progress
-    showProgress(true, `Loading HDU ${hduIndex}...`);
-    
-    // Call a modified version of the load-file endpoint that supports HDU selection
-    fetch(`/load-file/${encodeURIComponent(filepath)}?hdu=${hduIndex}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`Failed to load file: ${response.statusText}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.error) {
-                showNotification(`Error: ${data.error}`, 3000);
-                showProgress(false);
-                return;
-            }
-            
-            // Clear any existing error messages
-            window.loadingError = null;
-            
-            // Clear any existing catalog
-            if (typeof clearCatalog === 'function') {
-                clearCatalog();
-            }
-            
-            // Get file size to determine loading method
-            return checkFileSize(filepath)
-                .then(fileSize => {
-                    // Use fast loading for files larger than 100MB
-                    const useFastLoading = fileSize > 1300 * 1024 * 1024;
-                    
-                    if (useFastLoading) {
-                        console.log(`Large file detected (${formatFileSize(fileSize)}). Using fast loading.`);
-                        
-                        // Use JSON endpoint for fast loading mode with HDU parameter
-                        return fetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`)
-                            .then(response => response.json())
-                            .then(data => {
-                                if (data.error) {
-                                    throw new Error(data.error);
-                                }
-                                
-                                if (data.fast_loading) {
-                                    // Handle fast loading response
-                                    if (typeof handleFastLoadingResponse === 'function') {
-                                        return handleFastLoadingResponse(data, filepath);
-                                    } else {
-                                        throw new Error('Fast loading handler not available');
-                                    }
-                                } else {
-                                    // Fall back to binary processing
-                                    return fetchBinaryWithProgress(`/fits-binary/?fast_loading=false&hdu=${hduIndex}`)
-                                        .then(arrayBuffer => processBinaryData(arrayBuffer, filepath));
-                                }
-                            });
-                    } else {
-                        console.log(`Regular file (${formatFileSize(fileSize)}). Using standard loading.`);
-                        // For smaller files, use the regular viewer
-                        return fetchBinaryWithProgress(`/fits-binary/?fast_loading=false&hdu=${hduIndex}`)
-                            .then(arrayBuffer => {
-                                if (!arrayBuffer) {
-                                    throw new Error('Failed to load FITS data');
-                                }
-                                
-                                // Process binary data and initialize viewer
-                                console.time('parseBinaryData');
-                                return processBinaryData(arrayBuffer, filepath);
-                            });
-                    }
-                });
-        })
-        .catch(error => {
-            console.error('Error loading FITS file:', error);
-            showProgress(false);
-            showNotification(`Error: ${error.message || 'Failed to load FITS file'}`, 5000);
-        });
-}
+// In static/main.js
 
+async function selectHdu(hduIndex, filepath) {
+    console.log(`Selected HDU ${hduIndex} from ${filepath}`);
+    showNotification(`Loading HDU ${hduIndex}...`, 2000, "info");
+
+    const hduPopup = document.getElementById('hdu-selector-popup');
+    if (hduPopup) {
+        hduPopup.style.display = 'none';
+    }
+    
+    // The key change is here: We call /load-file which now returns the tileInfo.
+    // This single call prepares the backend session and gives the frontend everything it needs.
+    try {
+        const response = await fetch(`/load-file/${filepath}?hdu=${hduIndex}`);
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+        }
+        
+        const tileInfo = await response.json();
+        
+        // Pass the tileInfo to the handler that initializes the viewer
+        await handleFastLoadingResponse(tileInfo, filepath);
+        
+    } catch (error) {
+        console.error('Error loading FITS file for selected HDU:', error);
+        showNotification(`Error loading HDU ${hduIndex}: ${error.message}`, "error");
+    }
+}
 // Function to analyze the FITS file and get HDU information
 function getFitsHduInfo(filepath) {
     return fetch(`/fits-hdu-info/${encodeURIComponent(filepath)}`)
@@ -4786,12 +4977,12 @@ function loadFitsFileWithHduSelection(filepath) {
         welcomePointer.parentNode.removeChild(welcomePointer);
     }
     
-    showProgress(true, `Analyzing ${filepath}...`);
+    showNotification(true, `Analyzing ${filepath}...`);
     
     // First check how many HDUs this file has
     getFitsHduInfo(filepath)
         .then(hduList => {
-            showProgress(false);
+            showNotification(false);
             
             // If the file has multiple HDUs, show the selection popup
             if (hduList && hduList.length > 1) {
@@ -4806,7 +4997,7 @@ function loadFitsFileWithHduSelection(filepath) {
         })
         .catch(error => {
             console.error('Error analyzing FITS file:', error);
-            showProgress(false);
+            showNotification(false);
             showNotification(`Error: ${error.message || 'Failed to analyze FITS file'}`, 5000);
             
             // If analysis fails, fall back to loading the primary HDU
@@ -4825,22 +5016,770 @@ let currentFlagColumn = null; // Will store the name of the current boolean colu
 
 let flagFilterButton = null;
 
+
+// Replace the existing populateFlagDropdown function with this fixed version
+
+// REPLACE your existing populateFlagDropdown function in catalogs.js with this fixed version
+
+function populateFlagDropdown(dropdownContent) {
+    // Clear existing content
+    dropdownContent.innerHTML = '';
+    
+    // Add a "No Filter" option
+    const noFilterItem = document.createElement('div');
+    noFilterItem.className = 'flag-item';
+    noFilterItem.textContent = 'No Filter (Show All)';
+    noFilterItem.style.padding = '10px';
+    noFilterItem.style.cursor = 'pointer';
+    noFilterItem.style.borderBottom = '1px solid #444';
+    noFilterItem.style.color = 'white';
+    
+    // Highlight if currently selected
+    if (!flagFilterEnabled) {
+        noFilterItem.style.backgroundColor = 'white';
+        noFilterItem.style.color = 'black';
+    }
+    
+    // FIXED: Remove the condition that was preventing hover effects
+    noFilterItem.addEventListener('mouseover', function() {
+        if (!flagFilterEnabled) {
+            this.style.backgroundColor = '#333';
+        }
+    });
+    
+    noFilterItem.addEventListener('mouseout', function() {
+        if (!flagFilterEnabled) {
+            this.style.backgroundColor = 'white';
+            this.style.color = 'black';
+        } else {
+            this.style.backgroundColor = 'transparent';
+            this.style.color = 'white';
+        }
+    });
+    
+// REPLACE the "No Filter" click handler in your populateFlagDropdown function in catalogs.js with this:
+
+noFilterItem.addEventListener('click', function() {
+    console.log('No Filter clicked - clearing all filters');
+    
+    // Disable flag filtering
+    flagFilterEnabled = false;
+    currentFlagColumn = null;
+    currentEnvValue = null;
+    
+    // Clear global filter state
+    window.flagFilterEnabled = false;
+    window.currentFlagColumn = null;
+    window.visibleObjectIndices = null;
+    window.currentEnvValue = null;
+    
+    // FIXED: Clear passesFilter property on canvas overlay data
+    if (window.catalogDataForOverlay) {
+        console.log('Clearing passesFilter property on all canvas overlay objects');
+        window.catalogDataForOverlay.forEach(obj => {
+            obj.passesFilter = true; // Set to true to show all objects
+        });
+        
+        // Force canvas redraw
+        if (typeof canvasUpdateOverlay === 'function') {
+            console.log('Calling canvasUpdateOverlay to refresh display');
+            canvasUpdateOverlay();
+        }
+    }
+    
+    // Update the UI
+    updateFlagFilterUI(dropdownContent);
+    
+    // Handle DOM-based dots (fallback for older system)
+    if (window.catalogDots) {
+        console.log('Also clearing DOM dots filter state');
+        window.catalogDots.forEach(dot => {
+            dot.style.display = 'block';
+            dot.dataset.passesFilter = 'true';
+        });
+        
+        // Update DOM overlay if function exists
+        if (typeof updateOverlay === 'function') {
+            updateOverlay();
+        }
+    }
+    
+    // Close the dropdown
+    dropdownContent.style.display = 'none';
+    
+    showNotification('Showing all catalog objects', 1500, 'success');
+});
+    
+    dropdownContent.appendChild(noFilterItem);
+    
+    // If no catalog is loaded, show a message
+    if (!activeCatalog) {
+        const noDataItem = document.createElement('div');
+        noDataItem.style.padding = '10px';
+        noDataItem.style.color = '#aaa';
+        noDataItem.textContent = 'Load a catalog to see available flags';
+        dropdownContent.appendChild(noDataItem);
+        return;
+    }
+    
+    // Check if we already have flag data in the cache
+    if (window.catalogDataWithFlags) {
+        // Use the cached data to build the flag dropdown
+        buildFlagDropdownFromCache(dropdownContent);
+    } else {
+        // Show loading indicator
+        const loadingItem = document.createElement('div');
+        loadingItem.style.padding = '10px';
+        loadingItem.style.color = '#aaa';
+        loadingItem.textContent = 'Loading flag information...';
+        dropdownContent.appendChild(loadingItem);
+        
+        // Load the flag data
+        fetch(`/catalog-with-flags/${activeCatalog}`)
+            .then(response => response.json())
+            .then(data => {
+                // Cache the data for future use
+                window.catalogDataWithFlags = data;
+                
+                // Build the dropdown using the loaded data
+                buildFlagDropdownFromCache(dropdownContent);
+            })
+            .catch(error => {
+                console.error('Error loading flag data:', error);
+                
+                // Show error message
+                dropdownContent.innerHTML = '';
+                dropdownContent.appendChild(noFilterItem); // Keep the "No Filter" option
+                
+                const errorItem = document.createElement('div');
+                errorItem.style.padding = '10px';
+                errorItem.style.color = '#f44336';
+                errorItem.textContent = 'Error loading catalog flags';
+                dropdownContent.appendChild(errorItem);
+            });
+    }
+}
+
+// REPLACE your existing buildFlagDropdownFromCache function with this enhanced version
+
+function buildFlagDropdownFromCache(dropdownContent) {
+    // Clear everything after the "No Filter" option
+    const noFilterItem = dropdownContent.querySelector('.flag-item');
+    if (noFilterItem) {
+        while (noFilterItem.nextSibling) {
+            dropdownContent.removeChild(noFilterItem.nextSibling);
+        }
+    }
+    
+    if (!window.catalogDataWithFlags || window.catalogDataWithFlags.length === 0) {
+        const noDataItem = document.createElement('div');
+        noDataItem.style.padding = '10px';
+        noDataItem.style.color = '#aaa';
+        noDataItem.textContent = 'No catalog data available';
+        dropdownContent.appendChild(noDataItem);
+        return;
+    }
+    
+    console.log("Inspecting catalog data:");
+    console.log("Total catalog objects:", window.catalogDataWithFlags.length);
+    
+    // Get first object to check column types
+    const firstObj = window.catalogDataWithFlags[0];
+    if (!firstObj) {
+        const noDataItem = document.createElement('div');
+        noDataItem.style.padding = '10px';
+        noDataItem.style.color = '#aaa';
+        noDataItem.textContent = 'No catalog objects available';
+        dropdownContent.appendChild(noDataItem);
+        return;
+    }
+    
+    const availableProperties = Object.keys(firstObj);
+    console.log('Available properties in catalog data:', availableProperties);
+    
+    // Check for environment column and collect unique env values
+    let hasEnvColumn = false;
+    const envValues = new Set();
+    
+    if (availableProperties.includes('env')) {
+        hasEnvColumn = true;
+        console.log('Found env column, checking values...');
+        
+        // Sample more objects to get better coverage of env values
+        const sampleSize = Math.min(200, window.catalogDataWithFlags.length);
+        
+        for (let i = 0; i < sampleSize; i++) {
+            const obj = window.catalogDataWithFlags[i];
+            if (obj && obj.env !== null && obj.env !== undefined) {
+                const envVal = parseInt(obj.env);
+                if (!isNaN(envVal) && envVal >= 1 && envVal <= 10) {
+                    envValues.add(envVal);
+                }
+            }
+        }
+        
+        console.log('Found environment values:', Array.from(envValues).sort((a, b) => a - b));
+    }
+    
+    // Collect boolean columns
+    const actualBooleanColumns = new Set();
+    const sampleSize = Math.min(50, window.catalogDataWithFlags.length);
+    
+    for (const [key, value] of Object.entries(firstObj)) {
+        // Skip coordinate and display columns
+        if (['ra', 'dec', 'x', 'y', 'radius_pixels', 'env'].includes(key)) {
+            continue;
+        }
+        
+        let isActuallyBoolean = false;
+        let allValuesAreBooleanType = true;
+        let hasOnlyZeroOne = true;
+        let uniqueValues = new Set();
+        
+        // Sample multiple objects to determine if column is truly boolean
+        for (let i = 0; i < sampleSize; i++) {
+            const obj = window.catalogDataWithFlags[i];
+            if (!obj || !(key in obj)) continue;
+            
+            const val = obj[key];
+            uniqueValues.add(val);
+            
+            if (typeof val !== 'boolean') {
+                allValuesAreBooleanType = false;
+            }
+            
+            if (!(val === 0 || val === 1 || val === true || val === false)) {
+                hasOnlyZeroOne = false;
+            }
+        }
+        
+        // A column is boolean if it meets our criteria
+        if (allValuesAreBooleanType || 
+            (hasOnlyZeroOne && uniqueValues.size <= 3 && 
+             (uniqueValues.has(0) || uniqueValues.has(1) || uniqueValues.has(true) || uniqueValues.has(false)))) {
+            
+            // Additional filtering to avoid measurement columns
+            const keyLower = key.toLowerCase();
+            const isMeasurementColumn = keyLower.includes('err') || keyLower.includes('snr') || 
+                                       keyLower.includes('chi') || keyLower.includes('mass') ||
+                                       keyLower.includes('dust') || keyLower.includes('best.');
+            
+            if (!isMeasurementColumn) {
+                actualBooleanColumns.add(key);
+            }
+        }
+    }
+    
+    console.log("Boolean columns found:", Array.from(actualBooleanColumns));
+    
+    // ENVIRONMENT FILTERS SECTION
+    if (hasEnvColumn && envValues.size > 0) {
+        // Add environment section header
+        const envHeader = document.createElement('div');
+        envHeader.style.padding = '8px 10px';
+        envHeader.style.fontWeight = 'bold';
+        envHeader.style.backgroundColor = '#2a2a2a';
+        envHeader.style.borderBottom = '1px solid #555';
+        envHeader.style.color = '#4CAF50';
+        envHeader.style.fontSize = '13px';
+        envHeader.textContent = `Environment Filters (${envValues.size} types)`;
+        dropdownContent.appendChild(envHeader);
+        
+        // Sort environment values numerically
+        const sortedEnvValues = Array.from(envValues).sort((a, b) => a - b);
+        
+        // Add each environment value using ENV_DESCRIPTIONS
+        sortedEnvValues.forEach(envValue => {
+            // Get description from ENV_DESCRIPTIONS or use default
+            const description = ENV_DESCRIPTIONS[envValue] || `Environment ${envValue}`;
+            
+            const envItem = document.createElement('div');
+            envItem.className = 'flag-item env-item';
+            envItem.dataset.envValue = envValue;
+            envItem.style.padding = '10px 15px'; // Indent environment items
+            envItem.style.cursor = 'pointer';
+            envItem.style.borderBottom = '1px solid #3a3a3a';
+            envItem.style.color = 'white';
+            envItem.style.fontSize = '13px';
+            
+            // Create the display text with value and description
+            envItem.innerHTML = `
+                <span style="color: #66bb6a; font-weight: bold;">Env ${envValue}:</span> 
+                <span style="color: #fff;">${description}</span>
+            `;
+            
+            // Highlight if currently selected
+            if (flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue) {
+                envItem.style.backgroundColor = 'white';
+                envItem.style.color = 'black';
+                envItem.innerHTML = `
+                    <span style="color: #2e7d32; font-weight: bold;">Env ${envValue}:</span> 
+                    <span style="color: #000;">${description}</span>
+                `;
+            }
+            
+            envItem.addEventListener('mouseover', function() {
+                if (!(flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue)) {
+                    this.style.backgroundColor = '#444';
+                }
+            });
+            
+            envItem.addEventListener('mouseout', function() {
+                if (flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue) {
+                    this.style.backgroundColor = 'white';
+                    this.innerHTML = `
+                        <span style="color: #2e7d32; font-weight: bold;">Env ${envValue}:</span> 
+                        <span style="color: #000;">${description}</span>
+                    `;
+                } else {
+                    this.style.backgroundColor = 'transparent';
+                    this.innerHTML = `
+                        <span style="color: #66bb6a; font-weight: bold;">Env ${envValue}:</span> 
+                        <span style="color: #fff;">${description}</span>
+                    `;
+                }
+            });
+            
+            envItem.addEventListener('click', function() {
+                const selectedEnvValue = parseInt(this.dataset.envValue);
+                console.log(`Environment filter clicked: Env ${selectedEnvValue} (${description})`);
+                
+                // Set filter state
+                flagFilterEnabled = true;
+                currentFlagColumn = 'env';
+                currentEnvValue = selectedEnvValue;
+                
+                // Set global filter state
+                window.flagFilterEnabled = true;
+                window.currentFlagColumn = 'env';
+                window.currentEnvValue = selectedEnvValue;
+                
+                // Apply the environment filter
+                applyEnvironmentFilter(selectedEnvValue);
+                
+                // Update UI
+                updateFlagFilterUI(dropdownContent);
+                
+                // Close dropdown
+                dropdownContent.style.display = 'none';
+            });
+            
+            dropdownContent.appendChild(envItem);
+        });
+        
+        // Add section divider if we have boolean columns too
+        if (actualBooleanColumns.size > 0) {
+            const divider = document.createElement('div');
+            divider.style.height = '1px';
+            divider.style.backgroundColor = '#555';
+            divider.style.margin = '5px 0';
+            dropdownContent.appendChild(divider);
+        }
+    }
+    
+    // BOOLEAN FLAGS SECTION
+    if (actualBooleanColumns.size > 0) {
+        const booleanHeader = document.createElement('div');
+        booleanHeader.style.padding = '8px 10px';
+        booleanHeader.style.fontWeight = 'bold';
+        booleanHeader.style.backgroundColor = '#2a2a2a';
+        booleanHeader.style.borderBottom = '1px solid #555';
+        booleanHeader.style.color = '#2196F3';
+        booleanHeader.style.fontSize = '13px';
+        booleanHeader.textContent = `Boolean Flags (${actualBooleanColumns.size})`;
+        dropdownContent.appendChild(booleanHeader);
+        
+        // Convert to array and sort
+        const sortedBooleanColumns = Array.from(actualBooleanColumns).sort();
+        
+        // Add each boolean column to the dropdown
+        sortedBooleanColumns.forEach(column => {
+            const flagItem = document.createElement('div');
+            flagItem.className = 'flag-item boolean-flag-item';
+            flagItem.dataset.flagProperty = column;
+            flagItem.style.padding = '10px 15px';
+            flagItem.style.cursor = 'pointer';
+            flagItem.style.borderBottom = '1px solid #3a3a3a';
+            flagItem.style.color = 'white';
+            flagItem.style.fontSize = '13px';
+            
+            // Format property name for display
+            const displayName = column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            flagItem.textContent = displayName;
+            
+            // Highlight if currently selected
+            if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) {
+                flagItem.style.backgroundColor = 'white';
+                flagItem.style.color = 'black';
+            }
+            
+            flagItem.addEventListener('mouseover', function() {
+                if (!(flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null)) {
+                    this.style.backgroundColor = '#444';
+                }
+            });
+            
+            flagItem.addEventListener('mouseout', function() {
+                if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) {
+                    this.style.backgroundColor = 'white';
+                    this.style.color = 'black';
+                } else {
+                    this.style.backgroundColor = 'transparent';
+                    this.style.color = 'white';
+                }
+            });
+            
+            flagItem.addEventListener('click', function() {
+                const propertyName = this.dataset.flagProperty;
+                console.log(`Boolean flag filter clicked: ${propertyName}`);
+                
+                // Set filter state
+                flagFilterEnabled = true;
+                currentFlagColumn = propertyName;
+                currentEnvValue = null; // Not an environment filter
+                
+                // Set global filter state
+                window.flagFilterEnabled = true;
+                window.currentFlagColumn = propertyName;
+                window.currentEnvValue = null;
+                
+                // Apply the boolean filter
+                applyLocalFilter(propertyName);
+                
+                // Update UI
+                updateFlagFilterUI(dropdownContent);
+                
+                // Close dropdown
+                dropdownContent.style.display = 'none';
+            });
+            
+            dropdownContent.appendChild(flagItem);
+        });
+    }
+    
+    // Show message if no filters available
+    if (!hasEnvColumn && actualBooleanColumns.size === 0) {
+        const noFlagsItem = document.createElement('div');
+        noFlagsItem.style.padding = '10px';
+        noFlagsItem.style.color = '#aaa';
+        noFlagsItem.textContent = 'No environment values or boolean flags found';
+        dropdownContent.appendChild(noFlagsItem);
+    }
+}
+
+// ADD this new function to handle environment filtering
+
+function applyEnvironmentFilter(envValue) {
+    if (!window.catalogDataWithFlags) {
+        console.warn('No catalog data available for environment filtering');
+        showNotification('No catalog data available for filtering', 3000, 'warning');
+        return;
+    }
+    
+    console.log(`Applying environment filter for value: ${envValue} (${ENV_DESCRIPTIONS[envValue]})`);
+    
+    showNotification(true, `Filtering by ${ENV_DESCRIPTIONS[envValue]}...`);
+    
+    let visibleCount = 0;
+    const targetEnvValue = parseInt(envValue);
+    
+    console.log(`Using target environment value: ${targetEnvValue} (${typeof targetEnvValue})`);
+    
+    // Handle canvas-based overlay
+    if (window.catalogDataForOverlay && typeof updateCanvasOverlay === 'function') {
+        console.log('Applying environment filter to canvas overlay');
+        
+        // Filter the overlay data
+        window.catalogDataForOverlay.forEach((obj, index) => {
+            if (obj && 'env' in obj) {
+                const objEnvValue = parseInt(obj.env);
+                const matchesEnv = (objEnvValue === targetEnvValue);
+                
+                // Set filter property on the object
+                obj.passesFilter = matchesEnv;
+                
+                if (matchesEnv) {
+                    visibleCount++;
+                }
+            } else {
+                obj.passesFilter = false;
+            }
+        });
+        
+        // Update the canvas overlay
+        updateCanvasOverlay();
+    }
+    
+    // Handle DOM-based overlay (if catalogDots exist)
+    if (window.catalogDots && window.catalogDots.length > 0) {
+        console.log('Applying environment filter to DOM dots');
+        
+        window.catalogDots.forEach((dot, i) => {
+            if (!dot || !dot.dataset) {
+                console.warn(`Dot at index ${i} is invalid`);
+                return;
+            }
+            
+            // Get the object index from the dot's dataset
+            const dotIndex = parseInt(dot.dataset.index);
+            
+            if (isNaN(dotIndex) || dotIndex >= window.catalogDataWithFlags.length) {
+                dot.style.display = 'none';
+                dot.dataset.passesFilter = 'false';
+                return;
+            }
+            
+            // Get the corresponding data object
+            const objData = window.catalogDataWithFlags[dotIndex];
+            let matchesEnv = false;
+            
+            if (objData && 'env' in objData) {
+                const objEnvValue = parseInt(objData.env);
+                matchesEnv = (objEnvValue === targetEnvValue);
+                
+                if (matchesEnv) {
+                    visibleCount++;
+                }
+            }
+            
+            // Set dot visibility
+            dot.style.display = matchesEnv ? 'block' : 'none';
+            dot.dataset.passesFilter = matchesEnv ? 'true' : 'false';
+        });
+        
+        // Update DOM overlay
+        if (typeof updateOverlay === 'function') {
+            updateOverlay();
+        }
+    }
+    
+    console.log(`Environment filter results: ${visibleCount} objects match env=${targetEnvValue}`);
+    
+    showNotification(false);
+    
+    if (visibleCount === 0) {
+        showNotification(`No objects found in "${ENV_DESCRIPTIONS[targetEnvValue]}" environment`, 3000, 'warning');
+    } else {
+        showNotification(`Showing ${visibleCount} objects in "${ENV_DESCRIPTIONS[targetEnvValue]}"`, 2500, 'success');
+    }
+}
+
+// Also add this improved updateFlagFilterUI function to ensure proper visual feedback
+
+function updateFlagFilterUI(dropdownContent) {
+    // Update button appearance
+    if (flagFilterButton) {
+        if (flagFilterEnabled) {
+            flagFilterButton.style.backgroundColor = '#007bff'; // Blue when filter active
+            flagFilterButton.style.borderColor = '#007bff';
+            flagFilterButton.style.color = 'white';
+        } else {
+            flagFilterButton.style.backgroundColor = '#444'; // Default gray
+            flagFilterButton.style.borderColor = '#666';
+            flagFilterButton.style.color = '#fff';
+        }
+    }
+    
+    // Update dropdown items
+    const flagItems = dropdownContent.querySelectorAll('.flag-item');
+    flagItems.forEach(item => {
+        // Reset all items first
+        item.style.backgroundColor = 'transparent';
+        item.style.color = 'white';
+        
+        // Highlight selected item based on filtering mode
+        if (item.textContent === 'No Filter (Show All)' && !flagFilterEnabled) {
+            // No filter selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        } 
+        else if (item.classList.contains('env-item') && 
+                flagFilterEnabled && 
+                currentFlagColumn === 'env' && 
+                item.dataset.envValue == currentEnvValue) {
+            // Environment value selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        }
+        else if (!item.classList.contains('env-item') && 
+                flagFilterEnabled &&
+                item.textContent === currentFlagColumn && 
+                currentEnvValue === null) {
+            // Boolean flag selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        }
+    });
+}
+
+
+
+function updateFlagFilterUI(dropdownContent) {
+    // Update button appearance
+    if (flagFilterButton) {
+        if (flagFilterEnabled) {
+            flagFilterButton.style.backgroundColor = '#007bff'; // Blue when filter active
+            flagFilterButton.style.borderColor = '#007bff';
+            flagFilterButton.style.color = 'white';
+        } else {
+            flagFilterButton.style.backgroundColor = '#444'; // Default gray
+            flagFilterButton.style.borderColor = '#666';
+            flagFilterButton.style.color = '#fff';
+        }
+    }
+    
+    // Update dropdown items
+    const flagItems = dropdownContent.querySelectorAll('.flag-item');
+    flagItems.forEach(item => {
+        // Reset all items first
+        item.style.backgroundColor = 'transparent';
+        item.style.color = 'white';
+        
+        // Highlight selected item based on filtering mode
+        if (item.textContent === 'No Filter (Show All)' && !flagFilterEnabled) {
+            // No filter selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        } 
+        else if (item.classList.contains('env-item') && 
+                flagFilterEnabled && 
+                currentFlagColumn === 'env' && 
+                item.dataset.envValue == currentEnvValue) {
+            // Environment value selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        }
+        else if (!item.classList.contains('env-item') && 
+                flagFilterEnabled &&
+                item.textContent === currentFlagColumn && 
+                currentEnvValue === null) {
+            // Boolean flag selected
+            item.style.backgroundColor = 'white';
+            item.style.color = 'black';
+        }
+    });
+}
+
+// Add this helper function to debug the filter state
+function debugFilterState() {
+    console.log('=== FILTER DEBUG STATE ===');
+    console.log('flagFilterEnabled:', flagFilterEnabled);
+    console.log('currentFlagColumn:', currentFlagColumn);
+    console.log('currentEnvValue:', currentEnvValue);
+    console.log('window.flagFilterEnabled:', window.flagFilterEnabled);
+    console.log('window.catalogDots length:', window.catalogDots?.length);
+    console.log('window.catalogDataWithFlags length:', window.catalogDataWithFlags?.length);
+    
+    if (window.catalogDots && window.catalogDots.length > 0) {
+        const visibleCount = window.catalogDots.filter(dot => 
+            dot.style.display !== 'none'
+        ).length;
+        console.log('Currently visible dots:', visibleCount);
+    }
+}
+
+
+function debugFlagFilterButton() {
+    const container = document.querySelector('.flag-filter-container');
+    const button = document.querySelector('.flag-filter-button');
+    const toolbar = document.querySelector('.toolbar');
+    
+    console.log('=== FLAG FILTER BUTTON DEBUG ===');
+    console.log('Container exists:', !!container);
+    console.log('Button exists:', !!button);
+    console.log('Toolbar exists:', !!toolbar);
+    
+    if (container) {
+        console.log('Container display:', window.getComputedStyle(container).display);
+        console.log('Container visibility:', window.getComputedStyle(container).visibility);
+        console.log('Container in DOM:', document.body.contains(container));
+    }
+    
+    if (button) {
+        console.log('Button display:', window.getComputedStyle(button).display);
+        console.log('Button visibility:', window.getComputedStyle(button).visibility);
+        console.log('Button dimensions:', button.getBoundingClientRect());
+    }
+    
+    if (toolbar) {
+        console.log('Toolbar children count:', toolbar.children.length);
+        console.log('Toolbar children:', Array.from(toolbar.children).map(child => child.className));
+    }
+}
+
+// Run this in your browser console after loading a catalog
+
 function createFlagFilterButton() {
     // Check if button already exists
     const existingButton = document.querySelector('.flag-filter-container');
     if (existingButton) {
+        // If it exists, force it to be visible
+        existingButton.style.cssText = `
+               display: inline-block !important;
+    position: relative !important;
+    width: auto !important;
+    height: 100%;
+    margin-right: 5px !important;
+    margin-left: 5px;
+    margin-top: 5px;
+        `;
+        const button = existingButton.querySelector('.flag-filter-button');
+        if (button) {
+            button.style.cssText = `
+                  width: 38px !important;
+    height: 41px !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
+    color: rgb(255, 255, 255) !important;
+    border: 1px solid white !important;
+    cursor: pointer !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    margin: 0px 0px !important;
+    border-radius: 0px !important;
+    margin-top: 5px !important;
+    position: relative;
+    top: 1px;
+            `;
+        }
         return existingButton;
     }
     
     // Create a button container
     const flagFilterContainer = document.createElement('div');
     flagFilterContainer.className = 'flag-filter-container';
-    flagFilterContainer.style.display = 'inline-block'; // Make sure it's visible
+    flagFilterContainer.style.cssText = `
+        display: inline-block !important;
+    position: relative !important;
+    width: auto !important;
+    height: 100%;
+    margin-right: 5px !important;
+    margin-left: 5px;
+    margin-top: 5px;
+    `;
     
     // Create the main button with just an icon
     flagFilterButton = document.createElement('button');
     flagFilterButton.className = 'flag-filter-button';
-    flagFilterButton.style.display = 'none'; // Hide by default
+    flagFilterButton.title = 'Filter regions by catalog flags';
+    flagFilterButton.style.cssText = `
+         width: 38px !important;
+    height: 41px !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
+    color: rgb(255, 255, 255) !important;
+    border: 1px solid white !important;
+    cursor: pointer !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    margin: 0px 0px !important;
+    border-radius: 0px !important;
+    margin-top: 5px !important;
+    position: relative;
+    top: 1px;
+    `;
 
     // Use a filter icon
     const svgNS = "http://www.w3.org/2000/svg";
@@ -4848,7 +5787,12 @@ function createFlagFilterButton() {
     svg.setAttribute("width", "16");
     svg.setAttribute("height", "16");
     svg.setAttribute("viewBox", "0 0 24 24");
-    svg.style.fill = "currentColor";
+    svg.style.cssText = `
+        fill: currentColor !important;
+        display: block !important;
+        width: 16px !important;
+        height: 16px !important;
+    `;
     
     // Create the filter icon paths
     const path = document.createElementNS(svgNS, "path");
@@ -4856,81 +5800,53 @@ function createFlagFilterButton() {
     svg.appendChild(path);
     
     flagFilterButton.appendChild(svg);
-    flagFilterButton.title = 'Filter regions by catalog flags';
     
-    // Find the histogram button to copy styles
-    const histogramButton = document.querySelector('.dynamic-range-button');
+    // Add event listener for the dropdown
+  // In createFlagFilterButton function, replace the click event listener with:
+flagFilterButton.addEventListener('click', function(event) {
+    event.stopPropagation();
     
-    // Copy all styles from histogram button if it exists
-    if (histogramButton) {
-        // Get computed style of histogram button
-        const histoStyle = window.getComputedStyle(histogramButton);
-        
-        // Apply the same styles to our filter button
-        flagFilterButton.style.padding = histoStyle.padding;
-        flagFilterButton.style.backgroundColor = histoStyle.backgroundColor;
-        flagFilterButton.style.color = histoStyle.color;
-        flagFilterButton.style.border = histoStyle.border;
-        flagFilterButton.style.borderRadius = histoStyle.borderRadius;
-        flagFilterButton.style.width = histoStyle.width;
-        flagFilterButton.style.height = histoStyle.height;
-        flagFilterButton.style.cursor = 'pointer';
-        flagFilterButton.style.display = 'flex';
-        flagFilterButton.style.alignItems = 'center';
-        flagFilterButton.style.justifyContent = 'center';
-        flagFilterButton.style.marginRight = '5px';
-    } else {
-        // Fallback styles if histogram button is not found
-        flagFilterButton.style.padding = '6px';
-        flagFilterButton.style.backgroundColor = '#444';
-        flagFilterButton.style.color = '#fff';
-        flagFilterButton.style.border = 'none';
-        flagFilterButton.style.borderRadius = '4px';
-        flagFilterButton.style.cursor = 'pointer';
-        flagFilterButton.style.width = '32px';
-        flagFilterButton.style.height = '32px';
-        flagFilterButton.style.display = 'flex';
-        flagFilterButton.style.alignItems = 'center';
-        flagFilterButton.style.justifyContent = 'center';
-        flagFilterButton.style.marginRight = '5px';
+    let dropdownContent = flagFilterContainer.querySelector('.flag-dropdown-content');
+    
+    if (!dropdownContent) {
+        dropdownContent = document.createElement('div');
+        dropdownContent.className = 'flag-dropdown-content';
+        dropdownContent.style.cssText = `
+            display: none !important;
+            position: absolute !important;
+            background-color: #222 !important;
+            min-width: 250px !important;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.4) !important;
+            z-index: 1000 !important;
+            border-radius: 4px !important;
+            top: 100% !important;
+            right: 0 !important;
+            margin-top: 5px !important;
+            max-height: 400px !important;
+            overflow-y: auto !important;
+        `;
+        flagFilterContainer.appendChild(dropdownContent);
     }
     
-    // Add event listener
-    flagFilterButton.addEventListener('click', function() {
-        // Create dropdown content if it doesn't exist yet
-        if (!flagFilterContainer.querySelector('.flag-dropdown-content')) {
-            const dropdownContent = document.createElement('div');
-            dropdownContent.className = 'flag-dropdown-content';
-            dropdownContent.style.display = 'none';
-            dropdownContent.style.position = 'absolute';
-            dropdownContent.style.backgroundColor = '#222';
-            dropdownContent.style.minWidth = '200px';
-            dropdownContent.style.boxShadow = '0px 8px 16px 0px rgba(0,0,0,0.4)';
-            dropdownContent.style.zIndex = '1000';
-            dropdownContent.style.borderRadius = '4px';
-            dropdownContent.style.top = '100%';
-            dropdownContent.style.right = '0';
-            dropdownContent.style.marginTop = '5px';
-            
-            // Add a loading message initially
-            const loadingItem = document.createElement('div');
-            loadingItem.style.padding = '10px';
-            loadingItem.style.color = '#aaa';
-            loadingItem.textContent = 'Loading flag options...';
-            dropdownContent.appendChild(loadingItem);
-            
-            flagFilterContainer.appendChild(dropdownContent);
-        }
+    if (dropdownContent.style.display === 'none') {
+        dropdownContent.style.display = 'block';
         
-        const dropdownContent = flagFilterContainer.querySelector('.flag-dropdown-content');
-        if (dropdownContent.style.display === 'none') {
-            dropdownContent.style.display = 'block';
-            
-            // If a catalog is loaded, populate the dropdown with boolean columns
-            if (activeCatalog) {
-                populateFlagDropdown(dropdownContent);
-            }
+        // Call populateFlagDropdown directly - it will handle the catalog detection
+        if (typeof populateFlagDropdown === 'function') {
+            populateFlagDropdown(dropdownContent);
         } else {
+            console.error('populateFlagDropdown function not found');
+            dropdownContent.innerHTML = '<div style="padding: 10px; color: #f44;">populateFlagDropdown function missing</div>';
+        }
+    } else {
+        dropdownContent.style.display = 'none';
+    }
+});
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(event) {
+        const dropdownContent = flagFilterContainer.querySelector('.flag-dropdown-content');
+        if (dropdownContent && !flagFilterContainer.contains(event.target)) {
             dropdownContent.style.display = 'none';
         }
     });
@@ -4940,30 +5856,32 @@ function createFlagFilterButton() {
     
     // Find the toolbar
     const toolbar = document.querySelector('.toolbar');
-        
+    if (!toolbar) {
+        console.error('Toolbar not found for flag filter button');
+        return null;
+    }
+    
     // Find the histogram button or any other reference element in the toolbar
     const existingHistogramButton = toolbar.querySelector('.dynamic-range-button');
-    const zoomInButton = toolbar.querySelector('button:first-child'); // Fallback reference
+    const zoomInButton = toolbar.querySelector('button:first-child');
 
     // Insert the flag filter button in the appropriate position
-  // Insert the flag filter button in the appropriate position
     if (existingHistogramButton) {
-        // Insert before the histogram button
-        toolbar.insertBefore(flagFilterContainer, existingHistogramButton);
+        // toolbar.insertBefore(flagFilterContainer, existingHistogramButton);
         console.log("Inserted flag filter button before histogram button");
     } else if (zoomInButton) {
-        // Fallback: Insert before the first button (likely zoom in)
         toolbar.insertBefore(flagFilterContainer, zoomInButton);
         console.log("Inserted flag filter button before first button");
     } else {
-        // Last resort: Add to beginning of toolbar
         toolbar.prepend(flagFilterContainer);
         console.log("Prepended flag filter button to toolbar");
     }
-        
+    
     console.log("Flag filter button created and added to toolbar");
     return flagFilterContainer;
 }
+
+
 
 // Update this function to make the button white when filter is applied
 function updateFlagFilterUI(dropdownContent) {
@@ -4996,7 +5914,7 @@ function updateFlagFilterUI(dropdownContent) {
 
 // New endpoint to get all catalog data with flags in a single request
 function loadCatalogWithFlags(catalogName) {
-    showProgress(true, 'Loading catalog with flag data...');
+    showNotification(true, 'Loading catalog with flag data...');
     
     fetch(`/catalog-with-flags/${catalogName}`)
         .then(response => response.json())
@@ -5033,11 +5951,11 @@ function loadCatalogWithFlags(catalogName) {
                 applyLocalFilter(currentFlagColumn);
             }
             
-            showProgress(false);
+            showNotification(false);
         })
         .catch(error => {
             console.error('Error loading catalog with flags:', error);
-            showProgress(false);
+            showNotification(false);
             showNotification('Error loading catalog data', 3000);
         });
 }
@@ -5232,39 +6150,39 @@ function loadCatalogWithFlags(catalogName) {
             const currentViewer = window.viewer || window.tiledViewer; // Find the active viewer
             
             if (!currentViewer) {
-                 console.log("mousemove: No viewer found");
+                 // console.log("mousemove: No viewer found");
                  if (innerContainer) innerContainer.classList.remove('visible'); 
                  return;
             }
             if (!currentViewer.world) {
-                 console.log("mousemove: Viewer found, but no world");
+                 // console.log("mousemove: Viewer found, but no world");
                  if (innerContainer) innerContainer.classList.remove('visible');
                  return;
             }
              if (!currentViewer.world.getItemAt(0)) {
-                 console.log("mousemove: Viewer world found, but no item at index 0");
+                 // console.log("mousemove: Viewer world found, but no item at index 0");
                  if (innerContainer) innerContainer.classList.remove('visible');
                  return;
             }
              if (!window.fitsData) {
-                 console.log("mousemove: No FITS data found");
+                 // console.log("mousemove: No FITS data found");
                  if (innerContainer) innerContainer.classList.remove('visible');
                  return;
             }
              
              // console.log("mousemove: Viewer and FITS data OK"); // Log on success if needed
 
-            // Ensure WCS is parsed (assuming it's stored in window.parsedWCS after loading)
-            if (!window.parsedWCS && window.fitsData.wcs) {
-                 console.log("mousemove: Attempting to parse WCS");
-                 try {
-                     window.parsedWCS = parseWCS(window.fitsData.wcs);
-                     console.log("WCS parsed successfully for coordinate display.");
-                 } catch (e) {
-                     console.error("Failed to parse WCS for coordinate display:", e);
-                     window.parsedWCS = null; // Mark as failed
-                 }
-            }
+            // // Ensure WCS is parsed (assuming it's stored in window.parsedWCS after loading)
+            // if (!window.parsedWCS && window.fitsData.wcs) {
+            //      // console.log("mousemove: Attempting to parse WCS");
+            //      try {
+            //          window.parsedWCS = parseWCS(window.fitsData.wcs);
+            //          // console.log("WCS parsed successfully for coordinate display.");
+            //      } catch (e) {
+            //          console.error("Failed to parse WCS for coordinate display:", e);
+            //          window.parsedWCS = null; // Mark as failed
+            //      }
+            // }
 
 
             // Make sure container is visible
@@ -5272,25 +6190,34 @@ function loadCatalogWithFlags(catalogName) {
                 // console.log("mousemove: Adding 'visible' class"); // Optional log
                 innerContainer.classList.add('visible');
             } else {
-                 console.log("mousemove: innerContainer not found when trying to make visible");
+                 // console.log("mousemove: innerContainer not found when trying to make visible");
                  return; // Should not happen if init checks passed
             }
 
             // Get mouse position relative to the viewer element
             let viewportPoint;
             try {
+                // More defensive check for mouseTracker
+                if (!currentViewer.mouseTracker) {
+                    // console.log("mousemove: currentViewer.mouseTracker is not available.");
+                    if (innerContainer) innerContainer.classList.remove('visible');
+                    return;
+                }
                 const mousePos = currentViewer.mouseTracker.getMousePosition(event);
                  if (!mousePos) {
-                    console.log("mousemove: getMousePosition returned null");
+                    // console.log("mousemove: getMousePosition returned null");
+                    if (innerContainer) innerContainer.classList.remove('visible');
                     return;
                  }
                 viewportPoint = currentViewer.viewport.pointFromPixel(mousePos);
                  if (!viewportPoint) {
-                    console.log("mousemove: pointFromPixel returned null");
+                    // console.log("mousemove: pointFromPixel returned null");
+                    if (innerContainer) innerContainer.classList.remove('visible');
                      return;
                  }
             } catch (e) {
                 console.error("mousemove: Error getting viewport point:", e);
+                if (innerContainer) innerContainer.classList.remove('visible');
                 return;
             }
             // console.log("mousemove: Got viewport point:", viewportPoint);
@@ -5767,144 +6694,187 @@ function addHistogramInteraction(canvas, minInput, maxInput) {
 // --- End NEW ---
 
 // Rename updateHistogram and modify its content
-function updateHistogramBackground() { // Renamed
+async function updateHistogramBackground() { // Renamed and made async
     const canvas = document.getElementById('histogram-bg-canvas'); // Use BG canvas ID
     if (!canvas) {
         console.log('Histogram background canvas not found, skipping update');
         return;
     }
-    
-    // Check if we're in tiled mode - if so, fetch server histogram (which draws on bg canvas? Need to verify)
-    const inTiledMode = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
-    if (inTiledMode) {
-        console.log('Tiled mode: Fetching server histogram for background');
-        fetchServerHistogram(); // Assuming this function now targets 'histogram-bg-canvas'
-        return;
-    }
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear at the beginning
 
-    // Check if we have access to fitsData with pixel data
-    if (!window.fitsData || !window.fitsData.data || !window.fitsData.data.length === 0) {
-        console.log('No FITS data available for histogram background');
-        // Optionally draw an empty message on the background canvas
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
-        ctx.fillText('No FITS data available', canvas.width / 2, canvas.height / 2);
-        return;
-    }
-    
-    // --- Keep the data processing and bar/axis drawing logic --- 
     try {
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        
-        // Clear the background canvas
-        ctx.clearRect(0, 0, width, height);
-        
-        // ... (Calculate bins, range, skipFactor, validPixelCount etc. as before) ...
-         const numBins = 100;
-         const bins = new Array(numBins).fill(0);
-         const minValue = window.fitsData.min_value;
-         const maxValue = window.fitsData.max_value;
-         const range = maxValue - minValue;
-        
-         if (range <= 0 || !isFinite(range)) {
-             console.log('Invalid data range:', minValue, maxValue);
-             // Draw empty message on bg canvas
-             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
-             ctx.fillText('Invalid data range', width / 2, height / 2);
-             return;
-         }
-        
-         const maxSampleSize = 500000;
-         const skipFactor = Math.max(1, Math.floor((window.fitsData.width * window.fitsData.height) / maxSampleSize));
-         let pixelCount = 0;
-         let validPixelCount = 0;
-         for (let y = 0; y < window.fitsData.height; y++) {
-             for (let x = 0; x < window.fitsData.width; x += skipFactor) {
-                 pixelCount++;
-                 if (pixelCount % skipFactor !== 0) continue;
-                 let val; try { val = window.fitsData.data[y][x]; } catch (e) { continue; }
-                 if (!isNaN(val) && isFinite(val)) {
-                     validPixelCount++;
-                     if (val < minValue || val > maxValue) continue;
-                     const binIndex = Math.min(numBins - 1, Math.floor(((val - minValue) / range) * numBins));
-                     bins[binIndex]++;
-                 }
-             }
-         }
-        
-         let maxBinCount = 0; for (let i = 0; i < numBins; i++) { maxBinCount = Math.max(maxBinCount, bins[i]); }
-         if (maxBinCount === 0) {
-             // Draw empty message on bg canvas
-             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
-             ctx.fillText('No pixels in selected range', width / 2, height / 2);
-             return;
-         }
-         const logMaxBinCount = Math.log(maxBinCount + 1);
+        const dataSource = await getHistogramPixelDataSource(); // Await the promise
 
-        // Draw the axes and labels (directly on bg canvas)
+        if (dataSource.source === 'server_needed') {
+            console.log('Client-side data unavailable or not ideal, fetching histogram from server.', dataSource.message);
+            fetchServerHistogram(); // This function will handle drawing on the canvas
+            return; // Exit, as fetchServerHistogram will take over
+        }
+
+        if (dataSource.source === 'error' || dataSource.source === 'unavailable') {
+            console.log('Histogram data source issue:', dataSource.message);
+            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+            // ... (text wrapping for message remains the same)
+            const maxTextWidth = canvas.width - 20;
+            const lines = [];
+            let currentLine = '';
+            const words = dataSource.message.split(' ');
+            for (const word of words) {
+                const testLine = currentLine + word + ' ';
+                if (ctx.measureText(testLine).width > maxTextWidth && currentLine.length > 0) {
+                    lines.push(currentLine.trim());
+                    currentLine = word + ' ';
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            lines.push(currentLine.trim());
+            
+            let yPos = canvas.height / 2 - (lines.length -1) * 7; 
+            for (const line of lines) {
+                ctx.fillText(line, canvas.width / 2, yPos);
+                yPos += 15; 
+            }
+            return;
+        }
+
+        const {
+            pixels: pixelDataForHist, 
+            width: dataWidth,
+            height: dataHeight,
+            dataMin: sourceDataMin, 
+            dataMax: sourceDataMax, 
+            pixelNativeMin, 
+            pixelNativeMax  
+        } = dataSource;
+        
+        // --- Keep the data processing and bar/axis drawing logic --- 
+        // const ctx = canvas.getContext('2d'); // Already got context
+        const canvasFullWidth = canvas.width;
+        const canvasFullHeight = canvas.height;
+        
+        const numBins = 100;
+        const bins = new Array(numBins).fill(0);
+
+        const minInput = document.getElementById('min-range-input');
+        const maxInput = document.getElementById('max-range-input');
+        let histUIMin = sourceDataMin;
+        let histUIMax = sourceDataMax;
+
+        if (minInput && maxInput && minInput.value !== "" && maxInput.value !== "") {
+            const parsedMin = parseFloat(minInput.value);
+            const parsedMax = parseFloat(maxInput.value);
+            if (!isNaN(parsedMin) && !isNaN(parsedMax) && parsedMin < parsedMax) {
+                histUIMin = parsedMin;
+                histUIMax = parsedMax;
+            }
+        }
+        
+        const histDisplayRange = histUIMax - histUIMin;
+        
+        if (histDisplayRange <= 0 || !isFinite(histDisplayRange)) {
+            console.log('Invalid histogram display range:', histUIMin, histUIMax);
+            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+            ctx.fillText('Invalid data range for display', canvasFullWidth / 2, canvasFullHeight / 2);
+            return;
+        }
+        
+        const maxSampleSize = 500000;
+        const skipFactor = Math.max(1, Math.floor((dataWidth * dataHeight) / maxSampleSize));
+        let validPixelCount = 0;
+
+        for (let y = 0; y < dataHeight; y += skipFactor) {
+            if (!pixelDataForHist[y]) continue; 
+            for (let x = 0; x < dataWidth; x += skipFactor) {
+                let rawPixelVal = pixelDataForHist[y][x];
+                if (rawPixelVal === undefined) continue;
+
+                let actualVal = rawPixelVal; 
+
+                if (dataSource.source === 'overview') {
+                    if (pixelNativeMax !== pixelNativeMin) { 
+                        actualVal = (rawPixelVal - pixelNativeMin) / (pixelNativeMax - pixelNativeMin) * (sourceDataMax - sourceDataMin) + sourceDataMin;
+                    } else {
+                        actualVal = sourceDataMin; 
+                    }
+                }
+
+                if (!isNaN(actualVal) && isFinite(actualVal)) {
+                    validPixelCount++;
+                    if (actualVal < histUIMin || actualVal > histUIMax) continue;
+                    const binIndex = Math.min(numBins - 1, Math.floor(((actualVal - histUIMin) / histDisplayRange) * numBins));
+                    bins[binIndex]++;
+                }
+            }
+        }
+        
+        let maxBinCount = 0; for (let i = 0; i < numBins; i++) { maxBinCount = Math.max(maxBinCount, bins[i]); }
+        if (maxBinCount === 0) {
+            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+            ctx.fillText('No pixels in selected range', canvasFullWidth / 2, canvasFullHeight / 2);
+            return;
+        }
+        const logMaxBinCount = Math.log(maxBinCount + 1);
+
         const padding = { top: 30, right: 20, bottom: 40, left: 60 };
-        const histHeight = height - padding.top - padding.bottom;
+        const histCanvasRenderWidth = canvasFullWidth - padding.left - padding.right;
+        const histCanvasRenderHeight = canvasFullHeight - padding.top - padding.bottom;
+
         ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
-        // Y-axis line
-        ctx.beginPath(); ctx.moveTo(padding.left, padding.top); ctx.lineTo(padding.left, height - padding.bottom); ctx.stroke();
-        // X-axis line
-        ctx.beginPath(); ctx.moveTo(padding.left, height - padding.bottom); ctx.lineTo(width - padding.right, height - padding.bottom); ctx.stroke();
-        // Y Ticks & Labels
+        ctx.beginPath(); ctx.moveTo(padding.left, padding.top); ctx.lineTo(padding.left, canvasFullHeight - padding.bottom); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(padding.left, canvasFullHeight - padding.bottom); ctx.lineTo(canvasFullWidth - padding.right, canvasFullHeight - padding.bottom); ctx.stroke();
+        
         ctx.fillStyle = '#aaa'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
         const numYTicks = 5;
         for (let i = 0; i <= numYTicks; i++) { 
-            const y = height - padding.bottom - (i / numYTicks) * histHeight;
-            ctx.beginPath(); ctx.moveTo(padding.left - 5, y); ctx.lineTo(padding.left, y); ctx.stroke();
+            const yPos = canvasFullHeight - padding.bottom - (i / numYTicks) * histCanvasRenderHeight;
+            ctx.beginPath(); ctx.moveTo(padding.left - 5, yPos); ctx.lineTo(padding.left, yPos); ctx.stroke();
             const logValue = (i / numYTicks) * logMaxBinCount;
-            const actualValue = Math.round(Math.exp(logValue) - 1);
-            ctx.fillText(actualValue.toLocaleString(), padding.left - 8, y + 4);
+            const actualCountValue = Math.round(Math.exp(logValue) - 1);
+            ctx.fillText(actualCountValue.toLocaleString(), padding.left - 8, yPos + 4);
         }
-        // X Ticks & Labels
         ctx.textAlign = 'center';
         const numXTicks = 5;
         for (let i = 0; i <= numXTicks; i++) {
-            const x = padding.left + (i / numXTicks) * (width - padding.left - padding.right);
-            ctx.beginPath(); ctx.moveTo(x, height - padding.bottom); ctx.lineTo(x, height - padding.bottom + 5); ctx.stroke();
-            const value = minValue + (i / numXTicks) * range;
-            ctx.fillText(value.toFixed(2), x, height - padding.bottom + 20);
+            const xPos = padding.left + (i / numXTicks) * histCanvasRenderWidth;
+            ctx.beginPath(); ctx.moveTo(xPos, canvasFullHeight - padding.bottom); ctx.lineTo(xPos, canvasFullHeight - padding.bottom + 5); ctx.stroke();
+            const value = histUIMin + (i / numXTicks) * histDisplayRange;
+            ctx.fillText(value.toExponential(2), xPos, canvasFullHeight - padding.bottom + 20); 
         }
-        // Axis Labels
-        ctx.save(); ctx.translate(15, height / 2); ctx.rotate(-Math.PI / 2); ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.save(); ctx.translate(10, padding.top + histCanvasRenderHeight / 2); ctx.rotate(-Math.PI / 2); ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
         ctx.fillText('Pixel Count (log)', 0, 0); ctx.restore();
         ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
-        const xAxisLabel = window.fitsData.wcs && window.fitsData.wcs.bunit ? window.fitsData.wcs.bunit : 'Value';
-        ctx.fillText(xAxisLabel, width / 2, height - 5);
-        // Pixel Count Stat
+        const xAxisLabelText = (window.fitsData && window.fitsData.wcs && window.fitsData.wcs.bunit) ? window.fitsData.wcs.bunit : 'Value (UNIT)';
+        ctx.fillText(xAxisLabelText, canvasFullWidth / 2, canvasFullHeight - 5);
+        
         ctx.fillStyle = '#aaa'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
-        ctx.fillText(`Pixels: ${validPixelCount.toLocaleString()}`, width / 2, padding.top - 15);
+        ctx.fillText(`Pixels in Hist: ${validPixelCount.toLocaleString()}`, canvasFullWidth / 2, padding.top - 15);
 
-        // Draw histogram bars (directly on bg canvas)
-        ctx.fillStyle = 'rgba(0, 180, 0, 0.7)'; // Green bars
-        const barWidth = (width - padding.left - padding.right) / numBins;
+        ctx.textAlign = 'left';
+        ctx.fillText(`Hist Min: ${histUIMin.toExponential(2)}`, padding.left, padding.top - 10);
+        ctx.textAlign = 'right';
+        ctx.fillText(`Hist Max: ${histUIMax.toExponential(2)}`, canvasFullWidth - padding.right, padding.top - 10);
+
+        ctx.fillStyle = 'rgba(0, 180, 0, 0.7)'; 
+        const barWidth = histCanvasRenderWidth / numBins;
         for (let i = 0; i < numBins; i++) {
             const binCount = bins[i];
             if (binCount === 0) continue;
-            const logHeight = Math.log(binCount + 1) / logMaxBinCount * histHeight;
-            const x = padding.left + i * barWidth;
-            const y = height - padding.bottom - logHeight;
-            ctx.fillRect(x, y, barWidth - 1, logHeight); // Use barWidth - 1 for slight gap
+            const logHeight = Math.log(binCount + 1) / logMaxBinCount * histCanvasRenderHeight;
+            const xRect = padding.left + i * barWidth;
+            const yRect = canvasFullHeight - padding.bottom - logHeight;
+            ctx.fillRect(xRect, yRect, barWidth -1, logHeight); 
         }
 
-        // --- REMOVE Min/Max Line Drawing from here --- 
-
-        // Store scale info globally (needed by drawHistogramLines)
         histogramScaleInfo = {
             padding: padding,
-            histWidth: width - padding.left - padding.right,
-            histHeight: histHeight,
-            // Store the range used for THIS specific background render
-            dataMin: minValue, 
-            dataRange: range,
-            canvasWidth: width,
-            canvasHeight: height
+            histWidth: histCanvasRenderWidth, 
+            histHeight: histCanvasRenderHeight, 
+            dataMin: histUIMin, 
+            dataRange: histDisplayRange, 
+            canvasWidth: canvasFullWidth,
+            canvasHeight: canvasFullHeight
         };
         if (histogramScaleInfo.histWidth <= 0 || !isFinite(histogramScaleInfo.dataRange) || histogramScaleInfo.dataRange <= 0) {
              console.warn('Invalid histogram scale parameters calculated in background update:', histogramScaleInfo);
@@ -5912,17 +6882,12 @@ function updateHistogramBackground() { // Renamed
 
     } catch (error) {
         console.error('Error updating histogram background:', error);
-        // Optionally draw error message on bg canvas
-        const canvas = document.getElementById('histogram-bg-canvas');
         if(canvas) {
-           const ctx = canvas.getContext('2d');
            ctx.clearRect(0, 0, canvas.width, canvas.height);
            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
            ctx.fillText('Error updating histogram', canvas.width / 2, canvas.height / 2);
         }
-    } finally {
-        // No need for isUpdatingHistogram flags here if it only draws background
-    }
+    } 
 }
 
 // NEW Function to draw lines (with animation)
@@ -6060,39 +7025,546 @@ function requestHistogramUpdate() {
 // Modify fetchServerHistogram if it exists to draw on bg canvas
 function fetchServerHistogram() {
     const canvas = document.getElementById('histogram-bg-canvas'); // Target BG canvas
-    // ... rest of fetch logic ...
-    // Inside .then(data => { ... drawServerHistogram(data); ... })
-     if (!canvas) return;
+    if (!canvas) {
+        console.warn("Histogram background canvas not found for fetchServerHistogram.");
+        return; // Explicitly return undefined if canvas isn't found.
+                // applyPercentile expects a promise, so this case needs careful handling
+                // or ensure this function isn't called if canvas isn't ready.
+                // For now, this matches existing early returns.
+                // A better fix might be to return Promise.reject("Canvas not found")
+    }
+
+    const minInput = document.getElementById('min-range-input');
+    const maxInput = document.getElementById('max-range-input');
+    let uiMin = null;
+    let uiMax = null;
+
+    if (minInput && maxInput) {
+        uiMin = parseFloat(minInput.value);
+        uiMax = parseFloat(maxInput.value);
+        // Validate that uiMin and uiMax are numbers and min < max
+        if (isNaN(uiMin) || isNaN(uiMax) || uiMin >= uiMax) {
+            console.warn("Invalid Min/Max values from UI for server histogram request. uiMin:", uiMin, "uiMax:", uiMax, ". Fetching default range.");
+            uiMin = null; // Fallback to server default if UI values are bad
+            uiMax = null;
+        }
+    } else {
+        console.warn("Min/Max input fields not found. Fetching default range for server histogram.");
+    }
     
-     // Show a loading message on BG canvas
-     const ctx = canvas.getContext('2d');
-     ctx.clearRect(0, 0, canvas.width, canvas.height);
-     ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
-     ctx.fillText('Loading histogram data...', canvas.width / 2, canvas.height / 2);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('Loading histogram data...', canvas.width / 2, canvas.height / 2);
     
-     fetch('/fits-histogram/')
-         .then(response => response.json())
-         .then(data => {
-             if (data.error) throw new Error(data.error);
-             drawServerHistogram(data); // Draw the received data
-             // Also draw lines based on current inputs
-             const minInput = document.getElementById('min-range-input');
-             const maxInput = document.getElementById('max-range-input');
-             if (minInput && maxInput) {
-                 const currentMin = parseFloat(minInput.value);
-                 const currentMax = parseFloat(maxInput.value);
-                 if (!isNaN(currentMin) && !isNaN(currentMax)) {
-                     drawHistogramLines(currentMin, currentMax, false); // Draw lines over server BG
-                 }
-             }
-         })
-         .catch(error => {
-             console.error('Error fetching histogram:', error);
-             // Draw error message on BG canvas
-             ctx.clearRect(0, 0, canvas.width, canvas.height);
-             ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
-             ctx.fillText('Error: ' + error.message, canvas.width / 2, canvas.height / 2);
-         });
+    let fetchUrl = '/fits-histogram/';
+    if (uiMin !== null && uiMax !== null) {
+        fetchUrl += `?min_val=${encodeURIComponent(uiMin)}&max_val=${encodeURIComponent(uiMax)}`;
+    }
+    console.log("Fetching server histogram from:", fetchUrl);
+
+    return fetch(fetchUrl) 
+        .then(response => {
+            if (!response.ok) { // Check if response status is indicative of an error
+                return response.text().then(text => { // Try to get error text from server
+                    throw new Error(`Server error: ${response.status} ${response.statusText}. ${text}`);
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) { // This is if the server *successfully* responds with a JSON containing an error message
+                console.error("Server returned error for histogram:", data.error);
+                throw new Error(data.error); // Propagate as an error to be caught by .catch
+            }
+            // This function is expected by applyPercentile to resolve with histData
+            // The original function drew directly and didn't resolve with the data.
+            // We need to ensure it resolves with the data for applyPercentile
+            drawServerHistogram(data); // Keep drawing for other uses.
+            
+            // After drawing background, draw lines based on current inputs
+            if (minInput && maxInput) {
+                const currentMin = parseFloat(minInput.value);
+                const currentMax = parseFloat(maxInput.value);
+                if (!isNaN(currentMin) && !isNaN(currentMax)) {
+                    drawHistogramLines(currentMin, currentMax, false); 
+                }
+            }
+            return data; // Resolve the promise with the histogram data
+        })
+        .catch(error => { // This catches network errors or errors thrown from !response.ok or data.error
+            console.error('Error fetching or processing server histogram:', error);
+            const message = error.message || 'Unknown error';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#aaa'; ctx.font = '14px Arial'; ctx.textAlign = 'center';
+            // Wrap text if too long
+            const maxTextWidth = canvas.width - 20;
+            const lines = [];
+            let currentLine = '';
+            const words = `Error: ${message}`.split(' ');
+            for (const word of words) {
+                const testLine = currentLine + word + ' ';
+                if (ctx.measureText(testLine).width > maxTextWidth && currentLine.length > 0) {
+                    lines.push(currentLine.trim());
+                    currentLine = word + ' ';
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            lines.push(currentLine.trim());
+            
+            let yPos = canvas.height / 2 - (lines.length -1) * 7; // Adjust start Y for multi-line
+            for (const line of lines) {
+                ctx.fillText(line, canvas.width / 2, yPos);
+                yPos += 15; // Line height
+            }
+            throw error; // Re-throw the error so the caller's .catch() in applyPercentile can handle it
+        });
+}
+
+// static/main.js
+
+// NEW Helper function to get pixel data for histogram
+function getHistogramPixelDataSource() {
+    return new Promise((resolve, reject) => {
+        // ---- CHECK CACHE FIRST ---- START ----
+        if (window.histogramOverviewPixelData && 
+            window.histogramOverviewPixelData.pixels && 
+            (window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen())) {
+            
+            let useDataMin = window.histogramOverviewPixelData.dataMin;
+            let useDataMax = window.histogramOverviewPixelData.dataMax;
+
+            // If cached overview lacks min/max, try to get them from current window.fitsData
+            if ((useDataMin === null || useDataMax === null || typeof useDataMin === 'undefined' || typeof useDataMax === 'undefined') && 
+                window.fitsData && 
+                typeof window.fitsData.min_value !== 'undefined' && 
+                typeof window.fitsData.max_value !== 'undefined') {
+                console.log("Cached overview pixel data was missing min/max, updating from current window.fitsData for histogram.");
+                useDataMin = window.fitsData.min_value;
+                useDataMax = window.fitsData.max_value;
+                // Update the cache with these values for next time
+                window.histogramOverviewPixelData.dataMin = useDataMin;
+                window.histogramOverviewPixelData.dataMax = useDataMax;
+            }
+            
+            // Only proceed if we have valid dataMin and dataMax
+            if (useDataMin !== null && useDataMax !== null && typeof useDataMin !== 'undefined' && typeof useDataMax !== 'undefined') {
+                console.log('Histogram source: Using Cached Overview Pixel Data');
+                resolve({
+                    source: 'overview_cached', 
+                    pixels: window.histogramOverviewPixelData.pixels,
+                    width: window.histogramOverviewPixelData.width,
+                    height: window.histogramOverviewPixelData.height,
+                    dataMin: useDataMin,
+                    dataMax: useDataMax,
+                    pixelNativeMin: window.histogramOverviewPixelData.pixelNativeMin,
+                    pixelNativeMax: window.histogramOverviewPixelData.pixelNativeMax
+                });
+                return; // IMPORTANT: Exit early if cached data is used
+            } else {
+                console.warn("Cached overview pixel data is present but still lacks essential dataMin/dataMax. Cannot use for client-side histogram. Will try other sources.");
+            }
+        }
+        // ---- CHECK CACHE FIRST ---- END ----
+
+        // Case 1: Full FITS data is available and seems valid
+        if (window.fitsData && window.fitsData.data && Array.isArray(window.fitsData.data) && window.fitsData.data.length > 0 && Array.isArray(window.fitsData.data[0]) && window.fitsData.data[0].length > 0) {
+            console.log('Histogram source: Full FITS data (window.fitsData.data)');
+            resolve({
+                source: 'fitsData',
+                pixels: window.fitsData.data, // 2D array
+                width: window.fitsData.width,
+                height: window.fitsData.height,
+                dataMin: window.fitsData.min_value,
+                dataMax: window.fitsData.max_value
+            });
+            return; 
+        } 
+        // Case 2: Tiled mode, overview image in DOM (fallback if cache failed or not applicable)
+        // This path is less ideal now that we have the cache.
+        else if (window.fitsData && window.fitsData.overview && (window.tiledViewer && window.tiledViewer.isOpen())) {
+            console.log('Histogram source: Attempting Overview image from DOM (fallback for tiled view).');
+            
+            let attemptCount = 0;
+            const maxAttempts = 2; // Reduced attempts as this is a less preferred fallback
+            const retryDelay = 200; 
+
+            function findAndProcessOverview() {
+                attemptCount++;
+                const overviewContainer = document.getElementById('overview-container');
+                const overviewImgElement = overviewContainer ? overviewContainer.querySelector('img') : null;
+
+                const processOverview = () => {
+                    if (overviewImgElement && overviewImgElement.complete && overviewImgElement.naturalWidth > 0) {
+                        try {
+                            const offscreenCanvas = document.createElement('canvas');
+                            const imgWidth = overviewImgElement.naturalWidth;
+                            const imgHeight = overviewImgElement.naturalHeight;
+                            offscreenCanvas.width = imgWidth;
+                            offscreenCanvas.height = imgHeight;
+                            const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+                            if (!offscreenCtx) {
+                                console.error("Could not get 2D context for offscreen canvas in DOM overview processing.");
+                                resolve({ source: 'error', message: 'Error processing overview data from DOM (no context)' });
+                                return;
+                            }
+                            offscreenCtx.drawImage(overviewImgElement, 0, 0);
+                            const imageDataArray = offscreenCtx.getImageData(0, 0, imgWidth, imgHeight).data;
+                            const overviewPixels2D = [];
+                            for (let y = 0; y < imgHeight; y++) {
+                                const row = [];
+                                for (let x = 0; x < imgWidth; x++) {
+                                    row.push(imageDataArray[(y * imgWidth + x) * 4]);
+                                }
+                                overviewPixels2D.push(row);
+                            }
+                            console.log("Successfully processed overview image from DOM for histogram.");
+                            // Try to populate min/max from window.fitsData if available
+                            const dataMinValue = (window.fitsData && typeof window.fitsData.min_value !== 'undefined') ? window.fitsData.min_value : null;
+                            const dataMaxValue = (window.fitsData && typeof window.fitsData.max_value !== 'undefined') ? window.fitsData.max_value : null;
+
+                            if (dataMinValue !== null && dataMaxValue !== null) {
+                                resolve({
+                                    source: 'overview_dom',
+                                    pixels: overviewPixels2D,
+                                    width: imgWidth,
+                                    height: imgHeight,
+                                    dataMin: dataMinValue, 
+                                    dataMax: dataMaxValue,
+                                    pixelNativeMin: 0,
+                                    pixelNativeMax: 255
+                                });
+                            } else {
+                                console.warn("Could not determine dataMin/dataMax when processing DOM overview. Histogram may be incorrect.");
+                                resolve({ source: 'unavailable', message: 'Overview (DOM) processed but min/max FITS values missing.' });
+                            }
+                        } catch (e) {
+                            console.error('Error processing overview image from DOM for histogram source:', e);
+                            resolve({ source: 'error', message: 'Error processing overview data from DOM' });
+                        }
+                    } else {
+                        console.warn('Overview image element (DOM) found but not ready. Resolving as unavailable.');
+                        resolve({ source: 'unavailable', message: 'Overview image (DOM) not ready' });
+                    }
+                };
+
+                if (overviewImgElement) {
+                    if (overviewImgElement.complete && overviewImgElement.naturalWidth > 0) {
+                        processOverview();
+                    } else {
+                        console.log(`Overview image (DOM) not yet loaded (attempt ${attemptCount}), waiting for onload...`);
+                        overviewImgElement.onload = () => {
+                            console.log('Overview image (DOM) loaded via .onload callback.');
+                            processOverview();
+                        };
+                        overviewImgElement.onerror = () => {
+                            console.error('Error loading overview image (DOM) for histogram via .onerror.');
+                            resolve({ source: 'server_needed', message: 'Overview image (DOM) load error, server histogram fallback.'});
+                        };
+                    }
+                } else { // overviewImgElement not found
+                    if (attemptCount < maxAttempts) {
+                        console.log(`Overview image element (DOM) not found (attempt ${attemptCount}/${maxAttempts}). Retrying in ${retryDelay}ms...`);
+                        setTimeout(findAndProcessOverview, retryDelay);
+                    } else {
+                        console.warn(`Overview image element (DOM) not found after ${maxAttempts} attempts. Likely hidden.`);
+                        // If cache also failed, and we are here, then server might be needed if in tiled mode.
+                         if (window.tiledViewer && window.tiledViewer.isOpen()) {
+                            resolve({ source: 'server_needed', message: 'Overview (DOM) gone, and cache failed, server histogram needed.'});
+                        } else {
+                            resolve({ source: 'unavailable', message: 'Overview (DOM) gone, not tiled mode.' });
+                        }
+                    }
+                }
+            }
+            findAndProcessOverview(); 
+        } 
+        // Fallback: If no other source, and tiled viewer is active, definitely request server histogram.
+        else if (window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen()){
+             console.log('No suitable client-side data source for histogram, but tiled view is active. Requesting server histogram.');
+             resolve({ source: 'server_needed', message: 'No client data, server histogram needed for tiled view.' });
+        } 
+        // Absolute fallback if no FITS data at all, or not tiled view and no other source found.
+        else {
+            console.log('No suitable FITS data or overview found for histogram (and not forcing server request).');
+            resolve({ source: 'unavailable', message: 'No FITS data available for histogram processing.' });
+        }
+    });
 }
 
 
+
+// Add this function to static/main.js
+async function fetchRgbCutouts(ra, dec, catalogName, galaxyName = "UnknownGalaxy") {
+    if (typeof ra === 'undefined' || typeof dec === 'undefined' || !catalogName) {
+        showNotification("RA, Dec, or Catalog Name is missing. Cannot generate RGB cutouts.", 3000, "error");
+        console.error("RGB Cutouts: Missing parameters", { ra, dec, catalogName });
+        return;
+    }
+
+    showNotification(true, "Generating RGB panels...");
+    console.log(`Fetching RGB cutouts for RA: ${ra}, Dec: ${dec}, Catalog: ${catalogName}, Galaxy: ${galaxyName}`);
+
+    let endpointUrl = `/generate-rgb-cutouts/?ra=${ra}&dec=${dec}&catalog_name=${encodeURIComponent(catalogName)}`;
+    if (galaxyName && galaxyName !== "UnknownGalaxy") {
+        endpointUrl += `&galaxy_name=${encodeURIComponent(galaxyName)}`;
+    }
+
+    try {
+        const response = await fetch(endpointUrl);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || `Failed to generate RGB cutouts (HTTP ${response.status})`);
+        }
+
+        if (data.url) {
+            console.log("RGB cutouts generated:", data);
+            displayRgbCutoutImage(data.url, data.filename, data.data_found_summary, "RGB Cutout Panels");
+        } else {
+            throw new Error("Received success, but no image URL in response for RGB cutouts.");
+        }
+
+    } catch (error) {
+        console.error("Error fetching RGB cutouts:", error);
+        showNotification(`Error: ${error.message}`, 4000, "error");
+    } finally {
+        showNotification(false);
+    }
+}
+function displayRgbCutoutImage(imageUrl, filename, dataFoundSummary, titleText = "RGB Cutout Panels") {
+    closeSedContainer();
+    let popup = document.getElementById('rgb-cutout-popup');
+
+    if (popup) { // If popup exists, update its image and make sure it's visible
+        const imgElement = popup.querySelector('img');
+        if (imgElement) {
+            imgElement.src = imageUrl + '?' + new Date().getTime(); // Add cache buster
+        }
+        popup.style.display = 'flex'; // Make sure it's visible
+        popup.style.bottom = '0px'; // Slide in if it was somehow hidden
+        return;
+    }
+
+    // Create new popup - using original CSS styles
+    popup = document.createElement('div');
+    popup.id = 'rgb-cutout-popup';
+    Object.assign(popup.style, {
+        position: 'fixed',
+        bottom: '-100vh', // Start off-screen for slide-in animation
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: '100%', 
+        maxWidth: '100%', 
+        height: 'auto', 
+        minHeight: '250px', // Adjusted min-height
+        maxHeight: '50vh', 
+        backgroundColor: ' rgba(0,0,0,0.8)', 
+        borderRadius: '10px 10px 0 0', 
+        padding: '15PX 0PX', // General padding
+        zIndex: '1002', 
+        boxSizing: 'border-box',
+        boxShadow: '0 -5px 20px rgba(0,0,0,0.7)', 
+        display: 'flex', 
+        flexDirection: 'column',
+        alignItems: 'center',
+        transition: 'bottom 0.4s ease-out' 
+    });
+
+    // Header container for title and buttons
+    const headerContainer = document.createElement('div');
+    Object.assign(headerContainer.style, {
+        width: '100%',
+        display: 'flex',
+        justifyContent: 'space-between', // Puts title left, close button right
+        alignItems: 'center',
+        marginBottom: '10px', // Space below header
+        paddingLeft: '5px', // Align title a bit from edge
+        paddingRight: '5px' // Align close button a bit from edge
+    });
+    
+    const title = document.createElement('h3');
+    title.className = 'rgb-popup-title';
+    title.textContent = "";
+    Object.assign(title.style, {
+        margin: '0', // Remove default margins
+        color: '#eee',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '16px', // Slightly smaller title
+        fontWeight: 'bold',
+        textAlign: 'left' // Align title to the left within its space
+    });
+
+    // Button container for right-aligned buttons
+    const buttonContainer = document.createElement('div');
+    Object.assign(buttonContainer.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px' // Space between buttons
+    });
+
+    // Create Save Button
+    const saveButton = document.createElement('button');
+    saveButton.title = 'Save Panel Image';
+    Object.assign(saveButton.style, {
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '5px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+    // SVG icon for save (corrected)
+    saveButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cccccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17,21 17,13 7,13 7,21"></polyline><polyline points="7,3 7,8 15,8"></polyline></svg>`;
+    saveButton.onmouseover = () => { saveButton.querySelector('svg').style.stroke = '#ffffff'; };
+    saveButton.onmouseout = () => { saveButton.querySelector('svg').style.stroke = '#cccccc'; };
+
+    // Onclick handler for downloading the image
+    saveButton.onclick = () => {
+        if (!imageUrl) {
+            showNotification('Image URL is not available.', 'error');
+            return;
+        }
+        const link = document.createElement('a');
+        link.href = imageUrl;
+        link.download = filename || 'rgb_cutout_panel.png'; // Use provided filename or a default
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showNotification('Image download started.', 'success');
+    };
+
+    const closeButton = document.createElement('button');
+    closeButton.textContent = '×';
+    Object.assign(closeButton.style, {
+        backgroundColor: 'transparent',
+        border: 'none',
+        color: '#aaa',
+        fontSize: '28px', // Larger close button
+        cursor: 'pointer',
+        padding: '0 5px', // Padding around X
+        lineHeight: '1',
+        fontWeight: 'bold'
+    });
+    closeButton.onmouseover = () => { closeButton.style.color = '#fff'; };
+    closeButton.onmouseout = () => { closeButton.style.color = '#aaa'; };
+    closeButton.onclick = () => {
+        popup.style.bottom = '-100vh'; 
+        setTimeout(() => {
+            const currentPopup = document.getElementById('rgb-cutout-popup');
+            if (currentPopup === popup && currentPopup.parentNode) {
+                currentPopup.parentNode.removeChild(currentPopup);
+            }
+        }, 400); 
+    };
+
+    headerContainer.appendChild(title);
+    buttonContainer.appendChild(saveButton); // Add save button to container
+    buttonContainer.appendChild(closeButton); // Add close button to container
+    headerContainer.appendChild(buttonContainer); // Add button container to header
+    
+    popup.appendChild(headerContainer);
+
+    // Image container using original styles
+    const imageContainer = document.createElement('div');
+    Object.assign(imageContainer.style, {
+        margin: '0px 200px 0 200px', // Padding around X
+        textAlign: 'center',
+    });
+
+    const img = document.createElement('img');
+    img.src = imageUrl + '?' + new Date().getTime(); 
+    img.alt = filename;
+    Object.assign(img.style, {
+        maxWidth: '100%',
+        maxHeight: '100%', 
+        display: 'block', 
+        margin: '0 auto' 
+    });
+    imageContainer.appendChild(img);
+    popup.appendChild(imageContainer);
+    
+    document.body.appendChild(popup);
+
+    // Trigger slide-in animation
+    setTimeout(() => {
+        popup.style.bottom = '0px'; 
+    }, 50); 
+}
+
+// Method 1: Create a separate function to close the popup
+function closeRgbCutoutPopup() {
+    const popup = document.getElementById('rgb-cutout-popup');
+    if (popup) {
+        popup.style.bottom = '-100vh'; 
+        setTimeout(() => {
+            const currentPopup = document.getElementById('rgb-cutout-popup');
+            if (currentPopup && currentPopup.parentNode) {
+                currentPopup.parentNode.removeChild(currentPopup);
+            }
+        }, 400); 
+    }
+}
+
+// Method 2: Directly trigger the close button click
+function triggerRgbPopupClose() {
+    const popup = document.getElementById('rgb-cutout-popup');
+    if (popup) {
+        const closeButton = popup.querySelector('button[style*="font-size: 28px"]'); // Find close button by style
+        if (closeButton) {
+            closeButton.click();
+        }
+    }
+}
+
+// Method 3: More reliable - find close button by content
+function clickRgbPopupCloseButton() {
+    const popup = document.getElementById('rgb-cutout-popup');
+    if (popup) {
+        const buttons = popup.querySelectorAll('button');
+        const closeButton = Array.from(buttons).find(btn => btn.textContent === '×');
+        if (closeButton) {
+            closeButton.click();
+        }
+    }
+}
+
+// Method 4: Check if popup exists and is visible
+function isRgbPopupOpen() {
+    const popup = document.getElementById('rgb-cutout-popup');
+    return popup && popup.style.display !== 'none' && popup.style.bottom === '0px';
+}
+
+// Usage examples:
+// closeRgbCutoutPopup(); // Direct close
+// triggerRgbPopupClose(); // Simulate button click
+// clickRgbPopupCloseButton(); // Find and click close button
+// if (isRgbPopupOpen()) { closeRgbCutoutPopup(); } // Conditional close
+
+
+// static/main.js
+
+// ... at the very end of the file
+
+function zoomIn() {
+    const activeViewer = window.tiledViewer || window.viewer;
+    if (activeViewer && activeViewer.viewport) {
+        activeViewer.viewport.zoomBy(1.2);
+    }
+}
+
+function zoomOut() {
+    const activeViewer = window.tiledViewer || window.viewer;
+    if (activeViewer && activeViewer.viewport) {
+        activeViewer.viewport.zoomBy(0.8);
+    }
+}
+
+function resetView() {
+    const activeViewer = window.tiledViewer || window.viewer;
+    if (activeViewer && activeViewer.viewport) {
+        activeViewer.viewport.goHome();
+    }
+}

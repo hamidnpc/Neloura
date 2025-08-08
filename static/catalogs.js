@@ -1,5 +1,159 @@
 // Load available catalogs
 
+// // Color map functions for catalog styling
+// const COLOR_MAPS = {
+//     viridis: (val) => {
+//         const v = val / 255;
+//         let r, g, b;
+//         if (v < 0.25) { 
+//             r = 68 + v * 4 * (33 - 68); 
+//             g = 1 + v * 4 * (144 - 1); 
+//             b = 84 + v * 4 * (140 - 84); 
+//         } else if (v < 0.5) { 
+//             r = 33 + (v - 0.25) * 4 * (94 - 33); 
+//             g = 144 + (v - 0.25) * 4 * (201 - 144); 
+//             b = 140 + (v - 0.25) * 4 * (120 - 140); 
+//         } else if (v < 0.75) { 
+//             r = 94 + (v - 0.5) * 4 * (190 - 94); 
+//             g = 201 + (v - 0.5) * 4 * (222 - 201); 
+//             b = 120 + (v - 0.5) * 4 * (47 - 120); 
+//         } else { 
+//             r = 190 + (v - 0.75) * 4 * (253 - 190); 
+//             g = 222 + (v - 0.75) * 4 * (231 - 222); 
+//             b = 47 + (v - 0.75) * 4 * (37 - 47); 
+//         }
+//         return [Math.round(r), Math.round(g), Math.round(b)];
+//     },
+    
+//     plasma: (val) => {
+//         const v = val / 255;
+//         let r, g, b;
+//         if (v < 0.25) { 
+//             r = 13 + v * 4 * (126 - 13); 
+//             g = 8 + v * 4 * (8 - 8); 
+//             b = 135 + v * 4 * (161 - 135); 
+//         } else if (v < 0.5) { 
+//             r = 126 + (v - 0.25) * 4 * (203 - 126); 
+//             g = 8 + (v - 0.25) * 4 * (65 - 8); 
+//             b = 161 + (v - 0.25) * 4 * (107 - 161); 
+//         } else if (v < 0.75) { 
+//             r = 203 + (v - 0.5) * 4 * (248 - 203); 
+//             g = 65 + (v - 0.5) * 4 * (150 - 65); 
+//             b = 107 + (v - 0.5) * 4 * (58 - 107); 
+//         } else { 
+//             r = 248 + (v - 0.75) * 4 * (239 - 248); 
+//             g = 150 + (v - 0.75) * 4 * (204 - 150); 
+//             b = 58 + (v - 0.75) * 4 * (42 - 58); 
+//         }
+//         return [Math.round(r), Math.round(g), Math.round(b)];
+//     },
+    
+//     inferno: (val) => {
+//         const v = val / 255;
+//         let r, g, b;
+//         if (v < 0.2) { 
+//             r = 0 + v * 5 * 50; 
+//             g = 0 + v * 5 * 10; 
+//             b = 4 + v * 5 * 90; 
+//         } else if (v < 0.4) { 
+//             r = 50 + (v-0.2)*5 * (120-50); 
+//             g = 10 + (v-0.2)*5 * (28-10); 
+//             b = 94 + (v-0.2)*5 * (109-94); 
+//         } else if (v < 0.6) { 
+//             r = 120 + (v-0.4)*5 * (187-120); 
+//             g = 28 + (v-0.4)*5 * (55-28); 
+//             b = 109 + (v-0.4)*5 * (84-109); 
+//         } else if (v < 0.8) { 
+//             r = 187 + (v-0.6)*5 * (236-187); 
+//             g = 55 + (v-0.6)*5 * (104-55); 
+//             b = 84 + (v-0.6)*5 * (36-84); 
+//         } else { 
+//             r = 236 + (v-0.8)*5 * (251-236); 
+//             g = 104 + (v-0.8)*5 * (180-104); 
+//             b = 36 + (v-0.8)*5 * (26-36); 
+//         }
+//         return [Math.round(r), Math.round(g), Math.round(b)];
+//     },
+    
+//     cividis: (val) => {
+//         const v = val / 255;
+//         let r, g, b;
+//         if (v < 0.2) { 
+//             r = 0 + v*5 * 33; 
+//             g = 32 + v*5 * (61-32); 
+//             b = 76 + v*5 * (107-76); 
+//         } else if (v < 0.4) { 
+//             r = 33 + (v-0.2)*5 * (85-33); 
+//             g = 61 + (v-0.2)*5 * (91-61); 
+//             b = 107 + (v-0.2)*5 * (108-107); 
+//         } else if (v < 0.6) { 
+//             r = 85 + (v-0.4)*5 * (123-85); 
+//             g = 91 + (v-0.4)*5 * (122-91); 
+//             b = 108 + (v-0.4)*5 * (119-108); 
+//         } else if (v < 0.8) { 
+//             r = 123 + (v-0.6)*5 * (165-123); 
+//             g = 122 + (v-0.6)*5 * (156-122); 
+//             b = 119 + (v-0.6)*5 * (116-119); 
+//         } else { 
+//             r = 165 + (v-0.8)*5 * (217-165); 
+//             g = 156 + (v-0.8)*5 * (213-156); 
+//             b = 116 + (v-0.8)*5 * (122-116); 
+//         }
+//         return [Math.round(r), Math.round(g), Math.round(b)];
+//     },
+    
+//     hot: (val) => {
+//         const v = val / 255;
+//         let r, g, b;
+//         if (v < 1/3) { 
+//             r = v * 3 * 255; 
+//             g = 0; 
+//             b = 0; 
+//         } else if (v < 2/3) { 
+//             r = 255; 
+//             g = (v - 1/3) * 3 * 255; 
+//             b = 0; 
+//         } else { 
+//             r = 255; 
+//             g = 255; 
+//             b = (v - 2/3) * 3 * 255; 
+//         }
+//         return [Math.round(r), Math.round(g), Math.round(b)];
+//     },
+    
+//     cool: (val) => {
+//         const v = val / 255;
+//         return [Math.round(v * 255), Math.round((1 - v) * 255), 255];
+//     },
+    
+//     grayscale: (val) => [val, val, val],
+    
+//     jet: (val) => {
+//         const v = val / 255;
+//         let r = 0, g = 0, b = 0;
+//         if (v < 0.125) { 
+//             b = 0.5 + 4 * v; 
+//         } else if (v < 0.375) { 
+//             g = 4 * (v - 0.125); 
+//             b = 1.0; 
+//         } else if (v < 0.625) { 
+//             r = 4 * (v - 0.375); 
+//             g = 1.0; 
+//             b = 1.0 - 4 * (v - 0.375); 
+//         } else if (v < 0.875) { 
+//             r = 1.0; 
+//             g = 1.0 - 4 * (v - 0.625); 
+//         } else { 
+//             r = 1.0 - 4 * (v - 0.875); 
+//         }
+//         return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+//     }
+// };
+
+// Helper function to convert RGB array to hex color
+function rgbToHex(r, g, b) {
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
 
 // Update the catalog dropdown menu
 function updateCatalogDropdown(catalogs) {
@@ -60,129 +214,232 @@ function refreshCatalogs() {
     return false;
 }
 
-function loadCatalog(catalogName) {
-    if (!catalogName) {
-        showNotification('Please select a catalog first', 3000);
-        return;
-    }
-    
-    console.log(`Loading catalog: ${catalogName}`);
-    
-    // Store the current catalog name globally
-    window.currentCatalogName = catalogName;
-    
-    // Set the active catalog
-    activeCatalog = catalogName;
-    
-    // Show loading indicator
-    showProgress(true, 'Loading catalog...');
-    
-    // Clear any existing catalog overlay
-    clearCatalogOverlay();
-    
-    // Fetch catalog data from server using binary format for better performance
-    // Add prevent_auto_load parameter to prevent unintended catalog loading
-    fetch(`/catalog-binary/?catalog_name=${encodeURIComponent(catalogName)}&prevent_auto_load=true`, {
-        method: 'GET'
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`Failed to load catalog: ${response.statusText}`);
-        }
-        return response.arrayBuffer();
-    })
-    .then(arrayBuffer => {
-        console.time('parseBinaryCatalog');
-        
-        // Parse binary data
-        const dataView = new DataView(arrayBuffer);
-        const numObjects = dataView.getUint32(0, false); // Big-endian
-        
-        const catalogData = [];
-        let offset = 4; // Start after the count (4 bytes)
-        
-        for (let i = 0; i < numObjects; i++) {
-            // Read x, y coordinates (2 floats)
-            const x = dataView.getFloat32(offset, false);
-            offset += 4;
-            const y = dataView.getFloat32(offset, false);
-            offset += 4;
-            
-            // Read ra, dec coordinates (2 floats)
-            const ra = dataView.getFloat32(offset, false);
-            offset += 4;
-            const dec = dataView.getFloat32(offset, false);
-            offset += 4;
-            
-            // Read radius (1 float)
-            const radius = dataView.getFloat32(offset, false);
-            offset += 4;
-            
-            // Read magnitude (1 float)
-            const magnitude = dataView.getFloat32(offset, false);
-            offset += 4;
-            
-            // Add to catalog data
-            catalogData.push({
-                x: x,
-                y: y,
-                ra: ra,
-                dec: dec,
-                radius_pixels: radius,
-                magnitude: magnitude
-            });
-        }
-        
-        console.timeEnd('parseBinaryCatalog');
-        console.log(`Loaded ${catalogData.length} objects from catalog`);
-        
-        // Get catalog info for display
-        fetch(`/catalog-info/?catalog_name=${encodeURIComponent(catalogName)}`)
-            .then(response => response.json())
-            .then(catalogInfo => {
-                // Add catalog overlay
-                addCatalogOverlay(catalogData);
+// function loadCatalog(catalogName) {
 
-                // Display catalog info
-                displayCatalogInfo(catalogInfo);
 
-                createFlagFilterButton();
+//     if (!catalogName) {
+//         showNotification('Please select a catalog first', 3000);
+//         return;
+//     }
+    
+//     console.log(`Loading catalog: ${catalogName}`);
+    
+//     // Store the current catalog name globally
+//     window.currentCatalogName = catalogName;
+    
+//     // Set the active catalog
+//     activeCatalog = catalogName;
+    
+//     // Show loading indicator
+//     showNotification(true, 'Loading catalog...');
+    
+//     // Clear any existing catalog overlay
+//     clearCatalogOverlay();
+    
+//     // Clear any existing flag data
+//     window.catalogDataWithFlags = null;
+    
+//     // Fetch catalog data from server
+//     fetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}`, {
+//         method: 'GET'
+//     })
+//     .then(response => {
+//         if (!response.ok) {
+//             throw new Error(`Failed to load catalog: ${response.statusText}`);
+//         }
+//         return response.json();
+//     })
+//     .then(responseData => {
+//         console.time('parseJsonCatalog');
 
-                
-                // Hide loading indicator
-                showProgress(false);
-            })
-            .catch(error => {
-                console.error('Error fetching catalog info:', error);
-                
-                // Still add the overlay even if info fails
-                addCatalogOverlay(catalogData);
+//         let catalogData;
+//         if (Array.isArray(responseData)) {
+//             catalogData = responseData;
+//         } else if (responseData && responseData.data && Array.isArray(responseData.data)) {
+//             catalogData = responseData.data;
+//         } else if (responseData && responseData.catalog && Array.isArray(responseData.catalog)) {
+//             catalogData = responseData.catalog;
+//         } else if (responseData && responseData.catalog_data && Array.isArray(responseData.catalog_data)) {
+//             catalogData = responseData.catalog_data;
+//         } else {
+//             console.error('Parsed catalog data is not an array and does not contain a "data", "catalog", or "catalog_data" property with an array:', responseData);
+//             throw new Error('Invalid catalog data format: expected an array or an object with a data array.');
+//         }
+        
+//         console.log(`Received JSON data with ${catalogData.length} objects.`);
 
-                // Hide loading indicator
-                showProgress(false);
-            });
-    })
-    .catch(error => {
-        console.error('Error loading catalog:', error);
-        showProgress(false);
-        showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000);
-    });
-}
+//         // Ensure that the catalogData is an array
+//         if (!Array.isArray(catalogData)) {
+//             console.error('Parsed catalog data is not an array:', catalogData);
+//             throw new Error('Invalid catalog data format: expected an array.');
+//         }
+
+//         // Optional: Log the first few objects to verify structure
+//         if (catalogData.length > 0) {
+//             console.log('First catalog object:', catalogData[0]);
+//         }
+
+//         console.timeEnd('parseJsonCatalog');
+//         console.log(`Loaded ${catalogData.length} objects from catalog`);
+        
+//         // Store the complete catalog data with flags for filtering
+//         window.catalogDataWithFlags = catalogData;
+//         console.log('Stored catalog data with flags for filtering');
+        
+//         // Log available properties for debugging
+//         if (catalogData.length > 0) {
+//             const sampleObj = catalogData[0];
+//             const allProps = Object.keys(sampleObj);
+//             const booleanProps = allProps.filter(key => {
+//                 const val = sampleObj[key];
+//                 return typeof val === 'boolean' || val === 'True' || val === 'False' || 
+//                        val === true || val === false || val === 1 || val === 0;
+//             });
+//             console.log('All properties in catalog:', allProps);
+//             console.log('Boolean properties found:', booleanProps);
+//         }
+        
+//         // Get catalog info for display
+//         fetch(`/catalog-info/?catalog_name=${encodeURIComponent(catalogName)}`)
+//             .then(response => response.json())
+//             .then(catalogInfo => {
+//                 // Function to safely add catalog overlay, waiting for viewer if necessary
+//                 let retryCount = 0; // Initialize retry counter
+//                 const maxRetries = 50; // Maximum number of retries (50 * 100ms = 5 seconds)
+
+//                 function safeAddOverlay() {
+//                     console.log(`[safeAddOverlay Attempt ${retryCount + 1}/${maxRetries}] Checking viewer and addCatalogOverlay function...`);
+//                     const activeViewer = window.viewer || window.tiledViewer; // Check for either viewer
+//                     console.log(`[safeAddOverlay] window.viewer:`, window.viewer);
+//                     console.log(`[safeAddOverlay] window.tiledViewer:`, window.tiledViewer);
+//                     console.log(`[safeAddOverlay] activeViewer:`, activeViewer);
+//                     console.log(`[safeAddOverlay] typeof window.addCatalogOverlay:`, typeof window.addCatalogOverlay);
+
+//                     if (activeViewer && typeof window.addCatalogOverlay === 'function') {
+//                         console.log('[safeAddOverlay] Viewer ready, adding catalog overlay.');
+//                         // Pass the active viewer to addCatalogOverlay if it needs it
+//                         // For now, assuming addCatalogOverlay uses a global or can find it.
+//                         addCatalogOverlay(catalogData);
+
+//                         // Display catalog info
+//                         displayCatalogInfo(catalogInfo);
+
+//                         // Create flag filter button
+//                         createFlagFilterButton();
+
+//                         // Hide loading indicator
+//                         showNotification(false);
+                        
+//                         // Show success message with boolean flag count
+//                         if (catalogData.length > 0) {
+//                             const sampleObj = catalogData[0];
+//                             const booleanCount = Object.keys(sampleObj).filter(key => {
+//                                 const val = sampleObj[key];
+//                                 return typeof val === 'boolean' || val === 'True' || val === 'False' || 
+//                                        val === true || val === false || val === 1 || val === 0;
+//                             }).length;
+                            
+//                             if (booleanCount > 0) {
+//                                 showNotification(`Catalog loaded with ${booleanCount} boolean flags available for filtering`, 3000, 'success');
+//                             } else {
+//                                 showNotification('Catalog loaded successfully', 2000, 'success');
+//                             }
+//                         }
+//                     } else {
+//                         retryCount++;
+//                         if (retryCount > maxRetries) {
+//                             console.error('[safeAddOverlay] Max retries reached. Viewer or addCatalogOverlay function not available.');
+//                             showNotification(false); // Hide loading indicator
+//                             showNotification('Error: Viewer initialization failed. Catalog cannot be displayed.', 5000, 'error');
+//                             return;
+//                         }
+//                         console.warn(`[safeAddOverlay] Viewer not ready, retrying to add catalog overlay in 100ms... (Attempt ${retryCount}/${maxRetries})`);
+//                         setTimeout(safeAddOverlay, 100); // Retry after 100ms
+//                     }
+//                 }
+//                 safeAddOverlay(); // Initial attempt
+//             })
+//             .catch(error => {
+//                 console.error('Error fetching catalog info:', error);
+//                 // Still try to add the overlay even if info fails, but wait for viewer
+//                 let errorRetryCount = 0; // Initialize retry counter for error path
+//                 const maxErrorRetries = 50; // Maximum number of retries for error path
+
+//                 function safeAddOverlayWithError() {
+//                     console.log(`[safeAddOverlayWithError Attempt ${errorRetryCount + 1}/${maxErrorRetries}] Checking viewer and addCatalogOverlay function...`);
+//                     const activeViewer = window.viewer || window.tiledViewer; // Check for either viewer
+//                     console.log(`[safeAddOverlayWithError] window.viewer:`, window.viewer);
+//                     console.log(`[safeAddOverlayWithError] window.tiledViewer:`, window.tiledViewer);
+//                     console.log(`[safeAddOverlayWithError] activeViewer:`, activeViewer);
+//                     console.log(`[safeAddOverlayWithError] typeof window.addCatalogOverlay:`, typeof window.addCatalogOverlay);
+
+//                     if (activeViewer && typeof window.addCatalogOverlay === 'function') {
+//                         console.log('[safeAddOverlayWithError] Viewer ready (error path), adding catalog overlay.');
+//                         // Pass the active viewer to addCatalogOverlay if it needs it
+//                         addCatalogOverlay(catalogData);
+                        
+//                         // Create flag filter button even if catalog info failed
+//                         createFlagFilterButton();
+                        
+//                         // Hide loading indicator
+//                         showNotification(false);
+                        
+//                         // Show success message even if catalog info failed
+//                         showNotification('Catalog loaded successfully (info unavailable)', 2000, 'success');
+//                     } else {
+//                         errorRetryCount++;
+//                         if (errorRetryCount > maxErrorRetries) {
+//                             console.error('[safeAddOverlayWithError] Max retries reached in error path. Viewer or addCatalogOverlay function not available.');
+//                             showNotification(false); // Hide loading indicator
+//                             // Potentially show a different notification if needed
+//                             return;
+//                         }
+//                         console.warn(`[safeAddOverlayWithError] Viewer not ready (error path), retrying to add catalog overlay in 100ms... (Attempt ${errorRetryCount}/${maxErrorRetries})`);
+//                         setTimeout(safeAddOverlayWithError, 100); // Retry after 100ms
+//                     }
+//                 }
+//                 safeAddOverlayWithError();
+//             });
+//     })
+//     .catch(error => {
+//         console.error('Error loading catalog:', error);
+//         showNotification(false);
+//         showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000, 'error');
+        
+//         // Clear flag data on error
+//         window.catalogDataWithFlags = null;
+//     });
+// }
 
 // Keep a reference to the core loadCatalog function
-const coreLoadCatalog = loadCatalog;
+// const coreLoadCatalog = loadCatalog;
 
-// Make sure this function is added/updated
+// FIND your updateCanvasOverlay function in catalogs.js and REPLACE the viewer detection logic
+
+// REPLACE this section at the beginning of updateCanvasOverlay:
 function updateCanvasOverlay() {
     console.log('[updateCanvasOverlay] Entered function.');
+    
+    // FIXED: Check for both viewer types
+    const activeViewer = viewer || window.viewer || tiledViewer || window.tiledViewer;
+    
     console.log('[updateCanvasOverlay] Checking prerequisites:', {
-        viewerExists: typeof viewer !== 'undefined' && viewer !== null,
+        viewer: !!viewer,
+        windowViewer: !!window.viewer,
+        tiledViewer: !!tiledViewer,
+        windowTiledViewer: !!window.tiledViewer,
+        activeViewer: !!activeViewer,
         canvasExists: typeof window.catalogCanvas !== 'undefined' && window.catalogCanvas !== null,
         dataExists: typeof window.catalogDataForOverlay !== 'undefined' && window.catalogDataForOverlay !== null
     });
 
-    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
+    if (!activeViewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
         console.log('[updateCanvasOverlay] Exiting early due to missing prerequisites.');
+        console.log('[updateCanvasOverlay] Missing:', {
+            viewer: !activeViewer,
+            canvas: !window.catalogCanvas,
+            data: !window.catalogDataForOverlay
+        });
         return;
     }
 
@@ -192,8 +449,8 @@ function updateCanvasOverlay() {
     // Clear the canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get viewport bounds with margin for panning
-    const bounds = viewer.viewport.getBounds();
+    // Get viewport bounds with margin for panning - USE ACTIVE VIEWER
+    const bounds = activeViewer.viewport.getBounds();
     const viewportBounds = {
         left: bounds.x - 0.2,
         top: bounds.y - 0.2,
@@ -206,6 +463,7 @@ function updateCanvasOverlay() {
     
     // Count visible objects
     let visibleCount = 0;
+    let filteredOutCount = 0;
     
     // Set dot styling based on current styles
     const FIXED_RADIUS = 5; // Default radius in pixels
@@ -214,8 +472,7 @@ function updateCanvasOverlay() {
     const dotFillColor = regionStyles.backgroundColor || 'transparent';
     const dotOpacity = regionStyles.opacity || 0.7;
     
-    console.log('[updateCanvasOverlay] Reading styles:', {
-        raw: regionStyles, // Log the whole object
+    console.log('[updateCanvasOverlay] Using styles:', {
         borderWidth: dotBorderWidth,
         borderColor: dotBorderColor,
         fillColor: dotFillColor,
@@ -229,9 +486,10 @@ function updateCanvasOverlay() {
     for (let i = 0; i < window.catalogDataForOverlay.length; i++) {
         const obj = window.catalogDataForOverlay[i];
         
-        // Skip dots that should be hidden by filter
-        if (flagFilterEnabled && obj.dataset && obj.dataset.passesFilter === 'false') {
-            continue;
+        // FIXED: Check filter state properly
+        if (obj.passesFilter === false) {
+            filteredOutCount++;
+            continue; // Skip objects that don't pass the filter
         }
         
         // Get coordinates, preserving original values
@@ -245,8 +503,8 @@ function updateCanvasOverlay() {
             y = pixelCoords.y;
         }
         
-        // Convert image coordinates to viewport coordinates
-        const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
+        // Convert image coordinates to viewport coordinates - USE ACTIVE VIEWER
+        const viewportPoint = activeViewer.viewport.imageToViewportCoordinates(x, y);
         
         // Check if the point is within the viewport bounds
         if (viewportPoint.x >= viewportBounds.left && 
@@ -254,8 +512,8 @@ function updateCanvasOverlay() {
             viewportPoint.y >= viewportBounds.top && 
             viewportPoint.y <= viewportBounds.bottom) {
             
-            // Convert viewport coordinates to canvas coordinates
-            const pagePoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+            // Convert viewport coordinates to canvas coordinates - USE ACTIVE VIEWER
+            const pagePoint = activeViewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
             
             // Get the radius in pixels (use the object's radius if available)
             const radius = (obj.radius_pixels || FIXED_RADIUS);
@@ -293,10 +551,113 @@ function updateCanvasOverlay() {
         }
     }
     
-    // Optionally log the number of visible objects
-    // console.log(`Canvas rendering: ${visibleCount} visible objects out of ${window.catalogDataForOverlay.length}`);
+    // Log results
+    console.log(`[updateCanvasOverlay] Canvas rendering complete:`, {
+        totalObjects: window.catalogDataForOverlay.length,
+        filteredOut: filteredOutCount,
+        visibleInViewport: visibleCount,
+        totalSourceMap: window.catalogSourceMap.length
+    });
 }
 
+// ALSO ADD this improved applyEnvironmentFilter function to your catalogs.js:
+
+function applyEnvironmentFilter(envValue) {
+    console.log(`Applying environment filter for value: ${envValue} (${ENV_DESCRIPTIONS[envValue]})`);
+    
+    if (!window.catalogDataWithFlags) {
+        console.warn('No catalog data available for environment filtering');
+        showNotification('No catalog data available for filtering', 3000, 'warning');
+        return;
+    }
+    
+    showNotification(true, `Filtering by ${ENV_DESCRIPTIONS[envValue]}...`);
+    
+    let visibleCount = 0;
+    const targetEnvValue = parseInt(envValue);
+    
+    console.log(`Using target environment value: ${targetEnvValue} (${typeof targetEnvValue})`);
+    
+    // IMPROVED: Handle canvas-based overlay with better filtering
+    if (window.catalogDataForOverlay && typeof updateCanvasOverlay === 'function') {
+        console.log('Applying environment filter to canvas overlay');
+        
+        // Filter the overlay data
+        window.catalogDataForOverlay.forEach((obj, index) => {
+            if (obj && 'env' in obj) {
+                const objEnvValue = parseInt(obj.env);
+                const matchesEnv = (objEnvValue === targetEnvValue);
+                
+                // Set filter property on the object
+                obj.passesFilter = matchesEnv;
+                
+                if (matchesEnv) {
+                    visibleCount++;
+                }
+                
+                // Debug first few objects
+                if (index < 5) {
+                    console.log(`Object ${index}: env = ${obj.env} (${typeof obj.env}), target = ${targetEnvValue}, matches = ${matchesEnv}, passesFilter = ${obj.passesFilter}`);
+                }
+            } else {
+                obj.passesFilter = false;
+            }
+        });
+        
+        // IMPORTANT: Force immediate canvas update
+        console.log('Calling updateCanvasOverlay to refresh display...');
+        updateCanvasOverlay();
+        
+        // Also update global filter state for consistency
+        window.flagFilterEnabled = true;
+        window.currentFlagColumn = 'env';
+        window.currentEnvValue = targetEnvValue;
+    }
+    
+    // Handle DOM-based overlay (if catalogDots exist) - for backwards compatibility
+    if (window.catalogDots && window.catalogDots.length > 0) {
+        console.log('Also applying environment filter to DOM dots');
+        
+        window.catalogDots.forEach((dot, i) => {
+            if (!dot || !dot.dataset) {
+                return;
+            }
+            
+            const dotIndex = parseInt(dot.dataset.index);
+            
+            if (isNaN(dotIndex) || dotIndex >= window.catalogDataWithFlags.length) {
+                dot.style.display = 'none';
+                dot.dataset.passesFilter = 'false';
+                return;
+            }
+            
+            const objData = window.catalogDataWithFlags[dotIndex];
+            let matchesEnv = false;
+            
+            if (objData && 'env' in objData) {
+                const objEnvValue = parseInt(objData.env);
+                matchesEnv = (objEnvValue === targetEnvValue);
+            }
+            
+            dot.style.display = matchesEnv ? 'block' : 'none';
+            dot.dataset.passesFilter = matchesEnv ? 'true' : 'false';
+        });
+        
+        if (typeof updateOverlay === 'function') {
+            updateOverlay();
+        }
+    }
+    
+    console.log(`Environment filter results: ${visibleCount} objects match env=${targetEnvValue}`);
+    
+    showNotification(false);
+    
+    if (visibleCount === 0) {
+        showNotification(`No objects found in "${ENV_DESCRIPTIONS[targetEnvValue]}" environment`, 3000, 'warning');
+    } else {
+        showNotification(`Showing ${visibleCount} objects in "${ENV_DESCRIPTIONS[targetEnvValue]}"`, 2500, 'success');
+    }
+}
 
 
 // tion handles click detection for the canvas overlay
@@ -346,7 +707,7 @@ function handleCanvasClick(event) {
         highlightSelectedSource(closestSource.sourceIndex);
         
         // Show the info popup
-        showRegionInfo(tempDot, sourceObj);
+        showRegionInfo(tempDot, sourceObj,event);
     }
 }
 
@@ -398,7 +759,7 @@ function createInfoPopup(dotIndex) {
     popup.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.5)';
     popup.style.fontSize = '14px';
     popup.style.fontFamily = 'Arial, sans-serif';
-    popup.style.maxWidth = '300px';
+    popup.style.width = '340px';
     popup.style.display = 'none';
     popup.style.pointerEvents = 'auto';
     popup.style.cursor = 'move'; // Show move cursor to indicate draggability
@@ -616,163 +977,163 @@ function updateOverlay() {
 
 
 
-// Keep a reference to the original loadCatalog function
-const originalLoadCatalog = window.loadCatalog;
+// // Keep a reference to the original loadCatalog function
+// const originalLoadCatalog = window.loadCatalog;
 
-// Override the original loadCatalog function to show the style customizer popup first
-if (originalLoadCatalog) {
-    window.loadCatalog = function(catalogName) {
-        // Check if this is a direct call from apply button using stored catalog name
-        if (window.currentStyleCatalogName === catalogName) {
-            // Reset the stored name
-            window.currentStyleCatalogName = null;
+// // Override the original loadCatalog function to show the style customizer popup first
+// if (originalLoadCatalog) {
+//     window.loadCatalog = function(catalogName) {
+//         // Check if this is a direct call from apply button using stored catalog name
+//         if (window.currentStyleCatalogName === catalogName) {
+//             // Reset the stored name
+//             window.currentStyleCatalogName = null;
             
-            // Call the original function
-            return originalLoadCatalog.call(this, catalogName);
-        } else {
-            // Show the style customizer popup first
-            showStyleCustomizerPopup(catalogName);
+//             // Call the original function
+//             return originalLoadCatalog.call(this, catalogName);
+//         } else {
+//             // Show the style customizer popup first
+//             showStyleCustomizerPopup(catalogName);
             
-            // We don't immediately load the catalog here - it will be loaded when the user clicks Apply
-            return false; // Prevent original click handler from continuing
-        }
-    };
-}
+//             // We don't immediately load the catalog here - it will be loaded when the user clicks Apply
+//             return false; // Prevent original click handler from continuing
+//         }
+//     };
+// }
 
-// Modify the clearCatalog function to remove the filter button when catalog is cleared
-const originalClearCatalog = window.clearCatalog;
-if (originalClearCatalog) {
-    window.clearCatalog = function() {
-        // Call the original function to clear the catalog
-        const result = originalClearCatalog();
+// // Modify the clearCatalog function to remove the filter button when catalog is cleared
+// const originalClearCatalog = window.clearCatalog;
+// if (originalClearCatalog) {
+//     window.clearCatalog = function() {
+//         // Call the original function to clear the catalog
+//         const result = originalClearCatalog();
         
-        // Remove the filter button
-        const filterButton = document.querySelector('.flag-filter-container');
-        if (filterButton) {
-            filterButton.remove();
-        }
+//         // Remove the filter button
+//         const filterButton = document.querySelector('.flag-filter-container');
+//         if (filterButton) {
+//             filterButton.remove();
+//         }
         
-        return result;
-    };
-}
+//         return result;
+//     };
+// }
 
-// Don't create the button on initial page load unless a catalog is already loaded
-document.addEventListener("DOMContentLoaded", function() {
-    // Only create the flag filter button if a catalog is already active
-    if (activeCatalog) {
-        createFlagFilterButton();
-    }
-});
+// // Don't create the button on initial page load unless a catalog is already loaded
+// document.addEventListener("DOMContentLoaded", function() {
+//     // Only create the flag filter button if a catalog is already active
+//     if (activeCatalog) {
+//         createFlagFilterButton();
+//     }
+// });
 
 
 
-// Replace your existing populateFlagDropdown function with this one
-function populateFlagDropdown(dropdownContent) {
-    // Clear existing content
-    dropdownContent.innerHTML = '';
+// // Replace your existing populateFlagDropdown function with this one
+// function populateFlagDropdown(dropdownContent) {
+//     // Clear existing content
+//     dropdownContent.innerHTML = '';
     
-    // Add a "No Filter" option
-    const noFilterItem = document.createElement('div');
-    noFilterItem.className = 'flag-item';
-    noFilterItem.textContent = 'No Filter (Show All)';
-    noFilterItem.style.padding = '10px';
-    noFilterItem.style.cursor = 'pointer';
-    noFilterItem.style.borderBottom = '1px solid #444';
-    noFilterItem.style.color = 'white';
+//     // Add a "No Filter" option
+//     const noFilterItem = document.createElement('div');
+//     noFilterItem.className = 'flag-item';
+//     noFilterItem.textContent = 'No Filter (Show All)';
+//     noFilterItem.style.padding = '10px';
+//     noFilterItem.style.cursor = 'pointer';
+//     noFilterItem.style.borderBottom = '1px solid #444';
+//     noFilterItem.style.color = 'white';
     
-    // Highlight if currently selected
-    if (!flagFilterEnabled) {
-        noFilterItem.style.backgroundColor = 'white';
-        noFilterItem.style.color = 'black';
-    }
+//     // Highlight if currently selected
+//     if (!flagFilterEnabled) {
+//         noFilterItem.style.backgroundColor = 'white';
+//         noFilterItem.style.color = 'black';
+//     }
     
-    noFilterItem.addEventListener('mouseover', function() {
-        if (!flagFilterEnabled) return;
-        this.style.backgroundColor = '#333';
-    });
+//     noFilterItem.addEventListener('mouseover', function() {
+//         if (!flagFilterEnabled) return;
+//         this.style.backgroundColor = '#333';
+//     });
     
-    noFilterItem.addEventListener('mouseout', function() {
-        if (!flagFilterEnabled) return;
-        this.style.backgroundColor = 'transparent';
-    });
+//     noFilterItem.addEventListener('mouseout', function() {
+//         if (!flagFilterEnabled) return;
+//         this.style.backgroundColor = 'transparent';
+//     });
     
-    noFilterItem.addEventListener('click', function() {
-        // Disable flag filtering
-        flagFilterEnabled = false;
-        currentFlagColumn = null;
-        currentEnvValue = null;
+//     noFilterItem.addEventListener('click', function() {
+//         // Disable flag filtering
+//         flagFilterEnabled = false;
+//         currentFlagColumn = null;
+//         currentEnvValue = null;
         
-        // Update the UI
-        updateFlagFilterUI(dropdownContent);
+//         // Update the UI
+//         updateFlagFilterUI(dropdownContent);
         
-        // Show all catalog dots
-        if (window.catalogDots) {
-            window.catalogDots.forEach(dot => {
-                dot.style.display = 'block';
-                dot.dataset.passesFilter = 'true';
-            });
-        }
+//         // Show all catalog dots
+//         if (window.catalogDots) {
+//             window.catalogDots.forEach(dot => {
+//                 dot.style.display = 'block';
+//                 dot.dataset.passesFilter = 'true';
+//             });
+//         }
         
-        // Update overlay to refresh visibility
-        updateOverlay();
+//         // Update overlay to refresh visibility
+//         updateOverlay();
         
-        // Close the dropdown
-        dropdownContent.style.display = 'none';
-    });
+//         // Close the dropdown
+//         dropdownContent.style.display = 'none';
+//     });
     
-    dropdownContent.appendChild(noFilterItem);
+//     dropdownContent.appendChild(noFilterItem);
     
-    // If no catalog is loaded, show a message
-    if (!activeCatalog) {
-        const noDataItem = document.createElement('div');
-        noDataItem.style.padding = '10px';
-        noDataItem.style.color = '#aaa';
-        noDataItem.textContent = 'Load a catalog to see available flags';
-        dropdownContent.appendChild(noDataItem);
-        return;
-    }
+//     // If no catalog is loaded, show a message
+//     if (!activeCatalog) {
+//         const noDataItem = document.createElement('div');
+//         noDataItem.style.padding = '10px';
+//         noDataItem.style.color = '#aaa';
+//         noDataItem.textContent = 'Load a catalog to see available flags';
+//         dropdownContent.appendChild(noDataItem);
+//         return;
+//     }
     
-    // Check if we already have flag data in the cache
-    if (window.catalogDataWithFlags) {
-        // Use the cached data to build the flag dropdown
-        buildFlagDropdownFromCache(dropdownContent);
-    } else {
-        // Show loading indicator
-        const loadingItem = document.createElement('div');
-        loadingItem.style.padding = '10px';
-        loadingItem.style.color = '#aaa';
-        loadingItem.textContent = 'Loading flag information...';
-        dropdownContent.appendChild(loadingItem);
+//     // Check if we already have flag data in the cache
+//     if (window.catalogDataWithFlags) {
+//         // Use the cached data to build the flag dropdown
+//         buildFlagDropdownFromCache(dropdownContent);
+//     } else {
+//         // Show loading indicator
+//         const loadingItem = document.createElement('div');
+//         loadingItem.style.padding = '10px';
+//         loadingItem.style.color = '#aaa';
+//         loadingItem.textContent = 'Loading flag information...';
+//         dropdownContent.appendChild(loadingItem);
         
-        // Load the flag data
-        fetch(`/catalog-with-flags/${activeCatalog}`)
-            .then(response => response.json())
-            .then(data => {
-                // Cache the data for future use
-                window.catalogDataWithFlags = data;
+//         // Load the flag data
+//         fetch(`/catalog-with-flags/${activeCatalog}`)
+//             .then(response => response.json())
+//             .then(data => {
+//                 // Cache the data for future use
+//                 window.catalogDataWithFlags = data;
                 
-                // Build the dropdown using the loaded data
-                buildFlagDropdownFromCache(dropdownContent);
-            })
-            .catch(error => {
-                console.error('Error loading flag data:', error);
+//                 // Build the dropdown using the loaded data
+//                 buildFlagDropdownFromCache(dropdownContent);
+//             })
+//             .catch(error => {
+//                 console.error('Error loading flag data:', error);
                 
-                // Show error message
-                dropdownContent.innerHTML = '';
-                dropdownContent.appendChild(noFilterItem); // Keep the "No Filter" option
+//                 // Show error message
+//                 dropdownContent.innerHTML = '';
+//                 dropdownContent.appendChild(noFilterItem); // Keep the "No Filter" option
                 
-                const errorItem = document.createElement('div');
-                errorItem.style.padding = '10px';
-                errorItem.style.color = '#f44336';
-                errorItem.textContent = 'Error loading catalog flags';
-                dropdownContent.appendChild(errorItem);
-            });
-    }
-}
+//                 const errorItem = document.createElement('div');
+//                 errorItem.style.padding = '10px';
+//                 errorItem.style.color = '#f44336';
+//                 errorItem.textContent = 'Error loading catalog flags';
+//                 dropdownContent.appendChild(errorItem);
+//             });
+//     }
+// }
 
 
 
-// Replace the existing buildFlagDropdownFromCache function with this updated version
+
 function buildFlagDropdownFromCache(dropdownContent) {
     // Clear everything after the "No Filter" option
     const noFilterItem = dropdownContent.querySelector('.flag-item');
@@ -791,374 +1152,415 @@ function buildFlagDropdownFromCache(dropdownContent) {
         return;
     }
     
-    // Debug logging to inspect the catalog data
     console.log("Inspecting catalog data:");
     console.log("Total catalog objects:", window.catalogDataWithFlags.length);
     
-    // Collect all boolean columns from the cached data
-    const booleanColumns = new Set();
-    
-    // Check for env column and collect unique env values
-    let hasEnvColumn = false;
-    const envValues = new Set();
-    const rawEnvValues = []; // Store raw env values for debugging
-    
-    // Extract available columns from the first object
+    // Get first object to check column types
     const firstObj = window.catalogDataWithFlags[0];
-    const columns = firstObj ? Object.keys(firstObj) : [];
-    
-    // Use the new detection function if we need to find RA/DEC columns
-    const detectedColumns = detectCoordinateColumns(columns);
-    const ra_col = detectedColumns.ra_column;
-    const dec_col = detectedColumns.dec_column;
-    
-    // Loop through catalog objects to detect boolean columns and env values
-    for (let i = 0; i < window.catalogDataWithFlags.length; i++) {
-        const obj = window.catalogDataWithFlags[i];
-        if (!obj) continue;
-        
-        // Check all keys in the object
-        for (const [key, value] of Object.entries(obj)) {
-            // Look specifically for env column
-            if (key === 'env') {
-                hasEnvColumn = true;
-                if (value !== null && value !== undefined) {
-                    // Store the raw value for inspection
-                    rawEnvValues.push({index: i, value: value, type: typeof value});
-                    
-                    // Try to convert to number if it's not already
-                    let envVal;
-                    if (typeof value === 'number') {
-                        envVal = value;
-                    } else {
-                        envVal = parseInt(value);
-                    }
-                    
-                    if (!isNaN(envVal)) {
-                        envValues.add(envVal);
-                    }
-                }
-            }
-            // Add boolean columns to the list
-            else if (typeof value === 'boolean' || value === true || value === false || 
-                value === 'True' || value === 'False' || value === 1 || value === 0) {
-                booleanColumns.add(key);
-            }
-        }
-        
-        // Break early if we've found enough samples and have env values
-        if (hasEnvColumn && envValues.size > 0 && i > 100) {
-            break;
-        }
-    }
-    
-    // Print detailed debug info about env values
-    console.log("Has env column:", hasEnvColumn);
-    console.log("Raw env values found (first 20):", rawEnvValues.slice(0, 20));
-    console.log("Unique env values after processing:", Array.from(envValues));
-    console.log("Boolean columns:", Array.from(booleanColumns));
-    
-    // Convert boolean columns to array and sort
-    const sortedColumns = Array.from(booleanColumns).sort();
-    
-    // Handle the case where we have no boolean columns or environment values
-    if (sortedColumns.length === 0 && (!hasEnvColumn || envValues.size === 0)) {
-        const noBooleansItem = document.createElement('div');
-        noBooleansItem.style.padding = '10px';
-        noBooleansItem.style.color = '#aaa';
-        noBooleansItem.textContent = 'No boolean flags or environment values found';
-        dropdownContent.appendChild(noBooleansItem);
+    if (!firstObj) {
+        const noDataItem = document.createElement('div');
+        noDataItem.style.padding = '10px';
+        noDataItem.style.color = '#aaa';
+        noDataItem.textContent = 'No catalog objects available';
+        dropdownContent.appendChild(noDataItem);
         return;
     }
     
-    // Start with environment section if available - place it at the top
-    if (hasEnvColumn && envValues.size > 0) {
-        // Add environment section header
-        const envHeader = document.createElement('div');
-        envHeader.style.padding = '8px 10px';
-        envHeader.style.fontWeight = 'bold';
-        envHeader.style.backgroundColor = '#333';
-        envHeader.style.borderBottom = '1px solid #555';
-        envHeader.textContent = 'Environment Filters';
-        dropdownContent.appendChild(envHeader);
+    const availableProperties = Object.keys(firstObj);
+    console.log('Available properties in catalog data:', availableProperties);
+    
+    // FIXED: Check for environment column and collect unique env values
+    let hasEnvColumn = false;
+    const envValues = new Set();
+    
+    if (availableProperties.includes('env')) {
+        hasEnvColumn = true;
+        console.log('Found env column, checking ALL objects for environment values...');
         
-        // Convert envValues to array and sort numerically
-        const sortedEnvValues = Array.from(envValues).sort((a, b) => a - b);
+        // FIXED: Check ALL objects to find all environment values
+        const totalObjects = window.catalogDataWithFlags.length;
+        console.log(`Sampling all ${totalObjects} objects for environment values...`);
         
-        // Add each environment value as a filter option
-        sortedEnvValues.forEach(envValue => {
-            const description = ENV_DESCRIPTIONS[envValue] || `Environment ${envValue}`;
+        for (let i = 0; i < totalObjects; i++) {
+            const obj = window.catalogDataWithFlags[i];
+            if (obj && obj.env !== null && obj.env !== undefined) {
+                const envVal = parseInt(obj.env);
+                if (!isNaN(envVal) && envVal >= 1 && envVal <= 10) {
+                    envValues.add(envVal);
+                }
+            }
+        }
+        
+        console.log('Found environment values:', Array.from(envValues).sort((a, b) => a - b));
+        console.log(`Total unique environment types: ${envValues.size}`);
+    }
+    
+    // Collect boolean columns
+    const actualBooleanColumns = new Set();
+    const sampleSize = Math.min(50, window.catalogDataWithFlags.length);
+    
+    for (const [key, value] of Object.entries(firstObj)) {
+        // Skip coordinate and display columns
+        if (['ra', 'dec', 'x', 'y', 'radius_pixels', 'env'].includes(key)) {
+            continue;
+        }
+        
+        let isActuallyBoolean = false;
+        let allValuesAreBooleanType = true;
+        let hasOnlyZeroOne = true;
+        let uniqueValues = new Set();
+        
+        // Sample multiple objects to determine if column is truly boolean
+        for (let i = 0; i < sampleSize; i++) {
+            const obj = window.catalogDataWithFlags[i];
+            if (!obj || !(key in obj)) continue;
             
-            const envItem = document.createElement('div');
-            envItem.className = 'flag-item env-item';
-            envItem.textContent = `${envValue}: ${description}`;
-            envItem.dataset.envValue = envValue;
-            envItem.style.padding = '10px';
-            envItem.style.cursor = 'pointer';
-            envItem.style.borderBottom = '1px solid #444';
-            envItem.style.color = 'white';
+            const val = obj[key];
+            uniqueValues.add(val);
             
-            // Highlight if currently selected
-            if (flagFilterEnabled && currentFlagColumn === 'env' && 
-                (currentEnvValue === envValue || String(currentEnvValue) === String(envValue))) {
-                envItem.style.backgroundColor = 'white';
-                envItem.style.color = 'black';
+            if (typeof val !== 'boolean') {
+                allValuesAreBooleanType = false;
             }
             
-            envItem.addEventListener('mouseover', function() {
-                if (flagFilterEnabled && currentFlagColumn === 'env' && 
-                    (currentEnvValue === envValue || String(currentEnvValue) === String(envValue))) return;
-                this.style.backgroundColor = '#333';
-            });
+            if (!(val === 0 || val === 1 || val === true || val === false)) {
+                hasOnlyZeroOne = false;
+            }
+        }
+        
+        // A column is boolean if it meets our criteria
+        if (allValuesAreBooleanType || 
+            (hasOnlyZeroOne && uniqueValues.size <= 3 && 
+             (uniqueValues.has(0) || uniqueValues.has(1) || uniqueValues.has(true) || uniqueValues.has(false)))) {
             
-            envItem.addEventListener('mouseout', function() {
-                if (flagFilterEnabled && currentFlagColumn === 'env' && 
-                    (currentEnvValue === envValue || String(currentEnvValue) === String(envValue))) return;
-                this.style.backgroundColor = 'transparent';
-            });
+            // Additional filtering to avoid measurement columns
+            const keyLower = key.toLowerCase();
+            const isMeasurementColumn = keyLower.includes('err') || keyLower.includes('snr') || 
+                                       keyLower.includes('chi') || keyLower.includes('mass') ||
+                                       keyLower.includes('dust') || keyLower.includes('best.');
             
-            envItem.addEventListener('click', function() {
-                // Enable environment filtering
-                flagFilterEnabled = true;
-                currentFlagColumn = 'env';
-                currentEnvValue = envValue;
+            if (!isMeasurementColumn) {
+                actualBooleanColumns.add(key);
+            }
+        }
+    }
+    
+    console.log("Boolean columns found:", Array.from(actualBooleanColumns));
+    
+    // ENVIRONMENT FILTERS SECTION
+    // if (hasEnvColumn && envValues.size > 0) {
+    //     // Add environment section header
+    //     const envHeader = document.createElement('div');
+    //     envHeader.style.padding = '8px 10px';
+    //     envHeader.style.fontWeight = 'bold';
+    //     envHeader.style.backgroundColor = '#2a2a2a';
+    //     envHeader.style.borderBottom = '1px solid #555';
+    //     envHeader.style.color = '#4CAF50';
+    //     envHeader.style.fontSize = '13px';
+    //     envHeader.textContent = `Environment Filters (${envValues.size} types)`;
+    //     dropdownContent.appendChild(envHeader);
+        
+    //     // Sort environment values numerically
+    //     const sortedEnvValues = Array.from(envValues).sort((a, b) => a - b);
+        
+    //     // Add each environment value using ENV_DESCRIPTIONS
+    //     sortedEnvValues.forEach(envValue => {
+    //         // Get description from ENV_DESCRIPTIONS or use default
+    //         const description = ENV_DESCRIPTIONS[envValue] || `Environment ${envValue}`;
+            
+    //         const envItem = document.createElement('div');
+    //         envItem.className = 'flag-item env-item';
+    //         envItem.dataset.envValue = envValue;
+    //         envItem.style.padding = '10px 15px'; // Indent environment items
+    //         envItem.style.cursor = 'pointer';
+    //         envItem.style.borderBottom = '1px solid #3a3a3a';
+    //         envItem.style.color = 'white';
+    //         envItem.style.fontSize = '13px';
+            
+    //         // Create the display text with value and description
+    //         envItem.innerHTML = `
+    //             <span style="color: #66bb6a; font-weight: bold;">Env ${envValue}:</span> 
+    //             <span style="color: #fff;">${description}</span>
+    //         `;
+            
+    //         // Highlight if currently selected
+    //         if (flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue) {
+    //             envItem.style.backgroundColor = 'white';
+    //             envItem.style.color = 'black';
+    //             envItem.innerHTML = `
+    //                 <span style="color: #2e7d32; font-weight: bold;">Env ${envValue}:</span> 
+    //                 <span style="color: #000;">${description}</span>
+    //             `;
+    //         }
+            
+    //         envItem.addEventListener('mouseover', function() {
+    //             if (!(flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue)) {
+    //                 this.style.backgroundColor = '#444';
+    //             }
+    //         });
+            
+    //         envItem.addEventListener('mouseout', function() {
+    //             if (flagFilterEnabled && currentFlagColumn === 'env' && currentEnvValue == envValue) {
+    //                 this.style.backgroundColor = 'white';
+    //                 this.innerHTML = `
+    //                     <span style="color: #2e7d32; font-weight: bold;">Env ${envValue}:</span> 
+    //                     <span style="color: #000;">${description}</span>
+    //                 `;
+    //             } else {
+    //                 this.style.backgroundColor = 'transparent';
+    //                 this.innerHTML = `
+    //                     <span style="color: #66bb6a; font-weight: bold;">Env ${envValue}:</span> 
+    //                     <span style="color: #fff;">${description}</span>
+    //                 `;
+    //             }
+    //         });
+            
+    //         envItem.addEventListener('click', function() {
+    //             const selectedEnvValue = parseInt(this.dataset.envValue);
+    //             console.log(`Environment filter clicked: Env ${selectedEnvValue} (${description})`);
                 
-                console.log(`Selected environment filter: ${envValue} (${typeof envValue})`);
+    //             // Set filter state
+    //             flagFilterEnabled = true;
+    //             currentFlagColumn = 'env';
+    //             currentEnvValue = selectedEnvValue;
+                
+    //             // Set global filter state
+    //             window.flagFilterEnabled = true;
+    //             window.currentFlagColumn = 'env';
+    //             window.currentEnvValue = selectedEnvValue;
+                
+    //             // FIXED: Call the correct function name
+    //             applyEnvironmentFilter(selectedEnvValue);
+                
+    //             // Update UI
+    //             updateFlagFilterUI(dropdownContent);
+                
+    //             // Close dropdown
+    //             dropdownContent.style.display = 'none';
+    //         });
+            
+    //         dropdownContent.appendChild(envItem);
+    //     });
+        
+    //     // Add section divider if we have boolean columns too
+    //     if (actualBooleanColumns.size > 0) {
+    //         const divider = document.createElement('div');
+    //         divider.style.height = '1px';
+    //         divider.style.backgroundColor = '#555';
+    //         divider.style.margin = '5px 0';
+    //         dropdownContent.appendChild(divider);
+    //     }
+    // }
+    
+    // BOOLEAN FLAGS SECTION
+    if (actualBooleanColumns.size > 0) {
+        const booleanHeader = document.createElement('div');
+        booleanHeader.style.padding = '8px 10px';
+        booleanHeader.style.fontWeight = 'bold';
+        booleanHeader.style.backgroundColor = '#2a2a2a';
+        booleanHeader.style.borderBottom = '1px solid #555';
+        booleanHeader.style.color = '#2196F3';
+        booleanHeader.style.fontSize = '13px';
+        booleanHeader.textContent = `Boolean Flags (${actualBooleanColumns.size})`;
+        dropdownContent.appendChild(booleanHeader);
+        
+        // Convert to array and sort
+        const sortedBooleanColumns = Array.from(actualBooleanColumns).sort();
+        
+        // Add each boolean column to the dropdown
+        sortedBooleanColumns.forEach(column => {
+            const flagItem = document.createElement('div');
+            flagItem.className = 'flag-item boolean-flag-item';
+            flagItem.dataset.flagProperty = column;
+            flagItem.style.padding = '10px 15px';
+            flagItem.style.cursor = 'pointer';
+            flagItem.style.borderBottom = '1px solid #3a3a3a';
+            flagItem.style.color = 'white';
+            flagItem.style.fontSize = '13px';
+            
+            // Format property name for display
+            const displayName = column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            flagItem.textContent = displayName;
+            
+            // Highlight if currently selected
+            if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) {
+                flagItem.style.backgroundColor = 'white';
+                flagItem.style.color = 'black';
+            }
+            
+            flagItem.addEventListener('mouseover', function() {
+                if (!(flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null)) {
+                    this.style.backgroundColor = '#444';
+                }
+            });
+            
+            flagItem.addEventListener('mouseout', function() {
+                if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) {
+                    this.style.backgroundColor = 'white';
+                    this.style.color = 'black';
+                } else {
+                    this.style.backgroundColor = 'transparent';
+                    this.style.color = 'white';
+                }
+            });
+            
+            flagItem.addEventListener('click', function() {
+                const propertyName = this.dataset.flagProperty;
+                console.log(`Boolean flag filter clicked: ${propertyName}`);
+                
+                // Set filter state
+                flagFilterEnabled = true;
+                currentFlagColumn = propertyName;
+                currentEnvValue = null; // Not an environment filter
+                
+                // Set global filter state
+                window.flagFilterEnabled = true;
+                window.currentFlagColumn = propertyName;
+                window.currentEnvValue = null;
+                
+                // Apply the boolean filter
+                applyLocalFilter(propertyName);
                 
                 // Update UI
                 updateFlagFilterUI(dropdownContent);
-                
-                // Apply environment filter
-                applyEnvFilter(envValue);
                 
                 // Close dropdown
                 dropdownContent.style.display = 'none';
             });
             
-            dropdownContent.appendChild(envItem);
+            dropdownContent.appendChild(flagItem);
         });
-        
-        // Add section divider if we have boolean columns too
-        if (sortedColumns.length > 0) {
-            const divider = document.createElement('div');
-            divider.style.height = '1px';
-            divider.style.backgroundColor = '#555';
-            divider.style.margin = '5px 0';
-            dropdownContent.appendChild(divider);
-            
-            // Add boolean section header
-            const booleanHeader = document.createElement('div');
-            booleanHeader.style.padding = '8px 10px';
-            booleanHeader.style.fontWeight = 'bold';
-            booleanHeader.style.backgroundColor = '#333';
-            booleanHeader.style.borderBottom = '1px solid #555';
-            booleanHeader.textContent = 'Boolean Flags';
-            dropdownContent.appendChild(booleanHeader);
-        }
-    } else if (sortedColumns.length > 0) {
-        // Only add boolean header if we don't have env values
-        const booleanHeader = document.createElement('div');
-        booleanHeader.style.padding = '8px 10px';
-        booleanHeader.style.fontWeight = 'bold';
-        booleanHeader.style.backgroundColor = '#333';
-        booleanHeader.style.borderBottom = '1px solid #555';
-        booleanHeader.textContent = 'Boolean Flags';
-        dropdownContent.appendChild(booleanHeader);
     }
     
-    // Add each boolean column to the dropdown
-    sortedColumns.forEach(column => {
-        const flagItem = document.createElement('div');
-        flagItem.className = 'flag-item';
-        // Just show the column name without "Filter by:" prefix
-        flagItem.textContent = column;
-        flagItem.style.padding = '10px';
-        flagItem.style.cursor = 'pointer';
-        flagItem.style.borderBottom = '1px solid #444';
-        flagItem.style.color = 'white';
-        
-        // Highlight if currently selected
-        if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) {
-            flagItem.style.backgroundColor = 'white';
-            flagItem.style.color = 'black';
-        }
-        
-        flagItem.addEventListener('mouseover', function() {
-            if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) return;
-            this.style.backgroundColor = '#333';
-        });
-        
-        flagItem.addEventListener('mouseout', function() {
-            if (flagFilterEnabled && currentFlagColumn === column && currentEnvValue === null) return;
-            this.style.backgroundColor = 'transparent';
-        });
-        
-        flagItem.addEventListener('click', function() {
-            // Enable flag filtering with this column
-            flagFilterEnabled = true;
-            currentFlagColumn = column;
-            currentEnvValue = null;
-            
-            // Update the UI
-            updateFlagFilterUI(dropdownContent);
-            
-            // Apply the filter locally
-            applyLocalFilter(column);
-            
-            // Close the dropdown
-            dropdownContent.style.display = 'none';
-        });
-        
-        dropdownContent.appendChild(flagItem);
-    });
+    // Show message if no filters available
+    if (!hasEnvColumn && actualBooleanColumns.size === 0) {
+        const noFlagsItem = document.createElement('div');
+        noFlagsItem.style.padding = '10px';
+        noFlagsItem.style.color = '#aaa';
+        noFlagsItem.textContent = 'No environment values or boolean flags found';
+        dropdownContent.appendChild(noFlagsItem);
+    }
 }
 
 // Add event listener to initialize flag filter button when catalog is loaded
-document.addEventListener("DOMContentLoaded", function() {
-    // Create the flag filter button
-    createFlagFilterButton();
+// document.addEventListener("DOMContentLoaded", function() {
+//     // Create the flag filter button
+//     createFlagFilterButton();
     
 // Update the original loadCatalog function to preload flag data
-const originalLoadCatalog = window.loadCatalog;
-if (originalLoadCatalog) {
-    window.loadCatalog = function(catalogName) {
-        // Call the original function to load basic catalog data
-        const result = originalLoadCatalog(catalogName);
+// const originalLoadCatalog = window.loadCatalog;
+// if (originalLoadCatalog) {
+//     window.loadCatalog = function(catalogName) {
+//         // Call the original function to load basic catalog data
+//         const result = originalLoadCatalog(catalogName);
         
-        // Clear any previously cached flag data
-        window.catalogDataWithFlags = null;
+//         // Clear any previously cached flag data
+//         window.catalogDataWithFlags = null;
         
-        // After loading the basic catalog, preload the flag data
-        if (window.catalogDataForOverlay && window.catalogDataForOverlay.length > 0) {
-            console.log('Preloading catalog flag data...');
+//         // After loading the basic catalog, preload the flag data
+//         if (window.catalogDataForOverlay && window.catalogDataForOverlay.length > 0) {
+//             console.log('Preloading catalog flag data...');
             
-            // Load the flag data in the background
-            fetch(`/catalog-with-flags/${catalogName}`)
-                .then(response => response.json())
-                .then(data => {
-                    window.catalogDataWithFlags = data;
-                    console.log('Flag data preloaded successfully');
-                })
-                .catch(error => {
-                    console.error('Error preloading flag data:', error);
-                });
+//             // Load the flag data in the background
+//             fetch(`/catalog-with-flags/${catalogName}`)
+//                 .then(response => response.json())
+//                 .then(data => {
+//                     window.catalogDataWithFlags = data;
+//                     console.log('Flag data preloaded successfully');
+//                 })
+//                 .catch(error => {
+//                     console.error('Error preloading flag data:', error);
+//                 });
+//         }
+        
+//         return result;
+//     };
+// }
+// });
+
+
+function addCatalogOverlay(catalogData, styles) {
+    // Ensure catalog data is available
+    console.log("addCatalogOverlay called");
+    if (!catalogData || catalogData.length === 0) {
+        console.warn('No catalog data available to display.');
+        return;
+    }
+
+    console.log('[addCatalogOverlay] Function started');
+    const activeViewer = window.viewer || window.tiledViewer;
+    if (!activeViewer) {
+        console.error("No active viewer found for catalog overlay.");
+        return;
+    }
+
+    // Use the new wcsInfo object from main.js
+    const wcs = window.wcsInfo;
+    console.log("[addCatalogOverlay] WCS info:", wcs);
+    if (!wcs || !wcs.hasWCS) {
+        console.warn("[addCatalogOverlay] WCS info not available, cannot display catalog overlay.");
+        return;
+    }
+
+    const imageWidth = wcs.naxis1;
+    const imageHeight = wcs.naxis2;
+    console.log(`[addCatalogOverlay] Image dimensions: ${imageWidth}x${imageHeight}`);
+
+    // Clear existing overlays managed by this function
+    clearCatalogOverlay(); 
+    console.log('[addCatalogOverlay] Cleared existing overlays');
+
+
+    catalogData.forEach((obj, index) => {
+        const ra = obj.ra;
+        const dec = obj.dec;
+
+        if (ra === undefined || dec === undefined) {
+            console.warn(`[addCatalogOverlay] Skipping object at index ${index} due to missing coordinates`);
+            return;
         }
-        
-        return result;
-    };
+
+        // Use the new worldToPixels function
+        const pixelCoords = wcs.worldToPixels(ra, dec);
+        console.log(`[addCatalogOverlay] Object ${index}: RA=${ra}, Dec=${dec} -> Pixel X=${pixelCoords?.x}, Y=${pixelCoords?.y}`);
+
+        if (pixelCoords) {
+            const pixelX = pixelCoords.x;
+            const pixelY = pixelCoords.y;
+
+            // OpenSeadragon's imageToViewportCoordinates handles the coordinate system correctly.
+            if (pixelX >= 0 && pixelX < imageWidth && pixelY >= 0 && pixelY < imageHeight) {
+                console.log(`[addCatalogOverlay] Object ${index} is within image bounds. Creating dot.`);
+                const dotElement = createCatalogDotWithStyles(obj, index, styles);
+
+                // Use pixelY directly, OpenSeadragon will handle the correct placement.
+                const viewportPoint = activeViewer.viewport.imageToViewportCoordinates(pixelX, pixelY);
+                console.log(`[addCatalogOverlay] Viewport point for object ${index}:`, viewportPoint);
+
+                activeViewer.addOverlay({
+                    element: dotElement,
+                    location: viewportPoint,
+                    placement: 'CENTER'
+                });
+                console.log(`[addCatalogOverlay] Added overlay for object ${index}`);
+            } else {
+                console.warn(`[addCatalogOverlay] Object ${index} is outside image bounds.`);
+            }
+        } else {
+            console.warn(`[addCatalogOverlay] Could not convert world to pixel coordinates for object ${index}`);
+        }
+    });
+    console.log('[addCatalogOverlay] Function finished');
 }
-});
 
-
-// Modify the addCatalogOverlay function to store additional properties
-function extendCatalogOverlay() {
-    const originalAddCatalogOverlay = window.addCatalogOverlay;
-    if (originalAddCatalogOverlay) {
-        window.addCatalogOverlay = function(catalogData) {
-            console.log("Canvas-based addCatalogOverlay called with styles:", regionStyles);
-            
-            // Clear any existing overlay
-            clearCatalogOverlay();
-            
-            if (!viewer) {
-                console.error("No viewer available for catalog overlay");
-                return;
-            }
-            
-            if (!catalogData || catalogData.length === 0) {
-                console.error("No catalog data available");
-                return;
-            }
-            
-            console.log(`Adding overlay with ${catalogData.length} objects with canvas rendering`);
-            
-            // Store catalog data for later use
-            window.catalogDataForOverlay = catalogData;
-            
-            // Create container for the canvas
-            const container = document.createElement('div');
-            container.className = 'catalog-overlay-container';
-            container.style.position = 'absolute';
-            container.style.top = '0';
-            container.style.left = '0';
-            container.style.width = '100%';
-            container.style.height = '100%';
-            container.style.pointerEvents = 'none'; // IMPORTANT: Set to none so mouse events pass through
-            
-            // Create canvas element
-            const canvas = document.createElement('canvas');
-            canvas.className = 'catalog-canvas';
-            canvas.style.position = 'absolute';
-            canvas.style.top = '0';
-            canvas.style.left = '0';
-            canvas.style.width = '100%';
-            canvas.style.height = '100%';
-            canvas.style.pointerEvents = 'none'; // IMPORTANT: Let mouse events pass through
-            
-            // Set canvas size to match container
-            const viewerElement = document.getElementById('openseadragon');
-            canvas.width = viewerElement.clientWidth;
-            canvas.height = viewerElement.clientHeight;
-            
-            // Add canvas to container
-            container.appendChild(canvas);
-            
-            // Add the container to the viewer
-            viewerElement.appendChild(container);
-            
-            // Store the container and canvas for later reference
-            window.catalogOverlayContainer = container;
-            window.catalogCanvas = canvas;
-            
-            // Create a source reference map for click detection
-            window.catalogSourceMap = [];
-            
-            // Instead of putting click handler on canvas, put it on the viewer element
-            // This allows normal OpenSeadragon interactions but still enables our click detection
-            viewerElement.addEventListener('click', function(event) {
-                // Only handle clicks if not dragging
-                if (viewer.isMouseDown()) return;
-                
-                handleCanvasClick(event);
-            });
-            
-            // Add window resize handler to update canvas size
-            window.addEventListener('resize', function() {
-                if (window.catalogCanvas) {
-                    window.catalogCanvas.width = viewerElement.clientWidth;
-                    window.catalogCanvas.height = viewerElement.clientHeight;
-                    updateCanvasOverlay(); // Redraw after resize
-                }
-            });
-            
-            // Initial update
-            updateCanvasOverlay();
-            
-            // Add event handlers for viewer movement
-            viewer.addHandler('animation', updateCanvasOverlay);
-            viewer.addHandler('open', updateCanvasOverlay);
-            
-            // Use throttled update for pan events to improve performance
-            const throttledUpdate = throttle(updateCanvasOverlay, 100);
-            viewer.addHandler('pan', throttledUpdate);
-            
-            // Use debounced update for zoom to reduce flickering
-            const debouncedZoomUpdate = debounce(updateCanvasOverlay, 50);
-            viewer.addHandler('zoom', debouncedZoomUpdate);
-            
-            return catalogData.length; // Return the number of objects added
-        };
-        
+/**
+ * Removes all catalog overlays from the viewer.
+ */
+function clearCatalogOverlay() {
+    const activeViewer = window.viewer || window.tiledViewer;
+    if (activeViewer) {
+        activeViewer.removeAllOverlays();
     }
 }
-
-// Call the extension function
-extendCatalogOverlay();
-
-
-
-
-
 
 // Region Style Customizer
 // This code adds a popup to customize region styles when loading a catalog
@@ -1171,552 +1573,1346 @@ let regionStyles = {
     opacity: 0.7 // Default opacity
 };
 
-// Function to create and show the style customizer popup
-// Function to create and show the style customizer popup
-function showStyleCustomizerPopup(catalogName) {
-    // Check if popup already exists
-    let popup = document.getElementById('style-customizer-popup');
+
+
+// Updated applyStylesToRegions function
+function applyStylesToRegions(catalogName, styles) {
+    console.log('=== applyStylesToRegions START ===');
+    console.log('Catalog name:', catalogName);
+    console.log('Styles to apply:', styles);
+    console.log('Current window.catalogData:', window.catalogData);
     
-    if (popup) {
-        // If popup exists, check if the catalog-name-display element exists before updating it
-        const catalogNameDisplay = document.getElementById('catalog-name-display');
-        if (catalogNameDisplay) {
-            catalogNameDisplay.textContent = catalogName;
+    // Initialize window.catalogData if it doesn't exist
+    if (!window.catalogData || !Array.isArray(window.catalogData)) {
+        console.log('Initializing window.catalogData as empty array');
+        window.catalogData = [];
+    }
+
+    // Validate inputs
+    if (!catalogName || typeof catalogName !== 'string') {
+        console.error('Invalid catalog name provided:', catalogName);
+        return false;
+    }
+
+    if (!styles || typeof styles !== 'object') {
+        console.error('Invalid styles provided:', styles);
+        return false;
+    }
+
+    // Handle folder paths - normalize the catalog name
+    let normalizedCatalogName = catalogName;
+    let catalogNameForEndpoint = catalogName;
+    
+    // If catalog name includes 'catalogs/' prefix, remove it for API calls
+    if (catalogName.startsWith('catalogs/')) {
+        catalogNameForEndpoint = catalogName.replace('catalogs/', '');
+        console.log('Removed catalogs/ prefix for API calls:', catalogNameForEndpoint);
+    } else if (!catalogName.includes('/')) {
+        // If no folder path, add catalogs/ prefix for internal tracking
+        normalizedCatalogName = `catalogs/${catalogName}`;
+        catalogNameForEndpoint = catalogName;
+        console.log('Added catalogs/ prefix for internal tracking:', normalizedCatalogName);
+    }
+
+    // Extract just the filename for comparison
+    const searchFilename = catalogName.split('/').pop();
+    console.log('Searching for catalog with filename:', searchFilename);
+    console.log('Normalized catalog name:', normalizedCatalogName);
+    console.log('Catalog name for endpoint:', catalogNameForEndpoint);
+
+    // Multiple search strategies to find the catalog
+    let catalogIndex = -1;
+    
+    // Strategy 1: Exact match with the provided name
+    catalogIndex = window.catalogData.findIndex(c => {
+        return c && c.name === catalogName;
+    });
+    
+    if (catalogIndex !== -1) {
+        console.log('Found catalog with exact name match at index:', catalogIndex);
+    }
+
+    // Strategy 2: Exact match with normalized name (with catalogs/ prefix)
+    if (catalogIndex === -1) {
+        catalogIndex = window.catalogData.findIndex(c => {
+            return c && c.name === normalizedCatalogName;
+        });
+        
+        if (catalogIndex !== -1) {
+            console.log('Found catalog with normalized name match at index:', catalogIndex);
         }
-        popup.style.display = 'block';
+    }
+
+    // Strategy 3: Filename match (compare just the filenames)
+    if (catalogIndex === -1) {
+        catalogIndex = window.catalogData.findIndex(c => {
+            if (!c || !c.name) return false;
+            const dataFilename = c.name.split('/').pop();
+            return dataFilename === searchFilename;
+        });
+        
+        if (catalogIndex !== -1) {
+            console.log('Found catalog with filename match at index:', catalogIndex);
+        }
+    }
+
+    // Strategy 4: Partial match (in case of path differences)
+    if (catalogIndex === -1) {
+        catalogIndex = window.catalogData.findIndex(c => {
+            if (!c || !c.name) return false;
+            return c.name.includes(searchFilename) || 
+                   searchFilename.includes(c.name.split('/').pop()) ||
+                   c.name.endsWith(searchFilename);
+        });
+        
+        if (catalogIndex !== -1) {
+            console.log('Found catalog with partial match at index:', catalogIndex);
+        }
+    }
+
+    // If still not found, create a new entry using the normalized name
+    if (catalogIndex === -1) {
+        console.log('Catalog not found in window.catalogData, creating new entry');
+        const newCatalogEntry = {
+            name: normalizedCatalogName, // Use the normalized name with catalogs/ prefix
+            apiName: catalogNameForEndpoint, // Store the name to use for API calls
+            style: {
+                // Default values
+                borderColor: '#FF0000',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                opacity: 0.8,
+                raColumn: 'ra',
+                decColumn: 'dec',
+                radius: 5
+            }
+        };
+        window.catalogData.push(newCatalogEntry);
+        catalogIndex = window.catalogData.length - 1;
+        console.log('Created new catalog entry at index:', catalogIndex, 'with name:', normalizedCatalogName);
+    } else {
+        console.log('Found existing catalog at index:', catalogIndex, 'with name:', window.catalogData[catalogIndex].name);
+        // Ensure existing entries have apiName
+        if (!window.catalogData[catalogIndex].apiName) {
+            window.catalogData[catalogIndex].apiName = catalogNameForEndpoint;
+        }
+    }
+
+    // Ensure the catalog entry has a style object
+    if (!window.catalogData[catalogIndex].style) {
+        window.catalogData[catalogIndex].style = {};
+    }
+
+    // Update the style object for the catalog
+    const previousStyles = { ...window.catalogData[catalogIndex].style };
+    window.catalogData[catalogIndex].style = {
+        ...window.catalogData[catalogIndex].style, // Preserve any existing styles
+        ...styles // Apply new styles
+    };
+    
+    console.log('Previous styles:', previousStyles);
+    console.log('New styles applied:', styles);
+    console.log(`Final styles for catalog "${window.catalogData[catalogIndex].name}":`, window.catalogData[catalogIndex].style);
+    
+    // Also update the global regionStyles for immediate use
+    window.regionStyles = {
+        borderColor: styles.borderColor || window.regionStyles?.borderColor || '#FF0000',
+        backgroundColor: styles.backgroundColor || window.regionStyles?.backgroundColor || 'transparent',
+        borderWidth: styles.borderWidth || window.regionStyles?.borderWidth || 2,
+        opacity: styles.opacity || window.regionStyles?.opacity || 0.8
+    };
+    
+    console.log('Updated global regionStyles:', window.regionStyles);
+
+    // Store both the original and normalized catalog names for reloading
+    window.currentCatalogName = window.catalogData[catalogIndex].name; // Use the actual stored name
+    window.activeCatalog = window.catalogData[catalogIndex].name;
+
+    // If we have overlay data, update the styles for immediate visual feedback
+    if (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay)) {
+        console.log('Updating overlay data with new styles...');
+        
+        // Apply styles to each object in the overlay
+        window.catalogDataForOverlay.forEach((obj, index) => {
+            if (obj) {
+                // Apply visual styles
+                obj.color = styles.borderColor || '#FF0000';
+                obj.fillColor = styles.backgroundColor === 'transparent' ? 'rgba(255, 0, 0, 0.3)' : styles.backgroundColor;
+                obj.border_width = styles.borderWidth || 2;
+                obj.opacity = styles.opacity || 0.8;
+                obj.useTransparentFill = styles.backgroundColor === 'transparent';
+                
+                // Apply coordinate/size settings
+                if (styles.radius && typeof styles.radius === 'number') {
+                    obj.radius_pixels = styles.radius;
+                }
+            }
+        });
+        
+        console.log('Updated overlay data with new styles');
+        
+        // Force immediate redraw if canvas overlay is active
+        if (typeof canvasUpdateOverlay === 'function' && window.catalogCanvas) {
+            console.log('Triggering canvas overlay update...');
+            canvasUpdateOverlay();
+        } else if (typeof updateOverlay === 'function') {
+            console.log('Triggering DOM overlay update...');
+            updateOverlay();
+        }
+    }
+
+    console.log('=== applyStylesToRegions END ===');
+    console.log('Returning catalog info for reload:', {
+        catalogName: window.catalogData[catalogIndex].name,
+        apiName: window.catalogData[catalogIndex].apiName || catalogNameForEndpoint
+    });
+    
+    // Return the proper catalog names that should be used for reloading
+    return {
+        success: true,
+        catalogName: window.catalogData[catalogIndex].name,
+        apiName: window.catalogData[catalogIndex].apiName || catalogNameForEndpoint
+    };
+}
+
+// Updated populateDropdowns function in showStyleCustomizerPopup
+function populateDropdowns(catalogName) {
+    const dropdowns = [raDropdown, decDropdown, sizeDropdown];
+    dropdowns.forEach(dd => {
+        dd.dropdownList.innerHTML = '<div class="dropdown-item">Loading...</div>';
+        dd.hiddenSelect.innerHTML = '';
+    });
+
+    // Extract just the filename for the API call (remove catalogs/ prefix if present)
+    let catalogNameForApi = catalogName;
+    if (catalogName.startsWith('catalogs/')) {
+        catalogNameForApi = catalogName.replace('catalogs/', '');
+    }
+    
+    console.log('Populating dropdowns for catalog:', catalogName);
+    console.log('Using API name:', catalogNameForApi);
+
+    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
+        .then(response => { 
+            if (!response.ok) {
+                throw new Error(`Failed to load columns: ${response.status} - ${response.statusText}`);
+            }
+            return response.json(); 
+        })
+        .then(data => {
+            const allColumns = data.columns || [];
+            dropdowns.forEach(dd => dd.dropdownList.innerHTML = '');
+
+            const addOption = (dropdown, value, text) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                dropdown.hiddenSelect.appendChild(option);
+
+                const item = document.createElement('div');
+                item.className = 'dropdown-item';
+                item.textContent = text;
+                item.dataset.value = value;
+                item.addEventListener('click', () => {
+                    dropdown.hiddenSelect.value = value;
+                    dropdown.searchInput.value = text;
+                    dropdown.dropdownList.style.display = 'none';
+                    dropdown.hiddenSelect.dispatchEvent(new Event('change'));
+                });
+                dropdown.dropdownList.appendChild(item);
+            };
+
+            addOption(sizeDropdown, '', 'No size column');
+
+            allColumns.forEach(colName => {
+                dropdowns.forEach(dd => addOption(dd, colName, colName));
+            });
+            
+            const findDefaultColumn = (columns, keywords) => {
+                for (const keyword of keywords) {
+                    try {
+                        const regex = new RegExp(`^${keyword}$`, 'i');
+                        const match = columns.find(c => regex.test(c));
+                        if (match) return match;
+                    } catch (e) { console.error(`Invalid regex keyword: ${keyword}`, e); }
+                }
+                for (const keyword of keywords) {
+                    const match = columns.find(c => c.toLowerCase().includes(keyword));
+                    if (match) return match;
+                }
+                return null;
+            };
+
+            const raKeywords = ['ra', 'right_ascension'];
+            const decKeywords = ['dec', 'declination'];
+            const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'major', 'maj'];
+
+            if (allColumns.length > 0) {
+                const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
+                raDropdown.searchInput.value = defaultRa;
+                raDropdown.hiddenSelect.value = defaultRa;
+                
+                const defaultDec = findDefaultColumn(allColumns, decKeywords) || (allColumns.length > 1 ? allColumns[1] : allColumns[0]);
+                decDropdown.searchInput.value = defaultDec;
+                decDropdown.hiddenSelect.value = defaultDec;
+
+                const defaultSize = findDefaultColumn(allColumns, sizeKeywords);
+                sizeDropdown.searchInput.value = defaultSize || 'No size column';
+                sizeDropdown.hiddenSelect.value = defaultSize || '';
+                sizeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
+            }
+        })
+        .catch(error => {
+            console.error('Error populating dropdowns:', error);
+            dropdowns.forEach(dd => {
+                dd.dropdownList.innerHTML = '<div class="dropdown-item">Error loading</div>';
+            });
+        });
+}
+
+// Updated apply button handler
+function createUpdatedApplyButtonHandler(catalogName, popup, newStyles) {
+    return () => {
+        // Apply styles and get the result
+        const result = applyStylesToRegions(catalogName, newStyles);
+        
+        if (result && result.success) {
+            console.log('[Apply Styles] Styles applied successfully');
+            
+            // Use the apiName for reloading (this is the name without catalogs/ prefix)
+            const catalogNameForReload = result.apiName || result.catalogName;
+            console.log(`[Apply Styles] Reloading catalog '${catalogNameForReload}' to display new styles.`);
+            
+            if (typeof loadCatalog === 'function') {
+                // Load using the API-compatible name
+                loadCatalog(catalogNameForReload);
+            } else {
+                console.error("loadCatalog function not found! Cannot reload catalog after applying styles.");
+            }
+        } else {
+            console.error('[Apply Styles] Failed to apply styles');
+            if (typeof showNotification === 'function') {
+                showNotification('Failed to apply styles', 3000, 'error');
+            }
+        }
+        
+        // Close the popup
+        if (popup && popup.parentNode) {
+            popup.parentNode.removeChild(popup);
+        }
+    };
+}
+
+// Replace the current loadCatalog function with this fixed version
+function loadCatalog(catalogName, styles = null) {
+    console.log(`[DEBUG] loadCatalog called with:`, { catalogName, styles });
+    console.log(`[DEBUG] Current window functions:`, {
+        canvasAddCatalogOverlay: typeof window.canvasAddCatalogOverlay,
+        canvasUpdateOverlay: typeof window.canvasUpdateOverlay,
+        canvasClearCatalogOverlay: typeof window.canvasClearCatalogOverlay
+    });
+    console.log(`[loadCatalog] Function started with catalog: ${catalogName}`);
+    if (styles) {
+        console.log('[loadCatalog] Received styles:', styles);
+    }
+
+    if (!catalogName) {
+        console.error('[loadCatalog] No catalog name provided, exiting.');
+        showNotification('Please select a catalog first', 3000);
         return;
     }
     
-    // Create popup container
-    popup = document.createElement('div');
-    popup.id = 'style-customizer-popup';
-    popup.style.position = 'fixed';
-    popup.style.top = '50%';
-    popup.style.left = '50%';
-    popup.style.transform = 'translate(-50%, -50%)';
-    popup.style.backgroundColor = '#333';
-    popup.style.border = '1px solid #555';
-    popup.style.borderRadius = '5px';
-    popup.style.padding = '15px';
-    popup.style.zIndex = '1500';
-    popup.style.width = '350px';
-    popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
-    
-    // Create title
-    const title = document.createElement('h3');
-    title.innerHTML = 'Region Style Settings';
-    title.style.margin = '0 0 15px 0';
-    title.style.color = '#fff';
-    title.style.fontFamily = 'Arial, sans-serif';
-    title.style.fontSize = '18px';
-    title.style.fontWeight = 'bold';
-    title.style.borderBottom = '1px solid #555';
-    title.style.paddingBottom = '10px';
-    
-    // Add catalog name display
-    const catalogNameDisplay = document.createElement('div');
-    catalogNameDisplay.id = 'catalog-name-display';
-    catalogNameDisplay.textContent = catalogName;
-    catalogNameDisplay.style.color = '#4CAF50';
-    catalogNameDisplay.style.fontSize = '14px';
-    catalogNameDisplay.style.marginBottom = '10px';
-    
-    // Create close button
-    const closeButton = document.createElement('button');
-    closeButton.textContent = '×';
-    closeButton.style.position = 'absolute';
-    closeButton.style.top = '10px';
-    closeButton.style.right = '10px';
-    closeButton.style.backgroundColor = 'transparent';
-    closeButton.style.border = 'none';
-    closeButton.style.color = '#aaa';
-    closeButton.style.fontSize = '20px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.style.padding = '0';
-    closeButton.style.width = '24px';
-    closeButton.style.height = '24px';
-    closeButton.style.lineHeight = '24px';
-    closeButton.style.textAlign = 'center';
-    closeButton.style.borderRadius = '12px';
-    closeButton.addEventListener('mouseover', () => {
-        closeButton.style.backgroundColor = '#555';
-        closeButton.style.color = '#fff';
-    });
-    closeButton.addEventListener('mouseout', () => {
-        closeButton.style.backgroundColor = 'transparent';
-        closeButton.style.color = '#aaa';
-    });
-    closeButton.addEventListener('click', () => {
-        // popup.style.display = 'none'; // Hide the popup
-        if (popup && popup.parentNode) { // Remove the popup from the DOM
-             popup.parentNode.removeChild(popup);
-        }
-    });
-    
-    // Create form content
-    const formContainer = document.createElement('div');
-    formContainer.style.display = 'flex';
-    formContainer.style.flexDirection = 'column';
-    formContainer.style.gap = '15px';
-    
-    // Border color selector
-    const borderColorGroup = document.createElement('div');
-    
-    const borderColorLabel = document.createElement('label');
-    borderColorLabel.textContent = 'Border Color:';
-    borderColorLabel.style.display = 'block';
-    borderColorLabel.style.marginBottom = '5px';
-    borderColorLabel.style.color = '#aaa';
-    borderColorLabel.style.fontFamily = 'Arial, sans-serif';
-    
-    const borderColorInput = document.createElement('input');
-    borderColorInput.type = 'color';
-    borderColorInput.id = 'border-color-input';
-    borderColorInput.value = regionStyles.borderColor;
-    borderColorInput.style.width = '100%';
-    borderColorInput.style.height = '30px';
-    borderColorInput.style.cursor = 'pointer';
-    borderColorInput.style.backgroundColor = '#444';
-    borderColorInput.style.border = '1px solid #555';
-    borderColorInput.style.borderRadius = '3px';
-    
-    borderColorGroup.appendChild(borderColorLabel);
-    borderColorGroup.appendChild(borderColorInput);
-    
-    // Background color selector
-    const bgColorGroup = document.createElement('div');
-    
-    const bgColorLabel = document.createElement('label');
-    bgColorLabel.textContent = 'Fill Color:';
-    bgColorLabel.style.display = 'block';
-    bgColorLabel.style.marginBottom = '5px';
-    bgColorLabel.style.color = '#aaa';
-    bgColorLabel.style.fontFamily = 'Arial, sans-serif';
-    
-    const bgColorContainer = document.createElement('div');
-    bgColorContainer.style.display = 'flex';
-    bgColorContainer.style.alignItems = 'center';
-    bgColorContainer.style.gap = '10px';
-    
-    const bgColorInput = document.createElement('input');
-    bgColorInput.type = 'color';
-    bgColorInput.id = 'bg-color-input';
-    bgColorInput.value = regionStyles.backgroundColor === 'transparent' ? '#ffffff' : regionStyles.backgroundColor;
-    bgColorInput.style.width = '85%';
-    bgColorInput.style.height = '30px';
-    bgColorInput.style.cursor = 'pointer';
-    bgColorInput.style.backgroundColor = '#444';
-    bgColorInput.style.border = '1px solid #555';
-    bgColorInput.style.borderRadius = '3px';
-    
-    const transparentCheckbox = document.createElement('input');
-    transparentCheckbox.type = 'checkbox';
-    transparentCheckbox.id = 'transparent-bg-checkbox';
-    transparentCheckbox.checked = regionStyles.backgroundColor === 'transparent';
-    transparentCheckbox.style.margin = '0';
-    transparentCheckbox.style.cursor = 'pointer';
-    
-    const transparentLabel = document.createElement('label');
-    transparentLabel.textContent = 'Transparent';
-    transparentLabel.htmlFor = 'transparent-bg-checkbox';
-    transparentLabel.style.color = '#aaa';
-    transparentLabel.style.fontFamily = 'Arial, sans-serif';
-    transparentLabel.style.marginLeft = '5px';
-    
-    // Toggle background color input based on transparent checkbox
-    transparentCheckbox.addEventListener('change', () => {
-        bgColorInput.disabled = transparentCheckbox.checked;
-        bgColorInput.style.opacity = transparentCheckbox.checked ? '0.5' : '1';
-    });
-    
-    // Initialize state
-    bgColorInput.disabled = transparentCheckbox.checked;
-    bgColorInput.style.opacity = transparentCheckbox.checked ? '0.5' : '1';
-    
-    bgColorContainer.appendChild(bgColorInput);
-    
-    const transparentContainer = document.createElement('div');
-    transparentContainer.style.display = 'flex';
-    transparentContainer.style.alignItems = 'center';
-    transparentContainer.appendChild(transparentCheckbox);
-    transparentContainer.appendChild(transparentLabel);
-    
-    bgColorContainer.appendChild(transparentContainer);
-    
-    bgColorGroup.appendChild(bgColorLabel);
-    bgColorGroup.appendChild(bgColorContainer);
-    
-    // Border width slider
-    const borderWidthGroup = document.createElement('div');
-    
-    const borderWidthLabel = document.createElement('label');
-    borderWidthLabel.textContent = 'Border Width:';
-    borderWidthLabel.style.display = 'block';
-    borderWidthLabel.style.marginBottom = '5px';
-    borderWidthLabel.style.color = '#aaa';
-    borderWidthLabel.style.fontFamily = 'Arial, sans-serif';
-    
-    const borderWidthContainer = document.createElement('div');
-    borderWidthContainer.style.display = 'flex';
-    borderWidthContainer.style.alignItems = 'center';
-    borderWidthContainer.style.gap = '10px';
-    
-    const borderWidthSlider = document.createElement('input');
-    borderWidthSlider.type = 'range';
-    borderWidthSlider.id = 'border-width-slider';
-    borderWidthSlider.min = '1';
-    borderWidthSlider.max = '5';
-    borderWidthSlider.step = '1';
-    borderWidthSlider.value = regionStyles.borderWidth;
-    borderWidthSlider.style.flex = '1';
-    borderWidthSlider.style.height = '6px';
-    borderWidthSlider.style.appearance = 'none';
-    borderWidthSlider.style.backgroundColor = '#555';
-    borderWidthSlider.style.borderRadius = '3px';
-    borderWidthSlider.style.outline = 'none';
-    borderWidthSlider.style.cursor = 'pointer';
-    
-    // Add custom CSS for the slider thumb
-    const sliderStyle = document.createElement('style');
-    sliderStyle.textContent = `
-        #border-width-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #4CAF50;
-            cursor: pointer;
-        }
-        #border-width-slider::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #4CAF50;
-            cursor: pointer;
-            border: none;
-        }
-    `;
-    document.head.appendChild(sliderStyle);
-    
-    const borderWidthValue = document.createElement('span');
-    borderWidthValue.id = 'border-width-value';
-    borderWidthValue.textContent = regionStyles.borderWidth + 'px';
-    borderWidthValue.style.minWidth = '35px';
-    borderWidthValue.style.textAlign = 'center';
-    borderWidthValue.style.color = '#fff';
-    borderWidthValue.style.fontFamily = 'Arial, sans-serif';
-    
-    // Update the displayed value when the slider changes
-    borderWidthSlider.addEventListener('input', function() {
-        borderWidthValue.textContent = this.value + 'px';
-    });
-    
-    borderWidthContainer.appendChild(borderWidthSlider);
-    borderWidthContainer.appendChild(borderWidthValue);
-    
-    borderWidthGroup.appendChild(borderWidthLabel);
-    borderWidthGroup.appendChild(borderWidthContainer);
-    
-    // Opacity slider
-    const opacityGroup = document.createElement('div');
-    
-    const opacityLabel = document.createElement('label');
-    opacityLabel.textContent = 'Opacity:';
-    opacityLabel.style.display = 'block';
-    opacityLabel.style.marginBottom = '5px';
-    opacityLabel.style.color = '#aaa';
-    opacityLabel.style.fontFamily = 'Arial, sans-serif';
-    
-    const opacityContainer = document.createElement('div');
-    opacityContainer.style.display = 'flex';
-    opacityContainer.style.alignItems = 'center';
-    opacityContainer.style.gap = '10px';
-    
-    const opacitySlider = document.createElement('input');
-    opacitySlider.type = 'range';
-    opacitySlider.id = 'opacity-slider';
-    opacitySlider.min = '0';
-    opacitySlider.max = '1';
-    opacitySlider.step = '0.1';
-    opacitySlider.value = regionStyles.opacity;
-    opacitySlider.style.flex = '1';
-    opacitySlider.style.height = '6px';
-    opacitySlider.style.appearance = 'none';
-    opacitySlider.style.backgroundColor = '#555';
-    opacitySlider.style.borderRadius = '3px';
-    opacitySlider.style.outline = 'none';
-    opacitySlider.style.cursor = 'pointer';
-    
-    const opacityStyle = document.createElement('style');
-    opacityStyle.textContent = `
-        #opacity-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #2196F3;
-            cursor: pointer;
-        }
-        #opacity-slider::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #2196F3;
-            cursor: pointer;
-            border: none;
-        }
-    `;
-    document.head.appendChild(opacityStyle);
-    
-    const opacityValue = document.createElement('span');
-    opacityValue.id = 'opacity-value';
-    opacityValue.textContent = regionStyles.opacity;
-    opacityValue.style.minWidth = '35px';
-    opacityValue.style.textAlign = 'center';
-    opacityValue.style.color = '#fff';
-    opacityValue.style.fontFamily = 'Arial, sans-serif';
-    
-    // Update the displayed value when the slider changes
-    opacitySlider.addEventListener('input', function() {
-        opacityValue.textContent = this.value;
-    });
-    
-    opacityContainer.appendChild(opacitySlider);
-    opacityContainer.appendChild(opacityValue);
-    
-    opacityGroup.appendChild(opacityLabel);
-    opacityGroup.appendChild(opacityContainer);
-    
-    // Preview area
-    const previewGroup = document.createElement('div');
-    
-    const previewLabel = document.createElement('label');
-    previewLabel.textContent = 'Preview:';
-    previewLabel.style.display = 'block';
-    previewLabel.style.marginBottom = '5px';
-    previewLabel.style.color = '#aaa';
-    previewLabel.style.fontFamily = 'Arial, sans-serif';
-    
-    const previewArea = document.createElement('div');
-    previewArea.style.width = '100%';
-    previewArea.style.height = '60px';
-    previewArea.style.backgroundColor = '#222';
-    previewArea.style.borderRadius = '3px';
-    previewArea.style.display = 'flex';
-    previewArea.style.justifyContent = 'center';
-    previewArea.style.alignItems = 'center';
-    
-    const previewDot = document.createElement('div');
-    previewDot.id = 'preview-dot';
-    previewDot.style.width = '30px';
-    previewDot.style.height = '30px';
-    previewDot.style.borderRadius = '50%';
-    previewDot.style.borderWidth = regionStyles.borderWidth + 'px';
-    previewDot.style.borderStyle = 'solid';
-    previewDot.style.borderColor = regionStyles.borderColor;
-    previewDot.style.backgroundColor = regionStyles.backgroundColor;
-    previewDot.style.opacity = regionStyles.opacity;
-    
-    // Function to update preview dot
-    function updatePreview() {
-        const bgColor = transparentCheckbox.checked ? 'transparent' : bgColorInput.value;
-        previewDot.style.borderWidth = borderWidthSlider.value + 'px';
-        previewDot.style.borderColor = borderColorInput.value;
-        previewDot.style.backgroundColor = bgColor;
-        previewDot.style.opacity = opacitySlider.value;
+    // Initialize catalogData if needed
+    if (!window.catalogData || !Array.isArray(window.catalogData)) {
+        window.catalogData = [];
     }
     
-    // Add event listeners to update preview in real-time
-    borderColorInput.addEventListener('input', updatePreview);
-    bgColorInput.addEventListener('input', updatePreview);
-    transparentCheckbox.addEventListener('change', updatePreview);
-    borderWidthSlider.addEventListener('input', updatePreview);
-    opacitySlider.addEventListener('input', updatePreview);
+    // Store the current catalog name globally
+    window.currentCatalogName = catalogName;
+    activeCatalog = catalogName;
     
-    previewArea.appendChild(previewDot);
-    previewGroup.appendChild(previewLabel);
-    previewGroup.appendChild(previewArea);
+    // Show loading indicator
+    showNotification(true, 'Loading catalog...');
     
-    // Button container
-    const buttonContainer = document.createElement('div');
-    buttonContainer.style.display = 'flex';
-    buttonContainer.style.justifyContent = 'space-between';
-    buttonContainer.style.marginTop = '10px';
+    // Clear any existing catalog overlay
+    if (typeof canvasClearCatalogOverlay === 'function') {
+        canvasClearCatalogOverlay();
+    } else if (typeof clearCatalogOverlay === 'function') {
+        clearCatalogOverlay();
+    }
     
-    // Apply button
-    const applyButton = document.createElement('button');
-    applyButton.textContent = 'Apply';
-    applyButton.style.flex = '1';
-    applyButton.style.marginRight = '10px';
-    applyButton.style.padding = '8px 0';
-    applyButton.style.backgroundColor = '#4CAF50';
-    applyButton.style.color = '#fff';
-    applyButton.style.border = 'none';
-    applyButton.style.borderRadius = '3px';
-    applyButton.style.cursor = 'pointer';
-    applyButton.style.fontFamily = 'Arial, sans-serif';
-    applyButton.style.fontSize = '14px';
+    // Clear any existing flag data
+    window.catalogDataWithFlags = null;
     
-    applyButton.addEventListener('mouseover', () => {
-        applyButton.style.backgroundColor = '#45a049';
-    });
-    applyButton.addEventListener('mouseout', () => {
-        applyButton.style.backgroundColor = '#4CAF50';
-    });
-    applyButton.addEventListener('click', () => {
-        const newBorderColor = borderColorInput.value;
-        const newBgColor = transparentCheckbox.checked ? 'transparent' : bgColorInput.value;
-        const newBorderWidth = parseInt(borderWidthSlider.value);
-        const newOpacity = parseFloat(opacitySlider.value);
+    console.log(`[loadCatalog] Fetching data from: /catalog-with-flags/${encodeURIComponent(catalogName)}`);
+    
+    // Fetch catalog data from server
+    fetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}`, {
+        method: 'GET'
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`Failed to load catalog: ${response.statusText}`);
+        }
+        return response.json();
+    })
+    .then(responseData => {
+        console.log('[loadCatalog] Received response from server.');
+        
+        let catalogData;
+        if (Array.isArray(responseData)) {
+            catalogData = responseData;
+        } else if (responseData && responseData.catalog_data && Array.isArray(responseData.catalog_data)) {
+            catalogData = responseData.catalog_data;
+        } else if (responseData && responseData.data && Array.isArray(responseData.data)) {
+            catalogData = responseData.data;
+        } else if (responseData && responseData.catalog && Array.isArray(responseData.catalog)) {
+            catalogData = responseData.catalog;
+        } else {
+            console.error('[loadCatalog] Invalid catalog data format:', responseData);
+            throw new Error('Invalid catalog data format: expected an array or an object with a data array.');
+        }
+        
+        console.log(`[loadCatalog] Parsed ${catalogData.length} objects from response.`);
 
-        console.log('[Apply Styles] Values from inputs:', {
-            borderColor: newBorderColor,
-            backgroundColor: newBgColor,
-            borderWidth: newBorderWidth,
-            opacity: newOpacity
-        });
-
-        // Save settings
-        regionStyles = { // Update the local regionStyles object
-            borderColor: newBorderColor,
-            backgroundColor: newBgColor,
-            borderWidth: newBorderWidth,
-            opacity: newOpacity
-        };
-        console.log('[Apply Styles] Updated regionStyles object:', regionStyles);
-
-        // Hide popup
-        // popup.style.display = 'none'; // Instead of hiding, remove it
-        if (popup && popup.parentNode) {
-             popup.parentNode.removeChild(popup);
+        if (!Array.isArray(catalogData) || catalogData.length === 0) {
+            throw new Error('No catalog data found or invalid format.');
         }
 
-        // Apply styles to existing regions - REMOVED as we use canvas overlay now
-        // console.log('[Apply Styles] Calling applyStylesToRegions...');
-        // applyStylesToRegions();
-
-        // REMOVED: Update the overlay immediately - loadCatalog will handle the initial draw
-        // console.log('[Apply Styles] Triggering immediate overlay update...');
-        // if (typeof updateCanvasOverlay === 'function') {
-        //     updateCanvasOverlay(); // Prefer canvas update if available
-        // } else if (typeof updateOverlay === 'function') {
-        //     updateOverlay(); // Fallback to div overlay update
-        // }
-
-        // NOW load the catalog using the selected styles
-        if (typeof coreLoadCatalog === 'function') { // Use the core load function
-             console.log('[Apply Styles] Calling coreLoadCatalog to load/display with new styles...');
-             coreLoadCatalog(catalogName); // <-- Call the core function directly
-         } else {
-              console.error("coreLoadCatalog function not found! Cannot load catalog after applying styles.");
-         }
-    });
+        // Store the complete catalog data
+        window.catalogDataWithFlags = catalogData;
+// In the loadCatalog function, replace this part:
+window.catalogDataForOverlay = catalogData.map((obj, index) => {
+    // Create the styled object with proper defaults
+    const styledObj = {
+        ...obj,
+        index: index,
+        passesFilter: true
+    };
     
-    // Cancel button
-    const cancelButton = document.createElement('button');
-    cancelButton.textContent = 'Cancel';
-    cancelButton.style.flex = '1';
-    cancelButton.style.padding = '8px 0';
-    cancelButton.style.backgroundColor = '#f44336';
-    cancelButton.style.color = '#fff';
-    cancelButton.style.border = 'none';
-    cancelButton.style.borderRadius = '3px';
-    cancelButton.style.cursor = 'pointer';
-    cancelButton.style.fontFamily = 'Arial, sans-serif';
-    cancelButton.style.fontSize = '14px';
+    // Apply styles if provided, otherwise use defaults
+    if (styles) {
+        styledObj.color = styles.borderColor || '#FF0000';
+        styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
+        styledObj.border_width = styles.borderWidth || 2;
+        styledObj.opacity = styles.opacity || 0.8;
+        styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
+        styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+        
     
-    cancelButton.addEventListener('mouseover', () => {
-        cancelButton.style.backgroundColor = '#d32f2f';
-    });
-    cancelButton.addEventListener('mouseout', () => {
-        cancelButton.style.backgroundColor = '#f44336';
-    });
-    cancelButton.addEventListener('click', () => {
-        // popup.style.display = 'none'; // Hide the popup
-        if (popup && popup.parentNode) { // Remove the popup from the DOM
-             popup.parentNode.removeChild(popup);
+    } else {
+        // Default styles
+        styledObj.color = '#FF0000';
+        styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
+        styledObj.border_width = 2;
+        styledObj.opacity = 0.8;
+        styledObj.useTransparentFill = true;
+        styledObj.radius_pixels = obj.radius_pixels || 5;
+    }
+    
+    return styledObj;
+});
+
+console.log('[loadCatalog] Prepared overlay data with styles. Sample object:', window.catalogDataForOverlay[0]);
+        
+        console.log('[loadCatalog] Prepared overlay data with', window.catalogDataForOverlay.length, 'objects');
+        
+        // Wait for viewer to be ready and add overlay
+        function safeAddOverlay() {
+            const activeViewer = window.viewer || window.tiledViewer;
+            console.log('[loadCatalog] Checking for active viewer:', !!activeViewer);
+            
+            if (activeViewer) {
+                console.log('[loadCatalog] Viewer ready, adding canvas overlay');
+                
+                // Use canvas overlay system
+                if (typeof canvasAddCatalogOverlay === 'function') {
+                    const addedCount = canvasAddCatalogOverlay(window.catalogDataForOverlay);
+                    console.log(`[loadCatalog] Canvas overlay added ${addedCount} objects`);
+                } else {
+                    console.error('[loadCatalog] canvasAddCatalogOverlay function not found');
+                    // Fallback to DOM overlay
+                    if (typeof addCatalogOverlay === 'function') {
+                        addCatalogOverlay(window.catalogDataForOverlay, styles);
+                    }
+                }
+                
+                // Create flag filter button
+                createFlagFilterButton();
+                
+                showNotification(false);
+                showNotification(`Catalog loaded: ${catalogData.length} objects`, 2000, 'success');
+                
+            } else {
+                console.log('[loadCatalog] Viewer not ready, retrying...');
+                setTimeout(safeAddOverlay, 100);
+            }
         }
+        
+        safeAddOverlay();
+    })
+    .catch(error => {
+        console.error('[loadCatalog] Error loading catalog:', error);
+        showNotification(false);
+        showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000, 'error');
+        window.catalogDataWithFlags = null;
     });
-    
-    buttonContainer.appendChild(applyButton);
-    buttonContainer.appendChild(cancelButton);
-    
-    // Add all elements to form container
-    formContainer.appendChild(borderColorGroup);
-    formContainer.appendChild(bgColorGroup);
-    formContainer.appendChild(borderWidthGroup);
-    formContainer.appendChild(opacityGroup);
-    formContainer.appendChild(previewGroup);
-    
-    // Add all elements to popup
-    popup.appendChild(title);
-    popup.appendChild(catalogNameDisplay); // Add the catalog name display element
-    popup.appendChild(closeButton);
-    popup.appendChild(formContainer);
-    popup.appendChild(buttonContainer);
-    
-    // Make popup draggable
-    makeDraggable(popup, title);
-    
-    // Add popup to document
-    document.body.appendChild(popup);
 }
 
-// Function to apply styles to all catalog regions
-function applyStylesToRegions() {
-    if (!window.catalogDots) return;
+// Binary catalog loader with fast parsing
+function loadCatalogBinary(catalogName, styles = null) {
+    console.log(`[DEBUG] loadCatalogBinary called with:`, { catalogName, styles });
+    console.log(`[loadCatalogBinary] Function started with catalog: ${catalogName}`);
     
-    console.log("Applying styles to regions:", regionStyles);
+    if (!catalogName) {
+        console.error('[loadCatalogBinary] No catalog name provided, exiting.');
+        showNotification('Please select a catalog first', 3000);
+        return;
+    }
     
-    // Apply to all dots
-    window.catalogDots.forEach(dot => {
-        dot.style.border = `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`;
-        dot.style.backgroundColor = regionStyles.backgroundColor;
-        dot.style.opacity = regionStyles.opacity;
+    // Initialize catalogData if needed
+    if (!window.catalogData || !Array.isArray(window.catalogData)) {
+        window.catalogData = [];
+    }
+    
+    // Store the current catalog name globally
+    window.currentCatalogName = catalogName;
+    activeCatalog = catalogName;
+    
+    // Show loading indicator
+    showNotification(true, 'Loading catalog...');
+    
+    // Clear any existing catalog overlay
+    if (typeof canvasClearCatalogOverlay === 'function') {
+        canvasClearCatalogOverlay();
+    } else if (typeof clearCatalogOverlay === 'function') {
+        clearCatalogOverlay();
+    }
+    
+    // Clear any existing flag data
+    window.catalogDataWithFlags = null;
+    
+    console.log(`[loadCatalogBinary] Fetching binary data from: /catalog-binary/${encodeURIComponent(catalogName)}`);
+    
+    // Fetch binary catalog data from server
+    fetch(`/catalog-binary/${encodeURIComponent(catalogName)}`, {
+        method: 'GET',
+        headers: {
+            'Accept-Encoding': 'gzip'  // Request compressed data
+        }
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`Failed to load catalog: ${response.statusText}`);
+        }
+        return response.arrayBuffer();
+    })
+    .then(arrayBuffer => {
+        console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength);
         
-        // Also store the original style to restore later - this is needed for proper styling persistence
-        dot.dataset.originalBorder = `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`;
+        // Parse binary data
+        const catalogData = parseBinaryCatalog(arrayBuffer);
+        
+        console.log(`[loadCatalogBinary] Parsed ${catalogData.records.length} objects from binary data.`);
+        
+        if (!catalogData.records || catalogData.records.length === 0) {
+            throw new Error('No catalog data found or invalid format.');
+        }
+        
+        // Store the complete catalog data
+        window.catalogDataWithFlags = catalogData.records;
+        
+        // Prepare overlay data with styles
+        window.catalogDataForOverlay = catalogData.records.map((obj, index) => {
+            // Create the styled object with proper defaults
+            const styledObj = {
+                ...obj,
+                index: index,
+                passesFilter: true
+            };
+            
+            // Apply styles if provided, otherwise use defaults
+            if (styles) {
+                styledObj.color = styles.borderColor || '#FF0000';
+                styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
+                    styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
+                styledObj.border_width = styles.borderWidth || 2;
+                styledObj.opacity = styles.opacity || 0.8;
+                styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
+                styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+            } else {
+                // Default styles
+                styledObj.color = '#FF0000';
+                styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
+                styledObj.border_width = 2;
+                styledObj.opacity = 0.8;
+                styledObj.useTransparentFill = true;
+                styledObj.radius_pixels = obj.radius_pixels || 5;
+            }
+            
+            return styledObj;
+        });
+        
+        console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:', 
+                    window.catalogDataForOverlay[0]);
+        
+        // Store metadata
+        window.catalogMetadata = catalogData.header;
+        
+        // Wait for viewer to be ready and add overlay
+        function safeAddOverlay() {
+            const activeViewer = window.viewer || window.tiledViewer;
+            console.log('[loadCatalogBinary] Checking for active viewer:', !!activeViewer);
+            
+            if (activeViewer) {
+                console.log('[loadCatalogBinary] Viewer ready, adding canvas overlay');
+                
+                // Use canvas overlay system
+                if (typeof canvasAddCatalogOverlay === 'function') {
+                    const addedCount = canvasAddCatalogOverlay(window.catalogDataForOverlay);
+                    console.log(`[loadCatalogBinary] Canvas overlay added ${addedCount} objects`);
+                } else {
+                    console.error('[loadCatalogBinary] canvasAddCatalogOverlay function not found');
+                    // Fallback to DOM overlay
+                    if (typeof addCatalogOverlay === 'function') {
+                        addCatalogOverlay(window.catalogDataForOverlay, styles);
+                    }
+                }
+                
+                // Create flag filter button if boolean columns exist
+                if (catalogData.header.boolean_columns && catalogData.header.boolean_columns.length > 0) {
+                    createFlagFilterButton();
+                }
+                
+                showNotification(false);
+                showNotification(`Catalog loaded: ${catalogData.records.length} objects`, 2000, 'success');
+                
+            } else {
+                console.log('[loadCatalogBinary] Viewer not ready, retrying...');
+                setTimeout(safeAddOverlay, 100);
+            }
+        }
+        
+        safeAddOverlay();
+    })
+    .catch(error => {
+        console.error('[loadCatalogBinary] Error loading catalog:', error);
+        showNotification(false);
+        showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000, 'error');
+        window.catalogDataWithFlags = null;
     });
+}
+
+// Parse binary catalog format
+function parseBinaryCatalog(arrayBuffer) {
+    const dataView = new DataView(arrayBuffer);
+    let offset = 0;
+    
+    // Read header length (4 bytes)
+    const headerLength = dataView.getUint32(offset, true);
+    offset += 4;
+    
+    // Read header JSON
+    const headerBytes = new Uint8Array(arrayBuffer, offset, headerLength);
+    const headerJson = new TextDecoder().decode(headerBytes);
+    const header = JSON.parse(headerJson);
+    offset += headerLength;
+    
+    console.log('[parseBinaryCatalog] Header:', header);
+    
+    // Parse records
+    const records = [];
+    const numRecords = header.num_records;
+    
+    for (let i = 0; i < numRecords; i++) {
+        // Read numeric fields
+        const ra = dataView.getFloat64(offset, true);
+        offset += 8;
+        
+        const dec = dataView.getFloat64(offset, true);
+        offset += 8;
+        
+        const x_pixels = dataView.getFloat32(offset, true);
+        offset += 4;
+        
+        const y_pixels = dataView.getFloat32(offset, true);
+        offset += 4;
+        
+        const radius_pixels = dataView.getFloat32(offset, true);
+        offset += 4;
+        
+        // Read metadata length and content
+        const metadataLength = dataView.getUint32(offset, true);
+        offset += 4;
+        
+        const metadataBytes = new Uint8Array(arrayBuffer, offset, metadataLength);
+        const metadataJson = new TextDecoder().decode(metadataBytes);
+        const metadata = JSON.parse(metadataJson);
+        offset += metadataLength;
+        
+        // Combine into record
+        const record = {
+            ra,
+            dec,
+            x_pixels,
+            y_pixels,
+            radius_pixels,
+            ...metadata
+        };
+        
+        records.push(record);
+    }
+    
+    return {
+        header,
+        records
+    };
+}
+
+// Optimized binary catalog loader with streaming support (for very large catalogs)
+async function loadCatalogBinaryStream(catalogName, styles = null) {
+    console.log(`[loadCatalogBinaryStream] Starting streaming load for: ${catalogName}`);
+    
+    if (!catalogName) {
+        console.error('[loadCatalogBinaryStream] No catalog name provided');
+        showNotification('Please select a catalog first', 3000);
+        return;
+    }
+    
+    // Initialize
+    window.currentCatalogName = catalogName;
+    activeCatalog = catalogName;
+    showNotification(true, 'Loading catalog...');
+    
+    // Clear existing overlays
+    if (typeof canvasClearCatalogOverlay === 'function') {
+        canvasClearCatalogOverlay();
+    }
+    
+    try {
+        const response = await fetch(`/catalog-binary/${encodeURIComponent(catalogName)}`, {
+            method: 'GET',
+            headers: {
+                'Accept-Encoding': 'gzip'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Failed to load catalog: ${response.statusText}`);
+        }
+        
+        // For streaming, we need to process chunks
+        const reader = response.body.getReader();
+        const chunks = [];
+        let totalBytes = 0;
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            chunks.push(value);
+            totalBytes += value.length;
+            
+            // Update progress
+            showNotification(true, `Loading catalog... ${Math.round(totalBytes / 1024)}KB`);
+        }
+        
+        // Combine chunks into single ArrayBuffer
+        const fullBuffer = new ArrayBuffer(totalBytes);
+        const uint8Array = new Uint8Array(fullBuffer);
+        let position = 0;
+        
+        for (const chunk of chunks) {
+            uint8Array.set(chunk, position);
+            position += chunk.length;
+        }
+        
+        // Parse the complete buffer
+        const catalogData = parseBinaryCatalog(fullBuffer);
+        
+        // Process and display as before
+        window.catalogDataWithFlags = catalogData.records;
+        window.catalogDataForOverlay = prepareCatalogOverlayData(catalogData.records, styles);
+        window.catalogMetadata = catalogData.header;
+        
+        // Add overlay when viewer is ready
+        await waitForViewerAndAddOverlay();
+        
+        showNotification(false);
+        showNotification(`Catalog loaded: ${catalogData.records.length} objects`, 2000, 'success');
+        
+    } catch (error) {
+        console.error('[loadCatalogBinaryStream] Error:', error);
+        showNotification(false);
+        showNotification(`Error: ${error.message}`, 3000, 'error');
+        window.catalogDataWithFlags = null;
+    }
+}
+
+// Helper function to prepare overlay data with styles
+function prepareCatalogOverlayData(records, styles) {
+    return records.map((obj, index) => {
+        const styledObj = {
+            ...obj,
+            index: index,
+            passesFilter: true
+        };
+        
+        if (styles) {
+            styledObj.color = styles.borderColor || '#FF0000';
+            styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
+                styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
+            styledObj.border_width = styles.borderWidth || 2;
+            styledObj.opacity = styles.opacity || 0.8;
+            styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
+            styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+        } else {
+            styledObj.color = '#FF0000';
+            styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
+            styledObj.border_width = 2;
+            styledObj.opacity = 0.8;
+            styledObj.useTransparentFill = true;
+            styledObj.radius_pixels = obj.radius_pixels || 5;
+        }
+        
+        return styledObj;
+    });
+}
+
+// Helper function to wait for viewer and add overlay
+async function waitForViewerAndAddOverlay() {
+    return new Promise((resolve) => {
+        function checkAndAdd() {
+            const activeViewer = window.viewer || window.tiledViewer;
+            
+            if (activeViewer) {
+                if (typeof canvasAddCatalogOverlay === 'function') {
+                    const addedCount = canvasAddCatalogOverlay(window.catalogDataForOverlay);
+                    console.log(`[Overlay] Added ${addedCount} objects`);
+                } else if (typeof addCatalogOverlay === 'function') {
+                    addCatalogOverlay(window.catalogDataForOverlay);
+                }
+                
+                if (window.catalogMetadata?.boolean_columns?.length > 0) {
+                    createFlagFilterButton();
+                }
+                
+                resolve();
+            } else {
+                setTimeout(checkAndAdd, 100);
+            }
+        }
+        
+        checkAndAdd();
+    });
+}
+
+window.loadCatalog = loadCatalogBinary;
+
+// Updated showStyleCustomizerPopup function - fix the populateDropdowns call
+function showStyleCustomizerPopup(catalogName) {
+    // Prevent multiple popups
+    const existingPopup = document.getElementById('region-style-popup');
+    if (existingPopup) {
+        existingPopup.parentNode.removeChild(existingPopup);
+    }
+
+    // Default styles
+    const regionStyles = {
+        borderColor: '#FF0000',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        opacity: 0.8,
+    };
+
+    // Extract the API-compatible catalog name (remove catalogs/ prefix if present)
+    let catalogNameForApi = catalogName;
+    if (catalogName.startsWith('catalogs/')) {
+        catalogNameForApi = catalogName.replace('catalogs/', '');
+    }
+    
+    console.log('showStyleCustomizerPopup - Original catalog name:', catalogName);
+    console.log('showStyleCustomizerPopup - API catalog name:', catalogNameForApi);
+
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.id = 'region-style-popup';
+    Object.assign(popup.style, {
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        backgroundColor: '#333', border: '1px solid #555', borderRadius: '5px',
+        padding: '15px', zIndex: '1500', width: '700px',
+        boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)', boxSizing: 'border-box'
+    });
+    
+    // Add custom styles for sliders and dropdowns
+    const customStyles = document.createElement('style');
+    customStyles.textContent = `
+        #region-style-popup input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 16px; height: 16px;
+            border-radius: 50%; background: #007bff; cursor: pointer;
+        }
+        #region-style-popup input[type="range"]::-moz-range-thumb {
+            width: 16px; height: 16px; border-radius: 50%; background: #007bff; cursor: pointer; border: none;
+        }
+        .custom-dropdown-list {
+            position: absolute; background-color: #3c3c3c; border: 1px solid #555;
+            border-top: none; z-index: 1600; max-height: 150px; overflow-y: auto;
+            width: 100%; box-sizing: border-box; left: 0;
+        }
+        .custom-dropdown-list .dropdown-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px; cursor: pointer; border-bottom: 1px solid #555;
+            font-size: 13px; color: #fff;
+        }
+        .custom-dropdown-list .dropdown-item:last-child { border-bottom: none; }
+        .custom-dropdown-list .dropdown-item:hover { background-color: #555; }
+        .colormap-preview {
+            width: 80px; height: 12px; border: 1px solid #777; border-radius: 3px;
+        }
+    `;
+    popup.appendChild(customStyles);
+
+    const title = document.createElement('h3');
+    title.innerHTML = 'Region Style Settings';
+    Object.assign(title.style, { margin: '0 0 15px 0', color: '#fff', fontFamily: 'Arial, sans-serif', fontSize: '18px', fontWeight: 'bold', borderBottom: '1px solid #555', paddingBottom: '10px', cursor: 'grab' });
+
+    const catalogNameDisplay = document.createElement('div');
+    catalogNameDisplay.textContent = `Catalog: ${catalogNameForApi}`; // Show the API name to user
+    Object.assign(catalogNameDisplay.style, { color: '#4CAF50', fontSize: '14px', marginBottom: '10px' });
+    
+    const closeButton = document.createElement('button');
+    closeButton.textContent = '×';
+    Object.assign(closeButton.style, { position: 'absolute', top: '10px', right: '10px', backgroundColor: 'transparent', border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer', padding: '0', width: '24px', height: '24px', lineHeight: '24px', textAlign: 'center', borderRadius: '12px' });
+    closeButton.addEventListener('click', () => { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); });
+
+    const columnsContainer = document.createElement('div');
+    Object.assign(columnsContainer.style, { display: 'flex', flexDirection: 'row', gap: '20px', marginBottom: '15px' });
+
+    const leftColumn = document.createElement('div');
+    Object.assign(leftColumn.style, { flex: '1', display: 'flex', flexDirection: 'column', gap: '15px' });
+    const rightColumn = document.createElement('div');
+    Object.assign(rightColumn.style, { flex: '1', display: 'flex', flexDirection: 'column', gap: '15px' });
+    
+    function createFieldSet(legendText) {
+        const fieldset = document.createElement('fieldset');
+        Object.assign(fieldset.style, { border: '1px solid #555', borderRadius: '4px', padding: '10px', margin: '0', display: 'flex', flexDirection: 'column', gap: '10px' });
+        const legend = document.createElement('legend');
+        legend.textContent = legendText;
+        Object.assign(legend.style, { color: '#ccc', padding: '0 5px', fontSize: '14px' });
+        fieldset.appendChild(legend);
+        return fieldset;
+    }
+
+    const inputStyle = { width: '100%', padding: '6px', backgroundColor: '#444', color: 'white', border: '1px solid #555', borderRadius: '3px', boxSizing: 'border-box', fontSize: '13px' };
+
+    function createSearchableDropdown(label) {
+        const container = document.createElement('div');
+        container.style.position = 'relative';
+        const labelElement = document.createElement('label');
+        labelElement.textContent = label;
+        Object.assign(labelElement.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        Object.assign(searchInput.style, inputStyle);
+        const dropdownList = document.createElement('div');
+        dropdownList.className = 'custom-dropdown-list';
+        dropdownList.style.display = 'none';
+        const hiddenSelect = document.createElement('select');
+        hiddenSelect.style.display = 'none';
+        searchInput.addEventListener('input', () => {
+            const filter = searchInput.value.toLowerCase();
+            Array.from(dropdownList.children).forEach(item => {
+                item.style.display = item.textContent.toLowerCase().includes(filter) ? '' : 'none';
+            });
+        });
+        searchInput.addEventListener('focus', () => dropdownList.style.display = 'block');
+        document.addEventListener('click', (e) => {
+            if (!container.contains(e.target)) dropdownList.style.display = 'none';
+        });
+        container.appendChild(labelElement);
+        container.appendChild(searchInput);
+        container.appendChild(dropdownList);
+        container.appendChild(hiddenSelect);
+        return { container, searchInput, dropdownList, hiddenSelect };
+    }
+    
+    function createStyledDropdown(label, options) {
+        const container = document.createElement('div');
+        container.style.position = 'relative';
+        const labelElement = document.createElement('label');
+        labelElement.textContent = label;
+        Object.assign(labelElement.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+        const visibleDisplay = document.createElement('div');
+        Object.assign(visibleDisplay.style, inputStyle, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' });
+        const dropdownList = document.createElement('div');
+        dropdownList.className = 'custom-dropdown-list';
+        dropdownList.style.display = 'none';
+        const hiddenSelect = document.createElement('select');
+        hiddenSelect.style.display = 'none';
+        visibleDisplay.addEventListener('click', () => {
+            dropdownList.style.display = dropdownList.style.display === 'none' ? 'block' : 'none';
+        });
+        document.addEventListener('click', (e) => {
+            if (!container.contains(e.target)) dropdownList.style.display = 'none';
+        });
+        const updateVisibleDisplay = (value) => {
+            const selectedOption = options.find(opt => opt.value === value);
+            if (selectedOption) {
+                visibleDisplay.innerHTML = `<span>${selectedOption.text}</span><div class="colormap-preview" style="background: ${selectedOption.gradient};"></div>`;
+            }
+        };
+        options.forEach(opt => {
+            const optionEl = document.createElement('option');
+            optionEl.value = opt.value;
+            optionEl.textContent = opt.text;
+            hiddenSelect.appendChild(optionEl);
+            const item = document.createElement('div');
+            item.className = 'dropdown-item';
+            item.innerHTML = `<span>${opt.text}</span><div class="colormap-preview" style="background: ${opt.gradient};"></div>`;
+            item.addEventListener('click', () => {
+                hiddenSelect.value = opt.value;
+                updateVisibleDisplay(opt.value);
+                dropdownList.style.display = 'none';
+            });
+            dropdownList.appendChild(item);
+        });
+        if (options.length > 0) {
+            hiddenSelect.value = options[0].value;
+            updateVisibleDisplay(options[0].value);
+        }
+        container.appendChild(labelElement);
+        container.appendChild(visibleDisplay);
+        container.appendChild(dropdownList);
+        container.appendChild(hiddenSelect);
+        return { container, hiddenSelect };
+    }
+
+    const coordsFieldSet = createFieldSet('Coordinate & Size Settings');
+    const raDropdown = createSearchableDropdown('RA Column:');
+    const decDropdown = createSearchableDropdown('Dec Column:');
+    const sizeDropdown = createSearchableDropdown('Size Column (Optional):');
+    const radiusInput = document.createElement('input');
+    radiusInput.type = 'number';
+    radiusInput.min = '0';
+    radiusInput.step = '0.1';
+    Object.assign(radiusInput.style, inputStyle);
+    const radiusGroup = document.createElement('div');
+    const radiusLabel = document.createElement('label');
+    radiusLabel.textContent = 'Radius (pixels):';
+    Object.assign(radiusLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    radiusGroup.appendChild(radiusLabel);
+    radiusGroup.appendChild(radiusInput);
+    coordsFieldSet.appendChild(raDropdown.container);
+    coordsFieldSet.appendChild(decDropdown.container);
+    coordsFieldSet.appendChild(sizeDropdown.container);
+    coordsFieldSet.appendChild(radiusGroup);
+    leftColumn.appendChild(coordsFieldSet);
+
+    const styleFieldSet = createFieldSet('Region Style');
+    const manualColorContainer = document.createElement('div');
+    const borderColorInput = document.createElement('input');
+    borderColorInput.type = 'color';
+    borderColorInput.value = regionStyles.borderColor;
+    Object.assign(borderColorInput.style, { width: '100%', height: '30px', cursor: 'pointer', ...inputStyle, padding: '2px' });
+    const borderColorGroup = document.createElement('div');
+    const borderColorLabel = document.createElement('label');
+    borderColorLabel.textContent = 'Border Color:';
+    Object.assign(borderColorLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    borderColorGroup.appendChild(borderColorLabel);
+    borderColorGroup.appendChild(borderColorInput);
+    manualColorContainer.appendChild(borderColorGroup);
+    const bgColorContainer = document.createElement('div');
+    Object.assign(bgColorContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const bgColorInput = document.createElement('input');
+    bgColorInput.type = 'color';
+    bgColorInput.value = regionStyles.backgroundColor === 'transparent' ? '#ffffff' : regionStyles.backgroundColor;
+    Object.assign(bgColorInput.style, { flexGrow: '1', height: '30px', cursor: 'pointer', ...inputStyle, padding: '2px' });
+    const transparentCheckbox = document.createElement('input');
+    transparentCheckbox.type = 'checkbox';
+    transparentCheckbox.checked = regionStyles.backgroundColor === 'transparent';
+    const transparentLabel = document.createElement('label');
+    transparentLabel.textContent = 'Transparent Fill';
+    Object.assign(transparentLabel.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px', cursor: 'pointer' });
+    bgColorContainer.appendChild(bgColorInput);
+    bgColorContainer.appendChild(transparentCheckbox);
+    bgColorContainer.appendChild(transparentLabel);
+    const bgColorGroup = document.createElement('div');
+    const bgColorLabel = document.createElement('label');
+    bgColorLabel.textContent = 'Fill Color:';
+    Object.assign(bgColorLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    bgColorGroup.appendChild(bgColorLabel);
+    bgColorGroup.appendChild(bgColorContainer);
+    manualColorContainer.appendChild(bgColorGroup);
+    styleFieldSet.appendChild(manualColorContainer);
+    const borderWidthContainer = document.createElement('div');
+    Object.assign(borderWidthContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const borderWidthSlider = document.createElement('input');
+    borderWidthSlider.type = 'range';
+    borderWidthSlider.min = '1';
+    borderWidthSlider.max = '10';
+    borderWidthSlider.step = '1';
+    borderWidthSlider.value = regionStyles.borderWidth;
+    Object.assign(borderWidthSlider.style, { flex: '1', height: '8px', appearance: 'none', backgroundColor: '#555', borderRadius: '4px', outline: 'none', cursor: 'pointer' });
+    const borderWidthValue = document.createElement('span');
+    borderWidthValue.textContent = regionStyles.borderWidth + 'px';
+    borderWidthValue.style.color = '#fff';
+    borderWidthSlider.addEventListener('input', () => { borderWidthValue.textContent = borderWidthSlider.value + 'px'; updatePreview(); });
+    borderWidthContainer.appendChild(borderWidthSlider);
+    borderWidthContainer.appendChild(borderWidthValue);
+    const borderWidthGroup = document.createElement('div');
+    const borderWidthLabel = document.createElement('label');
+    borderWidthLabel.textContent = 'Border Width:';
+    Object.assign(borderWidthLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    borderWidthGroup.appendChild(borderWidthLabel);
+    borderWidthGroup.appendChild(borderWidthContainer);
+    styleFieldSet.appendChild(borderWidthGroup);
+    const opacityContainer = document.createElement('div');
+    Object.assign(opacityContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const opacitySlider = document.createElement('input');
+    opacitySlider.type = 'range';
+    opacitySlider.min = '0.1';
+    opacitySlider.max = '1';
+    opacitySlider.step = '0.05';
+    opacitySlider.value = regionStyles.opacity;
+    Object.assign(opacitySlider.style, { flex: '1', height: '8px', appearance: 'none', backgroundColor: '#555', borderRadius: '4px', outline: 'none', cursor: 'pointer' });
+    const opacityValue = document.createElement('span');
+    opacityValue.textContent = regionStyles.opacity;
+    opacitySlider.addEventListener('input', () => { opacityValue.textContent = opacitySlider.value; updatePreview(); });
+    opacityContainer.appendChild(opacitySlider);
+    opacityContainer.appendChild(opacityValue);
+    const opacityGroup = document.createElement('div');
+    const opacityLabel = document.createElement('label');
+    opacityLabel.textContent = 'Opacity:';
+    Object.assign(opacityLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    opacityGroup.appendChild(opacityLabel);
+    opacityGroup.appendChild(opacityContainer);
+    styleFieldSet.appendChild(opacityGroup);
+    rightColumn.appendChild(styleFieldSet);
+    const previewFieldSet = createFieldSet('Preview');
+    const previewContainer = document.createElement('div');
+    Object.assign(previewContainer.style, { height: '80px', backgroundColor: '#2e2e2e', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #555', overflow: 'hidden' });
+    const previewMarker = document.createElement('div');
+    Object.assign(previewMarker.style, { width: '50px', height: '50px', border: `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`, borderRadius: '50%', backgroundColor: regionStyles.backgroundColor, opacity: regionStyles.opacity, transition: 'all 0.2s ease' });
+    previewContainer.appendChild(previewMarker);
+    previewFieldSet.appendChild(previewContainer);
+    rightColumn.appendChild(previewFieldSet);
+
+    function populateDropdowns(catalogNameParam) {
+        const dropdowns = [raDropdown, decDropdown, sizeDropdown];
+        dropdowns.forEach(dd => {
+            dd.dropdownList.innerHTML = '<div class="dropdown-item">Loading...</div>';
+            dd.hiddenSelect.innerHTML = '';
+        });
+
+        // FIXED: Use the API-compatible catalog name
+        console.log('populateDropdowns called with:', catalogNameParam);
+        console.log('Using catalogNameForApi:', catalogNameForApi);
+
+        fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
+            .then(response => { 
+                if (!response.ok) {
+                    throw new Error(`Failed to load columns: ${response.status} - ${response.statusText}`);
+                }
+                return response.json(); 
+            })
+            .then(data => {
+                const allColumns = data.columns || [];
+                dropdowns.forEach(dd => dd.dropdownList.innerHTML = '');
+
+                const addOption = (dropdown, value, text) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = text;
+                    dropdown.hiddenSelect.appendChild(option);
+
+                    const item = document.createElement('div');
+                    item.className = 'dropdown-item';
+                    item.textContent = text;
+                    item.dataset.value = value;
+                    item.addEventListener('click', () => {
+                        dropdown.hiddenSelect.value = value;
+                        dropdown.searchInput.value = text;
+                        dropdown.dropdownList.style.display = 'none';
+                        dropdown.hiddenSelect.dispatchEvent(new Event('change'));
+                    });
+                    dropdown.dropdownList.appendChild(item);
+                };
+
+                addOption(sizeDropdown, '', 'No size column');
+
+                allColumns.forEach(colName => {
+                    dropdowns.forEach(dd => addOption(dd, colName, colName));
+                });
+                
+                const findDefaultColumn = (columns, keywords) => {
+                    for (const keyword of keywords) {
+                        try {
+                            const regex = new RegExp(`^${keyword}$`, 'i');
+                            const match = columns.find(c => regex.test(c));
+                            if (match) return match;
+                        } catch (e) { console.error(`Invalid regex keyword: ${keyword}`, e); }
+                    }
+                    for (const keyword of keywords) {
+                        const match = columns.find(c => c.toLowerCase().includes(keyword));
+                        if (match) return match;
+                    }
+                    return null;
+                };
+
+                const raKeywords = ['ra', 'right_ascension'];
+                const decKeywords = ['dec', 'declination'];
+                const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'major', 'maj'];
+
+                if (allColumns.length > 0) {
+                    const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
+                    raDropdown.searchInput.value = defaultRa;
+                    raDropdown.hiddenSelect.value = defaultRa;
+                    
+                    const defaultDec = findDefaultColumn(allColumns, decKeywords) || (allColumns.length > 1 ? allColumns[1] : allColumns[0]);
+                    decDropdown.searchInput.value = defaultDec;
+                    decDropdown.hiddenSelect.value = defaultDec;
+
+                    const defaultSize = findDefaultColumn(allColumns, sizeKeywords);
+                    sizeDropdown.searchInput.value = defaultSize || 'No size column';
+                    sizeDropdown.hiddenSelect.value = defaultSize || '';
+                    sizeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
+                }
+            })
+            .catch(error => {
+                console.error('Error populating dropdowns:', error);
+                dropdowns.forEach(dd => {
+                    dd.dropdownList.innerHTML = '<div class="dropdown-item">Error loading</div>';
+                });
+            });
+    }
+    
+    // FIXED: Call populateDropdowns with the API-compatible name
+    populateDropdowns(catalogNameForApi);
+
+    sizeDropdown.hiddenSelect.addEventListener('change', () => {
+        const hasSizeColumn = sizeDropdown.hiddenSelect.value !== '';
+        radiusInput.disabled = hasSizeColumn;
+        radiusInput.style.opacity = hasSizeColumn ? '0.5' : '1';
+        if (hasSizeColumn) radiusInput.value = '';
+    });
+    
+    function updatePreview() {
+        previewMarker.style.borderColor = borderColorInput.value;
+        previewMarker.style.backgroundColor = transparentCheckbox.checked ? 'transparent' : bgColorInput.value;
+        previewMarker.style.borderWidth = borderWidthSlider.value + 'px';
+        previewMarker.style.opacity = opacitySlider.value;
+    }
+    [borderColorInput, bgColorInput, transparentCheckbox, borderWidthSlider, opacitySlider].forEach(el => el.addEventListener('input', updatePreview));
+
+    const actionsContainer = document.createElement('div');
+    Object.assign(actionsContainer.style, { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '15px', borderTop: '1px solid #555' });
+    
+    const viewCatalogButton = document.createElement('button');
+    viewCatalogButton.textContent = 'View Catalog';
+    Object.assign(viewCatalogButton.style, { padding: '8px 16px', border: '1px solid #666', borderRadius: '4px', backgroundColor: '#555', color: '#fff', cursor: 'pointer', marginRight: 'auto' });
+    viewCatalogButton.onclick = (e) => {
+        e.preventDefault();
+        showCatalogViewer(catalogNameForApi);
+    };
+
+    const applyButton = document.createElement('button');
+    applyButton.textContent = 'Apply';
+    Object.assign(applyButton.style, { padding: '8px 16px', border: 'none', borderRadius: '4px', backgroundColor: '#4CAF50', color: '#fff', cursor: 'pointer' });
+    
+
+    applyButton.addEventListener('click', () => {
+        const newStyles = {
+            raColumn: raDropdown.hiddenSelect.value,
+            decColumn: decDropdown.hiddenSelect.value,
+            sizeColumn: sizeDropdown.hiddenSelect.value,
+            radius: radiusInput.value ? parseFloat(radiusInput.value) : 5,
+            borderColor: borderColorInput.value,
+            backgroundColor: transparentCheckbox.checked ? 'transparent' : bgColorInput.value,
+            borderWidth: parseInt(borderWidthSlider.value, 10),
+            opacity: parseFloat(opacitySlider.value)
+        };
+        
+        console.log('[Apply Styles] Detailed style values:');
+        console.log('  - borderColor (from color picker):', borderColorInput.value);
+        console.log('  - backgroundColor:', transparentCheckbox.checked ? 'transparent' : bgColorInput.value);
+        console.log('  - borderWidth (from slider):', parseInt(borderWidthSlider.value, 10));
+        console.log('  - opacity (from slider):', parseFloat(opacitySlider.value));
+        console.log('  - radius:', radiusInput.value ? parseFloat(radiusInput.value) : 5);
+        console.log('  - Complete newStyles object:', newStyles);
+        
+        // Get the catalog name for loading
+        const catalogNameForApi = catalogName.startsWith('catalogs/')
+            ? catalogName.replace('catalogs/', '')
+            : catalogName;
+    
+        console.log(`[Apply Styles] About to call loadCatalog with '${catalogNameForApi}' and styles:`, newStyles);
+        
+        // Close popup first
+        if (popup && popup.parentNode) {
+            popup.parentNode.removeChild(popup);
+        }
+        
+        // Check if loadCatalog function exists and call it with BOTH parameters
+        if (typeof loadCatalog === 'function') {
+            console.log('[Apply Styles] Calling loadCatalog function with styles');
+            loadCatalog(catalogNameForApi, newStyles); // Make sure BOTH parameters are passed
+        } else if (typeof window.loadCatalog === 'function') {
+            console.log('[Apply Styles] Calling window.loadCatalog function with styles');
+            window.loadCatalog(catalogNameForApi, newStyles); // Make sure BOTH parameters are passed
+        } else {
+            console.error('[Apply Styles] loadCatalog function not found!');
+            showNotification('Error: Cannot load catalog - function not found', 3000, 'error');
+        }
+        
+        console.log('[Apply Styles] loadCatalog call completed');
+    });
+    actionsContainer.appendChild(viewCatalogButton);
+    actionsContainer.appendChild(applyButton);
+
+    popup.appendChild(title);
+    popup.appendChild(catalogNameDisplay);
+    popup.appendChild(closeButton);
+    columnsContainer.appendChild(leftColumn);
+    columnsContainer.appendChild(rightColumn);
+    popup.appendChild(columnsContainer);
+    popup.appendChild(actionsContainer);
+    document.body.appendChild(popup);
+    makeDraggable(popup, title);
 }
 
 
 // Create catalog dots with custom styles
-function createCatalogDotWithStyles(obj, dotIndex) {
+function createCatalogDotWithStyles(obj, dotIndex, styles) {
+    console.log(`[createCatalogDotWithStyles] Function started for object at index ${dotIndex}`);
     const FIXED_RADIUS = 5;
     
     // Create a dot element
     const dot = document.createElement('div');
     dot.className = 'catalog-dot';
     dot.style.position = 'absolute';
-    dot.style.width = `${FIXED_RADIUS * 2}px`;
-    dot.style.height = `${FIXED_RADIUS * 2}px`;
+
+    // Get the specific style for this catalog
+    console.log('[createCatalogDotWithStyles] Received styles:', styles);
+    const catalogStyle = styles || (window.catalogData.find(c => c.name.includes(window.currentCatalogName)) || {}).style || {};
+    console.log('[createCatalogDotWithStyles] Final styles being applied:', catalogStyle);
+    
+    // Apply styles
+    dot.style.width = `${catalogStyle.radius || FIXED_RADIUS}px`;
+    dot.style.height = `${catalogStyle.radius || FIXED_RADIUS}px`;
     dot.style.borderRadius = '50%';
-    
-    // Apply custom styles
-    dot.style.backgroundColor = regionStyles.backgroundColor;
-    dot.style.border = `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`;
-    dot.style.opacity = regionStyles.opacity;
-    
+    dot.style.backgroundColor = catalogStyle.backgroundColor || 'transparent';
+    dot.style.border = `${catalogStyle.borderWidth || 2}px solid ${catalogStyle.borderColor || '#ff0000'}`;
+    dot.style.opacity = catalogStyle.opacity || 0.8;
+    dot.style.cursor = 'pointer';
     dot.style.boxSizing = 'border-box';
+    
     dot.style.transform = 'translate(-50%, -50%)';
     dot.style.pointerEvents = 'auto';  // Make dots clickable
-    dot.style.cursor = 'pointer';  // Show pointer cursor on hover
-    dot.style.transition = 'width 0.1s, height 0.1s';
     
     // Store the object data with the dot
-    dot.dataset.x = obj.x;
-    dot.dataset.y = obj.y;
-    dot.dataset.ra = obj.ra;
-    dot.dataset.dec = obj.dec;
-    dot.dataset.radius = obj.radius_pixels || FIXED_RADIUS;
-    dot.dataset.index = dotIndex;  // Store the index for reference
-    
-    // Store original style
-    dot.dataset.originalBorder = `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`;
-    dot.dataset.originalZIndex = 'auto';
+    dot.dataset.catalogIndex = dotIndex;
 
+    console.log(`[createCatalogDotWithStyles] Created dot for object ${dotIndex} with style:`, dot.style.cssText);
     return dot;
 }
 
@@ -2061,7 +3257,7 @@ async function uploadCatalog() {
         const formData = new FormData();
         formData.append('file', file);
 
-        showProgress(true, 'Uploading catalog...');
+        showNotification(true, 'Uploading catalog...');
 
         try {
             const response = await fetch('/upload-catalog/', {
@@ -2095,7 +3291,7 @@ async function uploadCatalog() {
             console.error('Error uploading catalog:', error);
             showNotification(`Error: ${error.message}`, 4000, 'error');
         } finally {
-            showProgress(false);
+            showNotification(false);
             // Clean up the dynamically created input element
             document.body.removeChild(fileInput);
         }
@@ -2159,3 +3355,64 @@ window.updateCatalogDropdown = function(catalogs) {
 
 // Function to create and show the style customizer popup
 // ... existing code ...
+
+// Add this to the end of static/catalogs.js
+
+function clearAllCatalogs() {
+    console.log("Clearing all loaded catalogs and overlays.");
+
+    // Clear the overlay from the canvas
+    if (typeof canvasClearCatalogOverlay === 'function') {
+        canvasClearCatalogOverlay();
+    }
+
+    // Reset the global catalog data arrays
+    window.loadedCatalogs = [];
+    window.catalogData = [];
+    window.catalogDataForOverlay = [];
+
+    // Clear the catalog selection dropdown in the UI
+    const dropdown = document.getElementById('catalog-select');
+    if (dropdown) {
+        // Remove all options except the placeholder
+        while (dropdown.options.length > 1) {
+            dropdown.remove(1);
+        }
+        // Hide the dropdown container if it's meant to be hidden when empty
+        const dropdownContainer = document.getElementById('catalog-selector-container');
+        if (dropdownContainer) {
+            dropdownContainer.style.display = 'none';
+        }
+    }
+    
+    // Also clear any peak finder specific UI if necessary
+    // (This part is a placeholder in case we need it later)
+    
+    console.log("All catalogs cleared.");
+}
+
+// Add this debugging function to check styles
+function debugCatalogStyles() {
+    if (window.catalogDataForOverlay && window.catalogDataForOverlay.length > 0) {
+        console.log('=== CATALOG STYLE DEBUG ===');
+        console.log('Total objects:', window.catalogDataForOverlay.length);
+        
+        // Check first few objects
+        for (let i = 0; i < Math.min(5, window.catalogDataForOverlay.length); i++) {
+            const obj = window.catalogDataForOverlay[i];
+            console.log(`Object ${i} styles:`, {
+                color: obj.color,
+                fillColor: obj.fillColor,
+                border_width: obj.border_width,
+                opacity: obj.opacity,
+                useTransparentFill: obj.useTransparentFill,
+                radius_pixels: obj.radius_pixels
+            });
+        }
+    } else {
+        console.log('No catalog data for overlay found');
+    }
+}
+
+// Call this in the console after applying styles to debug:
+// debugCatalogStyles();

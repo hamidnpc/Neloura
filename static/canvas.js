@@ -2,22 +2,22 @@
 
 // Utility functions for throttling and debouncing
 function throttle(func, wait) {
-    let lastCall = 0;
-    return function(...args) {
-        const now = Date.now();
-        if (now - lastCall >= wait) {
-            lastCall = now;
-            return func.apply(this, args);
-        }
-    };
+    // let lastCall = 0;
+    // return function(...args) {
+    //     const now = Date.now();
+    //     if (now - lastCall >= wait) {
+    //         lastCall = now;
+    //         return func.apply(this, args);
+    //     }
+    // };
 }
 
 function debounce(func, wait) {
-    let timeout;
-    return function(...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-    };
+    // let timeout;
+    // return function(...args) {
+    //     clearTimeout(timeout);
+    //     timeout = setTimeout(() => func.apply(this, args), wait);
+    // };
 }
 
 
@@ -63,7 +63,7 @@ window.canvasPopup = {
     sourceIndex: -1,
     x: 0,
     y: 0,
-    width: 300,
+    width:400,
     height: 200,
     content: {},
     isDragging: false,
@@ -316,17 +316,20 @@ window.canvasPopup = {
         const hasY = 'y' in this.content;
         const hasRA = 'ra' in this.content;
         const hasDec = 'dec' in this.content;
-        const hasRadius = 'radius' in this.content;
+        const hasRadiusPixels = 'radius_pixels' in this.content;
         
         if (hasX && hasY) baseHeight += 24;
         if (hasRA && hasDec) baseHeight += 24;
-        if (hasRadius) baseHeight += 24;
+        if (hasRadiusPixels) baseHeight += 24;
         
-        // Add height for buttons
-        baseHeight += 60;
+        // Add height for galaxy name display
+        baseHeight += 24;
+        
+        // Add height for buttons (now 3 buttons)
+        baseHeight += 70;
         
         // Count remaining properties
-        const standardFields = ['x', 'y', 'ra', 'dec', 'radius'];
+        const standardFields = ['x', 'y', 'ra', 'dec', 'radius', 'radius_pixels'];
         const remainingProps = Object.keys(this.content).filter(key => 
             !standardFields.includes(key) && !key.startsWith('_') && typeof this.content[key] !== 'function'
         ).length;
@@ -360,71 +363,43 @@ window.canvasPopup = {
                 `;
             }
             
-            if (hasRadius) {
-                const radius = typeof this.content.radius === 'number' ? this.content.radius.toFixed(2) : this.content.radius;
+            if (hasRadiusPixels) {
+                const radius = typeof this.content.radius_pixels === 'number' ? this.content.radius_pixels.toFixed(2) : this.content.radius_pixels;
                 html += `
                     <div style="margin-bottom: 8px;">
-                        <span style="color: #aaa;">Region Size:</span> ${radius} pixels
+                        <span style="color: #aaa;">Region Radius:</span> ${radius} pixels
                     </div>
                 `;
             }
             
-            // Add links instead of buttons
+            // Get and display galaxy name
+            let galaxyName = "UnknownGalaxy";
+            if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
+                galaxyName = this.content.galaxy_name.trim();
+            } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
+                galaxyName = this.content.NAME.trim();
+            } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
+                galaxyName = this.content.name.trim();
+            } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
+                galaxyName = this.content.galaxy.trim();
+            } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
+                galaxyName = window.galaxyNameFromSearch.trim();
+            }
+            
+            html += `
+              
+            `;
+            
+            // Add buttons container with all three buttons
             html += `
                 <div style="margin-top: 12px; text-align: center;">
-                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px;">Show SED</button>
-                    <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Show Properties</button>
+                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show SED</button>
+                    <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show Properties</button>
+                    <button id="show-rgb-btn" class="rgb-button" style="padding: 6px 12px; background-color: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show RGB</button>
                 </div>
             `;
             
-            // Display other properties but skip color, fillColor and anything below them
-            // First create an array of keys we want to display
-            const propertiesToDisplay = [];
-            const skipAfter = ['color', 'fillColor'];
-            let foundSkipProperty = false;
-            
-            for (const key of Object.keys(this.content)) {
-                // Skip already displayed properties and internal ones
-                if (['x', 'y', 'ra', 'dec', 'radius'].includes(key) || 
-                    key.startsWith('_') || typeof this.content[key] === 'function') {
-                    continue;
-                }
-                
-                // Check if we've hit a property that we should skip after
-                if (skipAfter.includes(key)) {
-                    foundSkipProperty = true;
-                    continue;
-                }
-                
-                // Skip this property and all subsequent ones if we've found a skip property
-                if (foundSkipProperty) {
-                    continue;
-                }
-                
-                propertiesToDisplay.push(key);
-            }
-            
-            // Now display the filtered properties
-            if (propertiesToDisplay.length > 0) {
-                html += `<div style="margin-top: 15px; border-top: 1px solid rgba(255, 255, 255, 0.2); padding-top: 10px;">`;
-                
-                for (const key of propertiesToDisplay) {
-                    // Format the value
-                    let displayValue = this.formatValue(this.content[key]);
-                    
-                    // Don't show empty values
-                    if (displayValue === 'N/A') continue;
-                    
-                    html += `
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                            <span style="color: #aaa; margin-right: 10px;">${key}:</span>
-                            <span style="text-align: right;">${displayValue}</span>
-                        </div>
-                    `;
-                }
-                
-                html += `</div>`;
-            }
+            // Additional properties section removed - only showing coordinates and buttons
             
             contentElement.innerHTML = html;
             
@@ -432,6 +407,7 @@ window.canvasPopup = {
             setTimeout(() => {
                 const sedButton = document.getElementById('show-sed-btn');
                 const propertiesButton = document.getElementById('show-properties-btn');
+                const rgbButton = document.getElementById('show-rgb-btn');
                 
                 if (sedButton) {
                     sedButton.addEventListener('click', (e) => {
@@ -440,9 +416,25 @@ window.canvasPopup = {
                         // Get the current catalog name
                         const catalogName = window.currentCatalogName || window.activeCatalog;
                         
-                        // Show SED
+                        // Get galaxy name (reuse the same logic as above)
+                        let galaxyNameForSed = "UnknownGalaxy";
+                        if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
+                            galaxyNameForSed = this.content.galaxy_name.trim();
+                        } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
+                            galaxyNameForSed = this.content.NAME.trim();
+                        } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
+                            galaxyNameForSed = this.content.name.trim();
+                        } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
+                            galaxyNameForSed = this.content.galaxy.trim();
+                        } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
+                            galaxyNameForSed = window.galaxyNameFromSearch.trim();
+                        }
+                        
+                        console.log('[canvasPopup] Show SED button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForSed);
+                        
+                        // Show SED with galaxy name
                         if (typeof window.showSed === 'function') {
-                            window.showSed(this.content.ra, this.content.dec, catalogName);
+                            window.showSed(this.content.ra, this.content.dec, catalogName, galaxyNameForSed);
                         } else {
                             console.error('showSed function not found');
                         }
@@ -462,6 +454,69 @@ window.canvasPopup = {
                         } else {
                             console.error('showProperties function not found');
                         }
+                    });
+                }
+                
+                if (rgbButton) {
+                    rgbButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        
+                        // Get the current catalog name with multiple fallbacks
+                        let catalogName = window.currentCatalogName || window.activeCatalog || "UnknownCatalog";
+                        
+                        // Additional fallbacks for catalog name
+                        if (!catalogName || catalogName === "undefined") {
+                            if (this.content.catalogName) {
+                                catalogName = this.content.catalogName;
+                            } else if (this.content.catalog) {
+                                catalogName = this.content.catalog;
+                            } else if (this.content.source) {
+                                catalogName = this.content.source;
+                            } else {
+                                catalogName = "UnknownCatalog";
+                            }
+                        }
+                        
+                        let galaxyNameForRgb = "UnknownGalaxy";
+                        
+                        // Try to get galaxy name from content or global variables
+                        if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
+                            galaxyNameForRgb = this.content.galaxy_name.trim();
+                        } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
+                            galaxyNameForRgb = this.content.NAME.trim();
+                        } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
+                            galaxyNameForRgb = this.content.name.trim();
+                        } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
+                            galaxyNameForRgb = this.content.galaxy.trim();
+                        } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
+                            galaxyNameForRgb = window.galaxyNameFromSearch.trim();
+                        }
+                        
+                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForRgb);
+                        console.log('[canvasPopup] Content object:', this.content);
+                        console.log('[canvasPopup] Available global variables - currentCatalogName:', window.currentCatalogName, 'activeCatalog:', window.activeCatalog);
+                        
+                        // Validate required parameters before calling fetchRgbCutouts
+                        if (!this.content.ra || !this.content.dec) {
+                            console.error('[canvasPopup] Missing RA or Dec coordinates');
+                            return;
+                        }
+                        
+                        // Show RGB panels
+                        if (typeof fetchRgbCutouts === 'function') {
+                            fetchRgbCutouts(this.content.ra, this.content.dec, catalogName, galaxyNameForRgb);
+                        } else {
+                            console.error('fetchRgbCutouts function not found. Ensure it is defined in main.js and the script is loaded.');
+                        }
+                    });
+                    
+                    // Add hover effects for RGB button
+                    rgbButton.addEventListener('mouseover', () => {
+                        rgbButton.style.backgroundColor = '#E68900';
+                    });
+                    
+                    rgbButton.addEventListener('mouseout', () => {
+                        rgbButton.style.backgroundColor = '#FF9800';
                     });
                 }
             }, 0);
@@ -550,234 +605,213 @@ function canvasHighlightSource(selectedIndex) {
     canvasUpdateOverlay();
 }
 
-// Function to update the canvas overlay with regions that scale correctly with zoom
+
 function canvasUpdateOverlay() {
-    if (!viewer || !window.catalogCanvas || !window.catalogDataForOverlay) return;
+    // console.log('canvasUpdateOverlay called');
+    const activeOsViewer = window.viewer || window.tiledViewer;
+    if (!activeOsViewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
+        return;
+    }
 
-    const canvas = window.catalogCanvas;
-    const ctx = canvas.getContext('2d');
-    
-    // Clear the canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Get viewport bounds
-    const bounds = viewer.viewport.getBounds();
-    const viewportBounds = {
-        left: bounds.x - 0.5,
-        top: bounds.y - 0.5,
-        right: bounds.x + bounds.width + 0.5,
-        bottom: bounds.y + bounds.height + 0.5
-    };
-    
-    // Performance optimization for large datasets
-    const totalSources = window.catalogDataForOverlay.length;
-    
-    // Skip processing if we have no sources
-    if (totalSources === 0) return;
-    
-    // Clear source map and prepare batch collection
+    const ctx = window.catalogCanvas.getContext('2d');
+    const catalogData = window.catalogDataForOverlay;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, window.catalogCanvas.width, window.catalogCanvas.height);
+
+    // Reset source map
     window.catalogSourceMap = [];
-    const regularPoints = [];
-    const highlightedPoint = {exists: false};
-    
-    // Direct pixel-based rendering for maximum performance
-    // Use TypedArrays to quickly process all the sources
-    const floatBytes = 4; // 4 bytes per float
-    const sourceProperties = 4; // x, y, radius, index
-    const bufferSize = totalSources * sourceProperties * floatBytes;
-    
-    // Create typed array for processing source positions efficiently
-    const sourceBuffer = new Float32Array(totalSources * sourceProperties);
-    let visibleCount = 0;
-    
-    // Get styles from the correct local variable in catalogs.js
-    const FIXED_RADIUS = 5;
-    const dotBorderWidth = regionStyles.borderWidth || 1;
-    const dotBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
-    const dotFillColor = regionStyles.backgroundColor || 'transparent';
-    const dotOpacity = regionStyles.opacity || 0.7;
-    
-    // OPTIMIZATION: Batch update all source coordinates in a single pass
-    // This significantly reduces function call overhead by using fast array operations
-    for (let i = 0; i < totalSources; i++) {
-        const obj = window.catalogDataForOverlay[i];
-        
-        // Skip filtered objects
-        if (window.flagFilterEnabled && obj.dataset && obj.dataset.passesFilter === 'false') {
-            continue;
+
+    // Show all sources - no visibility filtering
+    const visibleSources = catalogData.filter((source, index) => {
+        if (!source || typeof source.x === 'undefined' || typeof source.y === 'undefined') {
+            return false;
         }
         
-        // Get coordinates (reuse calculations when possible)
-        let x = obj.x;
-        let y = obj.y;
-        
-        // Convert RA/DEC if needed (only once per source)
-        if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
-            if (typeof celestialToPixel === 'function') {
-                const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
-                x = pixelCoords.x;
-                y = pixelCoords.y;
-            }
+        // Ensure the source has an index property
+        if (typeof source.index === 'undefined') {
+            source.index = index;
         }
         
-        // Get radius
-        const imageRadius = obj.radius_pixels || 5; // Use 5 as default
+        return true; // Show all sources
+    });
+
+    // Draw each source with its individual style
+    visibleSources.forEach((source, visibleIndex) => {
+        const imagePoint = new OpenSeadragon.Point(source.x, source.y);
+        const center = activeOsViewer.viewport.imageToViewerElementCoordinates(imagePoint);
+
+        // Get radius from source or use default
+        const radiusInImageCoords = source.radius_pixels || 5;
         
-        // PERFORMANCE: Convert to viewport only once per source
-        const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
-        const pagePoint = viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+        // Calculate on-screen radius correctly
+        const sourceCenter = new OpenSeadragon.Point(source.x, source.y);
+        const sourceEdge = new OpenSeadragon.Point(source.x + radiusInImageCoords, source.y);
+
+        const screenCenter = activeOsViewer.viewport.imageToViewerElementCoordinates(sourceCenter);
+        const screenEdge = activeOsViewer.viewport.imageToViewerElementCoordinates(sourceEdge);
         
-        // Use a single coordinate transformation for radius calculation
-        const offsetPoint = viewer.viewport.imageToViewportCoordinates(x + imageRadius, y);
-        const offsetPagePoint = viewer.viewport.viewportToViewerElementCoordinates(offsetPoint);
+        // Calculate distance for radius (handles rotation correctly)
+        const dx = screenEdge.x - screenCenter.x;
+        const dy = screenEdge.y - screenCenter.y;
+        const radius = Math.sqrt(dx * dx + dy * dy);
         
-        // Get screen radius
-        const screenRadius = Math.sqrt(
-            Math.pow(offsetPagePoint.x - pagePoint.x, 2) +
-            Math.pow(offsetPagePoint.y - pagePoint.y, 2)
-        );
-        
-        // Store source in map for hit detection
-        window.catalogSourceMap.push({
-            x: pagePoint.x,
-            y: pagePoint.y,
-            radius: screenRadius,
-            imageRadius: imageRadius,
-            sourceIndex: i,
-            imageX: x,
-            imageY: y,
-            viewportX: viewportPoint.x,
-            viewportY: viewportPoint.y,
-            ra: obj.ra,
-            dec: obj.dec
+        // Store source position for click detection with proper index
+        window.catalogSourceMap.push({ 
+            x: center.x, 
+            y: center.y, 
+            radius: radius, 
+            sourceIndex: source.index,
+            imageX: source.x,
+            imageY: source.y,
+            ra: source.ra,
+            dec: source.dec,
+            radius_pixels: source.radius_pixels
         });
+
+        // Apply the source's individual styling
+        ctx.globalAlpha = source.opacity || 0.7;
         
-        // OPTIMIZATION: Use simple bounds check for viewport culling
-        const isInViewport = (
-            viewportPoint.x >= viewportBounds.left && 
-            viewportPoint.x <= viewportBounds.right && 
-            viewportPoint.y >= viewportBounds.top && 
-            viewportPoint.y <= viewportBounds.bottom
-        );
-        
-        // OPTIMIZATION: Special case for highlighted source
-        const isHighlighted = (i === window.currentHighlightedSourceIndex);
-        
-        // Collect visible points efficiently
-        if (isInViewport) {
-            if (isHighlighted) {
-                highlightedPoint.x = pagePoint.x;
-                highlightedPoint.y = pagePoint.y;
-                highlightedPoint.radius = screenRadius;
-                highlightedPoint.exists = true;
-            } else {
-                // OPTIMIZATION: Store only the minimal data needed
-                regularPoints.push({
-                    x: pagePoint.x,
-                    y: pagePoint.y,
-                    radius: screenRadius
-                });
+        // Use the source's color, not a default
+        ctx.strokeStyle = source.color || '#FF8C00';
+        ctx.lineWidth = source.border_width || 2;
+
+        // Set fill color based on source's fill settings
+        if (source.useTransparentFill) {
+            // Create transparent fill based on stroke color
+            try {
+                const strokeColor = source.color || '#FF8C00';
+                const r = parseInt(strokeColor.slice(1, 3), 16);
+                const g = parseInt(strokeColor.slice(3, 5), 16);
+                const b = parseInt(strokeColor.slice(5, 7), 16);
+                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.3)`;
+            } catch (e) {
+                ctx.fillStyle = 'rgba(255, 140, 0, 0.3)';
             }
-            visibleCount++;
-        } else if (isHighlighted) {
-            highlightedPoint.x = pagePoint.x;
-            highlightedPoint.y = pagePoint.y;
-            highlightedPoint.radius = screenRadius;
-            highlightedPoint.exists = true;
-            visibleCount++;
+        } else {
+            ctx.fillStyle = source.fillColor || 'rgba(255, 140, 0, 0.3)';
         }
-        
-        // --- BEGIN PER-OBJECT STYLES (Using globalRegionStyles as fallback) ---
-        // If specific styles are needed per object, they would be fetched here
-        // For now, using the globally applied regionStyles from catalogs.js
-        const objBorderWidth = regionStyles.borderWidth || 1;
-        const objBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
-        const objOpacity = regionStyles.opacity || 0.7;
-        let objFillColor = regionStyles.backgroundColor || 'transparent';
 
-        // Example logic for per-object fill (can be adapted):
-        // const objData = window.catalogDataForOverlay[i];
-        // if (objData.useTransparentFill === false) {
-        //     objFillColor = objData.fillColor || regionStyles.backgroundColor || 'rgba(255, 152, 0, 0.3)';
-        // } else if (objData.useTransparentFill === true) { 
-        //     try {
-        //         const r = parseInt(objBorderColor.slice(1, 3), 16);
-        //         const g = parseInt(objBorderColor.slice(3, 5), 16);
-        //         const b = parseInt(objBorderColor.slice(5, 7), 16);
-        //         objFillColor = `rgba(${r}, ${g}, ${b}, 0.3)`; 
-        //     } catch (e) { 
-        //         objFillColor = regionStyles.backgroundColor !== 'transparent' ? regionStyles.backgroundColor : 'rgba(255, 152, 0, 0.3)';
-        //     }
-        // } else { 
-        //     objFillColor = regionStyles.backgroundColor || 'transparent';
-        // } 
-        // --- END PER-OBJECT STYLES ---
-        
-        // Draw the object if visible (moved drawing inside main loop)
-        if (isInViewport && !isHighlighted) { // Draw regular points directly
-            ctx.globalAlpha = objOpacity;
-            ctx.lineWidth = objBorderWidth;
-            ctx.strokeStyle = objBorderColor;
-            ctx.fillStyle = objFillColor;
+        // Draw the circle
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, radius, 0, 2 * Math.PI, false);
+        ctx.fill();
+        ctx.stroke();
 
-            ctx.beginPath();
-            ctx.moveTo(pagePoint.x + screenRadius, pagePoint.y);
-            ctx.arc(pagePoint.x, pagePoint.y, screenRadius, 0, 2 * Math.PI);
+        // Add highlight effect for selected source
+        if (source.index === window.currentHighlightedSourceIndex) {
+            ctx.globalAlpha = 1.0;
+            ctx.strokeStyle = 'yellow';
+            ctx.lineWidth = 3;
             ctx.stroke();
-            if (objFillColor !== 'transparent') {
-                ctx.fill();
-            }
         }
-    }
-    
-    // Handle highlighted point separately with special styling
-    if (highlightedPoint.exists) {
-        // Get the original highlighted object to fetch its style for fill
-        const highlightedObj = window.catalogDataForOverlay[window.currentHighlightedSourceIndex];
-        const highlightedFillColor = regionStyles.backgroundColor || 'transparent'; // Use global style
-        // const highlightedUseTransparentFill = highlightedObj.useTransparentFill !== undefined ? highlightedObj.useTransparentFill : true; // Per-object logic removed for now
-        let finalHighlightFill = highlightedFillColor; // Simpler logic
 
-        // if (highlightedUseTransparentFill === false) {
-        //     finalHighlightFill = highlightedFillColor;
-        // }
-        
-        ctx.save();
-        ctx.globalAlpha = 1.0;
-        ctx.lineWidth = regionStyles.borderWidth || 1; // Use global style
-        ctx.strokeStyle = 'yellow'; // Keep highlight stroke yellow
-        
-        // Draw highlighted circle
-        ctx.beginPath();
-        ctx.arc(highlightedPoint.x, highlightedPoint.y, highlightedPoint.radius, 0, 2 * Math.PI);
-        
-        // Fill if needed
-        if (finalHighlightFill !== 'transparent') {
-            ctx.fillStyle = finalHighlightFill;
-            ctx.fill();
-        }
-        
-        ctx.stroke();
-        
-        // Draw outer glow
-        ctx.beginPath();
-        ctx.arc(highlightedPoint.x, highlightedPoint.y, highlightedPoint.radius + 3, 0, 2 * Math.PI);
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        ctx.restore();
-    }
+
+    });
     
-    // Draw popup if active
-    window.canvasPopup.render(ctx);
-    
-    // Reset global alpha
+    // Restore global alpha
     ctx.globalAlpha = 1.0;
+
+    // console.log(`[canvasUpdateOverlay] Drew ${visibleSources.length} sources with individual styles`);
 }
 
+// Also update the canvasHandleClick function to add better error handling
+function canvasHandleClick_forCanvasPopup(event) {
+    if (!window.catalogSourceMap || !window.catalogDataForOverlay) {
+        console.error("Missing data for click handling", {
+            sourcesAvailable: !!window.catalogSourceMap,
+            catalogAvailable: !!window.catalogDataForOverlay
+        });
+        return;
+    }
+    
+    // Get click coordinates relative to the viewer
+    const viewerElement = document.getElementById('openseadragon');
+    const rect = viewerElement.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+    
+    // console.log("Click coordinates:", clickX, clickY);
+    
+    // Check if popup is already active and was clicked
+    if (window.canvasPopup.active) {
+        // Check if close button was clicked
+        if (window.canvasPopup.isCloseButtonClicked(clickX, clickY)) {
+            window.canvasPopup.hide();
+            return;
+        }
+        
+        // Check if drag handle was clicked
+        if (window.canvasPopup.isDragHandleClicked(clickX, clickY) || 
+            (window.canvasPopup.isPopupClicked(clickX, clickY) && clickY < window.canvasPopup.y - window.canvasPopup.height/2 + 36)) {
+            window.canvasPopup.startDrag(clickX, clickY);
+            return;
+        }
+        
+        // Check if popup area was clicked (to prevent processing clicks through it)
+        if (window.canvasPopup.isPopupClicked(clickX, clickY)) {
+            return;
+        }
+    }
+    
+    // Find closest source to the click point
+    let closestSource = null;
+    let closestDistance = Infinity;
+    const hitRadius = 10;
+    
+    for (const source of window.catalogSourceMap) {
+        const dx = source.x - clickX;
+        const dy = source.y - clickY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (distance <= Math.max(hitRadius, source.radius) && distance < closestDistance) {
+            closestDistance = distance;
+            closestSource = source;
+        }
+    }
+    
+    // Show info if source found
+    if (closestSource) {
+        // console.log("Found closest source:", closestSource);
+        
+        // Add better error checking for sourceIndex
+        if (typeof closestSource.sourceIndex === 'undefined') {
+            console.error("sourceIndex is undefined for closest source:", closestSource);
+            return;
+        }
+        
+        const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
+        if (!sourceObj) {
+            console.error("Source object not found at index:", closestSource.sourceIndex);
+            console.error("Available catalog data length:", window.catalogDataForOverlay.length);
+            console.error("Catalog data sample:", window.catalogDataForOverlay.slice(0, 3));
+            return;
+        }
 
+        // Merge source data to ensure all properties are available
+        const mergedSourceData = { ...sourceObj, ...closestSource };
+        console.log("Source object for popup:", mergedSourceData);
 
+        // Highlight the source on canvas
+        canvasHighlightSource(closestSource.sourceIndex);
+        
+        // Show popup with source info
+        window.canvasPopup.show(
+            closestSource.sourceIndex,
+            closestSource.x,
+            closestSource.y,
+            mergedSourceData
+        );
 
+    } else {
+        console.log("No source found near click position");
+        
+        // If clicking empty space, hide any active popup
+        if (window.canvasPopup.active) {
+            window.canvasPopup.hide();
+        }
+    }
+}
 
 
 // Fixed hide method for the DOM-based popup
@@ -1000,10 +1034,13 @@ function connectPopupToSedFunctions() {
 // Connect the popup to SED functions
 connectPopupToSedFunctions();
 
-// Function to handle clicks on the canvas overlay
-function canvasHandleClick(event) {
-    console.log("Canvas click handler called", event);
-    
+// This is the version that *should* be calling showRegionInfo from main.js
+// -- MODIFIED FOR MAIN.JS POPUP ---
+// --- MODIFICATION START ---
+// This function is intended to replace the one below if using main.js popups
+function canvasHandleClick_forMainJsPopup(event) { // RENAMED and THIS IS THE INTENDED HANDLER
+    // console.log("[[DEBUG]] INTENDED canvasHandleClick (for showRegionInfo) CALLED. Event:", event);
+
     if (!window.catalogSourceMap || !window.catalogDataForOverlay) {
         console.error("Missing data for click handling", {
             sourcesAvailable: !!window.catalogSourceMap,
@@ -1059,86 +1096,55 @@ function canvasHandleClick(event) {
     
     // Show info if source found
     if (closestSource) {
-        console.log("Found closest source:", closestSource);
+        console.log("Found closest source (in the truly active canvasHandleClick that originally called window.canvasPopup.show):", closestSource);
         const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
         if (!sourceObj) {
-            console.error("Source object not found at index:", closestSource.sourceIndex);
+            console.error("Source object not found at index (in truly active canvasHandleClick):", closestSource.sourceIndex);
             return;
         }
         
-        console.log("Source object:", sourceObj);
+        console.log("Source object (in truly active canvasHandleClick):", sourceObj);
         
         // Highlight the source on canvas
         canvasHighlightSource(closestSource.sourceIndex);
-
-        // --- Highlight corresponding point in scatter plot ---
-        const scatterPlotArea = document.getElementById('plot-area');
-        if (scatterPlotArea) {
-            // Clear previous scatter highlight
-            if (window.highlightedScatterCircle) {
-                try { // Add try-catch for safety
-                    const originalRadius = window.highlightedScatterCircle.dataset.originalRadius || 4; // Assume 4 if dataset not set
-                    window.highlightedScatterCircle.setAttribute('stroke', '#333');
-                    window.highlightedScatterCircle.setAttribute('stroke-width', '1');
-                    window.highlightedScatterCircle.setAttribute('r', originalRadius);
-                } catch (err) {
-                    console.warn("Error clearing previous scatter highlight:", err);
-                }
-            }
-            
-            // Find and highlight the new circle
-            const targetCircle = scatterPlotArea.querySelector(`circle[data-index='${closestSource.sourceIndex}']`);
-            if (targetCircle) {
-                 try { // Add try-catch for safety
-                    targetCircle.dataset.originalRadius = targetCircle.getAttribute('r'); // Store original radius
-                    targetCircle.setAttribute('stroke', 'yellow');
-                    targetCircle.setAttribute('stroke-width', '2');
-                    targetCircle.setAttribute('r', parseFloat(targetCircle.dataset.originalRadius) * 1.5);
-                    window.highlightedScatterCircle = targetCircle; // Store reference
-                    console.log("Canvas Click: Highlighted scatter plot circle for index", closestSource.sourceIndex);
-                 } catch (err) {
-                     console.warn("Error highlighting new scatter circle:", err);
-                 }
-            } else {
-                console.log("Canvas Click: Could not find scatter plot circle for index", closestSource.sourceIndex);
-                window.highlightedScatterCircle = null; // Ensure no stale reference
-            }
-        } else {
-             window.highlightedScatterCircle = null; // Ensure no stale reference if plot area gone
-        }
-        // --- End scatter plot highlight ---
         
-        // Show popup with source info using our canvas popup system
-        window.canvasPopup.show(
-            closestSource.sourceIndex,
-            closestSource.x, // Screen X for popup position
-            closestSource.y, // Screen Y for popup position
-            sourceObj
-        );
+        // --- MODIFICATION START ---
+        // REPLACED the original window.canvasPopup.show(...) call with this:
+        const tempDot = {
+            dataset: {
+                x: closestSource.imageX, // Use imageX from the source map
+                y: closestSource.imageY, // Use imageY from the source map
+                ra: closestSource.ra,
+                dec: closestSource.dec,
+                radius: closestSource.radius_pixels, // Use actual radius if available
+                index: closestSource.sourceIndex
+            }
+        };
+        
+        console.log("[TRULY Active canvasHandleClick] Calling showRegionInfo from main.js. tempDot:", tempDot, "sourceObj:", sourceObj, "event:", event);
+        
+        if (typeof showRegionInfo === 'function') {
+            // console.log("[[DEBUG]] INTENDED canvasHandleClick: Attempting to call showRegionInfo.");
+            showRegionInfo(tempDot, sourceObj, event); // Pass the original event for positioning
+        } else {
+            console.error("[TRULY Active canvasHandleClick] showRegionInfo function from main.js is NOT defined or not accessible!");
+        }
+        // --- MODIFICATION END ---
+
     } else {
         console.log("No source found near click position");
         
-        // If clicking empty space, hide any active popup and clear highlights
-        if (window.canvasPopup.active) {
-            window.canvasPopup.hide(); 
-        }
-        // Also clear scatter highlight if clicking empty space
-        if (window.highlightedScatterCircle) {
-            try {
-                const originalRadius = window.highlightedScatterCircle.dataset.originalRadius || 4;
-                window.highlightedScatterCircle.setAttribute('stroke', '#333');
-                window.highlightedScatterCircle.setAttribute('stroke-width', '1');
-                 window.highlightedScatterCircle.setAttribute('r', originalRadius);
-            } catch (err) { console.warn("Error clearing scatter highlight on empty click:", err); }
-             window.highlightedScatterCircle = null;
+        // If clicking empty space, hide any active popup (this was part of the original logic)
+        if (window.canvasPopup && window.canvasPopup.active) {
+            window.canvasPopup.hide();
         }
     }
 }
 
 
 // Update the canvasHandleClick function to handle drag and drop
-function canvasHandleClick(event) {
-    console.log("Canvas click handler called", event);
+function canvasHandleClick_forCanvasPopup(event) { // RENAMED. THIS WAS THE CURRENTLY RUNNING HANDLER
+    // console.error("[[DEBUG]] CURRENTLY RUNNING canvasHandleClick (using canvasPopup.show) CALLED. THIS IS LIKELY THE WRONG ONE FOR 'Show RGB Panels' BUTTON. Event:", event);
     
     if (!window.catalogSourceMap || !window.catalogDataForOverlay) {
         console.error("Missing data for click handling", {
@@ -1196,25 +1202,33 @@ function canvasHandleClick(event) {
     
     // Show info if source found
     if (closestSource) {
-        console.log("Found closest source:", closestSource);
+        // console.log("Found closest source:", closestSource);
         const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
         if (!sourceObj) {
             console.error("Source object not found at index:", closestSource.sourceIndex);
             return;
         }
-        
-        console.log("Source object:", sourceObj);
-        
+
+        // --- FIX START ---
+        // To ensure all data is present for the popup, we'll use the rich `closestSource`
+        // object we created earlier, which now contains all necessary properties.
+        // We will merge it with any extra properties from `sourceObj` just in case.
+        const mergedSourceData = { ...sourceObj, ...closestSource };
+
+        console.log("Source object for popup:", mergedSourceData);
+
         // Highlight the source on canvas
         canvasHighlightSource(closestSource.sourceIndex);
         
         // Show popup with source info using our canvas popup system
         window.canvasPopup.show(
             closestSource.sourceIndex,
-            closestSource.x,
-            closestSource.y,
-            sourceObj
+            closestSource.x, // screen x
+            closestSource.y, // screen y
+            mergedSourceData // Pass the complete source data
         );
+        // --- FIX END ---
+
     } else {
         console.log("No source found near click position");
         
@@ -1279,11 +1293,13 @@ function canvasAddCatalogOverlay(catalogData) {
     // Clear any existing overlay
     canvasClearCatalogOverlay();
     
-    if (!viewer) {
-        console.error("No viewer available for catalog overlay");
+    const activeOsViewer = window.viewer || window.tiledViewer; // Use the same logic to find the active viewer
+
+    if (!activeOsViewer) {
+        console.error("No active viewer (window.viewer or window.tiledViewer) available for catalog overlay");
         return;
     }
-    
+
     if (!catalogData || catalogData.length === 0) {
         console.error("No catalog data available");
         return;
@@ -1337,7 +1353,7 @@ function canvasAddCatalogOverlay(catalogData) {
     let dragStartPos = null;
     
     // Set up the click handler directly on the viewer
-    viewer.addHandler('canvas-press', function(event) {
+    activeOsViewer.addHandler('canvas-press', function(event) {
         // Store the starting position for drag detection
         dragStartPos = {
             x: event.position.x,
@@ -1346,7 +1362,7 @@ function canvasAddCatalogOverlay(catalogData) {
         isDragging = false;
     });
     
-    viewer.addHandler('canvas-drag', function(event) {
+    activeOsViewer.addHandler('canvas-drag', function(event) {
         if (!dragStartPos) return;
         
         // Check if we've moved far enough to consider this a drag
@@ -1359,7 +1375,7 @@ function canvasAddCatalogOverlay(catalogData) {
         }
     });
     
-    viewer.addHandler('canvas-release', function(event) {
+    activeOsViewer.addHandler('canvas-release', function(event) {
         if (!dragStartPos) return;
         
         // Only handle as a click if it wasn't a drag
@@ -1372,7 +1388,7 @@ function canvasAddCatalogOverlay(catalogData) {
                 clientY: event.position.y + rect.top
             };
             
-            canvasHandleClick(clickEvent);
+            canvasHandleClick_forCanvasPopup(clickEvent); // MODIFIED to call the correct handler
         }
         
         dragStartPos = null;
@@ -1395,18 +1411,18 @@ function canvasAddCatalogOverlay(catalogData) {
     canvasUpdateOverlay();
     
     // Add event handlers
-    viewer.addHandler('animation', canvasUpdateOverlay);
-    viewer.addHandler('open', canvasUpdateOverlay);
+    activeOsViewer.addHandler('animation', canvasUpdateOverlay);
+    activeOsViewer.addHandler('open', canvasUpdateOverlay);
     
     const throttledUpdate = throttle(function() {
         canvasUpdateOverlay();
     }, 100);
-    viewer.addHandler('pan', throttledUpdate);
+    activeOsViewer.addHandler('pan', throttledUpdate);
     
     const debouncedZoomUpdate = debounce(function() {
         canvasUpdateOverlay();
     }, 50);
-    viewer.addHandler('zoom', debouncedZoomUpdate);
+    activeOsViewer.addHandler('zoom', debouncedZoomUpdate);
     
     return catalogData.length;
 }
@@ -1429,10 +1445,15 @@ function canvasClearCatalogOverlay() {
     }
     
     // Remove any handlers added to the viewer (if possible)
-    if (window.viewer) {
-        // No reliable way to remove specific handlers added by name, 
-        // but OpenSeadragon usually handles cleanup on close/destroy.
-        // We might need to explicitly remove the canvas-press/drag/release handlers if added globally.
+    const activeOsViewer = window.viewer || window.tiledViewer;
+    if (activeOsViewer) {
+        // Explicitly remove handlers if they were added. 
+        // Note: OSD typically needs handler functions themselves to remove them, 
+        // so this might not be fully effective without storing handler references.
+        // However, OSD should clean up on close/destroy.
+        // Example of attempting removal (might need more robust handler management):
+        // activeOsViewer.removeHandler('canvas-press', THE_ACTUAL_HANDLER_FUNCTION_REFERENCE);
+        // activeOsViewer.removeHandler('animation', canvasUpdateOverlay); // This might work if canvasUpdateOverlay is the exact ref.
     }
     
     // Clear references
@@ -1468,15 +1489,15 @@ function initPureCanvasImplementation() {
     window.clearCatalogOverlay = canvasClearCatalogOverlay;
     
     // Override showRegionInfo to be a no-op since we're using canvas popups
-    window.showRegionInfo = function() {
-        console.log("showRegionInfo called but we're using canvas popups instead");
-        return null;
-    };
+    // window.showRegionInfo = function() { // COMMENTED OUT to prevent override
+    //     console.log("showRegionInfo called but we're using canvas popups instead");
+    //     return null;
+    // };
     
     // Also expose canvas functions with their original names
     window.canvasAddCatalogOverlay = canvasAddCatalogOverlay;
     window.canvasUpdateOverlay = canvasUpdateOverlay;
-    window.canvasHandleClick = canvasHandleClick;
+    window.canvasHandleClick = canvasHandleClick_forCanvasPopup; // MODIFIED to assign correct handler
     window.canvasHighlightSource = canvasHighlightSource;
     window.canvasClearCatalogOverlay = canvasClearCatalogOverlay;
     
@@ -1531,3 +1552,22 @@ if (document.readyState === 'complete') {
 }
 
 console.log("DOM-based popup replacement loaded");
+
+
+// Ensure canvas system is ready when DOM loads
+document.addEventListener('DOMContentLoaded', function() {
+    // Force canvas implementation to be active
+    if (typeof initPureCanvasImplementation === 'function') {
+        console.log('Initializing pure canvas implementation...');
+        initPureCanvasImplementation();
+    }
+    
+    // Verify canvas functions are available
+    setTimeout(() => {
+        console.log('Canvas overlay functions available:', {
+            canvasAddCatalogOverlay: typeof window.canvasAddCatalogOverlay,
+            canvasUpdateOverlay: typeof window.canvasUpdateOverlay,
+            canvasClearCatalogOverlay: typeof window.canvasClearCatalogOverlay
+        });
+    }, 1000);
+});
