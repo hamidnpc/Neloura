@@ -376,6 +376,7 @@ window.canvasPopup = {
             let galaxyName = "UnknownGalaxy";
             if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
                 galaxyName = this.content.galaxy_name.trim();
+                console.log('galaxyName?????????', galaxyName)
             } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
                 galaxyName = this.content.NAME.trim();
             } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
@@ -416,19 +417,26 @@ window.canvasPopup = {
                         // Get the current catalog name
                         const catalogName = window.currentCatalogName || window.activeCatalog;
                         
-                        // Get galaxy name (reuse the same logic as above)
-                        let galaxyNameForSed = "UnknownGalaxy";
-                        if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
-                            galaxyNameForSed = this.content.galaxy_name.trim();
-                        } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
-                            galaxyNameForSed = this.content.NAME.trim();
-                        } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
-                            galaxyNameForSed = this.content.name.trim();
-                        } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
-                            galaxyNameForSed = this.content.galaxy.trim();
-                        } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
-                            galaxyNameForSed = window.galaxyNameFromSearch.trim();
-                        }
+
+                                                // Get galaxy name (robust)
+                        const getGalaxyFrom = (obj) => {
+                            if (!obj) return null;
+                            const candidates = [obj.galaxy_name, obj.NAME, obj.name, obj.galaxy];
+                            for (const v of candidates) {
+                                if (typeof v === 'string') {
+                                    const s = v.trim();
+                                    if (s) return s;
+                                }
+                            }
+                            return null;
+                        };
+
+                        let galaxyNameForSed =
+                            getGalaxyFrom(this.content) ||
+                            getGalaxyFrom(window.catalogDataForOverlay && window.catalogDataForOverlay[this.sourceIndex]) ||
+                            (typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim()) ||
+                            "UnknownGalaxy";
+                            
                         
                         console.log('[canvasPopup] Show SED button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForSed);
                         
@@ -492,7 +500,7 @@ window.canvasPopup = {
                             galaxyNameForRgb = window.galaxyNameFromSearch.trim();
                         }
                         
-                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForRgb);
+                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:???????????', galaxyNameForRgb);
                         console.log('[canvasPopup] Content object:', this.content);
                         console.log('[canvasPopup] Available global variables - currentCatalogName:', window.currentCatalogName, 'activeCatalog:', window.activeCatalog);
                         
@@ -1005,13 +1013,30 @@ function connectPopupToSedFunctions() {
                     if (isSedLinkClicked) {
                         console.log("SED link clicked in canvas popup");
                         const sourceObj = window.catalogDataForOverlay[window.canvasPopup.sourceIndex];
-                        
+                    
                         // Get the current catalog name
-                        const catalogName = window.currentCatalogName || "catalog";
-                        
-                        // Call the showSed function with the source coordinates
+                        const catalogName = window.currentCatalogName || window.activeCatalog || "UnknownCatalog";
+                    
+                        // Derive galaxy name (same logic as the dedicated SED button)
+                        let galaxyNameForSed = "UnknownGalaxy";
+                        if (sourceObj && typeof sourceObj === 'object') {
+                            if (typeof sourceObj.galaxy_name === 'string' && sourceObj.galaxy_name.trim() !== "") {
+                                galaxyNameForSed = sourceObj.galaxy_name.trim();
+                            } else if (typeof sourceObj.NAME === 'string' && sourceObj.NAME.trim() !== "") {
+                                galaxyNameForSed = sourceObj.NAME.trim();
+                            } else if (typeof sourceObj.name === 'string' && sourceObj.name.trim() !== "") {
+                                galaxyNameForSed = sourceObj.name.trim();
+                            } else if (typeof sourceObj.galaxy === 'string' && sourceObj.galaxy.trim() !== "") {
+                                galaxyNameForSed = sourceObj.galaxy.trim();
+                            }
+                        }
+                        if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
+                            galaxyNameForSed = window.galaxyNameFromSearch.trim();
+                        }
+                    
+                        // Call the showSed function with galaxy name
                         if (typeof window.showSed === 'function') {
-                            window.showSed(sourceObj.ra, sourceObj.dec, catalogName);
+                            window.showSed(sourceObj.ra, sourceObj.dec, catalogName, galaxyNameForSed);
                         }
                     } else if (isPropLinkClicked) {
                         console.log("Properties link clicked in canvas popup");

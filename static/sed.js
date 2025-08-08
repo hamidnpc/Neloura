@@ -300,7 +300,7 @@ function showSed(ra, dec, catalogName, galaxyName = null) {
 
 // Updated fallbackToStandardMethod function - include galaxy name in URL
 function fallbackToStandardMethod(ra, dec, catalogName, galaxyName = null) {
-    console.log("Falling back to standard SED generation method");
+    console.log("Falling back to standard SED generation method", ra, dec, catalogName, galaxyName);
     
     // Reset progress for fallback method
     updateSedProgress(10, "Generating SED using standard method...");
