@@ -1,5 +1,5 @@
 # Neloura 
-![Neloura Logo](static/logo/logo.png)
+<img src="static/logo/logo.png" alt="Neloura Logo" width="200"/>
 
 **A modern, web-based astronomical image analysis and visualization platform**
 
