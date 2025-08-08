@@ -3656,7 +3656,7 @@ async def load_file(filepath: str, hdu: int = Query(DEFAULT_HDU_INDEX)):  # Upda
             )
         
         # Ensure the file is within the files directory (security check)
-        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
+        if ".." in Path(filepath).parts:
             return JSONResponse(
                 status_code=403,
                 content={"error": "Access denied: file is outside the files directory"}
@@ -5617,7 +5617,7 @@ async def get_file_size(filepath: str):
             )
         
         # Ensure the file is within the files directory (security check)
-        if not str(file_path.resolve()).startswith(str(base_dir.resolve())):
+        if ".." in Path(filepath).parts:
             return JSONResponse(
                 status_code=403,
                 content={"error": "Access denied: file is outside the files directory"}
