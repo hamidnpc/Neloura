@@ -3110,10 +3110,10 @@ async def list_files_for_frontend(path: str = "", search: str = Query(None)):
         
         # Security check: ensure the path is within the files directory
         if ".." in Path(path).parts:
-        return JSONResponse(
-            status_code=403,
-            content={"error": "Access denied: directory traversal not allowed"}
-        )
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Access denied: directory traversal not allowed"}
+            )
         
         items = []
 
