@@ -4016,7 +4016,7 @@ function createWelcomeScreen() {
     <img src="static/logo/logo.png" alt="Neloura Logo" class="welcome-logo">
     <h2 style="margin-top: 0px;">Welcome to Neloura</h2>
     <p>Please select a FITS file to open using the folder icon 📁 in the top toolbar.</p>
-<a href="https://neloura.com/app.zip" target="_blank" rel="noopener noreferrer" aria-label="Download Neloura for macOS" style="display:inline-block; margin-top: 12px; text-decoration: none;">
+<a href="https://neloura.com/static/app.zip" target="_blank" rel="noopener noreferrer" aria-label="Download Neloura for macOS" style="display:inline-block; margin-top: 12px; text-decoration: none;">
   <svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48">
     <defs>
       <linearGradient id="cosmicGradient" x1="0" y1="0" x2="1" y2="0">
