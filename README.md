@@ -179,9 +179,6 @@ Neloura provides a comprehensive REST API for programmatic access:
 4. Make your changes and add tests
 5. Submit a pull request
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
