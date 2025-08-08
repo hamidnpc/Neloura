@@ -1840,34 +1840,28 @@ def linear(inputArray, scale_min=None, scale_max=None):
     return imageData
 
 
-@app.get("/generate-sed/")
 
+
+@app.get("/generate-sed/")
 async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galaxy_name: str = None):
-    """Optimized SED plot generation keeping ALL cutouts and RGB composites."""
+    """SED plot generation that accepts catalog_name, derives galaxy from row (ignores JS galaxy_name),
+    searches recursively under FILES_DIRECTORY with galaxy-token preference, and keeps cutouts/RGB logic."""
     try:
-        # Early validation
         if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Invalid RA/Dec coordinates"}
-            )
-        
-        # Debug logging
-        print(f"[[DEBUG]] generate_sed_optimized CALLED in main.py. ra: {ra} dec: {dec} catalog_name: {catalog_name} galaxy_name: {galaxy_name}")
-        
-        # 1. CATALOG LOADING (optimized)
+            return JSONResponse(status_code=400, content={"error": "Invalid RA/Dec coordinates"})
+
+        print(f"[[DEBUG]] generate_sed_optimized CALLED. ra: {ra} dec: {dec} catalog_name: {catalog_name} (ignoring JS galaxy_name)")
+
+        # 1) Load catalog
         catalog_table = loaded_catalogs.get(catalog_name)
         if catalog_table is None:
             print(f"SED: Loading catalog '{catalog_name}'...")
             catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
             if catalog_table is None:
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": f"Failed to load catalog '{catalog_name}'"}
-                )
+                return JSONResponse(status_code=404, content={"error": f"Failed to load catalog '{catalog_name}'"})
             loaded_catalogs[catalog_name] = catalog_table
-        
-        # 2. COORDINATE MATCHING (vectorized)
+
+        # 2) Find nearest row
         ra_col = dec_col = None
         for col_name in catalog_table.colnames:
             lower_col = col_name.lower()
@@ -1877,50 +1871,65 @@ async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galax
                 dec_col = col_name
             if ra_col and dec_col:
                 break
-        
         if not ra_col or not dec_col:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Could not find RA and DEC columns in catalog"}
-            )
-        
-        # Vectorized distance calculation
+            return JSONResponse(status_code=400, content={"error": "Could not find RA and DEC columns in catalog"})
+
         ra_diff = np.abs(catalog_table[ra_col] - ra)
         dec_diff = np.abs(catalog_table[dec_col] - dec)
         distances = np.sqrt(ra_diff**2 + dec_diff**2)
-        closest_idx = np.argmin(distances)
-        
-        if distances[closest_idx] > SED_COORDINATE_TOLERANCE:
-            return JSONResponse(
-                status_code=404,
-                content={"error": "No object found near specified coordinates"}
-            )
-        
+        closest_idx = int(np.argmin(distances))
+        if float(distances[closest_idx]) > SED_COORDINATE_TOLERANCE:
+            return JSONResponse(status_code=404, content={"error": "No object found near specified coordinates"})
         closest_obj = catalog_table[closest_idx]
-        
-        # 3. FLUX EXTRACTION (batch processing)
-        # Pre-create column lookup set for O(1) access
         available_cols = set(catalog_table.colnames)
-        
-        sed_fluxes = []
-        sed_fluxes_err = []
-        sed_fluxes_cigale = []
-        sed_fluxes_total = []
 
-        # HST filters
+        # 3) Derive galaxy from the matched row (ignore JS galaxy_name)
+        def _first_non_empty_string(*vals):
+            for v in vals:
+                if isinstance(v, str):
+                    s = v.strip()
+                    if s:
+                        return s
+            return None
+
+        galaxy_from_row = _first_non_empty_string(
+            str(closest_obj.get(SED_COL_GALAXY, '') if SED_COL_GALAXY in available_cols else ''),
+            str(closest_obj.get('galaxy', '')),
+            str(closest_obj.get('galaxy_name', '')),
+            str(closest_obj.get('NAME', '')),
+            str(closest_obj.get('name', ''))
+        )
+        target_galaxy_name = galaxy_from_row if galaxy_from_row else "UnknownGalaxy"
+        print(f"[SED] Galaxy from row: {target_galaxy_name}")
+
+        # Tokens (ngc628/ngc0628/ngc628mosaic)
+        import re
+        def build_galaxy_tokens(name: str) -> list[str]:
+            if not name:
+                return []
+            g = name.strip().lower()
+            if not g or g in ("unknown", "unknowngalaxy"):
+                return []
+            base = re.sub(r'[\s_\-]+', '', g)
+            tokens = {g, base}
+            m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+            if m:
+                prefix, digits = m.group(1), m.group(2)
+                tokens.add(f"{prefix}{digits}")             # ngc628
+                tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+                tokens.add(f"{prefix}0{digits}")            # ngc0628 variant
+            return list(tokens)
+
+        galaxy_tokens = build_galaxy_tokens(target_galaxy_name)
+
+        # 4) Gather fluxes
+        sed_fluxes, sed_fluxes_err, sed_fluxes_cigale, sed_fluxes_total = [], [], [], []
+
         for filter_name in SED_HST_FILTERS:
             flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
             sed_fluxes.append(flux_val)
-            
-            bkg_col_name = f"{filter_name}_bkg"
-            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
-            sed_fluxes_total.append(flux_val + bkg_val)
-            
-            err_col_name = f"{filter_name}_err"
-            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
-            sed_fluxes_err.append(err_val)
-            
-            # CIGALE best fit - check multiple patterns efficiently
+            sed_fluxes_total.append(flux_val + (float(closest_obj.get(f"{filter_name}_bkg", 0.0)) if f"{filter_name}_bkg" in available_cols else 0.0))
+            sed_fluxes_err.append(float(closest_obj.get(f"{filter_name}_err", 0.0)) if f"{filter_name}_err" in available_cols else 0.0)
             cigale_val = 0.0
             for pattern in [f"best.hst.wfc3.{filter_name}", f"best.hst.wfc.{filter_name}", f"best.hst_{filter_name}"]:
                 if pattern in available_cols:
@@ -1928,406 +1937,242 @@ async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galax
                     break
             sed_fluxes_cigale.append(cigale_val)
 
-        # JWST NIRCam filters
         for filter_name in SED_JWST_NIRCAM_FILTERS:
             flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
             sed_fluxes.append(flux_val)
-            
-            bkg_col_name = f"{filter_name}_bkg"
-            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
-            sed_fluxes_total.append(flux_val + bkg_val)
-            
-            err_col_name = f"{filter_name}_err"
-            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
-            sed_fluxes_err.append(err_val)
-            
-            cigale_col = f"best.jwst.nircam.{filter_name}"
-            cigale_val = float(closest_obj[cigale_col]) * SED_CIGALE_MULTIPLIER if cigale_col in available_cols else 0.0
-            sed_fluxes_cigale.append(cigale_val)
+            sed_fluxes_total.append(flux_val + (float(closest_obj.get(f"{filter_name}_bkg", 0.0)) if f"{filter_name}_bkg" in available_cols else 0.0))
+            sed_fluxes_err.append(float(closest_obj.get(f"{filter_name}_err", 0.0)) if f"{filter_name}_err" in available_cols else 0.0)
+            sed_fluxes_cigale.append((float(closest_obj.get(f"best.jwst.nircam.{filter_name}", 0.0)) if f"best.jwst.nircam.{filter_name}" in available_cols else 0.0) * SED_CIGALE_MULTIPLIER)
 
-        # JWST MIRI filters
         for filter_name in SED_JWST_MIRI_FILTERS:
             flux_val = float(closest_obj[filter_name]) if filter_name in available_cols else 0.0
             sed_fluxes.append(flux_val)
-            
-            bkg_col_name = f"{filter_name}_bkg"
-            bkg_val = float(closest_obj[bkg_col_name]) if bkg_col_name in available_cols else 0.0
-            sed_fluxes_total.append(flux_val + bkg_val)
-            
-            err_col_name = f"{filter_name}_err"
-            err_val = float(closest_obj[err_col_name]) if err_col_name in available_cols else 0.0
-            sed_fluxes_err.append(err_val)
-            
-            cigale_col = f"best.jwst.miri.{filter_name}"
-            cigale_val = float(closest_obj[cigale_col]) * SED_CIGALE_MULTIPLIER if cigale_col in available_cols else 0.0
-            sed_fluxes_cigale.append(cigale_val)
+            sed_fluxes_total.append(flux_val + (float(closest_obj.get(f"{filter_name}_bkg", 0.0)) if f"{filter_name}_bkg" in available_cols else 0.0))
+            sed_fluxes_err.append(float(closest_obj.get(f"{filter_name}_err", 0.0)) if f"{filter_name}_err" in available_cols else 0.0)
+            sed_fluxes_cigale.append((float(closest_obj.get(f"best.jwst.miri.{filter_name}", 0.0)) if f"best.jwst.miri.{filter_name}" in available_cols else 0.0) * SED_CIGALE_MULTIPLIER)
 
-        
-        # 4. BASIC PLOT CREATION
+        # 5) Plot
         fig = plt.figure(figsize=(SED_FIGURE_SIZE_WIDTH, SED_FIGURE_SIZE_HEIGHT))
         ax = fig.add_subplot(111)
-        
-        # Plot observed fluxes with error bars
         try:
-            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes_total, yerr=sed_fluxes_err, fmt='o', 
-                       ecolor='gray', color='purple', label='Observed', alpha=SED_ALPHA, 
-                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE)
-            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes, yerr=sed_fluxes_err, fmt='o', 
-                       ecolor='gray', color='blue', label='BKG-Subtracted', 
-                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
+            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes_total, yerr=sed_fluxes_err, fmt='o', ecolor='gray', color='purple',
+                        label='Observed', alpha=SED_ALPHA, markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE)
+            ax.errorbar(SED_FILTER_WAVELENGTHS, sed_fluxes, yerr=sed_fluxes_err, fmt='o', ecolor='gray', color='blue',
+                        label='BKG-Subtracted', markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
         except:
-            filter_wavelengths_short = SED_FILTER_WAVELENGTHS[:-1]  # Remove last element
-            ax.errorbar(filter_wavelengths_short, sed_fluxes, yerr=sed_fluxes_err, fmt='o', 
-                       ecolor='gray', color='blue', label='BKG-Subtracted', 
-                       markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
-        
-        # Set plot properties
+            ax.errorbar(SED_FILTER_WAVELENGTHS[:-1], sed_fluxes, yerr=sed_fluxes_err, fmt='o', ecolor='gray', color='blue',
+                        label='BKG-Subtracted', markersize=SED_MARKERSIZE, capsize=SED_CAPSIZE, alpha=SED_ALPHA)
         ax.set_xlabel(SED_X_LABEL, fontsize=SED_FONTSIZE_LABELS)
         ax.set_ylabel(SED_Y_LABEL, fontsize=SED_FONTSIZE_LABELS)
         ax.legend(loc='lower right', bbox_to_anchor=(0.67, 0.0))
-        ax.set_xscale('log')
-        ax.set_yscale('log')
+        ax.set_xscale('log'); ax.set_yscale('log')
         ax.set_xticks(SED_FILTER_WAVELENGTHS)
         ax.set_xticklabels([f'{w:.2f}' for w in SED_FILTER_WAVELENGTHS], rotation=45, fontsize=SED_FONTSIZE_TICKS)
         ax.set_xlim(SED_X_LIM_MIN, SED_X_LIM_MAX)
-        
-        # Check if this is an ISM source
-        is_ism_source = bool(closest_obj.get(SED_COL_ISM_SOURCE, False)) if SED_COL_ISM_SOURCE in available_cols else False
-        
-        # Add information text box
-        galaxy_name_display = str(closest_obj.get(SED_COL_GALAXY, 'Unknown')).upper() if SED_COL_GALAXY in available_cols else "Unknown"
-        
-        # Get age, mass, chi, ebv if available
-        age = float(closest_obj[SED_COL_AGE]) if SED_COL_AGE in available_cols else 0.0
-        mass = float(closest_obj[SED_COL_MASS]) if SED_COL_MASS in available_cols else 0.0
-        chi = float(closest_obj[SED_COL_CHI]) if SED_COL_CHI in available_cols else 0.0
-        ebv_gas = float(closest_obj[SED_COL_EBV_GAS]) if SED_COL_EBV_GAS in available_cols else 0.0
-        
+
         bbox = dict(boxstyle="round", alpha=0.7, facecolor="white")
-        text_str = f"Galaxy: {galaxy_name_display}\nRA: {ra:.4f}, DEC: {dec:.4f}"
-        
-        ax.text(SED_INFO_BOX_X, SED_INFO_BOX_Y, text_str, transform=ax.transAxes, 
-                ha="right", va="bottom", fontsize=SED_FONTSIZE_INFO, bbox=bbox)
-        
+        galaxy_name_display = (str(closest_obj.get(SED_COL_GALAXY)).upper() if SED_COL_GALAXY in available_cols else target_galaxy_name.upper())
+        ax.text(SED_INFO_BOX_X, SED_INFO_BOX_Y, f"Galaxy: {galaxy_name_display}\nRA: {ra:.4f}, DEC: {dec:.4f}",
+                transform=ax.transAxes, ha="right", va="bottom", fontsize=SED_FONTSIZE_INFO, bbox=bbox)
+
         fig.canvas.draw()
         transform = ax.transAxes.inverted()
-        
-        # 5. ENHANCED FILE SEARCH WITH GALAXY NAME
-        # Pre-compile all file patterns for faster lookup, including galaxy-specific patterns
+
+        # 6) File search (recursive + tokens)
+        base_dir = FILES_DIRECTORY
         filter_patterns = {}
         for filter_name in SED_FILTER_NAMES:
-            patterns = [f"{FILES_DIRECTORY}/*{filter_name.lower()}*.fits"]
+            lf = filter_name.lower()
+            patterns = [f"{base_dir}/*{lf}*.fits", f"{base_dir}/**/*{lf}*.fits"]
             if filter_name == 'F438W':
-                patterns.append(f"{FILES_DIRECTORY}/*f435w*.fits")
-            
-            # Add galaxy-specific patterns if galaxy name is provided
-            if galaxy_name and galaxy_name != 'Unknown' and galaxy_name is not None:
-                galaxy_lower = galaxy_name.lower()
-                # Try various galaxy name formats in filenames
-                patterns.extend([
-                    f"{FILES_DIRECTORY}/*{galaxy_lower}*{filter_name.lower()}*.fits",
-                    f"{FILES_DIRECTORY}/*{galaxy_lower}*/*{filter_name.lower()}*.fits",
-                    f"{FILES_DIRECTORY}/{galaxy_lower}/*{filter_name.lower()}*.fits",
-                    f"{FILES_DIRECTORY}/*{galaxy_name}*{filter_name.lower()}*.fits",
-                    f"{FILES_DIRECTORY}/*{galaxy_name}*/*{filter_name.lower()}*.fits",
-                    f"{FILES_DIRECTORY}/{galaxy_name}/*{filter_name.lower()}*.fits"
-                ])
-            
+                patterns.extend([f"{base_dir}/*f435w*.fits", f"{base_dir}/**/*f435w*.fits"])
+            for tok in galaxy_tokens:
+                patterns.extend([f"{base_dir}/*{tok}*{lf}*.fits", f"{base_dir}/**/*{tok}*{lf}*.fits"])
+                if filter_name == 'F438W':
+                    patterns.extend([f"{base_dir}/*{tok}*f435w*.fits", f"{base_dir}/**/*{tok}*f435w*.fits"])
             filter_patterns[filter_name] = patterns
-        
-        # Find all matching files in parallel using ThreadPoolExecutor
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import threading
-        
+        import threading, glob, os
+
         file_matches = {}
         file_lock = threading.Lock()
-        
+
         def find_files_for_filter(filter_name, patterns):
-            """Enhanced function to exclude Ha files when searching for F555W and F814W filters and prioritize galaxy-specific files"""
             for pattern in patterns:
-                matching_files = glob.glob(pattern)
-                if matching_files:
-                    # Filter out Ha files for F555W and F814W
-                    if filter_name.upper() in ['F555W', 'F814W']:
-                        # Exclude files that contain '_ha-img' or '_ha_' in their filename (more specific)
-                        filtered_files = [f for f in matching_files if not any(pattern in os.path.basename(f).lower() for pattern in ['_ha-img', '_ha_', '-ha-', '-ha.fits'])]
-                        if filtered_files:
-                            with file_lock:
-                                if filter_name not in file_matches:
-                                    # Sort by preference: galaxy-specific files first
-                                    if galaxy_name and galaxy_name != 'Unknown':
-                                        galaxy_files = [f for f in filtered_files if galaxy_name.lower() in f.lower()]
-                                        if galaxy_files:
-                                            file_matches[filter_name] = galaxy_files[0]
-                                        else:
-                                            file_matches[filter_name] = filtered_files[0]
-                                    else:
-                                        file_matches[filter_name] = filtered_files[0]
-                            return
-                    else:
-                        # For other filters, use the enhanced logic with galaxy preference
-                        with file_lock:
-                            if filter_name not in file_matches:
-                                # Sort by preference: galaxy-specific files first
-                                if galaxy_name and galaxy_name != 'Unknown':
-                                    galaxy_files = [f for f in matching_files if galaxy_name.lower() in f.lower()]
-                                    if galaxy_files:
-                                        file_matches[filter_name] = galaxy_files[0]
-                                    else:
-                                        file_matches[filter_name] = matching_files[0]
-                                else:
-                                    file_matches[filter_name] = matching_files[0]
+                matches = glob.glob(pattern, recursive=True)
+                if not matches:
+                    continue
+                if filter_name.upper() in ['F555W', 'F814W']:
+                    matches = [f for f in matches if not any(t in os.path.basename(f).lower() for t in ['_ha-img', '_ha_', '-ha-', '-ha.fits'])]
+                    if not matches:
+                        continue
+                chosen = matches
+                if galaxy_tokens:
+                    prioritized = [f for f in matches if any(tok in f.lower() for tok in galaxy_tokens)]
+                    if prioritized:
+                        chosen = prioritized
+                with file_lock:
+                    if filter_name not in file_matches and chosen:
+                        file_matches[filter_name] = chosen[0]
                         return
-        
-        # Search for files in parallel (this is safe to keep)
+
         with ThreadPoolExecutor(max_workers=SED_MAX_WORKERS_FILES) as executor:
-            futures = [executor.submit(find_files_for_filter, fname, patterns) 
-                      for fname, patterns in filter_patterns.items()]
-            
-            # Wait for all searches to complete with timeout
-            for future in as_completed(futures, timeout=FIND_FILES_TIMEOUT):
+            futures = [executor.submit(find_files_for_filter, fn, pats) for fn, pats in filter_patterns.items()]
+            for fut in as_completed(futures, timeout=FIND_FILES_TIMEOUT):
                 try:
-                    future.result()
+                    fut.result()
                 except:
                     continue
-        
-        # Log found files for debugging
-        if galaxy_name and galaxy_name != 'Unknown':
-            print(f"Files found for galaxy '{galaxy_name}': {len(file_matches)} filters")
-            for filter_name, file_path in file_matches.items():
-                if galaxy_name.lower() in file_path.lower():
-                    print(f"  {filter_name}: {file_path} (galaxy-specific)")
-                else:
-                    print(f"  {filter_name}: {file_path} (generic)")
-        
-        # 6. PROCESS CUTOUTS SEQUENTIALLY (FIXED - NO MORE PARALLEL PROCESSING)
-        
-        # Storage for RGB composites - use dictionaries to ensure proper order
-        nircam_cutouts = {}  # NIRCam
-        miri_cutouts = {}    # MIRI 
-        hst_cutouts = {}     # HST
+
+        if target_galaxy_name and target_galaxy_name != 'UnknownGalaxy':
+            print(f"Files found for galaxy '{target_galaxy_name}': {len(file_matches)} filters")
+            for fn, fp in file_matches.items():
+                mark = "galaxy-specific" if any(tok in fp.lower() for tok in galaxy_tokens) else "generic"
+                print(f"  {fn}: {fp} ({mark})")
+
+        # 7) Cutouts
+        nircam_cutouts, miri_cutouts, hst_cutouts = {}, {}, {}
+        nircam_header = miri_header = hst_header = None
         rgbsss = []          # CO data
         rgbsss2 = []         # HST HA data
-        
-        nircam_header = None
-        miri_header = None
-        hst_header = None
-        
-        # Process cutouts SEQUENTIALLY to maintain order
+
         for i, (wavelength, filter_name) in enumerate(zip(SED_FILTER_WAVELENGTHS_EXTENDED[:len(SED_FILTER_NAMES)], SED_FILTER_NAMES)):
             if filter_name not in file_matches:
                 continue
-            
             try:
                 fits_file = file_matches[filter_name]
                 print(f"Processing cutout for {filter_name} from {fits_file}")
-                
                 with fits.open(fits_file) as hdul:
-                    # Find image HDU quickly
-                    image_hdu = None
-                    for hdu in hdul:
-                        if (hdu.data is not None and 
-                            hasattr(hdu.data, 'shape') and 
-                            len(hdu.data.shape) >= 2):
-                            image_hdu = hdu
-                            break
-                    
+                    image_hdu = next((h for h in hdul if (h.data is not None and hasattr(h.data, 'shape') and len(h.data.shape) >= 2)), None)
                     if image_hdu is None:
                         print(f"No valid image HDU found in {fits_file}")
                         continue
-                    
-                    # Get WCS and create cutout
+
                     prepared_header = _prepare_jwst_header_for_wcs(image_hdu.header)
                     wcs = WCS(prepared_header)
-                    
                     if not wcs.has_celestial:
                         print(f"No celestial WCS found for {filter_name}")
                         continue
-                    
+
                     image_data = image_hdu.data
                     if len(image_data.shape) > 2:
                         image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
-                    
+
                     target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-                    cutout_size = SED_CUTOUT_SIZE_ARCSEC * u.arcsec
-                    cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
-                    
-                    # Clean data
+                    cutout = Cutout2D(image_data, target_coord, SED_CUTOUT_SIZE_ARCSEC * u.arcsec, wcs=wcs)
+
                     cutout_data = cutout.data.copy()
                     cutout_data[np.isnan(cutout_data)] = 0
                     cutout_data[np.isinf(cutout_data)] = 0
-                    
-                    print(f"Successfully processed cutout for {filter_name}, data shape: {cutout_data.shape}")
-                    
-                    # 7. ADD CUTOUTS TO PLOT
-                    # Position cutout
+
                     x_norm, _ = transform.transform(ax.transData.transform((wavelength, 0)))
                     x_norm = max(min(x_norm, 1 - 0.05), 0.0)
                     x_norm += SED_X_OFFSETS[i] if i < len(SED_X_OFFSETS) else 0
-                    
-                    # Create inset
+
                     ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
-                                         bbox_to_anchor=(x_norm, 0.945, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
-                                         bbox_transform=fig.transFigure)
-                    
-                    # Display image with appropriate normalization
+                                          bbox_to_anchor=(x_norm, 0.945, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                                          bbox_transform=fig.transFigure)
+
                     if filter_name in SED_JWST_NIRCAM_FILTERS + [SED_MIRI_RED_FILTER, SED_MIRI_GREEN_FILTER, SED_MIRI_BLUE_FILTER]:
                         ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP,
-                                       vmin=0, vmax=np.percentile(cutout_data, SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE))
+                                        vmin=0, vmax=np.percentile(cutout_data, SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE))
                     else:
                         sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, SED_HST_CUTOUT_DISPLAY_MAX_PERCENTILE))
                         ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
-                    
-                    # Add circle and formatting
+
                     region_sky = CircleSkyRegion(center=target_coord, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
-                    reg = region_sky.to_pixel(cutout.wcs)
-                    reg.plot(ax=ax_inset, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
-                    
+                    reg = region_sky.to_pixel(cutout.wcs); reg.plot(ax=ax_inset, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH)
+
                     ax_inset.set_title(filter_name, fontsize=SED_FONTSIZE_TITLE)
                     ax_inset.axis('off')
-                    
-                    # Store cutout data for RGB composites in correct order
+
                     header = cutout.wcs.to_header()
                     header['NAXIS1'] = cutout.data.shape[1]
                     header['NAXIS2'] = cutout.data.shape[0]
                     header['NAXIS'] = 2
-                    
-                    # Store data for RGB composites with specific filter mapping
-                    if filter_name == SED_NIRCAM_RED_FILTER:  # red for NIRCam
-                        nircam_cutouts['red'] = np.array(cutout_data)
-                        nircam_header = header.copy()
-                    elif filter_name == SED_NIRCAM_GREEN_FILTER:  # green for NIRCam
-                        nircam_cutouts['green'] = np.array(cutout_data)
-                        if nircam_header is None:
-                            nircam_header = header.copy()
-                    elif filter_name == SED_NIRCAM_BLUE_FILTER:  # blue for NIRCam
-                        nircam_cutouts['blue'] = np.array(cutout_data)
-                        if nircam_header is None:
-                            nircam_header = header.copy()
-                    
-                    # HST filters - fix the logic here
-                    elif filter_name.upper() == 'F814W':  # red for HST
-                        hst_cutouts['red'] = np.array(cutout_data)
-                        hst_header = header.copy()
-                    elif filter_name.upper() == 'F555W':  # green for HST
-                        hst_cutouts['green'] = np.array(cutout_data)
-                        if hst_header is None:
-                            hst_header = header.copy()
-                    elif filter_name.upper() in ['F438W', 'F435W']:  # blue for HST
-                        hst_cutouts['blue'] = np.array(cutout_data)
-                        if hst_header is None:
-                            hst_header = header.copy()
-                    
-                    elif filter_name == SED_MIRI_RED_FILTER:  # red for MIRI
-                        miri_cutouts['red'] = np.array(cutout_data)
-                        miri_header = header.copy()
-                    elif filter_name == SED_MIRI_GREEN_FILTER:  # green for MIRI
-                        miri_cutouts['green'] = np.array(cutout_data)
-                        if miri_header is None:
-                            miri_header = header.copy()
-                    elif filter_name == SED_MIRI_BLUE_FILTER:  # blue for MIRI
-                        miri_cutouts['blue'] = np.array(cutout_data)
-                        if miri_header is None:
-                            miri_header = header.copy()
-                        
-                        
+
+                    if filter_name == SED_NIRCAM_RED_FILTER:
+                        nircam_cutouts['red'] = np.array(cutout_data); nircam_header = header.copy()
+                    elif filter_name == SED_NIRCAM_GREEN_FILTER:
+                        nircam_cutouts['green'] = np.array(cutout_data); nircam_header = nircam_header or header.copy()
+                    elif filter_name == SED_NIRCAM_BLUE_FILTER:
+                        nircam_cutouts['blue'] = np.array(cutout_data); nircam_header = nircam_header or header.copy()
+                    elif filter_name.upper() == 'F814W':
+                        hst_cutouts['red'] = np.array(cutout_data); hst_header = header.copy()
+                    elif filter_name.upper() == 'F555W':
+                        hst_cutouts['green'] = np.array(cutout_data); hst_header = hst_header or header.copy()
+                    elif filter_name.upper() in ['F438W', 'F435W']:
+                        hst_cutouts['blue'] = np.array(cutout_data); hst_header = hst_header or header.copy()
+                    elif filter_name == SED_MIRI_RED_FILTER:
+                        miri_cutouts['red'] = np.array(cutout_data); miri_header = header.copy()
+                    elif filter_name == SED_MIRI_GREEN_FILTER:
+                        miri_cutouts['green'] = np.array(cutout_data); miri_header = miri_header or header.copy()
+                    elif filter_name == SED_MIRI_BLUE_FILTER:
+                        miri_cutouts['blue'] = np.array(cutout_data); miri_header = miri_header or header.copy()
+
             except Exception as e:
                 print(f"Error processing {filter_name}: {e}")
-                import traceback
-                traceback.print_exc()
+                import traceback; traceback.print_exc()
                 continue
-        
-        print(f"Total cutouts processed: {len(nircam_cutouts) + len(miri_cutouts) + len(hst_cutouts)}")
-        
-        # 8. HST Ha PROCESSING (enhanced with galaxy-specific search)
-        ha_patterns = SED_HA_PATTERNS.copy()
-        
-        # Add galaxy-specific H-alpha patterns
-        if galaxy_name and galaxy_name != 'Unknown':
-            galaxy_lower = galaxy_name.lower()
-            ha_patterns.extend([
-                f"{FILES_DIRECTORY}/*{galaxy_lower}*ha-img.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_lower}*_ha-*.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_lower}*-ha-*.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_lower}*halpha*.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_name}*ha-img.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_name}*_ha-*.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_name}*-ha-*.fits",
-                f"{FILES_DIRECTORY}/*{galaxy_name}*halpha*.fits"
-            ])
 
+        print(f"Total cutouts processed: {len(nircam_cutouts) + len(miri_cutouts) + len(hst_cutouts)}")
+
+        # 8) H-alpha (recursive + tokens)
+        ha_patterns = SED_HA_PATTERNS.copy()
+        for tok in galaxy_tokens:
+            ha_patterns.extend([
+                f"{base_dir}/*{tok}*ha-img.fits",        f"{base_dir}/**/*{tok}*ha-img.fits",
+                f"{base_dir}/*{tok}*_ha-*.fits",         f"{base_dir}/**/*{tok}*_ha-*.fits",
+                f"{base_dir}/*{tok}*-ha-*.fits",         f"{base_dir}/**/*{tok}*-ha-*.fits",
+                f"{base_dir}/*{tok}*halpha*.fits",       f"{base_dir}/**/*{tok}*halpha*.fits",
+            ])
         ha_files = []
         for pattern in ha_patterns:
-            matches = glob.glob(pattern)
-            if matches:
-                # Prioritize galaxy-specific files
-                if galaxy_name and galaxy_name != 'Unknown':
-                    galaxy_matches = [f for f in matches if galaxy_name.lower() in f.lower()]
-                    if galaxy_matches:
-                        ha_files = galaxy_matches
-                        break
-                ha_files = matches
-                break
+            matches = glob.glob(pattern, recursive=True)
+            if not matches:
+                continue
+            if galaxy_tokens:
+                galaxy_matches = [f for f in matches if any(tok in f.lower() for tok in galaxy_tokens)]
+                if galaxy_matches:
+                    ha_files = galaxy_matches; break
+            ha_files = matches; break
 
         if ha_files:
             try:
-                # Process first Ha file only for speed
                 ha_file = ha_files[0]
                 print(f"Processing H-alpha file: {ha_file}")
                 with fits.open(ha_file) as hdul:
                     for hdu in hdul:
-                        if (hdu.data is not None and 
-                            hasattr(hdu.data, 'shape') and 
-                            len(hdu.data.shape) >= 2):
-                            
-                            prepared_header = _prepare_jwst_header_for_wcs(hdu.header)
-                            wcs = WCS(prepared_header)
-
-                            if not wcs.has_celestial:
-                                continue
-                            
-                            image_data = hdu.data
-                            if len(image_data.shape) > 2:
-                                image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
-                            
-                            target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-                            cutout_size = SED_CUTOUT_SIZE_ARCSEC * u.arcsec
-                            cutout = Cutout2D(image_data, target_coord, cutout_size, wcs=wcs)
-                            
-                            cutout_data = cutout.data.copy()
-                            cutout_data[np.isnan(cutout_data)] = 0
-                            cutout_data[np.isinf(cutout_data)] = 0
-                            
-                            x_norm, _ = transform.transform(ax.transData.transform((SED_HA_WAVELENGTH, 0)))
-                            x_norm = max(min(x_norm, 1 - 0.05), 0.0)
-                            x_norm += SED_HA_X_OFFSET
-                            
-                            ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
-                                                 bbox_to_anchor=(x_norm, SED_HA_Y_POSITION, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
-                                                 bbox_transform=fig.transFigure)
-                            
-                            sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE))
-                            ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
-                            
-                            region_sky = CircleSkyRegion(center=target_coord, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
-                            reg = region_sky.to_pixel(cutout.wcs)
-                            reg.plot(ax=ax_inset, color=CIRCLE_COLOR,lw=CIRCLE_LINEWIDTH)
-                            
-                            ax_inset.set_title(r'HST H$\alpha$', fontsize=SED_FONTSIZE_TITLE)
-                            ax_inset.axis('off')
-                            
-                            header = cutout.wcs.to_header()
-                            header['NAXIS1'] = cutout.data.shape[1]
-                            header['NAXIS2'] = cutout.data.shape[0]
-                            header['NAXIS'] = 2
-                            
-                            break
+                        if (hdu.data is None or not hasattr(hdu.data, 'shape') or len(hdu.data.shape) < 2):
+                            continue
+                        prepared_header = _prepare_jwst_header_for_wcs(hdu.header)
+                        wcs = WCS(prepared_header)
+                        if not wcs.has_celestial: continue
+                        image_data = hdu.data
+                        if len(image_data.shape) > 2:
+                            image_data = image_data[0] if len(image_data.shape) == 3 else image_data[0, 0]
+                        target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+                        cutout = Cutout2D(image_data, target_coord, SED_CUTOUT_SIZE_ARCSEC * u.arcsec, wcs=wcs)
+                        cutout_data = cutout.data.copy()
+                        cutout_data[np.isnan(cutout_data)] = 0
+                        cutout_data[np.isinf(cutout_data)] = 0
+                        x_norm, _ = transform.transform(ax.transData.transform((SED_HA_WAVELENGTH, 0)))
+                        x_norm = max(min(x_norm, 1 - 0.05), 0.0); x_norm += SED_HA_X_OFFSET
+                        ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
+                                             bbox_to_anchor=(x_norm, SED_HA_Y_POSITION, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                                             bbox_transform=fig.transFigure)
+                        sqrt_norm = PowerNorm(gamma=0.5, vmin=0, vmax=np.percentile(cutout_data, SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE))
+                        ax_inset.imshow(cutout_data, origin='lower', cmap=SED_CUTOUT_CMAP, norm=sqrt_norm)
+                        region_sky = CircleSkyRegion(center=target_coord, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
+                        reg = region_sky.to_pixel(cutout.wcs); reg.plot(ax=ax_inset, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH)
+                        ax_inset.set_title(r'HST H$\alpha$', fontsize=SED_FONTSIZE_TITLE)
+                        ax_inset.axis('off')
+                        break
             except Exception as e:
                 print(f"Error processing HST Ha: {e}")
-        
-        
-        # 9. RGB COMPOSITE CREATION (FIXED - using ordered dictionaries)
-        
+
+
         # NIRCam RGB
         if len(nircam_cutouts) == 3 and nircam_header is not None:
             try:
@@ -2434,54 +2279,34 @@ async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galax
                 print("HST RGB composite created successfully")
             except Exception as e:
                 print(f"Error creating HST RGB: {e}")
-        
-        
-        # 10. FINAL LAYOUT AND SAVE
-        
-        # Adjust layout
+        # 9) Save
         try:
             with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", 
-                    category=UserWarning, 
-                    message="This figure includes Axes that are not compatible with tight_layout"
-                )
+                warnings.filterwarnings("ignore", category=UserWarning,
+                                        message="This figure includes Axes that are not compatible with tight_layout")
                 plt.tight_layout()
         except Exception as e_layout:
             print(f"Error during plt.tight_layout(): {e_layout}")
-        
-        # Generate filename and save
+
         filename = f"SED_RA{ra:.4f}_DEC{dec:.4f}.png"
         image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), IMAGE_DIR)
         os.makedirs(image_dir, exist_ok=True)
         filepath = os.path.join(image_dir, filename)
-        
-        # Save with optimized DPI
         fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches='tight')
         plt.close(fig)
-        
-        # Debug: Check if file was actually created
+
         if os.path.exists(filepath):
-            file_size = os.path.getsize(filepath)
-            print(f"SED file created successfully: {filepath} (size: {file_size} bytes)")
+            print(f"SED file created successfully: {filepath} (size: {os.path.getsize(filepath)} bytes)")
         else:
             print(f"ERROR: SED file was not created at {filepath}")
-        
-        url_path = f"/{IMAGE_DIR}/{filename}"
-        return JSONResponse(
-            status_code=200,
-            content={"message": "SED saved successfully", "url": url_path, "filename": filename}
-        )
-    
+
+        return JSONResponse(status_code=200, content={"message": "SED saved successfully", "url": f"/{IMAGE_DIR}/{filename}", "filename": filename})
+
     except Exception as e:
         import traceback
         print(f"Error saving SED: {e}")
         print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to save SED: {str(e)}"}
-        )
-
+        return JSONResponse(status_code=500, content={"error": f"Failed to save SED: {str(e)}"})
 # HELPER FUNCTION FOR CACHING FILE SEARCHES
 import functools
 from typing import List
@@ -6912,7 +6737,6 @@ def plot_data_na(ax, title=""):
 from astropy.nddata.utils import NoOverlapError
 
 
-# Replace your existing _find_and_extract_cutout_via_glob function with this updated version
 def _find_and_extract_cutout_via_glob(
     base_search_path: str,
     filter_identifiers: list[str],
@@ -6920,48 +6744,82 @@ def _find_and_extract_cutout_via_glob(
     dec: float,
     cutout_size_arcsec: float,
     display_filter_name: str,
-    exclude_patterns: list[str] = None
+    exclude_patterns: list[str] = None,
+    galaxy_name: str | None = None
 ):
     """
     Finds a FITS file using glob patterns and extracts cutout data.
-    Now gracefully handles cases where target coordinates are outside image coverage.
-    
-    base_search_path: e.g., "files/"
-    filter_identifiers: List of strings to search for in filenames, e.g., ["f814w", "814"]
-    display_filter_name: Name for logging, e.g., "F814W"
-    exclude_patterns: List of patterns to exclude from filename matching, e.g., ["ha-img", "ha_img"]
-    
-    Returns:
-    - (cutout_data, cutout_wcs_header) if successful
-    - (None, None) if file not found or target outside coverage
+    - Recursively searches under base_search_path (files/**)
+    - If galaxy_name is provided, only considers files whose path includes a matching galaxy token
+      (handles variants like 'ngc628', 'ngc0628', 'ngc628mosaic', etc.)
     """
+    import re
+
     if exclude_patterns is None:
         exclude_patterns = []
-    
+
+    def build_galaxy_tokens(name: str) -> list[str]:
+        if not name:
+            return []
+        g = name.strip().lower()
+        if not g or g in ("unknown", "unknowngalaxy"):
+            return []
+        base = re.sub(r'[\s_\-]+', '', g)
+        tokens = {g, base}
+        m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+        if m:
+            prefix, digits = m.group(1), m.group(2)
+            tokens.add(f"{prefix}{digits}")             # ngc628
+            tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+            tokens.add(f"{prefix}0{digits}")            # ngc0628 (single zero variant)
+        return list(tokens)
+
+    galaxy_tokens = build_galaxy_tokens(galaxy_name) if galaxy_name else []
+
     matching_files = []
     for ident in filter_identifiers:
-        pattern = os.path.join(base_search_path, f"*{ident.lower()}*.fits")
-        found = glob.glob(pattern)
-        if found:
-            # Filter out files that match exclude patterns
-            filtered_found = []
-            for file_path in found:
-                filename = os.path.basename(file_path).lower()
-                # Check if any exclude pattern is in the filename
-                should_exclude = any(exclude_pattern.lower() in filename for exclude_pattern in exclude_patterns)
-                if not should_exclude:
-                    filtered_found.append(file_path)
-                else:
-                    print(f"Cutout [{display_filter_name}]: Excluding {file_path} (matches exclude pattern)")
-            
-            matching_files.extend(filtered_found)
+        ident_lower = ident.lower()
+        patterns = [
+            os.path.join(base_search_path, f"*{ident_lower}*.fits"),
+            os.path.join(base_search_path, "**", f"*{ident_lower}*.fits"),
+        ]
+        # Add targeted galaxy+identifier patterns for each token
+        for tok in galaxy_tokens:
+            patterns.extend([
+                os.path.join(base_search_path, f"*{tok}*{ident_lower}*.fits"),
+                os.path.join(base_search_path, "**", f"*{tok}*{ident_lower}*.fits"),
+            ])
+
+        for pattern in patterns:
+            found = glob.glob(pattern, recursive=True)
+            if found:
+                filtered_found = []
+                for file_path in found:
+                    filename = os.path.basename(file_path).lower()
+                    should_exclude = any(excl.lower() in filename for excl in exclude_patterns)
+                    if not should_exclude:
+                        filtered_found.append(file_path)
+                    else:
+                        print(f"Cutout [{display_filter_name}]: Excluding {file_path} (matches exclude pattern)")
+                matching_files.extend(filtered_found)
+
+    # Deduplicate while preserving order
+    matching_files = list(dict.fromkeys(matching_files))
+
+    # If galaxy_name provided, strictly restrict to that galaxy using any token
+    if galaxy_tokens:
+        galaxy_only = [f for f in matching_files if any(tok in f.lower() for tok in galaxy_tokens)]
+        if not galaxy_only:
+            print(f"Cutout [{display_filter_name}]: No FITS file found for galaxy='{galaxy_name}' using identifiers {filter_identifiers}")
+            return None, None
+        matching_files = galaxy_only
 
     if not matching_files:
         excluded_info = f" (after excluding patterns: {exclude_patterns})" if exclude_patterns else ""
         print(f"Cutout [{display_filter_name}]: No FITS file found using identifiers {filter_identifiers} in {base_search_path}{excluded_info}")
         return None, None
 
-    fits_file_path = matching_files[0] # Use the first match
+    fits_file_path = matching_files[0]
     print(f"Cutout [{display_filter_name}]: Using FITS file {fits_file_path}")
 
     try:
@@ -6970,12 +6828,10 @@ def _find_and_extract_cutout_via_glob(
                 if hdu.data is not None and hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2:
                     try:
                         header = hdu.header.copy()
-                        # Try to prepare header, especially for JWST WCS issues
                         if any(tag in display_filter_name.upper() for tag in ["F200W", "F300M", "F335M", "F360M", "F770W", "F1000W", "F1130W", "F2100W"]):
                             header = _prepare_jwst_header_for_wcs(header)
 
                         wcs = WCS(header)
-
                         if not wcs.has_celestial:
                             print(f"Cutout [{display_filter_name}]: WCS for {fits_file_path} (HDU {hdu_idx}) lacks celestial. Skipping HDU.")
                             continue
@@ -6994,14 +6850,13 @@ def _find_and_extract_cutout_via_glob(
                             return None, None
 
                         target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
-                        
                         try:
                             cutout_obj = Cutout2D(
-                                image_data_full, 
-                                target_coord, 
-                                cutout_size_arcsec * u.arcsec, 
-                                wcs=wcs, 
-                                mode='partial', 
+                                image_data_full,
+                                target_coord,
+                                cutout_size_arcsec * u.arcsec,
+                                wcs=wcs,
+                                mode='partial',
                                 fill_value=np.nan
                             )
                         except NoOverlapError:
@@ -7009,22 +6864,18 @@ def _find_and_extract_cutout_via_glob(
                             return None, None
 
                         cutout_data = cutout_obj.data.copy()
-
                         cutout_wcs_header = cutout_obj.wcs.to_header()
                         cutout_wcs_header['NAXIS1'] = cutout_data.shape[1]
                         cutout_wcs_header['NAXIS2'] = cutout_data.shape[0]
-                        cutout_wcs_header['NAXIS'] = 2 # Ensure NAXIS is 2 for 2D cutout
-
+                        cutout_wcs_header['NAXIS'] = 2
                         print(f"Cutout [{display_filter_name}]: Successfully extracted from HDU {hdu_idx}, shape {cutout_data.shape}")
                         return cutout_data, cutout_wcs_header
 
                     except NoOverlapError:
-                        # Handle NoOverlapError specifically at this level too
                         print(f"Cutout [{display_filter_name}]: Target position (RA={ra:.4f}, Dec={dec:.4f}) is outside image coverage area")
                         return None, None
                     except Exception as wcs_cutout_e:
                         print(f"Cutout [{display_filter_name}]: Error processing HDU {hdu_idx} in {fits_file_path}: {wcs_cutout_e}")
-                        # Only print full traceback for unexpected errors (not NoOverlapError)
                         if not isinstance(wcs_cutout_e, NoOverlapError):
                             import traceback
                             print(f"Traceback for HDU processing error [{display_filter_name}]:")
@@ -7039,26 +6890,27 @@ def _find_and_extract_cutout_via_glob(
         return None, None
     except Exception as e:
         print(f"Cutout [{display_filter_name}]: Error opening or processing FITS file {fits_file_path}: {e}")
-        # Only print full traceback for unexpected errors
         if not isinstance(e, NoOverlapError):
             import traceback
             print(f"Traceback for FITS file processing error [{display_filter_name}]:")
             traceback.print_exc()
         return None, None
 
+
+
 @app.get("/generate-rgb-cutouts/")
 async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_name: str = Query("UnknownGalaxy")):
     """
     Generates a 1x4 panel of RGB and H-alpha cutouts for a given RA/Dec.
-    Uses file finding logic similar to /generate-sed.
-    Titles are added as text annotations. RA/Dec marker is plotted. Uses LinearStretch.
-    Applies custom scaling for each instrument panel to match original astronomical code.
+    Uses recursive file search and restricts to files for the provided galaxy_name when available.
     """
-    BASE_FITS_PATH = FILES_DIRECTORY    # Base path for FITS files
+    import re
 
-    target_galaxy_name = galaxy_name # Use provided galaxy_name as default
+    print('????????',galaxy_name)
+    BASE_FITS_PATH = FILES_DIRECTORY
+    target_galaxy_name = galaxy_name
 
-    # Try to get galaxy name from catalog
+    # Try to get galaxy name from catalog (unchanged)
     try:
         catalog_table = loaded_catalogs.get(catalog_name)
         if catalog_table is None:
@@ -7068,7 +6920,6 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
                 loaded_catalogs[catalog_name] = catalog_table
             else:
                 print(f"RGB Cutouts: Failed to load catalog '{catalog_name}'.")
-
         if catalog_table is not None:
             ra_col, dec_col = None, None
             available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
@@ -7078,7 +6929,6 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             for potential_dec_name in RGB_DEC_COLUMN_NAMES:
                 if potential_dec_name in available_cols_lower:
                     dec_col = available_cols_lower[potential_dec_name]; break
-
             if ra_col and dec_col:
                 try:
                     table_ra = catalog_table[ra_col].astype(float)
@@ -7089,7 +6939,7 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
                     distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + (table_dec - dec)**2)
                     if len(distances) > 0:
                         closest_idx = np.argmin(distances)
-                        if distances[closest_idx] < ((CUTOUT_SIZE_ARCSEC / RGB_COORDINATE_TOLERANCE_FACTOR) / 3600.0): 
+                        if distances[closest_idx] < ((CUTOUT_SIZE_ARCSEC / RGB_COORDINATE_TOLERANCE_FACTOR) / 3600.0):
                             closest_obj = catalog_table[closest_idx]
                             for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
                                 if gal_col_name in closest_obj.colnames:
@@ -7103,17 +6953,34 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
     except Exception as e:
         print(f"RGB Cutouts: Error loading/processing catalog '{catalog_name}': {e}")
 
+    def build_galaxy_tokens(name: str) -> list[str]:
+        if not name:
+            return []
+        g = name.strip().lower()
+        if not g or g in ("unknown", "unknowngalaxy"):
+            return []
+        base = re.sub(r'[\s_\-]+', '', g)
+        tokens = {g, base}
+        m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+        if m:
+            prefix, digits = m.group(1), m.group(2)
+            tokens.add(f"{prefix}{digits}")             # ngc628
+            tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+            tokens.add(f"{prefix}0{digits}")            # ngc0628 variant
+        return list(tokens)
+
+    galaxy_tokens = build_galaxy_tokens(target_galaxy_name)
+
     print(f"RGB Cutouts: Generating for RA={ra}, Dec={dec}. Target Galaxy: {target_galaxy_name}")
 
-    fig, axes_list = plt.subplots(RGB_SUBPLOT_ROWS, RGB_SUBPLOT_COLS, 
-                                  figsize=(RGB_FIGURE_WIDTH, RGB_FIGURE_HEIGHT))
+    fig, axes_list = plt.subplots(RGB_SUBPLOT_ROWS, RGB_SUBPLOT_COLS, figsize=(RGB_FIGURE_WIDTH, RGB_FIGURE_HEIGHT))
     if not isinstance(axes_list, np.ndarray): axes_list = [axes_list]
 
     plot_panels_info = [
         {
-            "ax_idx": RGB_HST_PANEL_INDEX, 
-            "short_title": RGB_HST_SHORT_TITLE, 
-            "full_title": f"{RGB_HST_SHORT_TITLE} ({target_galaxy_name})", 
+            "ax_idx": RGB_HST_PANEL_INDEX,
+            "short_title": RGB_HST_SHORT_TITLE,
+            "full_title": f"{RGB_HST_SHORT_TITLE} ({target_galaxy_name})",
             "filters": {
                 "r": {"id": RGB_FILTERS["HST"]["RED"][0], "name": RGB_FILTERS["HST"]["RED"][1]},
                 "g": {"id": RGB_FILTERS["HST"]["GREEN"][0], "name": RGB_FILTERS["HST"]["GREEN"][1]},
@@ -7121,9 +6988,9 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             }
         },
         {
-            "ax_idx": RGB_NIRCAM_PANEL_INDEX, 
-            "short_title": RGB_NIRCAM_SHORT_TITLE, 
-            "full_title": f"{RGB_NIRCAM_SHORT_TITLE} ({target_galaxy_name})", 
+            "ax_idx": RGB_NIRCAM_PANEL_INDEX,
+            "short_title": RGB_NIRCAM_SHORT_TITLE,
+            "full_title": f"{RGB_NIRCAM_SHORT_TITLE} ({target_galaxy_name})",
             "filters": {
                 "r": {"id": RGB_FILTERS["NIRCAM"]["RED"][0], "name": RGB_FILTERS["NIRCAM"]["RED"][1]},
                 "g": {"id": RGB_FILTERS["NIRCAM"]["GREEN"][0], "name": RGB_FILTERS["NIRCAM"]["GREEN"][1]},
@@ -7131,9 +6998,9 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             }
         },
         {
-            "ax_idx": RGB_MIRI_PANEL_INDEX, 
-            "short_title": RGB_MIRI_SHORT_TITLE, 
-            "full_title": f"{RGB_MIRI_SHORT_TITLE} ({target_galaxy_name})", 
+            "ax_idx": RGB_MIRI_PANEL_INDEX,
+            "short_title": RGB_MIRI_SHORT_TITLE,
+            "full_title": f"{RGB_MIRI_SHORT_TITLE} ({target_galaxy_name})",
             "filters": {
                 "r": {"id": RGB_FILTERS["MIRI"]["RED"][0], "name": RGB_FILTERS["MIRI"]["RED"][1]},
                 "g": {"id": RGB_FILTERS["MIRI"]["GREEN"][0], "name": RGB_FILTERS["MIRI"]["GREEN"][1]},
@@ -7141,25 +7008,22 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             }
         },
         {
-            "ax_idx": RGB_HA_PANEL_INDEX, 
-            "short_title": RGB_HA_SHORT_TITLE, 
-            "full_title": f"HST {RGB_HA_SHORT_TITLE} ({target_galaxy_name})", 
-            "is_single_channel": True, 
-            "filters": {
-                "ha": {"id": RGB_FILTERS["HA"][0], "name": RGB_FILTERS["HA"][1]}
-            }
+            "ax_idx": RGB_HA_PANEL_INDEX,
+            "short_title": RGB_HA_SHORT_TITLE,
+            "full_title": f"HST {RGB_HA_SHORT_TITLE} ({target_galaxy_name})",
+            "is_single_channel": True,
+            "filters": { "ha": {"id": RGB_FILTERS["HA"][0], "name": RGB_FILTERS["HA"][1]} }
         }
     ]
 
     all_data_found_flags = {}
     panel_wcs_objects = [None] * len(axes_list)
 
-   
     for panel_info in plot_panels_info:
         ax_idx = panel_info["ax_idx"]
         ax = axes_list[ax_idx]
         ax.set_facecolor(RGB_PANEL_BACKGROUND_COLOR)
-        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False, 
+        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                        labelbottom=False, labelleft=False)
         for spine in ax.spines.values():
             spine.set_edgecolor(RGB_PANEL_SPINE_COLOR)
@@ -7169,7 +7033,6 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
         current_panel_wcs = None
         data_for_shape_check = None
 
-        # Determine which instrument this panel belongs to
         instrument = None
         if panel_info["short_title"] == RGB_HST_SHORT_TITLE:
             instrument = "HST"
@@ -7177,15 +7040,15 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             instrument = "NIRCAM"
         elif panel_info["short_title"] == RGB_MIRI_SHORT_TITLE:
             instrument = "MIRI"
-        
-        # Get exclude patterns for this instrument
+
         exclude_patterns = RGB_FILTERS.get(instrument, {}).get("exclude_patterns", []) if instrument else []
 
         if panel_info.get("is_single_channel"):
             f_info = panel_info["filters"]["ha"]
-            # For H-alpha, don't use exclude patterns since we want to find H-alpha files
-            data, wcs_header = _find_and_extract_cutout_via_glob(BASE_FITS_PATH, f_info["id"], ra, dec, 
-                                                                CUTOUT_SIZE_ARCSEC, f_info["name"])
+            data, wcs_header = _find_and_extract_cutout_via_glob(
+                BASE_FITS_PATH, f_info["id"], ra, dec, CUTOUT_SIZE_ARCSEC, f_info["name"],
+                galaxy_name=target_galaxy_name
+            )
             if data is not None:
                 channel_data["ha"] = data
                 data_for_shape_check = data
@@ -7198,21 +7061,22 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
                         current_panel_wcs = None
             else:
                 panel_all_found = False
-        else: # RGB panel
+        else:
             r_wcs_header = None
             for band in ["r", "g", "b"]:
                 f_info = panel_info["filters"][band]
-                # Pass exclude patterns to avoid H-alpha composite files
-                data, temp_wcs_header = _find_and_extract_cutout_via_glob(BASE_FITS_PATH, f_info["id"], ra, dec, 
-                                                                         CUTOUT_SIZE_ARCSEC, f_info["name"], 
-                                                                         exclude_patterns=exclude_patterns)
+                data, temp_wcs_header = _find_and_extract_cutout_via_glob(
+                    BASE_FITS_PATH, f_info["id"], ra, dec, CUTOUT_SIZE_ARCSEC, f_info["name"],
+                    exclude_patterns=exclude_patterns, galaxy_name=target_galaxy_name
+                )
                 if data is not None:
                     channel_data[band] = data
                     if band == "r":
                         data_for_shape_check = data
                         if temp_wcs_header: r_wcs_header = temp_wcs_header
                 else:
-                    panel_all_found = False; break
+                    panel_all_found = False
+                    break
             if panel_all_found and r_wcs_header:
                 try:
                     current_panel_wcs = WCS(_prepare_jwst_header_for_wcs(r_wcs_header))
@@ -7220,13 +7084,13 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
                 except Exception as e:
                     print(f"Error creating WCS for panel {panel_info['short_title']} from R-band: {e}")
                     current_panel_wcs = None
-        
+
         panel_wcs_objects[ax_idx] = current_panel_wcs
         all_data_found_flags[panel_info["full_title"]] = panel_all_found
 
-        ax.text(RGB_TITLE_X_POSITION, RGB_TITLE_Y_POSITION, panel_info["short_title"], 
-                transform=ax.transAxes, fontsize=RGB_TITLE_FONT_SIZE, color=RGB_TITLE_COLOR, 
-                fontweight=RGB_TITLE_FONT_WEIGHT, ha='right', va='top', 
+        ax.text(RGB_TITLE_X_POSITION, RGB_TITLE_Y_POSITION, panel_info["short_title"],
+                transform=ax.transAxes, fontsize=RGB_TITLE_FONT_SIZE, color=RGB_TITLE_COLOR,
+                fontweight=RGB_TITLE_FONT_WEIGHT, ha='right', va='top',
                 bbox=dict(facecolor=RGB_TITLE_BBOX_FACECOLOR, alpha=RGB_TITLE_BBOX_ALPHA, edgecolor='none'))
 
         if not panel_all_found:
@@ -7239,38 +7103,17 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             if ha_data is not None:
                 norm = simple_norm(ha_data, stretch=RGB_HA_STRETCH, percent=RGB_HA_PERCENTILE)
                 ax.imshow(ha_data, origin='lower', cmap=RGB_HA_COLORMAP, norm=norm, aspect='equal')
-        else: # RGB
+        else:
             r_data, g_data, b_data = channel_data.get("r"), channel_data.get("g"), channel_data.get("b")
             if r_data is not None and g_data is not None and b_data is not None:
-                # Handle different panel types with instrument-specific scaling
                 if panel_info["short_title"] == RGB_HST_SHORT_TITLE:
-                    print(f"Applying HST-specific scaling (matches original astronomical code)")
-                    rgb_image = create_display_rgb(
-                        r_data, g_data, b_data, 
-                        panel_type="hst",
-                        source_index=0  # Use 0 for first source, could be made dynamic if needed
-                    )
+                    rgb_image = create_display_rgb(r_data, g_data, b_data, panel_type="hst", source_index=0)
                 elif panel_info["short_title"] == RGB_NIRCAM_SHORT_TITLE:
-                    print(f"Applying NIRCam-specific scaling")
-                    rgb_image = create_display_rgb(
-                        r_data, g_data, b_data, 
-                        panel_type="nircam"
-                    )
+                    rgb_image = create_display_rgb(r_data, g_data, b_data, panel_type="nircam")
                 elif panel_info["short_title"] == RGB_MIRI_SHORT_TITLE:
-                    print(f"Applying MIRI-specific scaling")
-                    rgb_image = create_display_rgb(
-                        r_data, g_data, b_data, 
-                        panel_type="miri"
-                    )
+                    rgb_image = create_display_rgb(r_data, g_data, b_data, panel_type="miri")
                 else:
-                    # Default scaling for any other panels
-                    print(f"Applying default scaling for {panel_info['short_title']}")
-                    rgb_image = create_display_rgb(
-                        r_data, g_data, b_data, 
-                        q_min=RGB_DEFAULT_Q_MIN, 
-                        q_max=RGB_DEFAULT_Q_MAX
-                    )
-                
+                    rgb_image = create_display_rgb(r_data, g_data, b_data, q_min=RGB_DEFAULT_Q_MIN, q_max=RGB_DEFAULT_Q_MAX)
                 if rgb_image is not None:
                     ax.imshow(rgb_image, origin='lower', aspect='equal')
                 else:
@@ -7279,29 +7122,26 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
             else:
                 print(f"Warning: Missing channel data for {panel_info['short_title']} RGB panel")
                 plot_data_na(ax, title="")
-        
-        # Plot RA/Dec marker
+
         retrieved_wcs = panel_wcs_objects[ax_idx]
         if retrieved_wcs and data_for_shape_check is not None:
             try:
                 pixel_coords = retrieved_wcs.world_to_pixel_values(ra, dec)
-                if 0 <= pixel_coords[0] < data_for_shape_check.shape[1] and \
-                   0 <= pixel_coords[1] < data_for_shape_check.shape[0]:
-                    ax.plot(pixel_coords[0], pixel_coords[1], RGB_MARKER_SYMBOL, 
-                           markersize=RGB_MARKER_SIZE, markeredgewidth=RGB_MARKER_EDGE_WIDTH, 
-                           alpha=RGB_MARKER_ALPHA)
+                if 0 <= pixel_coords[0] < data_for_shape_check.shape[1] and 0 <= pixel_coords[1] < data_for_shape_check.shape[0]:
+                    ax.plot(pixel_coords[0], pixel_coords[1], RGB_MARKER_SYMBOL,
+                            markersize=RGB_MARKER_SIZE, markeredgewidth=RGB_MARKER_EDGE_WIDTH, alpha=RGB_MARKER_ALPHA)
                 else:
                     print(f"RA/Dec marker for {panel_info['short_title']} is outside image bounds based on WCS.")
             except Exception as e:
                 print(f"Error plotting RA/Dec marker for {panel_info['short_title']}: {e}")
-                
+
     plt.tight_layout(pad=RGB_TIGHT_LAYOUT_PAD, w_pad=RGB_TIGHT_LAYOUT_W_PAD, h_pad=RGB_TIGHT_LAYOUT_H_PAD)
 
     image_dir = Path(IMAGE_DIR)
     image_dir.mkdir(exist_ok=True)
     safe_galaxy_name = "".join(c if c in RGB_ALLOWED_FILENAME_CHARS else RGB_FILENAME_REPLACEMENT_CHAR 
                               for c in target_galaxy_name).rstrip().replace(' ', RGB_FILENAME_REPLACEMENT_CHAR)
-    if not safe_galaxy_name or safe_galaxy_name.lower() == "unknown": 
+    if not safe_galaxy_name or safe_galaxy_name.lower() == "unknown":
         safe_galaxy_name = RGB_DEFAULT_GALAXY_NAME
     
     timestamp = int(time.time())
@@ -7313,7 +7153,7 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
         plt.close(fig)
         print(f"RGB Cutout panel saved to {filepath}")
         url_path = f"/{IMAGE_DIR}/{filename}"
-        return JSONResponse(content={"message": "RGB cutouts generated successfully", "url": url_path, 
+        return JSONResponse(content={"message": "RGB cutouts generated successfully", "url": url_path,
                                    "filename": filename, "data_found_summary": all_data_found_flags})
     except Exception as e:
         plt.close(fig)
