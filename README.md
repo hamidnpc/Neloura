@@ -3,6 +3,7 @@
 
 **A modern, web-based astronomical image analysis and visualization platform.  
 Check the server-based app [here](https://neloura.com)!**
+
 Neloura is a comprehensive tool for astronomical data analysis, specializing in FITS image processing, catalog management, and multi-wavelength visualization. Built with Python FastAPI backend and a sophisticated vanilla JavaScript frontend, it provides an intuitive web interface for exploring astronomical datasets with professional-grade analysis capabilities.
 
 The platform features a clean, responsive design with integrated code execution, real-time progress monitoring, and advanced visualization tools - all accessible through any modern web browser without requiring local software installation.
