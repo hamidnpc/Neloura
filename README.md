@@ -43,7 +43,7 @@ The platform features a clean, responsive design with integrated code execution,
 - **WebSocket communication** for live updates and notifications
 - **No installation required** - runs entirely in web browsers
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - Python 3.8 or higher
@@ -116,14 +116,13 @@ neloura/
 └── images/                # Generated plot outputs
 ```
 
-## 📁 Project Structure
+##  Project Structure
 
 ### Backend
 - **FastAPI** - High-performance Python web framework
 - **Astropy** - Core astronomical data handling
 - **NumPy/SciPy** - Numerical computing
 - **Matplotlib** - Scientific plotting
-- **Pillow** - Image processing
 - **Uvicorn** - ASGI server
 
 ### Frontend Architecture
@@ -151,37 +150,30 @@ RGB_FIGURE_SIZE_INCHES = (10, 10)
 SED_FIGURE_SIZE_INCHES = (18, 14)
 ```
 
-## 📚 API Documentation
-
-Neloura provides a comprehensive REST API for programmatic access:
-
-### Image Endpoints
-- `GET /fits-binary/` - Load FITS image data
-- `GET /fits-tile/{level}/{x}/{y}` - Retrieve image tiles
-- `POST /update-dynamic-range/` - Adjust image scaling
-
-### Catalog Endpoints
-- `GET /catalog-with-flags/{catalog_name}` - Load catalog with filtering
-- `POST /cone-search/` - Perform spatial queries
-- `POST /range-search/` - Apply column-based filters
-
-### Visualization Endpoints
-- `GET /generate-rgb-cutouts/` - Create RGB composite images
-- `GET /generate-sed/` - Generate SED plots
-- `POST /start-peak-finder/` - Initiate source detection
 
 
-### Development Setup
+## Acknowledgments
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Install development dependencies: `pip install -r requirements-dev.txt`
-4. Make your changes and add tests
-5. Submit a pull request
+**Backend (Python):**
 
+- Aiohttp
+- Astropy
+- FastAPI
+- Matplotlib
+- NumPy
+- Pillow
+- Photutils
+- Psutil
+- Pydantic
+- Regions
+- Reproject
+- Scikit-image
+- Scipy
+- Spectral-cube
+- Uvicorn
 
-## 🙏 Acknowledgments
+**Frontend (JavaScript):**
 
-- **Astropy Project** for foundational astronomical software
-- **OpenSeadragon** for high-performance image viewing
-- **FastAPI** for modern web framework architecture
+- OpenSeadragon
+- D3.js
+- SweetAlert2
