@@ -1843,6 +1843,9 @@ def linear(inputArray, scale_min=None, scale_max=None):
 
 
 @app.get("/generate-sed/")
+
+
+
 async def generate_sed_optimized(ra: float, dec: float, catalog_name: str, galaxy_name: str = None):
     """SED plot generation that accepts catalog_name, derives galaxy from row (ignores JS galaxy_name),
     searches recursively under FILES_DIRECTORY with galaxy-token preference, and keeps cutouts/RGB logic."""
