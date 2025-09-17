@@ -167,11 +167,8 @@ def compute_ast_plot(params: AstPlotRequest):
             if flux.size == 0:
                 return None
 
-            try:
-                popt, _ = curve_fit(_logistic, flux, detection, p0=[1.0 / max(np.median(flux), 1e-6), np.median(flux)], maxfev=5000)
-            except Exception:
-                c_guess = float(np.median(flux[detection == 1])) if np.any(detection == 1) else float(np.median(flux))
-                popt = np.array([1.0 / max(c_guess, 1e-6), c_guess], dtype=float)
+            popt, _ = curve_fit(_logistic, flux, detection, p0=[1.0 / max(np.median(flux), 1e-6), np.median(flux)], maxfev=5000)
+
 
             b_fit = float(popt[0])
             c_fit = float(popt[1])
@@ -279,12 +276,8 @@ def compute_ast_plot(params: AstPlotRequest):
             raise ValueError('No valid flux values after filtering')
 
         # Logistic fit
-        try:
-            popt, _ = curve_fit(_logistic, flux, detection, p0=[1.0 / max(np.median(flux), 1e-6), np.median(flux)], maxfev=5000)
-        except Exception:
-            # Fallback: rough slope and 50% threshold as median flux where detection=1
-            c_guess = float(np.median(flux[detection == 1])) if np.any(detection == 1) else float(np.median(flux))
-            popt = np.array([1.0 / max(c_guess, 1e-6), c_guess], dtype=float)
+        popt, _ = curve_fit(_logistic, flux, detection, p0=[1.0 / max(np.median(flux), 1e-6), np.median(flux)], maxfev=5000)
+
 
         b_fit = float(popt[0])
         c_fit = float(popt[1])
@@ -516,9 +509,17 @@ def inject_sources(params: AstInjectRequest):
         coord_table = Table(rows=coordinates, names=('X', 'Y', 'RA', 'DEC', 'FLUX_BKG_uJy', 'FLUX_uJy', 'FLUX_ERR_uJy', 'SNR'))
         # Add units (uJy) to relevant columns
         try:
-            coord_table['BKG'].unit = 'uJy'
-            coord_table['FLUX'].unit = 'uJy'
-            coord_table['FLUX_ERR'].unit = 'uJy'
+            coord_table['FLUX_uJy'].unit = 'uJy'
+            coord_table['FLUX_BKG_uJy'].unit = 'uJy'
+            coord_table['FLUX_ERR_uJy'].unit = 'uJy'
+        except Exception:
+            pass
+        # Save filter in catalog: as a column and metadata
+        try:
+            filter_str = str(params.filterName)
+            coord_table['FILTER'] = [filter_str] * len(coord_table)
+            coord_table.meta['FILTER'] = filter_str
+            coord_table.meta['FLUX_UNIT'] = 'uJy'
         except Exception:
             pass
         catalog_filename = f"injected_catalog_{Path(params.fitsFile).stem}_{timestamp}.fits"

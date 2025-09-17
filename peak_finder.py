@@ -19,7 +19,7 @@ from astropy.stats import sigma_clipped_stats, SigmaClip
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from astropy.wcs.utils import proj_plane_pixel_scales
-from astropy.table import Table
+from astropy.table import Table, Column
 
 # Image processing imports
 import scipy.ndimage as nd
@@ -57,6 +57,67 @@ def _ensure_manager():
         # assign atomically
         manager = mgr
         job_status = manager.dict()
+# ---
+
+# --- WCS orientation analysis (copied from main.py) ---
+def analyze_wcs_orientation(header, data=None):
+    """
+    Analyze WCS header to determine coordinate system orientation and optionally flip data
+
+    Returns
+    -------
+    flip_y : bool
+        True if Y-axis is flipped (dy should be multiplied by -1)
+    determinant : float
+        Determinant of the transformation matrix
+    flipped_data : numpy.ndarray or None
+        Flipped data array if data was provided and flip was needed, otherwise None
+    """
+    try:
+        # Get transformation matrix elements (CD, PC, or CDELT)
+        if 'CD1_1' in header:
+            cd11 = header.get('CD1_1', 0)
+            cd12 = header.get('CD1_2', 0)
+            cd21 = header.get('CD2_1', 0)
+            cd22 = header.get('CD2_2', 0)
+        elif 'PC1_1' in header:
+            pc11 = header.get('PC1_1', 1)
+            pc12 = header.get('PC1_2', 0)
+            pc21 = header.get('PC2_1', 0)
+            pc22 = header.get('PC2_2', 1)
+            cdelt1 = header.get('CDELT1', 1)
+            cdelt2 = header.get('CDELT2', 1)
+            cd11 = pc11 * cdelt1
+            cd12 = pc12 * cdelt1
+            cd21 = pc21 * cdelt2
+            cd22 = pc22 * cdelt2
+        else:
+            cdelt1 = header.get('CDELT1', 1)
+            cdelt2 = header.get('CDELT2', 1)
+            cd11 = cdelt1
+            cd12 = 0
+            cd21 = 0
+            cd22 = cdelt2
+
+        determinant = cd11 * cd22 - cd12 * cd21
+
+        flip_y = False
+        if determinant < 0:
+            flip_y = True
+        # Additional guard for inverted Y scale
+        if cd22 < 0 and determinant > 0:
+            flip_y = True
+        if abs(determinant) < 1e-15:
+            flip_y = cd22 < 0
+
+        flipped_data = None
+        if data is not None:
+            flipped_data = np.flipud(data) if flip_y else data.copy()
+
+        return flip_y, determinant, flipped_data
+    except Exception:
+        flipped_data = data.copy() if data is not None else None
+        return False, 1.0, flipped_data
 # ---
 
 # --- JWST filter metadata for photometry (mirrors ast_test.py) ---
@@ -115,7 +176,8 @@ def peak_finder_worker(job_id: str, job_state: dict, params: dict):
             filter_name=params.get('filterName'),
             progress_reporter=progress_reporter
         )
-        ra_coords, dec_coords, x_coords, y_coords = results
+        # Unpack all values including bottom-left coordinates
+        ra_coords, dec_coords, x_coords, y_coords, x_bl_out, y_bl_out = results
         
         progress_reporter(98, "Saving catalog...")
 
@@ -125,7 +187,7 @@ def peak_finder_worker(job_id: str, job_state: dict, params: dict):
         galaxy_name = galaxy_match.group(1) if galaxy_match else "UnknownGalaxy"
         
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        catalogs_dir = os.path.join(base_dir, 'catalogs')
+        catalogs_dir = os.path.join(base_dir, 'files/uploads')
         os.makedirs(catalogs_dir, exist_ok=True)
         
         output_filename = f"peak_catalog_{galaxy_name}_{os.path.splitext(base_name)[0]}_{timestamp}.fits"
@@ -136,13 +198,23 @@ def peak_finder_worker(job_id: str, job_state: dict, params: dict):
 
         # Final status update
         job_state[job_id] = {
-            "status": "completed",
+            # Frontend expects 'complete'
+            "status": "complete",
             "progress": 100,
             "stage": "Finished",
             "result": {
                 "message": f"Peak finding complete. Catalog saved to {output_path}",
                 "catalog_file": output_path,
-                "num_sources": len(ra_coords),
+                "sources": {
+                    "ra": ra_coords,
+                    "dec": dec_coords,
+                    "x": x_coords,
+                    "y": y_coords,
+                    "x_bottom_left": x_bl_out,
+                    "y_bottom_left": y_bl_out,
+                    "coords_frame": "top-left",
+                    "source_count": len(ra_coords)
+                }
             }
         }
 
@@ -150,7 +222,7 @@ def peak_finder_worker(job_id: str, job_state: dict, params: dict):
         # Error handling
         print(f"Error in peak finder worker (job {job_id}): {e}", file=sys.stderr)
         traceback.print_exc()
-        job_state[job_id] = {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+        job_state[job_id] = {"status": "error", "error": str(e), "message": str(e), "traceback": traceback.format_exc()}
 
 
 @router.post("/start-peak-finder/", tags=["Peak Finder"])
@@ -446,9 +518,18 @@ def _run_peaks_from_map_tiled(
     return np.array(x_final, dtype=int), np.array(y_final, dtype=int)
 
 
-def find_sources(fits_file, pix_across_beam=5, min_beams=1.0, 
-                beams_to_search=1.0, delta_rms=3.0, minval_rms=5.0, edge_clip=1, progress_reporter=None,
-                filter_name: str = None):
+def find_sources(
+    fits_file,
+    pix_across_beam=5,
+    min_beams=1.0,
+    beams_to_search=1.0,
+    delta_rms=3.0,
+    minval_rms=5.0,
+    edge_clip=1,
+    progress_reporter=None,
+    filter_name: str = None,
+    hdu_index: int | None = None,
+):
     """
     Find sources in a FITS image using simplified peak detection with improved progress reporting.
     
@@ -465,38 +546,44 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
 
         # Open the FITS file
         with fits.open(fits_file) as hdul:
-            # Find the first HDU with image data
-            for hdu_idx, hdu in enumerate(hdul):
-                if hasattr(hdu, 'data') and hdu.data is not None and len(hdu.data.shape) >= 2:
-                    # Copy the data to avoid modifying the original
-                    data = hdu.data.copy()
-                    header = hdu.header.copy()
-                    
-                    # Process the WCS with special handling for JWST files
-                    try:
-                        # First try to parse the header with JWST-specific fixes
-                        modified_header = (header)
-                        wcs = WCS(modified_header)
-                        
-                        # Test if the WCS is valid
-                        if not wcs.has_celestial:
-                            print(f"WCS doesn't have celestial coordinates, trying standard WCS", file=sys.stderr)
-                            wcs = WCS(header)
-                            
-                            if wcs.has_celestial:
-                                print(f"Using WCS from HDU {hdu_idx} with projection {wcs.wcs.ctype}", file=sys.stderr)
-                            else:
-                                print(f"No valid celestial WCS found in HDU {hdu_idx}", file=sys.stderr)
-                                continue
-                        
-                    except Exception as e:
-                        print(f"Error getting WCS: {e}", file=sys.stderr)
-                        continue
-                    
-                    break
-            else:
+            selected_idx = None
+            # Prefer explicit HDU index when provided and valid
+            if isinstance(hdu_index, int) and 0 <= hdu_index < len(hdul):
+                sel = hdul[hdu_index]
+                if hasattr(sel, 'data') and sel.data is not None and len(getattr(sel.data, 'shape', ())) >= 2:
+                    selected_idx = hdu_index
+                else:
+                    print(f"Requested HDU {hdu_index} has no 2D image data; falling back to first image HDU.", file=sys.stderr)
+            # Fallback: first HDU with image data
+            if selected_idx is None:
+                for hdu_idx, hdu in enumerate(hdul):
+                    if hasattr(hdu, 'data') and hdu.data is not None and len(getattr(hdu.data, 'shape', ())) >= 2:
+                        selected_idx = hdu_idx
+                        break
+            if selected_idx is None:
                 print("No suitable image data found in the FITS file", file=sys.stderr)
                 return [], [], [], []
+
+            hdu = hdul[selected_idx]
+            # Copy the data to avoid modifying the original
+            data = hdu.data.copy()
+            header = hdu.header.copy()
+
+            # Process the WCS
+            try:
+                wcs = WCS(header)
+                if not wcs.has_celestial:
+                    print(f"WCS doesn't have celestial coordinates in HDU {selected_idx}.", file=sys.stderr)
+                    # Try again with the same header (kept for parity with prior logic)
+                    wcs = WCS(header)
+                    if not wcs.has_celestial:
+                        print(f"No valid celestial WCS found in HDU {selected_idx}", file=sys.stderr)
+            except Exception as e:
+                print(f"Error getting WCS from HDU {selected_idx}: {e}", file=sys.stderr)
+                # Continue without WCS; downstream conversion will fail gracefully
+
+        # Analyze WCS orientation to determine if display Y-flip is needed
+        flip_y, determinant, _ = analyze_wcs_orientation(header, None)
         
         # Clean up data - handle NaN and negative values
         data[np.isnan(data)] = 0
@@ -584,13 +671,30 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
         # Convert NumPy arrays to lists for JSON serialization
         ra_coords = [float(ra) for ra in ra_coords]
         dec_coords = [float(dec) for dec in dec_coords]
-        x_coords_out = [float(x) for x in x_max]
-        y_coords_out = [float(y) for y in y_max]
+        # Dimensions
+        height = int(data.shape[-2])  # rows
+
+        # Compute top-left image coordinates consistent with display using flip_y
+        x_tl_out = [float(x) for x in x_max]
+        if flip_y:
+            y_tl_out = [float(height - 1 - int(y)) for y in y_max]
+        else:
+            y_tl_out = [float(int(y)) for y in y_max]
+
+        # Compute bottom-left FITS-like coordinates from top-left
+        x_bl_out = x_tl_out[:]
+        y_bl_out = [float(height - 1 - y) for y in y_tl_out]
+
+        # # Use 1-based indexing for FITS-like readout values to match other endpoints
+        x_bl_out = [float(x) + 1.0 for x in x_bl_out]
+        y_bl_out = [float(y) + 1.0 for y in y_bl_out]
+        
         
         # --- Optional photometry using JWST filter metadata (mirrors ast_test.inject_sources) ---
         fluxes_jy = None
         flux_errs_jy = None
         snrs = None
+        flux_unit = None  # Will be 'uJy' for JWST filters, or header BUNIT for non-JWST
         try:
             if filter_name:
                 filter_key = str(filter_name).upper()
@@ -616,6 +720,8 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
                         fluxes_jy = surfbright_arr
                         flux_errs_jy = np.full_like(fluxes_jy, np.nan, dtype=float)
                         snrs = np.full_like(fluxes_jy, np.nan, dtype=float)
+                        # Use image BUNIT for non-JWST case, e.g., 'MJy/sr'
+                        flux_unit = str(header.get('BUNIT', 'UNKNOWN'))
                     else:
                         # JWST filter: require FWHM and solid angle
                         if FWHM_arcsec is None or solid_angle_sr is None:
@@ -654,24 +760,36 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
                             else:
                                 surfbright_arr = np.array([])
 
-                            # Convert to Jy using solid angle and factor
+                            # Convert to uJy using solid angle and factor
                             fluxes_jy = (surfbright_arr - flux_bkg_arr) * solid_angle_sr * FLUX_CONVERSION_FACTOR
                             flux_errs_jy = bkg_sigma_arr * solid_angle_sr * FLUX_CONVERSION_FACTOR
                             with np.errstate(divide='ignore', invalid='ignore'):
                                 snrs = np.where(flux_errs_jy > 0, fluxes_jy / flux_errs_jy, 0.0)
+                            flux_unit = 'uJy'
                 else:
                     print(f"Unknown JWST filter '{filter_name}'. Skipping photometry.", file=sys.stderr)
         except Exception as e_phot:
             print(f"Photometry step failed: {e_phot}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 
-        # Convert NumPy to Python lists if computed
-        if isinstance(fluxes_jy, np.ndarray):
-            fluxes_jy = [float(x) if np.isfinite(x) else np.nan for x in fluxes_jy]
-        if isinstance(flux_errs_jy, np.ndarray):
-            flux_errs_jy = [float(x) if np.isfinite(x) else np.nan for x in flux_errs_jy]
-        if isinstance(snrs, np.ndarray):
-            snrs = [float(x) if np.isfinite(x) else np.nan for x in snrs]
+        # Normalize photometry arrays to Python lists and align lengths with sources
+        n_sources = len(ra_coords)
+        def _to_list_aligned(arr, n):
+            if arr is None:
+                return [float('nan')] * n
+            if isinstance(arr, np.ndarray):
+                arr_list = [float(x) if np.isfinite(x) else np.nan for x in arr]
+            else:
+                arr_list = [float(x) if (x is not None and np.isfinite(x)) else np.nan for x in list(arr)]
+            if len(arr_list) > n:
+                return arr_list[:n]
+            if len(arr_list) < n:
+                return arr_list + [float('nan')] * (n - len(arr_list))
+            return arr_list
+
+        fluxes_jy = _to_list_aligned(fluxes_jy, n_sources)
+        flux_errs_jy = _to_list_aligned(flux_errs_jy, n_sources)
+        snrs = _to_list_aligned(snrs, n_sources)
         
         # --- Create and save the catalog ---
         if len(ra_coords) > 0:
@@ -680,14 +798,30 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
                 output_table = Table()
                 output_table['RA'] = ra_coords
                 output_table['DEC'] = dec_coords
-                output_table['X'] = x_coords_out
-                output_table['Y'] = y_coords_out
-                if fluxes_jy is not None:
-                    output_table['Flux_uJy'] = fluxes_jy
-                if flux_errs_jy is not None:
-                    output_table['FluxErr_uJy'] = flux_errs_jy
-                if snrs is not None:
-                    output_table['SNR'] = snrs
+                output_table['x_bottom_left'] = x_bl_out
+                output_table['y_bottom_left'] = y_bl_out
+                output_table['X'] = x_tl_out
+                output_table['Y'] = y_tl_out
+                # Add photometry columns with units and consistent lengths
+                if flux_unit == 'uJy':
+                    output_table['Flux_uJy'] = Column(fluxes_jy, unit='uJy')
+                    output_table['FluxErr_uJy'] = Column(flux_errs_jy, unit='uJy')
+                else:
+                    # Fallback to image surface brightness units if not JWST
+                    fb_unit = flux_unit if flux_unit is not None else None
+                    output_table['Flux'] = Column(fluxes_jy, unit=fb_unit)
+                    output_table['FluxErr'] = Column(flux_errs_jy, unit=fb_unit)
+                output_table['SNR'] = snrs
+
+                # Save filter as a per-row column for easier consumption
+                filter_str = str(filter_name) if filter_name is not None else 'UNKNOWN'
+                output_table['FILTER'] = [filter_str] * len(ra_coords)
+
+                # Store helpful metadata
+                if filter_name is not None:
+                    output_table.meta['FILTER'] = str(filter_name)
+                if flux_unit is not None:
+                    output_table.meta['FLUX_UNIT'] = str(flux_unit)
 
                 # Extract galaxy name from filename
                 base_name = os.path.basename(fits_file)
@@ -696,7 +830,7 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
 
                 # Create a unique catalog name
                 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                output_dir = "catalogs"
+                output_dir = "files/uploads"
                 os.makedirs(output_dir, exist_ok=True)
                 output_filename = f"peak_catalog_{galaxy}_{base_name.replace('.fits', '')}_{timestamp}.fits"
                 output_path = os.path.join(output_dir, output_filename)
@@ -712,14 +846,15 @@ def find_sources(fits_file, pix_across_beam=5, min_beams=1.0,
         if progress_reporter:
             progress_reporter(100, "Complete")
 
-        return ra_coords, dec_coords, x_coords_out, y_coords_out
+        return ra_coords, dec_coords, x_tl_out, y_tl_out, x_bl_out, y_bl_out
         
     except Exception as e:
         print(f"An error occurred in find_sources: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         if progress_reporter:
             progress_reporter(-1, f"Error: {e}")
-        return [], [], [], []
+        # Maintain tuple arity with BL outputs on error
+        return [], [], [], [], [], []
 
 
 def find_peaks(full_file_path: str, progress_callback=None, **kwargs):
@@ -740,7 +875,7 @@ def find_peaks(full_file_path: str, progress_callback=None, **kwargs):
 
         # Find sources using the simplified peak detection method
         # ** This is the key change: passing the reporter to find_sources **
-        ra_coords, dec_coords, values, x_coords, y_coords = find_sources(
+        ra_coords, dec_coords, x_coords, y_coords, x_bl_out, y_bl_out = find_sources(
             full_file_path, 
             pix_across_beam=kwargs.get('pix_across_beam', 5),
             min_beams=kwargs.get('min_beams', 1.0),
@@ -756,7 +891,7 @@ def find_peaks(full_file_path: str, progress_callback=None, **kwargs):
         if not ra_coords:
             reporter(100, "No sources found. Process complete.")
             return {
-                "ra": [], "dec": [], "x": [], "y": [],
+                "ra": [], "dec": [], "x": [], "y": [], "x_bottom_left": [], "y_bottom_left": [],
                 "source_count": 0, "photometry": None
             }
 
@@ -773,7 +908,7 @@ def find_peaks(full_file_path: str, progress_callback=None, **kwargs):
 
         return {
             "ra": ra_coords, "dec": dec_coords,
-            "x": x_coords, "y": y_coords, "source_count": len(ra_coords)
+            "x": x_coords, "y": y_coords, "x_bottom_left": x_bl_out, "y_bottom_left": y_bl_out, "source_count": len(ra_coords)
         }
 
     except Exception as e:
@@ -929,7 +1064,7 @@ def main():
     # Run source detection
     try:
         print(f"Processing file: {fits_file}")
-        ra_list, dec_list, x_list, y_list = find_sources(
+        ra_list, dec_list, x_list, y_list, x_bl_out, y_bl_out = find_sources(
             fits_file, 
             pix_across_beam=params['pix_across_beam'],
             min_beams=params['min_beams'],
@@ -946,6 +1081,8 @@ def main():
             "dec": dec_list,
             "x": x_list,
             "y": y_list,
+            "x_bottom_left": x_bl_out,
+            "y_bottom_left": y_bl_out,
             "source_count": len(ra_list)
         }
         # print(json.dumps(result))
@@ -993,7 +1130,7 @@ if __name__ == "__main__":
         # It's better to keep the script quiet unless there are errors for stderr,
         # and if it's specifically being debugged.
         
-        ra_found, dec_found, x_found, y_found = find_sources(fits_file_arg, **fs_params)
+        ra_found, dec_found, x_found, y_found, x_bl_out, y_bl_out = find_sources(fits_file_arg, **fs_params)
         
         # Photometry is still commented out in this main block, which is fine.
         # If it were enabled, its internal prints are already stderr.
@@ -1003,6 +1140,8 @@ if __name__ == "__main__":
             "dec": dec_found,
             "x": x_found,
             "y": y_found,
+            "x_bottom_left": x_bl_out,
+            "y_bottom_left": y_bl_out,
             # "fluxes": fluxes_phot, # Uncomment if photometry is performed
             # "flux_errors": flux_errs_phot, # Uncomment if photometry is performed
             # "snr": snrs_phot, # Uncomment if photometry is performed
