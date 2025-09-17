@@ -2042,6 +2042,19 @@ class SimpleTileGenerator:
             # data_min and data_max (overall true data range) are removed for now to fix the error.
             # If needed, these would require explicit calculation and storage in the generator.
         }
+
+    def get_minimal_tile_info(self):
+        """Return minimal tile info without triggering dynamic range (cpah-friendly)."""
+        bunit = self.header.get('BUNIT', None)
+        return {
+            "width": self.width,
+            "height": self.height,
+            "tileSize": self.tile_size,
+            "maxLevel": self.max_level,
+            "bunit": bunit,
+            "color_map": self.color_map,
+            "scaling_function": self.scaling_function
+        }
     def get_tile(self, level, x, y):
         """Generate a tile at the specified level and coordinates."""
         self.ensure_dynamic_range_calculated() # ADDED: Ensure min/max values are available for scaling
@@ -5261,18 +5274,16 @@ async def fits_binary(
 
                 generator_instance = session_generators.get(file_id)
                 if generator_instance is None:
-                    # Load/correct data in a worker thread, limited by FITS init semaphore
+                    # Header-only lazy init: avoid heavy image reads on cpah; return minimal info immediately
                     loop = asyncio.get_running_loop()
-                    fits_sem = getattr(app.state, "fits_init_semaphore", None)
-                    if fits_sem is None:
-                        fits_sem = asyncio.Semaphore(2)
-                        app.state.fits_init_semaphore = fits_sem
-                    async with fits_sem:
-                        image_data, header = await loop.run_in_executor(app.state.thread_executor, _load_image_data_and_header_corrected, fits_file, hdu_index)
-                        generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
-                        # mark flip applied if we provided corrected_data
-                        setattr(generator_instance, "_flip_applied", True)
-                        session_generators[file_id] = generator_instance
+                    generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+                    session_generators[file_id] = generator_instance
+                    # Warm up in background (best-effort)
+                    try:
+                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_dynamic_range_calculated))
+                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated))
+                    except Exception:
+                        pass
                 else:
                     # Reused generator: ensure orientation is corrected once
                     try:
@@ -5308,7 +5319,7 @@ async def fits_binary(
                         except Exception as _bg_e:
                             print(f"Overview generation failed: {_bg_e}")
 
-                tile_info = generator_instance.get_tile_info()
+                tile_info = generator_instance.get_minimal_tile_info()
                 return JSONResponse(content={
                     "fast_loading": True,
                     "file_id": file_id,
