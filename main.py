@@ -1826,24 +1826,32 @@ class SimpleTileGenerator:
         self._overview_lock = threading.Lock() # Lock for overview generation
         self._dynamic_range_lock = threading.Lock() # DEFER: Lock for dynamic range calculation
         
-        # Keep the FITS file open with memory mapping
-        self._hdul = fits.open(fits_file_path, memmap=True, lazy_load_hdus=True)
+        # Keep the FITS file open with memory mapping. Disable scaling to avoid costly I/O on Ceph
+        self._hdul = fits.open(
+            fits_file_path,
+            memmap=True,
+            lazy_load_hdus=True,
+            do_not_scale_image_data=True
+        )
         hdu = self._hdul[self.hdu_index] # Use self.hdu_index
         self.header = hdu.header 
 
-        # Get reference to data without copying
-        self.image_data = image_data if image_data is not None else hdu.data
-        
-        # Handle different dimensionality
-        if self.image_data.ndim > 2:
-            if self.image_data.ndim == 3:
-                self.image_data = self.image_data[0, :, :]
-            elif self.image_data.ndim == 4:
-                self.image_data = self.image_data[0, 0, :, :]
-            # Higher dimensions are not directly processed further here for min/max,
-            # but the full self.image_data is kept for potential tile generation from other slices if customized later.
-        
-        self.height, self.width = self.image_data.shape[-2:] # Use last two dimensions for height/width
+        # Header-first sizing to avoid touching data on Ceph
+        self.width = int(self.header.get('NAXIS1', 0))
+        self.height = int(self.header.get('NAXIS2', 0))
+
+        # Defer data access to first need
+        self.image_data = None
+        self._image_data_loaded = False
+        if image_data is not None:
+            self.image_data = image_data
+            if getattr(self.image_data, "ndim", 0) > 2:
+                if self.image_data.ndim == 3:
+                    self.image_data = self.image_data[0, :, :]
+                elif self.image_data.ndim == 4:
+                    self.image_data = self.image_data[0, 0, :, :]
+            self.height, self.width = self.image_data.shape[-2:]
+            self._image_data_loaded = True
 
         # Optional: apply app-wide I/O optimization policy (deferred by default for Ceph)
         self.io_strategy = 'deferred'
@@ -1870,9 +1878,37 @@ class SimpleTileGenerator:
             self.wcs = None
         
         logger.info(f"SimpleTileGenerator initialized: {self.width}x{self.height}, max_level: {self.max_level}. Dynamic range calculation deferred.")
+
+    def _ensure_image_data_loaded(self):
+        """Load image data lazily when first needed to avoid heavy I/O on Ceph during fast init."""
+        if self._image_data_loaded:
+            return
+        hdu = self._hdul[self.hdu_index]
+        data = hdu.data
+        if data is None:
+            raise HTTPException(status_code=400, detail=f"No image data found in HDU {self.hdu_index}.")
+        if getattr(data, "ndim", 0) > 2:
+            if data.ndim == 3:
+                data = data[0, :, :]
+            elif data.ndim == 4:
+                data = data[0, 0, :, :]
+        # Apply pending flip if required
+        if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
+            try:
+                data = np.flipud(data)
+                setattr(self, "_flip_applied", True)
+            except Exception:
+                pass
+        self.image_data = data
+        self.height, self.width = self.image_data.shape[-2:]
+        # Recompute max_level if width/height were unknown
+        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+        self._image_data_loaded = True
     
     def _calculate_initial_dynamic_range(self):
         """Calculates and sets the initial dynamic range (min/max values) using percentiles."""
+        # Ensure data is loaded lazily (avoid heavy I/O during fast init on Ceph)
+        self._ensure_image_data_loaded()
         # MAX_SAMPLE_POINTS = 1_000_000  # Target for number of points to use for percentile <- REMOVE THIS
 
         # self.image_data is expected to be 2D at this point due to __init__
@@ -1945,7 +1981,7 @@ class SimpleTileGenerator:
     
     def ensure_overview_generated(self):
         """Ensures the overview is generated, thread-safe."""
-        self.ensure_dynamic_range_calculated() # ADDED: Ensure dynamic range is available first
+        # Do not force dynamic range calculation up-front on Ceph; overview computes its own vmin/vmax
         if self.overview_image is None: 
             with self._overview_lock:
                 if self.overview_image is None: 
@@ -1960,21 +1996,31 @@ class SimpleTileGenerator:
     def _generate_overview(self):
         """Generate a downsampled overview image for quick display."""
         try:
+            # Ensure data is loaded lazily before slicing
+            self._ensure_image_data_loaded()
             # Create a small overview (max 512x512)
             target_size = 512
             strategy = os.getenv('OVERVIEW_STRATEGY', 'central')  # 'central' | 'full'
 
             if strategy == 'central':
-                # Read a small central, fully contiguous region (default 512x512) to avoid Ceph random I/O
-                center_size_env = int(os.getenv('OVERVIEW_CENTRAL_SIZE', str(target_size)))
-                side = max(64, min(center_size_env, target_size, self.height, self.width))
+                # Read a single contiguous central window to avoid random I/O on Ceph
+                win_size = int(os.getenv('OVERVIEW_CENTRAL_SIZE', '4096'))
+                win_h = min(self.height, win_size)
+                win_w = min(self.width, win_size)
                 cy = self.height // 2
                 cx = self.width // 2
-                y0 = max(0, cy - side // 2)
-                y1 = y0 + side
-                x0 = max(0, cx - side // 2)
-                x1 = x0 + side
-                overview_data = self.image_data[y0:y1, x0:x1]
+                y0 = max(0, cy - win_h // 2)
+                y1 = y0 + win_h
+                x0 = max(0, cx - win_w // 2)
+                x1 = x0 + win_w
+                window = self.image_data[y0:y1, x0:x1]
+
+                # Downsample the window to target_size using simple stride sampling (contiguous access)
+                stride_y = max(1, window.shape[0] // target_size)
+                stride_x = max(1, window.shape[1] // target_size)
+                overview_data = window[0:window.shape[0]:stride_y, 0:window.shape[1]:stride_x]
+                # Clamp to target dimensions if slightly oversized
+                overview_data = overview_data[:target_size, :target_size]
             else:
                 # Full-image strided decimation (may be slow on Ceph due to random I/O)
                 scale = max(1, max(self.width, self.height) / target_size)
@@ -2072,6 +2118,8 @@ class SimpleTileGenerator:
         }
     def get_tile(self, level, x, y):
         """Generate a tile at the specified level and coordinates."""
+        # Ensure data is loaded lazily before slicing
+        self._ensure_image_data_loaded()
         self.ensure_dynamic_range_calculated() # ADDED: Ensure min/max values are available for scaling
         try:
             # Calculate the scale for this level
@@ -5294,14 +5342,19 @@ async def fits_binary(
                     loop = asyncio.get_running_loop()
                     generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
                     session_generators[file_id] = generator_instance
-                    # Warm up in background (best-effort)
+                    # Determine if Y-flip is required from header only; defer actual flip to first data access
                     try:
-                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_dynamic_range_calculated))
-                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated))
+                        header = getattr(generator_instance, "header", None)
+                        if header is not None:
+                            flip_y, _, _ = analyze_wcs_orientation(header, None)
+                            if flip_y:
+                                setattr(generator_instance, "_flip_required", True)
                     except Exception:
                         pass
+                    # Skip heavy warmups on Ceph; frontend will request overview when needed
+                    pass
                 else:
-                    # Reused generator: ensure orientation is corrected once
+                    # Reused generator: set flip flag based on header without touching data
                     try:
                         header = getattr(generator_instance, "header", None)
                         if header is None:
@@ -5312,28 +5365,15 @@ async def fits_binary(
                             loop = asyncio.get_running_loop()
                             header = await loop.run_in_executor(app.state.thread_executor, _read_header_sync)
                         flip_y, _, _ = analyze_wcs_orientation(header, None)
-                        if flip_y and not getattr(generator_instance, "_flip_applied", False):
-                            generator_instance.image_data = np.flipud(generator_instance.image_data)
-                            setattr(generator_instance, "_flip_applied", True)
-                            # regenerate overview after flip
+                        if flip_y:
+                            setattr(generator_instance, "_flip_required", True)
+                            # Invalidate any previous overview so it regenerates after flip at next request
                             generator_instance.overview_image = None
                             generator_instance.overview_generated = False
-                            print("Applied Y-flip to existing tile generator image data.")
                     except Exception as _e:
                         print(f"Orientation check on existing generator failed: {_e}")
 
-                # Start overview generation in the background to avoid blocking
-                if not generator_instance.overview_generated:
-                    try:
-                        loop = asyncio.get_running_loop()
-                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated))
-                    except Exception:
-                        # As a fallback, run synchronously but still proceed
-                        try:
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated)
-                        except Exception as _bg_e:
-                            print(f"Overview generation failed: {_bg_e}")
+                # Defer overview generation until explicitly requested by /fits-overview
 
                 tile_info = generator_instance.get_minimal_tile_info()
                 return JSONResponse(content={
@@ -5480,14 +5520,8 @@ def _build_fits_binary_sync(fits_file: str, hdu_index: int):
         padding_bytes = (4 - (buffer.tell() % 4)) % 4
         buffer.write(b"\0" * padding_bytes)
 
-        # Avoid sending full image on Ceph; send a small sentinel instead when fast_loading is typical
-        ceph_optimized = os.getenv('CEPH_OPTIMIZE_BINARY', '1') in ('1','true','True')
-        if ceph_optimized and max(height, width) > 2048:
-            # Send an empty payload for pixels; frontend uses tiles anyway
-            pass
-        else:
-            float_data = np.ascontiguousarray(image_data, dtype=np.float32)
-            buffer.write(float_data.tobytes())
+        float_data = np.ascontiguousarray(image_data, dtype=np.float32)
+        buffer.write(float_data.tobytes())
 
         binary_data = buffer.getvalue()
         return binary_data, wcs_info, w_object
