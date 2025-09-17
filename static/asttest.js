@@ -186,7 +186,7 @@ async function createAstTab(container) {
     // Helper function to fetch files
     async function fetchFiles(directory) {
         try {
-            const response = await fetch(`/list-files/${directory}`);
+            const response = await apiFetch(`/list-files/${directory}`);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
@@ -247,7 +247,7 @@ async function createAstTab(container) {
 
         if (fitsFile) {
             try {
-                const response = await fetch(`/fits-hdu-info/${fitsFile}`);
+                const response = await apiFetch(`/fits-hdu-info/${encodeURIComponent(fitsFile)}`);
                 if (!response.ok) {
                     const errorData = await response.json();
                     throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -326,7 +326,7 @@ async function createAstTab(container) {
         }
         displaySpan.textContent = 'Loading...';
         try {
-            const response = await fetch(`/get-pixel-scale/${filepath}`);
+            const response = await apiFetch(`/get-pixel-scale/${encodeURIComponent(filepath)}`);
             const data = await response.json();
             if (response.ok) {
                 displaySpan.textContent = `${data.pixel_scale_arcsec.toFixed(5)} arcsec/pixel`;
@@ -485,7 +485,7 @@ async function createAstTab(container) {
         submitButton.disabled = true;
 
         try {
-            const response = await fetch('/ast-inject/', {
+            const response = await apiFetch('/ast-inject/', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -496,7 +496,7 @@ async function createAstTab(container) {
             const result = await response.json();
 
             if (response.ok) {
-                showAstMessage('Injection successful! Check Catalog and Upload folders.', 'success', true);
+                showAstMessage('Injection successful! Check Upload folder.', 'success', true);
             } else {
                 const detail = (result && (result.detail || result.error)) ? (result.detail || result.error) : 'Unknown error';
                 let friendly = detail;
@@ -522,11 +522,121 @@ async function createAstTab(container) {
     plotControls.style.display = 'block';
     plotControls.style.gap = '10px';
 
-    // Catalog selectors
+    // Catalog selectors with refresh button
+    const catalogsHeader = document.createElement('div');
+    catalogsHeader.style.display = 'flex';
+    catalogsHeader.style.alignItems = 'center';
+    catalogsHeader.style.justifyContent = 'space-between';
     const catalogsTitle = document.createElement('div');
     catalogsTitle.className = 'ast-section-title';
     catalogsTitle.textContent = 'Catalogs';
-    plotControls.appendChild(catalogsTitle);
+    const refreshBtn = document.createElement('button');
+    refreshBtn.textContent = 'Refresh';
+    refreshBtn.style.background = '#374151';
+    refreshBtn.style.color = '#fff';
+    refreshBtn.style.border = '1px solid #4b5563';
+    refreshBtn.style.borderRadius = '6px';
+    refreshBtn.style.padding = '6px 10px';
+    refreshBtn.style.cursor = 'pointer';
+    refreshBtn.style.fontSize = '12px';
+    refreshBtn.addEventListener('click', async () => {
+        try {
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = 'Refreshing...';
+            await populateCatalogDropdowns();
+            showAstMessage('Catalog lists refreshed.', 'success', false);
+        } catch (_) {
+            showAstMessage('Failed to refresh catalogs.', 'error', false);
+        } finally {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = 'Refresh';
+        }
+    });
+    // Upload button (uploads to files/uploads using progress circle)
+    const uploadBtn = document.createElement('button');
+    uploadBtn.textContent = 'Upload';
+    uploadBtn.style.background = '#2563EB';
+    uploadBtn.style.color = '#fff';
+    uploadBtn.style.border = '1px solid #1d4ed8';
+    uploadBtn.style.borderRadius = '6px';
+    uploadBtn.style.padding = '6px 10px';
+    uploadBtn.style.cursor = 'pointer';
+    uploadBtn.style.fontSize = '12px';
+    uploadBtn.style.marginLeft = '8px';
+
+    function showCircleProgress(show) {
+        try {
+            const el = document.getElementById('progress-container');
+            if (!el) return;
+            el.style.display = show ? '' : 'none';
+            const eta = document.getElementById('progress-eta');
+            if (eta && show) eta.textContent = 'Uploading...';
+        } catch (_) {}
+    }
+    function updateCircleProgress(percent) {
+        try {
+            const bar = document.getElementById('progress-bar');
+            if (!bar) return;
+            const p = Math.max(0, Math.min(100, Number(percent || 0)));
+            const dashOffset = 100 - p; // stroke-dasharray 100 100
+            bar.style.strokeDashoffset = String(dashOffset);
+            const eta = document.getElementById('progress-eta');
+            if (eta) eta.textContent = `${Math.round(p)}%`;
+        } catch (_) {}
+    }
+
+    uploadBtn.addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.fits,.fit';
+        input.style.display = 'none';
+        input.addEventListener('change', () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const form = new FormData();
+            form.append('file', file);
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/upload-fits/', true);
+            xhr.upload.onprogress = (evt) => {
+                if (evt.lengthComputable) {
+                    const pct = (evt.loaded / Math.max(1, evt.total)) * 100;
+                    updateCircleProgress(pct);
+                } else {
+                    updateCircleProgress(0);
+                }
+            };
+            xhr.onreadystatechange = async () => {
+                if (xhr.readyState !== 4) return;
+                try {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        showAstMessage('Upload complete. Refreshing catalogs...', 'success', false);
+                        await populateCatalogDropdowns();
+                    } else {
+                        showAstMessage('Upload failed.', 'error', false);
+                    }
+                } finally {
+                    showCircleProgress(false);
+                    updateCircleProgress(0);
+                }
+            };
+            try {
+                showCircleProgress(true);
+                updateCircleProgress(0);
+                xhr.send(form);
+            } catch (e) {
+                showCircleProgress(false);
+                showAstMessage('Upload error.', 'error', false);
+            }
+        });
+        document.body.appendChild(input);
+        input.click();
+        setTimeout(() => { try { document.body.removeChild(input); } catch (_) {} }, 0);
+    });
+
+    catalogsHeader.appendChild(catalogsTitle);
+    catalogsHeader.appendChild(refreshBtn);
+    catalogsHeader.appendChild(uploadBtn);
+    plotControls.appendChild(catalogsHeader);
 
     // Replace file pickers with simple dropdowns populated from /list-files/CATALOGS_DIRECTORY
     function createCatalogDropdown(id, label) {
@@ -553,9 +663,9 @@ async function createAstTab(container) {
     // Helper available to both flux/color population and catalog population
     async function loadColumnsFor(catalogPath) {
         if (!catalogPath) return [];
-        const name = catalogPath.split('/').pop();
         try {
-            const resp = await fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(name)}`);
+            // Pass full relative path so uploads work server-side
+            const resp = await apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogPath)}`);
             const data = await resp.json();
             return Array.isArray(data.columns) ? data.columns : [];
         } catch (e) {
@@ -618,9 +728,23 @@ async function createAstTab(container) {
 
     async function populateCatalogDropdowns() {
         try {
-            const res = await fetch(`/list-files/catalogs`);
-            const js = await res.json();
-            const files = (js.files || []).filter(f => f.type === 'file' && /\.fits$/i.test(f.name));
+            // Fetch main catalogs and uploads catalogs
+            const [resMain, resUploads] = await Promise.all([
+                apiFetch(`/list-files/catalogs`),
+                apiFetch(`/list-files/files/uploads`)
+            ]);
+            const [jsMain, jsUploads] = await Promise.all([resMain.json(), resUploads.json()]);
+            const mainFiles = (jsMain.files || []).filter(f => f.type === 'file' && /\.fits$/i.test(f.name));
+            const uploadFiles = (jsUploads.files || []).filter(f => {
+                if (f.type !== 'file') return false;
+                const name = f.name || '';
+                if (!/\.fits$/i.test(name)) return false;
+                return /^(injected_catalog_|peak_catalog_)/i.test(name);
+            });
+
+            // Merge lists (main first, then uploads)
+            const files = mainFiles.concat(uploadFiles);
+
             function fill(sel) {
                 sel.innerHTML = '';
                 const placeholder = document.createElement('option');
@@ -629,7 +753,7 @@ async function createAstTab(container) {
                 sel.appendChild(placeholder);
                 files.forEach(f => {
                     const opt = document.createElement('option');
-                    opt.value = f.path; // path relative to server listing
+                    opt.value = f.path; // full relative path works for uploads and main
                     opt.textContent = f.name;
                     sel.appendChild(opt);
                 });
@@ -908,7 +1032,7 @@ async function createAstTab(container) {
             colorColumn,
             overlapRadiusDeg: parseFloat(document.getElementById('ast-plot-overlap-deg')?.value || '2')
         };
-        const res = await fetch('/ast-plot/', {
+        const res = await apiFetch('/ast-plot/', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });

@@ -131,7 +131,7 @@ function createUsageIcon() {
     iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'; // Light, slightly transparent background
     iconContainer.style.borderRadius = '50%';
     iconContainer.style.cursor = 'pointer';
-    iconContainer.style.zIndex = '1001';
+    iconContainer.style.zIndex = '3001';
     iconContainer.style.display = 'flex';
     iconContainer.style.alignItems = 'center';
     iconContainer.style.justifyContent = 'center';
@@ -204,7 +204,7 @@ function createUsagePopup() {
     popup.style.color = '#f0f0f0';
     popup.style.border = '1px solid #444';
     popup.style.boxShadow = '0 5px 15px rgba(0,0,0,0.3)';
-    popup.style.zIndex = '1000';
+    popup.style.zIndex = '30000';
     popup.style.padding = '15px'; // Increased padding
     popup.style.borderRadius = '8px';
     popup.style.fontFamily = 'Arial, sans-serif';

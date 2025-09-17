@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Neloura</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?debug6">
     <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
     <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css">
     <link rel="stylesheet" href="/static/vendor/codemirror/theme/dracula.min.css">
@@ -15,14 +15,29 @@
 
     <script defer src="/static/peak.js"></script>
     <script defer src="/static/image-processing.js"></script>
-    <script defer src="/static/main.js"></script>
-    <script defer src="/static/sed.js"></script>
-    <script defer src="/static/plotter.js"></script>
-    <script defer src="/static/asttest.js"></script>
-    <script defer src="/static/catalogs.js"></script>
+    <script defer src="/static/main.js?v=debug5"></script>
+    <script defer src="/static/coords_overlay.js"></script>
+    <script defer src="/static/sed.js?v=debug5"></script>
+    <script defer src="/static/plotter.js?v=debug5"></script>
+    <script defer src="/static/asttest.js?v=debug5"></script>
+    <script defer src="/static/catalogs.js?v=debug6"></script>
     <script defer src="/static/files.js"></script>
-    <script defer src="/static/canvas.js"></script>
-    <script defer src="/static/local_coding.js"></script>
+    <script defer src="/static/mast.js"></script>
+    <script defer src="/static/canvas.js?v=debug5"></script>
+    <script>
+      (function(){
+        fetch('/settings/me').then(r=>r.json()).then(me=>{
+          if (me && me.admin) {
+            var s=document.createElement('script'); s.defer=true; s.src='/static/local_coding.js'; document.head.appendChild(s);
+          }
+        }).catch(()=>{});
+      })();
+    </script>
+    <script defer src="/static/settings.js"></script>
+    <script defer src="/static/save.js"></script>
+    <script defer src="/static/toolbar.js"></script>
+    <script defer src="/static/wcs.js"></script>
+
     <script src="/static/catalog_viewer.js"></script>
     <script src="/static/vendor/codemirror/codemirror.min.js"></script>
     <script src="/static/vendor/codemirror/mode/python/python.min.js"></script>
@@ -39,9 +54,9 @@
 </head>
 <body>
     <div class="toolbar">
-        <button onclick="zoomIn()">+</button>
-        <button onclick="zoomOut()">-</button>
-        <button onclick="resetView()">R</button>
+        <!-- <button onclick="zoomIn()">+</button> -->
+        <!-- <button onclick="zoomOut()">-</button> -->
+        <!-- <button onclick="resetView()">R</button> -->
         <div class="dropdown">
             <button id="catalog-button">Catalog</button>
             <div id="catalog-dropdown" class="dropdown-content">
@@ -49,9 +64,7 @@
                 <a href="#" onclick="refreshCatalogs()">Refresh Catalogs</a>
             </div>
         </div>
-        <button id="plotter-button" onclick="togglePlotter()">Plotter</button>
         <div id="top-bar-custom-buttons" class="top-bar-section">
-            <button id="local-coding-button" class="top-bar-button" onclick="toggleLocalCodingPanel()">Local Coding</button>
         </div>
         <!-- <span id="filename-display" style="margin-left: 10px; color: #ddd; font-size: 12px; align-self: center;">No file loaded</span> -->
     </div>
@@ -89,6 +102,15 @@
 <!-- <script src="jstat.min.js"></script> -->
 <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/2.4.2/openseadragon.min.js"></script> -->
     <script src="/static/coding.js"></script>
+    <script>
+      (function(){
+        fetch('/settings/me').then(r=>r.json()).then(me=>{
+          var btn=document.getElementById('local-coding-button');
+          if (!btn) return;
+          btn.style.display = (me && me.admin) ? '' : 'none';
+        }).catch(()=>{});
+      })();
+    </script>
 
     <!-- UI Components -->
     <div id="notification-container"></div>

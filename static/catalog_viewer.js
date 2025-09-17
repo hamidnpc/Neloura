@@ -1,8 +1,187 @@
-// Complete Advanced Catalog Viewer with all functionality
+// Cache for raw binary catalogs (keyed by exact filename incl. .fits)
+const catalogBinaryCache = window.catalogBinaryCache || (window.catalogBinaryCache = {});
+// Single-flight guard to avoid duplicate parallel loads for the same catalog
+const catalogBinaryInflight = window.catalogBinaryInflight || (window.catalogBinaryInflight = {});
 
-/**
- * Enhanced catalog viewer with bug fixes and simplified features
- */
+function stripCatalogPrefix(name) {
+  return name && name.startsWith('catalogs/') ? name.slice('catalogs/'.length) : name;
+}
+function namesMatch(a, b) {
+  return stripCatalogPrefix(String(a)) === stripCatalogPrefix(String(b));
+}
+
+
+async function loadBinaryCatalogRawIntoCache(catalogName) {
+    const key = stripCatalogPrefix(catalogName);
+    if (catalogBinaryCache[key]) return catalogBinaryCache[key];
+    if (catalogBinaryInflight[key]) return catalogBinaryInflight[key];
+
+    const inflight = (async () => {
+      const metaResp = await apiFetch(`/catalog-metadata/${encodeURIComponent(key)}?ts=${Date.now()}`);
+      if (!metaResp.ok) throw new Error(`Failed to load catalog metadata: ${metaResp.statusText}`);
+      const meta = await metaResp.json();
+
+      // Only fetch the first page once to warm minimal cache; no multi-page prefetch
+      const url = `/catalog-binary-raw/${encodeURIComponent(key)}?page=1&limit=500&ts=${Date.now()}`;
+      const resp = await apiFetch(url);
+      if (!resp.ok) {
+        let msg = `${resp.status} ${resp.statusText}`;
+        try { msg = (await resp.json()).error || msg; } catch (_) {}
+        throw new Error(`Failed to load raw binary page 1: ${msg}`);
+      }
+      const arrayBuf = await resp.arrayBuffer();
+      const parsed = (typeof parseBinaryCatalog === 'function')
+        ? parseBinaryCatalog(arrayBuf)
+        : (window.parseBinaryCatalog ? window.parseBinaryCatalog(arrayBuf) : null);
+      if (!parsed || !parsed.records) throw new Error('Binary parse failed (raw)');
+
+      const columns = meta.column_names || (parsed.records[0] ? Object.keys(parsed.records[0]) : []);
+      const cacheEntry = {
+        header: meta,
+        records: parsed.records,
+        columns,
+        total_rows: meta.total_rows || parsed.records.length,
+        total_columns: columns.length
+      };
+      catalogBinaryCache[key] = cacheEntry;
+      return cacheEntry;
+    })();
+
+    catalogBinaryInflight[key] = inflight;
+    try {
+      const result = await inflight;
+      return result;
+    } finally {
+      delete catalogBinaryInflight[key];
+    }
+  }
+  
+  async function ensureBinaryCatalogLoaded(catalogName) {
+    const key = stripCatalogPrefix(catalogName);
+    if (catalogBinaryCache[key]) return catalogBinaryCache[key];
+    return loadBinaryCatalogRawIntoCache(key);
+  }
+  
+  // Metadata for viewer (from RAW cache)
+// Viewer API
+async function fetchCatalogMetadata(catalogName) {
+    const key = stripCatalogPrefix(catalogName);
+    const resp = await apiFetch(`/catalog-metadata/${encodeURIComponent(key)}?ts=${Date.now()}`);
+    if (!resp.ok) {
+      throw new Error(`Failed to load catalog metadata: ${resp.status} ${resp.statusText}`);
+    }
+    const meta = await resp.json();
+
+    // Normalize columns to the shape this viewer expects
+    let columnsMeta = [];
+    const rawCols = Array.isArray(meta.columns) ? meta.columns : (Array.isArray(meta.column_names) ? meta.column_names : []);
+    if (rawCols.length && typeof rawCols[0] === 'object') {
+      columnsMeta = rawCols;
+    } else {
+      columnsMeta = rawCols.map(name => ({ name, dtype: 'unknown', unit: null, is_numeric: false, is_boolean: false }));
+    }
+
+    const columnNames = columnsMeta.map(c => c.name);
+    const totalRows = meta.total_rows ?? meta.num_records ?? meta.row_count ?? 0;
+
+    return {
+      total_rows: totalRows,
+      total_columns: columnNames.length,
+      column_names: columnNames,
+      columns: columnsMeta,
+      raw: meta
+    };
+  }
+  
+ 
+
+
+  async function fetchCatalogData(catalogName, options = {}) {
+    const {
+      page = 1,
+      limit = 100,
+      search = null,        // client-side (not applied when using raw binary)
+      sortBy = null,        // client-side (not applied when using raw binary)
+      sortOrder = 'asc',    // client-side (not applied when using raw binary)
+      columns = null,
+      filters = null,       // client-side (not applied when using raw binary)
+      stats = false
+    } = options;
+
+    const key = stripCatalogPrefix(catalogName);
+    const hasClientOps = (filters && Object.keys(filters).length > 0) || (search && String(search).trim()) || !!sortBy;
+
+    const colParam = columns ? (Array.isArray(columns) ? columns.join(',') : String(columns)) : '';
+    const effLimit = hasClientOps ? Math.min(Number(limit)||500, 500) : limit;
+    const url = `/catalog-binary-raw/${encodeURIComponent(key)}?page=${page}&limit=${effLimit}`
+      + (colParam ? `&columns=${encodeURIComponent(colParam)}` : '')
+      + (hasClientOps ? `&filters=${encodeURIComponent(JSON.stringify(filters||{}))}` : '')
+      + (search ? `&search=${encodeURIComponent(String(search))}` : '')
+      + (sortBy ? `&sort_by=${encodeURIComponent(String(sortBy))}&sort_order=${encodeURIComponent(String(sortOrder||'asc'))}` : '')
+      + `&ts=${Date.now()}`;
+    const fetchOpts = {};
+    if (options && options.signal) fetchOpts.signal = options.signal;
+    const resp = await apiFetch(url, fetchOpts);
+    if (!resp.ok) {
+      let msg = `${resp.status} ${resp.statusText}`;
+      try { msg = (await resp.json()).error || msg; } catch (_) {}
+      throw new Error(`Failed to load data page ${page}: ${msg}`);
+    }
+
+    const arrayBuf = await resp.arrayBuffer();
+    const parsed = (typeof parseBinaryCatalog === 'function')
+      ? parseBinaryCatalog(arrayBuf)
+      : (window.parseBinaryCatalog ? window.parseBinaryCatalog(arrayBuf) : null);
+    if (!parsed || !parsed.records || !parsed.header) throw new Error('Binary parse failed');
+
+    const pg = parsed.header.pagination || {};
+    const totalItems = pg.total_items ?? parsed.header.total_rows ?? 0;
+    const totalPages = pg.total_pages ?? Math.max(1, Math.ceil(totalItems / limit));
+    const showingStart = pg.showing_start ?? (totalItems ? (page - 1) * limit + 1 : 0);
+    const showingEnd = pg.showing_end ?? Math.min(page * limit, totalItems);
+
+    return {
+      catalog_data: parsed.records,
+      pagination: {
+        page,
+        limit,
+        total_items: totalItems,
+        total_pages: totalPages,
+        has_prev: !!pg.has_prev || page > 1,
+        has_next: !!pg.has_next || page < totalPages,
+        showing_start: showingStart,
+        showing_end: showingEnd
+      },
+      column_stats: stats ? null : null
+    };
+  }
+
+
+
+
+// Prefer the already-loaded overlay dataset for this catalog (keeps content consistent)
+function tryGetLocalActiveCatalog(catalogName) {
+  const key = stripCatalogPrefix(catalogName);
+  const active = stripCatalogPrefix(window.currentCatalogName || window.activeCatalog || '');
+  if (active && active === key && Array.isArray(window.catalogDataWithFlags) && window.catalogDataWithFlags.length > 0) {
+    const columns =
+      (window.catalogMetadata && window.catalogMetadata.column_names) ||
+      Object.keys(window.catalogDataWithFlags[0]);
+    return {
+      header: window.catalogMetadata || {},
+      records: window.catalogDataWithFlags,
+      columns,
+      total_rows:
+        (window.catalogMetadata && (window.catalogMetadata.num_records || window.catalogMetadata.total_rows)) ||
+        window.catalogDataWithFlags.length,
+      total_columns: columns.length,
+    };
+  }
+  return null;
+}
+
+
+
 function showCatalogViewer(catalogName) {
     showNotification(true, `Loading catalog metadata for ${catalogName}...`);
     
@@ -19,64 +198,8 @@ function showCatalogViewer(catalogName) {
         });
 }
 
-/**
- * Fetch catalog metadata with retry logic
- */
-async function fetchCatalogMetadata(catalogName) {
-    const catalogNameForApi = catalogName.startsWith('catalogs/') 
-        ? catalogName.replace('catalogs/', '') 
-        : catalogName;
-    
-    const response = await fetch(`/catalog-metadata/${encodeURIComponent(catalogNameForApi)}`);
-    if (!response.ok) {
-        throw new Error(`Failed to load catalog metadata: ${response.statusText}`);
-    }
-    return response.json();
-}
 
-/**
- * Fetch paginated catalog data with proper error handling
- */
-async function fetchCatalogData(catalogName, options = {}) {
-    const catalogNameForApi = catalogName.startsWith('catalogs/') 
-        ? catalogName.replace('catalogs/', '') 
-        : catalogName;
-    
-    const {
-        page = 1,
-        limit = 100,
-        search = null,
-        sortBy = null,
-        sortOrder = 'asc',
-        columns = null,
-        filters = null,
-        stats = false
-    } = options;
-    
-    const params = new URLSearchParams({
-        page: page.toString(),
-        limit: limit.toString(),
-        sort_order: sortOrder
-    });
-    
-    if (search) params.append('search', search);
-    if (sortBy) params.append('sort_by', sortBy);
-    if (columns) params.append('columns', columns);
-    if (filters) params.append('filters', JSON.stringify(filters));
-    if (stats) params.append('stats', 'true');
-    
-    const response = await fetch(`/catalog-with-flags/${encodeURIComponent(catalogNameForApi)}?${params}`, {
-        headers: {
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip, deflate'
-        }
-    });
-    
-    if (!response.ok) {
-        throw new Error(`Failed to load catalog data: ${response.statusText}`);
-    }
-    return response.json();
-}
+
 
 /**
  * Create advanced catalog viewer with TopCat-like interface
@@ -101,7 +224,7 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
     // State management
     const state = {
         currentPage: 1,
-        pageSize: 100,
+        pageSize: 500,
         totalItems: metadata.total_rows,
         search: '',
         sortBy: null,
@@ -111,13 +234,19 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
         columns: metadata.column_names,
         metadata: metadata,
         activeFilters: {},
-        selectedColumns: [...metadata.column_names],
+        // Show all columns by default
+        selectedColumns: Array.isArray(metadata.column_names) ? [...metadata.column_names] : [],
         selectedRows: new Set()
     };
 
     // Create layout
     const header = createAdvancedHeader(catalogName, metadata, popup);
-    const toolbar = createToolbar(state, () => loadData());
+    let loadTimer = null;
+    const scheduleLoad = () => {
+        if (loadTimer) clearTimeout(loadTimer);
+        loadTimer = setTimeout(() => loadData(true), 250);
+    };
+    const toolbar = createToolbar(state, scheduleLoad);
     const mainContent = createMainContent(state);
     const statusBar = createStatusBar(state);
 
@@ -132,12 +261,18 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
     }
 
     // Load initial data
-    loadData();
+    scheduleLoad();
 
-    async function loadData() {
-        if (state.loading) return;
+    async function loadData(immediate) {
+        if (!immediate) return; // Only run when scheduled
+        if (state.loading) {
+            try { if (state._abort && typeof state._abort.abort === 'function') state._abort.abort(); } catch(_){}
+        }
         
         state.loading = true;
+        // Setup abort controller to cancel older requests
+        try { if (state._abort && typeof state._abort.abort === 'function') state._abort.abort(); } catch(_){}
+        state._abort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         updateLoadingState(true);
         
         try {
@@ -149,7 +284,8 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
                 sortOrder: state.sortOrder,
                 columns: state.selectedColumns.join(','),
                 filters: Object.keys(state.activeFilters).length > 0 ? state.activeFilters : null,
-                stats: true
+                stats: true,
+                signal: state._abort ? state._abort.signal : undefined
             };
 
             const response = await fetchCatalogData(catalogName, options);
@@ -280,7 +416,7 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
         searchButton.onclick = () => showAdvancedSearchDialog(state, onUpdate);
 
         searchContainer.appendChild(searchInput);
-        searchContainer.appendChild(searchButton);
+        // searchContainer.appendChild(searchButton);
 
         // Filter indicator
         const filterIndicator = document.createElement('div');
@@ -337,7 +473,7 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
         toolbar.appendChild(searchContainer);
         toolbar.appendChild(filterIndicator);
         toolbar.appendChild(pageSizeSelect);
-        toolbar.appendChild(columnButton);
+        // toolbar.appendChild(columnButton);
         toolbar.appendChild(filterButton);
         toolbar.appendChild(selectionInfo);
         
@@ -387,7 +523,7 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
         tableContainer.appendChild(table);
 
         // Pagination controls
-        const pagination = createPaginationControls(state, () => loadData());
+        const pagination = createPaginationControls(state, scheduleLoad);
 
         tableArea.appendChild(tableContainer);
         tableArea.appendChild(pagination);
@@ -554,7 +690,7 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
                     state.sortOrder = 'asc';
                 }
                 state.currentPage = 1;
-                loadData();
+                scheduleLoad();
             };
 
             const colActions = document.createElement('div');
@@ -583,11 +719,11 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
             });
             filterBtn.onclick = (e) => {
                 e.stopPropagation();
-                showColumnFilter(col, state, loadData);
+                showColumnFilter(col, state, scheduleLoad);
             };
 
             // colActions.appendChild(infoBtn);
-            colActions.appendChild(filterBtn);
+            // colActions.appendChild(filterBtn);
 
             headerContent.appendChild(colName);
             headerContent.appendChild(colActions);

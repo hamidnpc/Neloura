@@ -24,7 +24,7 @@ function createCreditIcon() {
     iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
     iconContainer.style.borderRadius = '50%';
     iconContainer.style.cursor = 'pointer';
-    iconContainer.style.zIndex = '1001';
+    iconContainer.style.zIndex = '3001';
     iconContainer.style.display = 'flex';
     iconContainer.style.alignItems = 'center';
     iconContainer.style.justifyContent = 'center';
@@ -95,12 +95,12 @@ function createCreditPopup() {
     popup.style.position = 'fixed';
     popup.style.bottom = '60px';
     popup.style.left = '10px';
-    popup.style.width = '320px';
+    popup.style.width = '420px';
     popup.style.backgroundColor = '#2c2c2c';
     popup.style.color = '#f0f0f0';
     popup.style.border = '1px solid #444';
     popup.style.boxShadow = '0 5px 15px rgba(0,0,0,0.3)';
-    popup.style.zIndex = '1000';
+    popup.style.zIndex = '3000';
     popup.style.padding = '15px';
     popup.style.borderRadius = '8px';
     popup.style.fontFamily = 'Arial, sans-serif';
@@ -189,7 +189,7 @@ function createCreditPopup() {
     tabsContainer.style.marginBottom = '15px';
     tabsContainer.style.borderBottom = '1px solid #555';
 
-    const tabs = ['Neloura', 'Codes', 'Data', 'Feedback'];
+    const tabs = ['Neloura', 'Codes', 'Data', 'Feedback', 'Log'];
     tabs.forEach((tabName, index) => {
         const tab = document.createElement('div');
         tab.textContent = tabName;
@@ -297,13 +297,66 @@ function createCreditPopup() {
     feedbackContent.className = 'credit-tab-content';
     feedbackContent.style.display = 'none';
     feedbackContent.innerHTML = `<p>Help make Neloura better by reporting bugs and sharing the features you’d love to see:</p>
-                                 <a href="#" target="_blank" rel="noopener noreferrer">Submit Feedback</a>`;
+                                 <a href="https://forms.gle/DCuoMUNC5TV5B1GU7" target="_blank" rel="noopener noreferrer">Submit Feedback</a>`;
 
+    const logContent = document.createElement('div');
+    logContent.id = 'credit-tab-content-4';
+    logContent.className = 'credit-tab-content';
+    logContent.style.display = 'none';
+    logContent.innerHTML = `<div style=\"display:flex; align-items:center; gap:8px; margin-bottom:8px;\">
+                                <button id=\"credit-log-open-modal\" style=\"padding:6px 10px; border:1px solid #555; background:#2a2a2a; color:#eee; border-radius:4px; cursor:pointer;\">View application log</button>
+                            </div>`;
+
+    setTimeout(()=>{
+        try {
+            const openBtn = document.getElementById('credit-log-open-modal');
+            if (openBtn) openBtn.onclick = async ()=>{
+                try {
+                    if (!window.__sid) { const rs = await fetch('/session/start'); const js = await rs.json(); window.__sid = js.session_id; }
+                    const res = await fetch(`/log?lines=5000`, { headers: window.__sid ? { 'X-Session-ID': window.__sid } : {} });
+                    const text = await res.text();
+                    const modal = document.getElementById('fits-header-modal');
+                    if (!modal) { alert(text); return; }
+                    const titleEl = document.getElementById('fits-header-filename');
+                    const container = document.getElementById('fits-header-table-container');
+                    const search = document.getElementById('fits-header-search');
+                    if (titleEl) titleEl.textContent = 'Application Log';
+                    if (container) {
+                        const pre = document.createElement('pre');
+                        pre.id = 'credit-log-modal-pre';
+                        pre.style.whiteSpace = 'pre-wrap'; pre.style.color = '#ddd'; pre.style.fontSize = '12px'; pre.style.lineHeight = '1.4';
+                        pre.textContent = text || 'No log output.';
+                        container.innerHTML = ''; container.appendChild(pre);
+                    }
+                    if (search) {
+                        search.value='';
+                        search.placeholder = 'Filter log (text match)';
+                        const fullText = text || '';
+                        const doFilter = ()=>{
+                            try {
+                                const q = (search.value||'').toLowerCase();
+                                const pre = document.getElementById('credit-log-modal-pre');
+                                if (!pre) return;
+                                if (!q) { pre.textContent = fullText; return; }
+                                const filtered = fullText.split('\n').filter(line=> line.toLowerCase().includes(q)).join('\n');
+                                pre.textContent = filtered || '(no matches)';
+                            } catch(_){ }
+                        };
+                        search.oninput = doFilter;
+                    }
+                    modal.style.display = 'block'; modal.classList.remove('fade-out');
+                } catch (e) {
+                    alert('Failed to load log: '+e);
+                }
+            };
+        } catch(_){ }
+    }, 0);
 
     contentArea.appendChild(nelouraCreditContent);
     contentArea.appendChild(codeCreditContent);
     contentArea.appendChild(dataCreditContent);
     contentArea.appendChild(feedbackContent);
+    contentArea.appendChild(logContent);
     
     document.body.appendChild(popup);
 } 

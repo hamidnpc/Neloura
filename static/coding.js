@@ -122,7 +122,7 @@ async function renderSessionList(status = '') {
     
     try {
         const url = status ? `/coding/sessions?status=${status}` : '/coding/sessions';
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         if (!response.ok) {
             const errorText = await response.text();
             let errorMessage = `Failed to load sessions: ${response.status}`;
@@ -191,7 +191,7 @@ async function renderResourceContexts() {
     const container = document.getElementById('resource-context-container');
 
     try {
-        const response = await fetch('/coding/context');
+        const response = await apiFetch('/coding/context');
         if (!response.ok) {
             throw new Error('Could not load resource contexts.');
         }
@@ -241,7 +241,7 @@ async function renderRepositoryList() {
     const container = document.getElementById('repository-list-container');
     
     try {
-        const response = await fetch('/coding/repository');
+        const response = await apiFetch('/coding/repository');
         if (!response.ok) throw new Error('Could not load repositories.');
         const repositories = await response.json();
 
@@ -274,7 +274,7 @@ async function showSessionDetails(sessionId) {
     const contentArea = document.getElementById(`modal-content-${sessionId}`);
 
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}`);
+        const response = await apiFetch(`/coding/sessions/${sessionId}`);
         if (!response.ok) throw new Error('Could not load session details.');
         const details = await response.json();
 
@@ -311,7 +311,7 @@ async function loadDesktopApps(sessionId) {
     contentArea.innerHTML = '<div class="loader"></div>';
 
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}/apps`);
+        const response = await apiFetch(`/coding/sessions/${sessionId}/apps`);
         if (!response.ok) throw new Error('Could not load desktop apps.');
         const apps = await response.json();
 
@@ -351,8 +351,8 @@ async function showAttachAppForm(sessionId) {
 
     try {
         const [imagesRes, contextsRes] = await Promise.all([
-            fetch('/coding/images?image_type=desktop-app'),
-            fetch('/coding/context')
+            apiFetch('/coding/images?image_type=desktop-app'),
+            apiFetch('/coding/context')
         ]);
 
         if (!imagesRes.ok || !contextsRes.ok) {
@@ -384,7 +384,7 @@ async function attachNewApp(sessionId) {
     const ram = document.getElementById(`app-ram-${sessionId}`).value;
 
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}/apps`, {
+        const response = await apiFetch(`/coding/sessions/${sessionId}/apps`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ image, cores, ram })
@@ -403,7 +403,7 @@ async function attachNewApp(sessionId) {
 async function deleteDesktopApp(sessionId, appId) {
     showConfirmationModal('Are you sure you want to delete this app?', async () => {
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}/apps/${appId}`, { method: 'DELETE' });
+        const response = await apiFetch(`/coding/sessions/${sessionId}/apps/${appId}`, { method: 'DELETE' });
         if (!response.ok) {
                 const error = await response.json();
                 throw new Error(error.detail || 'Failed to delete app');
@@ -419,7 +419,7 @@ async function renewSession(sessionId, button) {
     button.disabled = true;
     button.textContent = 'Renewing...';
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}/renew`, { method: 'POST' });
+        const response = await apiFetch(`/coding/sessions/${sessionId}/renew`, { method: 'POST' });
         if (!response.ok) throw new Error('Could not renew session.');
         alert('Session renewed successfully.');
     } catch (error) {
@@ -434,7 +434,7 @@ async function loadSessionLogs(sessionId) {
     const contentArea = document.getElementById(`session-tab-content-${sessionId}`);
     contentArea.innerHTML = '<div class="loader"></div>';
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}?view=logs`);
+        const response = await apiFetch(`/coding/sessions/${sessionId}?view=logs`);
         if (!response.ok) throw new Error('Could not load logs.');
         const logs = await response.text();
         contentArea.innerHTML = `<pre class="log-view">${logs || '(No logs available)'}</pre>`;
@@ -447,7 +447,7 @@ async function loadSessionEvents(sessionId) {
     const contentArea = document.getElementById(`session-tab-content-${sessionId}`);
     contentArea.innerHTML = '<div class="loader"></div>';
      try {
-        const response = await fetch(`/coding/sessions/${sessionId}?view=events`);
+        const response = await apiFetch(`/coding/sessions/${sessionId}?view=events`);
         if (!response.ok) throw new Error('Could not load events.');
         const events = await response.json();
         
@@ -491,7 +491,7 @@ async function showAppDetails(sessionId, appId) {
     const contentArea = document.getElementById(`modal-content-${appId}`);
 
     try {
-        const response = await fetch(`/coding/sessions/${sessionId}/apps/${appId}`);
+        const response = await apiFetch(`/coding/sessions/${sessionId}/apps/${appId}`);
         if (!response.ok) throw new Error('Could not load application details.');
         const details = await response.json();
 
@@ -519,8 +519,8 @@ async function renderNewSessionForm() {
 
     try {
         const [imagesRes, contextsRes] = await Promise.all([
-            fetch('/coding/images'), 
-            fetch('/coding/context')
+            apiFetch('/coding/images'), 
+            apiFetch('/coding/context')
         ]);
 
         if (!imagesRes.ok || !contextsRes.ok) {
@@ -644,7 +644,7 @@ async function createNewSession() {
     createButton.innerHTML = '<div class="button-loader"></div> Creating...';
 
     try {
-        const response = await fetch('/coding/sessions', {
+        const response = await apiFetch('/coding/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(sessionDetails)
@@ -672,7 +672,7 @@ async function createNewSession() {
 async function deleteSession(sessionId) {
     showConfirmationModal('Are you sure you want to delete this session?', async () => {
     try {
-            const response = await fetch(`/coding/sessions/${sessionId}`, {
+            const response = await apiFetch(`/coding/sessions/${sessionId}`, {
                 method: 'DELETE'
             });
          if (!response.ok) {

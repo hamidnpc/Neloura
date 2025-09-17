@@ -1,5 +1,20 @@
+function getActiveFitsPath() {
+    const first = [
+      window.currentFitsFile,
+      window.fitsData && (window.fitsData.filepath || window.fitsData.filePath || window.fitsData.filename),
+      window.activeFile && (window.activeFile.path || window.activeFile.filepath),
+    ].filter(Boolean)[0];
+    if (!first) return null;
+    let p = String(first);
+    if (!p.startsWith('files/')) p = `files/${p}`;
+    return p;
+  }
+
 function runPeakFinder(filepath, customParams = {}) {
     console.log('[DEBUG PeakFinder] Starting job with params:', customParams);
+    
+
+    
 
     if (!filepath) {
         showNotification("No FITS file is currently loaded.", 3000, 'error');
@@ -38,11 +53,20 @@ function runPeakFinder(filepath, customParams = {}) {
         formData.append(key, customParams[key]);
     });
 
-    fetch('/start-peak-finder/', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
+    const sid = sessionStorage.getItem('sid');
+    console.debug('[PeakFinder] POST URL:', '/start-peak-finder/');
+    console.debug('[PeakFinder] Session ID from storage:', sid);
+    console.debug('[PeakFinder] FormData keys:', Array.from(formData.keys()));
+
+    apiFetch('/start-peak-finder/', { method: 'POST', body: formData })
+   
+    .then(async (response) => {
+        const text = await response.clone().text();
+        console.debug('[PeakFinder] Response status:', response.status);
+        console.debug('[PeakFinder] Raw response text:', text);
+        // For actual handling:
+        return response.ok ? JSON.parse(text || '{}') : Promise.reject(new Error(`HTTP ${response.status}: ${text}`));
+      })
     .then(data => {
         if (data.error || !data.job_id) {
             throw new Error(data.error || "Server did not return a job ID.");
@@ -52,7 +76,7 @@ function runPeakFinder(filepath, customParams = {}) {
         console.log(`Job started with ID: ${jobId}`);
 
         const intervalId = setInterval(() => {
-            fetch(`/peak-finder-status/${jobId}`)
+            apiFetch(`/peak-finder-status/${jobId}`)
             .then(response => response.json())
             .then(statusData => {
                 if (statusData.status === 'complete') {
@@ -106,6 +130,8 @@ function processPeakFinderResults(data, customParams) {
                 const catalogEntry = {
                     x: sources.x[i],
                     y: sources.y[i],
+                    x_bottom_left: sources.x_bottom_left[i],
+                    y_bottom_left: sources.y_bottom_left[i],
                     ra: sources.ra[i],
                     dec: sources.dec[i],
                     radius_pixels: radiusInPixels,
@@ -186,25 +212,25 @@ function transformSourceCoordinates(sources) {
     
     console.log(`Transforming ${sources.length} source coordinates for display. Image size: ${width}x${height}`);
     
-    // Apply transformation to each source
-    sources.forEach((source, index) => {
-        const origX = source.x;
-        const origY = source.y;
+    // // Apply transformation to each source
+    // sources.forEach((source, index) => {
+    //     const origX = source.x;
+    //     const origY = source.y;
         
-        // The peak finder backend (Python/astropy) likely uses a FITS standard
-        // coordinate system with the origin (0,0) at the bottom-left. The frontend
-        // canvas rendering uses a top-left origin. We need to flip the Y-axis for correct display.
-        const newX = origX;
-        const newY = height - origY;
+    //     // The peak finder backend (Python/astropy) likely uses a FITS standard
+    //     // coordinate system with the origin (0,0) at the bottom-left. The frontend
+    //     // canvas rendering uses a top-left origin. We need to flip the Y-axis for correct display.
+    //     const newX = origX;
+    //     const newY = height - origY;
         
-        // Update source coordinates and ensure they are within the image bounds.
-        source.x = Math.max(0, Math.min(newX, width - 1));
-        source.y = Math.max(0, Math.min(newY, height - 1));
+    //     // Update source coordinates and ensure they are within the image bounds.
+    //     source.x = Math.max(0, Math.min(newX, width - 1));
+    //     source.y = Math.max(0, Math.min(newY, height - 1));
         
-        if (index < 5) { // Log first few for debugging
-            console.log(`Transformed source ${index}: Original (${origX.toFixed(2)}, ${origY.toFixed(2)}) -> Canvas (${source.x.toFixed(2)}, ${source.y.toFixed(2)})`);
-        }
-    });
+    //     if (index < 5) { // Log first few for debugging
+    //         console.log(`Transformed source ${index}: Original (${origX.toFixed(2)}, ${origY.toFixed(2)}) -> Canvas (${source.x.toFixed(2)}, ${source.y.toFixed(2)})`);
+    //     }
+    // });
 }
 
 // Function to log detailed information about the current FITS data's WCS information
@@ -263,7 +289,25 @@ inspectCurrentWCS();
 
 function createPeakFinderModal(filepath) {
     let popup = document.getElementById('peak-finder-modal');
+    // Resolve current file/HDU for display
+    const resolvedFile = getActiveFitsPath() || filepath || (window.currentFitsFile || '');
+    const resolvedHdu = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
     if (popup) {
+        // Update file/HDU info if modal already exists
+        const infoEl = popup.querySelector('#peak-finder-file-info');
+        if (infoEl) {
+            const base = String(resolvedFile).split('/').pop();
+            const fileSpan = infoEl.querySelector('#peak-finder-file-text');
+            const hduSpan = infoEl.querySelector('#peak-finder-hdu-text');
+            if (fileSpan && hduSpan) {
+                fileSpan.textContent = `File: ${base || '(none)'}`;
+                fileSpan.title = String(resolvedFile || base || '');
+                hduSpan.textContent = `HDU: ${resolvedHdu}`;
+            } else {
+                // Fallback if spans are missing
+                infoEl.textContent = `File: ${base || '(none)'}   |   HDU: ${resolvedHdu}`;
+            }
+        }
         if (document.readyState === 'complete' && document.visibilityState === 'visible') {
             popup.style.display = 'block';
         }
@@ -298,6 +342,27 @@ function createPeakFinderModal(filepath) {
     closeButton.addEventListener('mouseover', () => { closeButton.style.backgroundColor = '#555'; closeButton.style.color = '#fff'; });
     closeButton.addEventListener('mouseout', () => { closeButton.style.backgroundColor = 'transparent'; closeButton.style.color = '#aaa'; });
     closeButton.addEventListener('click', () => { popup.style.display = 'none'; });
+
+    // Info bar: show current FITS file and HDU
+    const infoBar = document.createElement('div');
+    infoBar.id = 'peak-finder-file-info';
+    const baseName = String(resolvedFile || '').split('/').pop();
+    Object.assign(infoBar.style, {
+        backgroundColor: '#2a2a2a', color: '#ddd', padding: '8px 10px',
+        border: '1px solid #444', borderRadius: '4px', marginBottom: '12px',
+        fontFamily: 'monospace', fontSize: '12px', display: 'flex', alignItems: 'center'
+    });
+    const fileSpan = document.createElement('span');
+    fileSpan.id = 'peak-finder-file-text';
+    fileSpan.textContent = `File: ${baseName || '(none)'}`;
+    fileSpan.title = String(resolvedFile || baseName || '');
+    Object.assign(fileSpan.style, { flex: '1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+    const hduSpan = document.createElement('span');
+    hduSpan.id = 'peak-finder-hdu-text';
+    hduSpan.textContent = `HDU: ${resolvedHdu}`;
+    Object.assign(hduSpan.style, { marginLeft: '10px', flex: 'none', whiteSpace: 'nowrap' });
+    infoBar.appendChild(fileSpan);
+    infoBar.appendChild(hduSpan);
 
     // Main container for the two columns
     const columnsContainer = document.createElement('div');
@@ -562,6 +627,8 @@ function createPeakFinderModal(filepath) {
             edge_clip: parseInt(document.getElementById('edge-clip').value),
             // Pass through the selected JWST filter using the same field name as ast_test.py (filterName)
             filterName: document.getElementById('jwst-filter').value,
+            // Include the currently selected HDU index
+            hdu_index: (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0,
             color: document.getElementById('source-color').value,
             fillColor: document.getElementById('fill-color').value,
             useTransparentFill: document.getElementById('transparent-fill-checkbox').checked,
@@ -570,10 +637,18 @@ function createPeakFinderModal(filepath) {
         };
         popup.style.display = 'none';
 
-        // Add the 'files/' prefix to the filepath before sending to the backend
-        const fullFilepath = `files/${filepath}`;
-
-        // Use the filepath that was passed into createPeakFinderModal
+        let fullFilepath = filepath || getActiveFitsPath();
+        console.debug('[PeakFinder] modal filepath param:', filepath, 'resolved via getActiveFitsPath:', fullFilepath);
+        if (!fullFilepath) {
+          showNotification('Peak Finder: no FITS file detected. Load an image first.', 3000, 'error');
+          return;
+        }
+        // normalize exactly once
+        fullFilepath = String(fullFilepath).replace(/^\/+/, '');
+        if (!fullFilepath.startsWith('files/')) {
+          fullFilepath = `files/${fullFilepath.replace(/^files\//, '')}`;
+        }
+        console.debug('[PeakFinder] final fullFilepath posted:', fullFilepath);
         runPeakFinder(fullFilepath, params);
     });
 
@@ -582,6 +657,7 @@ function createPeakFinderModal(filepath) {
 
     popup.appendChild(title);
     popup.appendChild(closeButton);
+    popup.appendChild(infoBar);
     popup.appendChild(columnsContainer); // Add the new two-column container
     popup.appendChild(buttonContainer);
 
@@ -696,6 +772,7 @@ function createNewCatalog(sources, options = {}) {
     // overwriting the correct value when the objects are merged.
     delete options.size;
     // --- FIX END ---
+    // console.log('source:::::', source);
 
     // If sources already have x and y, preserve them. This is crucial for peak finder.
     const processedSources = sources.map((source, index) => {
@@ -851,7 +928,8 @@ function addPeakFinderButton() {
 
     peakFinderButton.addEventListener('click', () => {
         // Pass the current FITS file path to the peak finder
-        createPeakFinderModal(window.currentFitsFile); 
+        console.log('getActiveFitsPath()', getActiveFitsPath());
+        createPeakFinderModal(getActiveFitsPath());
     });
 
     customButtonContainer.appendChild(peakFinderButton);

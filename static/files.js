@@ -1,3 +1,25 @@
+// Ensure session and attach header for all API requests
+async function ensureSession() {
+    try {
+        let sid = sessionStorage.getItem('sid');
+        if (!sid) {
+            const r = await fetch('/session/start');
+            if (!r.ok) throw new Error('Failed to start session');
+            const j = await r.json();
+            sid = j.session_id;
+            sessionStorage.setItem('sid', sid);
+        }
+        return sid;
+    } catch (e) { console.warn('Session init failed', e); return null; }
+}
+
+async function apiFetch(url, options = {}) {
+    const sid = await ensureSession();
+    const headers = options.headers ? { ...options.headers } : {};
+    if (sid) headers['X-Session-ID'] = sid;
+    return fetch(url, { ...options, headers });
+}
+
 function debounce(func, delay) {
     let timeout;
     return function(...args) {
@@ -37,7 +59,7 @@ function loadFitsFile(filepath) {
     showNotification(true, `Loading ${filepath}...`);
     
     // First set the active file on the server
-    fetch(`/load-file/${encodeURIComponent(filepath)}`)
+    apiFetch(`/load-file/${encodeURIComponent(filepath)}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Failed to load file: ${response.statusText}`);
@@ -63,7 +85,7 @@ function loadFitsFile(filepath) {
             console.log(`Using fast/tiled loading for ${filepath}.`);
 
             // Use JSON endpoint for fast loading mode
-            return fetch(`/fits-binary/?fast_loading=true`)
+            return apiFetch(`/fits-binary/?fast_loading=true`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
@@ -83,7 +105,8 @@ function loadFitsFile(filepath) {
                         return fetchBinaryWithProgress('/fits-binary/?fast_loading=false')
                             .then(arrayBuffer => processBinaryData(arrayBuffer, filepath));
                     }
-                });
+                })
+                .then(()=>{ try { window.dispatchEvent(new CustomEvent('fits:imageLoaded', { detail: { filepath } })); } catch (_) {} });
         })
         .catch(error => {
             console.error('Error loading FITS file:', error);
@@ -94,7 +117,7 @@ function loadFitsFile(filepath) {
 
 // Function to check the file size
 function checkFileSize(filepath) {
-    return fetch(`/file-size/${encodeURIComponent(filepath)}`)
+    return apiFetch(`/file-size/${encodeURIComponent(filepath)}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Failed to get file size: ${response.statusText}`);
@@ -176,9 +199,15 @@ async function downloadAndLoadFitsFromUrl(url) {
     const startTime = Date.now();
     
     updateProgressCircle(0, 0, 0, startTime);
+    // Ensure the initial 0% renders before starting the network work
+    try { await new Promise(r => requestAnimationFrame(r)); } catch(_) {}
 
     try {
-        const response = await fetch(`/proxy-download/?url=${encodeURIComponent(url)}`);
+        // If this is an internal API path (e.g., /mast/download?...), call it directly.
+        // Otherwise, use the proxy for external URLs.
+        const isInternal = typeof url === 'string' && url.startsWith('/');
+        const fetchUrl = isInternal ? url : `/proxy-download/?url=${encodeURIComponent(url)}`;
+        const response = await apiFetch(fetchUrl);
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -190,7 +219,8 @@ async function downloadAndLoadFitsFromUrl(url) {
             throw new Error(`Download failed: ${response.status} ${response.statusText}. Server says: ${errorDetails}`);
         }
 
-        const contentLength = +response.headers.get('Content-Length');
+        const contentLengthHeader = response.headers.get('Content-Length');
+        const contentLength = contentLengthHeader ? +contentLengthHeader : null;
         let receivedLength = 0;
         const chunks = [];
         const reader = response.body.getReader();
@@ -205,9 +235,16 @@ async function downloadAndLoadFitsFromUrl(url) {
             chunks.push(value);
             receivedLength += value.length;
 
-            if (contentLength) {
+            if (contentLength && isFinite(contentLength) && contentLength > 0) {
                 const percent = Math.round((receivedLength / contentLength) * 100);
                 updateProgressCircle(percent, receivedLength, contentLength, startTime);
+            } else {
+                // Unknown length: show spinner style progress with received bytes and speed
+                const elapsedSeconds = (Date.now() - startTime) / 1000;
+                const speedBps = elapsedSeconds > 0 ? receivedLength / elapsedSeconds : 0;
+                // Start at 0% and grow smoothly (0.5% per MB), capped at 95%
+                const pseudoPercent = Math.min(95, Math.max(0, Math.floor(receivedLength / (2 * 1024 * 1024))));
+                updateProgressCircle(pseudoPercent, receivedLength, 0, startTime);
             }
         }
 
@@ -231,34 +268,55 @@ async function downloadAndLoadFitsFromUrl(url) {
 
 // Upload a FITS file to the server and return the server path
 function uploadFitsToServer(fileData, filename) {
-    return new Promise((resolve, reject) => {
-        // Create a FormData object to send the file
-        const formData = new FormData();
-        const blob = new Blob([fileData], { type: 'application/octet-stream' });
-        formData.append('file', blob, filename);
-        
-        // Send the file to the server
-        fetch('/upload-fits/', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.error) {
-                throw new Error(data.error);
-            }
-            
-            // Return the server file path
-            resolve(data.filepath);
-        })
-        .catch(error => {
-            reject(error);
-        });
+    // XHR-based upload with progress updates into #download-progress-container
+    return new Promise(async (resolve, reject) => {
+        try {
+            const sid = await ensureSession();
+
+            const formData = new FormData();
+            const blob = new Blob([fileData], { type: 'application/octet-stream' });
+            formData.append('file', blob, filename);
+
+            // Show 0% on the existing progress UI
+            const startTime = Date.now();
+            try { updateProgressCircle(0, 0, blob.size || 0, startTime); } catch (_) {}
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/upload-fits/', true);
+            if (sid) xhr.setRequestHeader('X-Session-ID', sid);
+
+            xhr.upload.onprogress = function (event) {
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    try { updateProgressCircle(percent, event.loaded, event.total, startTime); } catch (_) {}
+                }
+            };
+
+            xhr.onload = function () {
+                try { updateProgressCircle(null); } catch (_) {}
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const resp = JSON.parse(xhr.responseText || '{}');
+                        if (resp.error) return reject(new Error(resp.error));
+                        return resolve(resp.path || resp.filepath || resp.filename || resp); // prefer filepath
+                    } catch (e) {
+                        return reject(new Error('Invalid server response for upload'));
+                    }
+                } else {
+                    return reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                }
+            };
+
+            xhr.onerror = function () {
+                try { updateProgressCircle(null); } catch (_) {}
+                return reject(new Error('Network error during upload'));
+            };
+
+            xhr.send(formData);
+        } catch (e) {
+            try { updateProgressCircle(null); } catch (_) {}
+            reject(e);
+        }
     });
 }
 
@@ -665,8 +723,15 @@ function selectHdu(hduIndex, filepath) {
     // Show loading progress
     showNotification(true, `Loading HDU ${hduIndex}...`);
     
+    // Track selected file/HDU globally for other modules (e.g., WCS/coords overlay)
+    window.currentHduIndex = hduIndex;
+    window.currentFitsFile = filepath;
+    if (typeof window.refreshWcsForOverlay === 'function') {
+        window.refreshWcsForOverlay({ filepath, hduIndex });
+    }
+    
     // Call the load-file endpoint with the selected HDU
-    fetch(`/load-file/${encodeURIComponent(filepath)}?hdu=${hduIndex}`)
+    apiFetch(`/load-file/${encodeURIComponent(filepath)}?hdu=${hduIndex}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Failed to load file: ${response.statusText}`);
@@ -692,7 +757,7 @@ function selectHdu(hduIndex, filepath) {
             console.log(`Using fast/tiled loading for HDU ${hduIndex}.`);
             
             // Use JSON endpoint for fast loading mode with HDU parameter
-            return fetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`)
+            return apiFetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`)
                 .then(response => {
                     // Check content type to determine how to process the response
                     const contentType = response.headers.get('content-type');
@@ -739,7 +804,7 @@ function selectHdu(hduIndex, filepath) {
 
 // Function to analyze the FITS file and get HDU information
 function getFitsHduInfo(filepath) {
-    return fetch(`/fits-hdu-info/${encodeURIComponent(filepath)}`)
+    return apiFetch(`/fits-hdu-info/${encodeURIComponent(filepath)}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Failed to get HDU info: ${response.statusText}`);
@@ -832,7 +897,7 @@ async function loadAndDisplayFitsHeader(filepath, hduIndex = 0) { // Add hduInde
 
     try {
         // Include hduIndex in the fetch request
-        const response = await fetch(`/fits-header/${encodeURIComponent(filepath)}?hdu_index=${hduIndex}`);
+        const response = await apiFetch(`/fits-header/${encodeURIComponent(filepath)}?hdu_index=${hduIndex}`);
         if (!response.ok) {
              let errorMsg = `Error ${response.status}: ${response.statusText}`;
              try {
@@ -1272,6 +1337,9 @@ function switchTab(activeTabId) {
         case 'ned-tab':
             contentId = 'ned-content';
             break;
+        case 'mast-tab':
+            contentId = 'mast-content';
+            break;
     }
 
     if (contentId) {
@@ -1309,13 +1377,16 @@ function loadFilesList(path = '', search = null) {
         fileBrowserContainer.dataset.currentPath = path;
         const title = fileBrowserContainer.querySelector('h2');
         if (title) {
-            title.textContent = search ? `Search results for "${search}"` : (path ? `Files: /${path}` : 'Available Files');
+            title.textContent = search ? `Search results for "${search}"` : (path ? `Files: /${path}` : 'Browser');
         }
     }
 
     const directoryContent = document.getElementById('directory-content');
     if (directoryContent) {
-        directoryContent.innerHTML = `<div style="text-align: center; padding: 20px; color: #aaa;">Loading directory content...</div>`;
+        // Do not wipe the entire UI while user is typing in the search box; it causes focus loss
+        if (!search) {
+            directoryContent.innerHTML = `<div style="text-align: center; padding: 20px; color: #aaa;">Loading directory content...</div>`;
+        }
     }
 
     let url = path ? `/list-files-for-frontend/${path}` : '/list-files-for-frontend/';
@@ -1323,7 +1394,7 @@ function loadFilesList(path = '', search = null) {
         url += `?search=${encodeURIComponent(search)}`;
     }
 
-    fetch(url)
+    apiFetch(url)
         .then(response => response.json())
         .then(data => {
             if (data.error) {
@@ -1352,7 +1423,25 @@ function showFilesListError(message) {
 function displayFilesList(items, currentPath = '', search = null) {
     const directoryContent = document.getElementById('directory-content');
     if (!directoryContent) return;
-    
+
+    // Preserve search input focus and caret position across re-renders
+    let prevSearchValue = '';
+    let prevSelectionStart = 0;
+    let prevSelectionEnd = 0;
+    let wasFocused = false;
+    let existingSearchInput = directoryContent.querySelector('#files-search-input');
+    if (!existingSearchInput) {
+        existingSearchInput = directoryContent.querySelector('input[placeholder="Search files recursively..."]');
+    }
+    if (existingSearchInput) {
+        prevSearchValue = existingSearchInput.value || '';
+        try {
+            prevSelectionStart = existingSearchInput.selectionStart ?? 0;
+            prevSelectionEnd = existingSearchInput.selectionEnd ?? prevSelectionStart;
+        } catch (e) { /* ignore */ }
+        wasFocused = document.activeElement === existingSearchInput;
+    }
+
     directoryContent.innerHTML = '';
     
     const breadcrumbContainer = document.createElement('div');
@@ -1413,9 +1502,15 @@ function displayFilesList(items, currentPath = '', search = null) {
     searchContainer.style.marginBottom = '15px';
     
     const searchInput = document.createElement('input');
+    searchInput.id = 'files-search-input';
     searchInput.type = 'text';
     searchInput.placeholder = 'Search files recursively...';
-    if (search) searchInput.value = search;
+    // Restore the previous value if we had one; otherwise use the provided search param
+    if (prevSearchValue) {
+        searchInput.value = prevSearchValue;
+    } else if (search) {
+        searchInput.value = search;
+    }
     Object.assign(searchInput.style, {
         width: '100%', padding: '8px', backgroundColor: '#333',
         color: 'white', border: '1px solid #555', borderRadius: '4px',
@@ -1431,11 +1526,22 @@ function displayFilesList(items, currentPath = '', search = null) {
         searchInput.style.boxShadow = 'none';
     });
 
-    const debouncedSearch = debounce((path, searchTerm) => loadFilesList(path, searchTerm), 300);
-    searchInput.addEventListener('input', () => debouncedSearch(currentPath, searchInput.value.trim()));
+    // Use lodash's debounce to avoid any naming collisions with local helpers
+    const debouncedSearch = _.debounce(() => {
+        loadFilesList(currentPath, searchInput.value.trim());
+    }, 300);
+    searchInput.addEventListener('input', debouncedSearch);
     
     searchContainer.appendChild(searchInput);
     directoryContent.appendChild(searchContainer);
+
+    // Restore focus and caret after rebuilding DOM
+    if (wasFocused) {
+        setTimeout(() => {
+            searchInput.focus();
+            try { searchInput.setSelectionRange(prevSelectionStart, prevSelectionEnd); } catch (e) { /* ignore */ }
+        }, 0);
+    }
     
     if (!items || items.length === 0) {
         const emptyMessage = document.createElement('div');
@@ -1501,6 +1607,42 @@ function createItemElement(item, currentPath) {
             sizeElement.textContent = formatFileSize(item.size);
             Object.assign(sizeElement.style, { fontSize: '12px', color: '#aaa', marginTop: '4px' });
             contentContainer.appendChild(sizeElement);
+        }
+
+        if (item.path && item.path.startsWith('uploads/')) {
+            // Add download button for uploads only
+            const downloadBtn = document.createElement('button');
+            downloadBtn.textContent = 'Download';
+            downloadBtn.className = 'download-upload-button';
+            Object.assign(downloadBtn.style, {
+                padding: '3px 6px', fontSize: '10px', cursor: 'pointer',
+                backgroundColor: '#9C27B0', color: 'white', border: 'none',
+                borderRadius: '3px', transition: 'background-color 0.2s',
+                flexShrink: '0', marginTop: '6px', width: 'fit-content', marginRight: '6px'
+            });
+            downloadBtn.addEventListener('mouseover', () => downloadBtn.style.backgroundColor = '#7B1FA2');
+            downloadBtn.addEventListener('mouseout', () => downloadBtn.style.backgroundColor = '#9C27B0');
+            downloadBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                try {
+                    const rel = item.path.replace(/^uploads\//,'');
+                    const resp = await apiFetch(`/download/${encodeURIComponent(rel)}`);
+                    if (!resp.ok) throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
+                    const blob = await resp.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = item.name;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } catch (err) {
+                    console.error('Download error:', err);
+                    showNotification(`Download error: ${err.message}`, 4000, 'error');
+                }
+            });
+            contentContainer.appendChild(downloadBtn);
         }
 
         if (item.name.toLowerCase().endsWith('.fits') || item.name.toLowerCase().endsWith('.fits.gz')) {
@@ -1585,7 +1727,8 @@ function createTabInterface(contentContainer) {
         { id: 'directory-tab', label: 'Directory', contentId: 'directory-content' },
         { id: 'upload-tab', label: 'Upload', contentId: 'upload-content' },
         { id: 'download-tab', label: 'Download', contentId: 'download-content' },
-        { id: 'ned-tab', label: 'NED', contentId: 'ned-content' }
+        { id: 'ned-tab', label: 'NED', contentId: 'ned-content' },
+        { id: 'mast-tab', label: 'MAST', contentId: 'mast-content' }
     ];
 
     tabs.forEach(tab => {
@@ -1684,6 +1827,9 @@ function createFileBrowserContainer() {
     initializeUploadContent();
     initializeDownloadContent();
     initializeNedContent(); 
+    if (typeof window.initializeMastContent === 'function') {
+        window.initializeMastContent();
+    }
     
     switchTab('directory-tab');
 }
@@ -2110,7 +2256,7 @@ function performNedSearch() {
     const proxyUrl = `/proxy-download/?url=${encodeURIComponent(lookupUrl)}`;
     
     // First get object information
-    fetch(proxyUrl)
+    apiFetch(proxyUrl)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`HTTP error! Status: ${response.status}`);
@@ -2191,7 +2337,7 @@ function performNedSearch() {
             const imageProxyUrl = `/proxy-download/?url=${encodeURIComponent(nedApiUrl)}`;
             
             // Fetch image results
-            return fetch(imageProxyUrl)
+            return apiFetch(imageProxyUrl)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP error! Status: ${response.status}`);
@@ -2423,7 +2569,7 @@ function performNedSearch() {
                         const selectedFacility = facilityFilter.value;
                         const selectedWavelength = wavelengthFilter.value;
                         const selectedResolution = resolutionFilter.value;
-                        const searchTerm = searchFilter.value.toLowerCase();
+                        const searchTerm = (searchFilter.value || '').toLowerCase().trim();
                         
                         // Clear current display (except target info and filters)
                         const existingResults = resultsList.querySelectorAll('.ned-result-item');
@@ -2475,12 +2621,16 @@ function performNedSearch() {
                                 if (selectedFacility && facilityName !== selectedFacility) return;
                                 if (selectedWavelength && wavelengthCategory !== selectedWavelength) return;
                                 if (selectedResolution && resolutionCategory !== selectedResolution) return;
-                                if (searchTerm && 
-                                    !targetName.toLowerCase().includes(searchTerm) && 
-                                    !facilityName.toLowerCase().includes(searchTerm) && 
-                                    !instrumentName.toLowerCase().includes(searchTerm) &&
-                                    !obsId.toLowerCase().includes(searchTerm) &&
-                                    !obsCollection.toLowerCase().includes(searchTerm)) return;
+                                if (searchTerm) {
+                                    const haystack = [
+                                        targetName, facilityName, instrumentName, obsId, obsCollection,
+                                        (sRa||''), (sDec||''), (oUcd||''), (obsPublisherDid||''),
+                                        dataProductType, calibLevel, accessFormat,
+                                        (sResolution||''), wavelengthCategory, (emWl||''),
+                                        (accessEstSize||''), (tExptime||''), (sFov||''), (sFov1||''), (sFov2||'')
+                                    ].join(' ').toLowerCase();
+                                    if (!haystack.includes(searchTerm)) return;
+                                }
                                 
                                 resultCount++;
                                 
@@ -2635,9 +2785,12 @@ function performNedSearch() {
                     wavelengthFilter.addEventListener('change', filterAndDisplayResults);
                     resolutionFilter.addEventListener('change', filterAndDisplayResults);
                     
-                    // Debounced search for better performance
-                    const debouncedFilter = debounce(filterAndDisplayResults, 300);
-                    searchFilter.addEventListener('input', debouncedFilter);
+                    // Search box: update immediately and also debounce bursts
+                    const debouncedFilter = debounce(filterAndDisplayResults, 150);
+                    searchFilter.addEventListener('input', filterAndDisplayResults);
+                    searchFilter.addEventListener('keyup', debouncedFilter);
+                    searchFilter.addEventListener('change', filterAndDisplayResults);
+                    searchFilter.addEventListener('search', filterAndDisplayResults);
                     
                     // Initial display of all results
                     filterAndDisplayResults();
@@ -2714,7 +2867,7 @@ function downloadAndLoadFitsDirect(url) {
     showNotification(true, 'Downloading FITS file...');
     
     // ALWAYS use the server-side proxy to avoid CORS issues
-    fetch(`/proxy-download/?url=${encodeURIComponent(url)}`)
+    apiFetch(`/proxy-download/?url=${encodeURIComponent(url)}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Download failed: ${response.status} ${response.statusText}`);
@@ -2748,7 +2901,7 @@ function downloadAndLoadFits(url) {
     showNotification(true, 'Downloading via proxy...');
     
     // Use the server's proxy-download endpoint for all files
-    fetch(`/proxy-download/?url=${encodeURIComponent(url)}`)
+    apiFetch(`/proxy-download/?url=${encodeURIComponent(url)}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Proxy download failed: ${response.status} ${response.statusText}`);
@@ -2781,7 +2934,7 @@ async function retrieveNedImages(objectName, ra, dec) {
 
     try {
         const encodedUrl = encodeURIComponent(`http://ned.ipac.caltech.edu/cgi-bin/imgdata?objname=${encodeURIComponent(objectName)}`);
-        const response = await fetch(`/proxy-download/?url=${encodedUrl}`);
+        const response = await apiFetch(`/proxy-download/?url=${encodedUrl}`);
         
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -2889,7 +3042,7 @@ function addFileBrowserButton() {
         // Now that the toolbar is confirmed to exist, add the peak finder button
         if (typeof window.addPeakFinderButton === 'function') {
             console.log("Calling addPeakFinderButton from files.js");
-            window.addPeakFinderButton();
+            // window.addPeakFinderButton();
         } else {
             console.warn("addPeakFinderButton function not found when trying to add it to the toolbar.");
         }
@@ -2936,13 +3089,14 @@ function updateProgressCircle(percent, receivedLength, totalLength, startTime) {
         const offset = circumference - (percent / 100) * circumference;
         progressCircle.style.strokeDashoffset = offset;
 
-        const receivedMb = Math.round(receivedLength / (1024 * 1024));
-        const totalMb = Math.round(totalLength / (1024 * 1024));
+        const receivedMb = Math.round((receivedLength || 0) / (1024 * 1024));
+        const totalMb = Math.round((totalLength || 0) / (1024 * 1024));
         
         const elapsedSeconds = (Date.now() - startTime) / 1000;
         const speedBps = elapsedSeconds > 0 ? receivedLength / elapsedSeconds : 0;
         const speedMbps = (speedBps * 8 / (1024 * 1024)).toFixed(0);
 
-        progressText.innerHTML = `${percent}%<br>${receivedMb} / ${totalMb} MB<br>${speedMbps} Mbps`;
+        const sizeLine = totalLength && totalLength > 0 ? `${receivedMb} / ${totalMb} MB` : `${receivedMb} MB`;
+        progressText.innerHTML = `${percent}%<br>${sizeLine}<br>${speedMbps} Mbps`;
     }
 }

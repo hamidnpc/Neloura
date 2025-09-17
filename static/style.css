@@ -5,6 +5,15 @@
   font-display: swap;
   src: url('/static/fonts/raleway-v28-latin-300.woff2') format('woff2');
 }
+#usage-popup{z-index: 30000 !important;}
+.popup-opening{
+    z-index: 30000 !important;
+}
+#zoom-in-button,#zoom-out-button,#reset-button{       font-size: 16px;
+    width: 35px !important;
+    height: 40px !important;
+    border-color: white !important;
+    border-radius: 0px !important;}
 @font-face {
   font-family: 'Raleway';
   font-style: normal;
@@ -366,13 +375,13 @@ color: black !important;
         .toolbar {
             position: absolute;
             top: 20px;
-            transform: translateX(-50%);
+            right: 10px;
+            left: auto;
             background: rgba(0, 0, 0, 0.7);
             padding: 10px;
             border-radius: 8px;
             text-align: center;
             z-index: 1000;
-            right: 0;
         }
         .toolbar button {
             padding: 10px;
@@ -388,6 +397,7 @@ color: black !important;
             background: rgba(255, 255, 255, 0.3);
         }
         .dropdown {
+                margin-left: -5px;
             position: relative;
             display: inline-block;
         }
@@ -396,7 +406,7 @@ color: black !important;
             position: absolute;
             right: 0;
             background-color: rgba(0, 0, 0, 0.9);
-            min-width: 160px;
+            min-width: 500px !important;
             box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.5);
             z-index: 1001;
             border-radius: 5px;
@@ -416,8 +426,12 @@ color: black !important;
         .dropdown-content a:hover {
             background-color: rgba(255, 255, 255, 0.1);
         }
-        .dropdown:hover .dropdown-content {
-            display: block;
+        .dropdown:hover .dropdown-content { display: block; }
+
+        /* Improve iPad portrait spacing */
+        @media (max-width: 1024px) and (orientation: portrait) {
+            .toolbar { top: 12px; right: 8px; padding: 8px; border-radius: 6px; }
+            .toolbar button { margin: 4px; padding: 8px; }
         }
         .catalog-info {
             position: absolute;
@@ -563,10 +577,29 @@ color: black !important;
 
         /* Fix for CodeMirror autocomplete z-index */
         .CodeMirror-hints {
-            z-index: 1002 !important; /* Ensure it's above the panel (z-index: 1001) */
+            z-index: 300001 !important; /* Keep above all overlays/toolbars/popups */
         }
 
         /* Styles for Local Coding Panel */
+        /* Local Coding panel layout and animation */
+        #dynamic-local-coding-panel { 
+            position: fixed; 
+            top: 0; 
+            right: -600px; /* hidden off-screen by default */
+            height: 100vh; 
+            width: 600px; 
+            background-color: rgba(20,20,20,0.95);
+            color: #fff;
+            padding: 15px; 
+            box-sizing: border-box; 
+            z-index: 4001; 
+            font-family: monospace; 
+            display: flex; 
+            flex-direction: column; 
+            transition: right 0.3s ease-in-out;
+        }
+        #dynamic-local-coding-panel.open { right: 0; }
+        #dynamic-local-coding-panel .coding-panel-button { cursor: pointer; }
         .coding-panel-button {
             background-color: #444;
             color: white;

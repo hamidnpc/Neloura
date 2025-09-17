@@ -1,154 +1,3 @@
-// Load available catalogs
-
-// // Color map functions for catalog styling
-// const COLOR_MAPS = {
-//     viridis: (val) => {
-//         const v = val / 255;
-//         let r, g, b;
-//         if (v < 0.25) { 
-//             r = 68 + v * 4 * (33 - 68); 
-//             g = 1 + v * 4 * (144 - 1); 
-//             b = 84 + v * 4 * (140 - 84); 
-//         } else if (v < 0.5) { 
-//             r = 33 + (v - 0.25) * 4 * (94 - 33); 
-//             g = 144 + (v - 0.25) * 4 * (201 - 144); 
-//             b = 140 + (v - 0.25) * 4 * (120 - 140); 
-//         } else if (v < 0.75) { 
-//             r = 94 + (v - 0.5) * 4 * (190 - 94); 
-//             g = 201 + (v - 0.5) * 4 * (222 - 201); 
-//             b = 120 + (v - 0.5) * 4 * (47 - 120); 
-//         } else { 
-//             r = 190 + (v - 0.75) * 4 * (253 - 190); 
-//             g = 222 + (v - 0.75) * 4 * (231 - 222); 
-//             b = 47 + (v - 0.75) * 4 * (37 - 47); 
-//         }
-//         return [Math.round(r), Math.round(g), Math.round(b)];
-//     },
-    
-//     plasma: (val) => {
-//         const v = val / 255;
-//         let r, g, b;
-//         if (v < 0.25) { 
-//             r = 13 + v * 4 * (126 - 13); 
-//             g = 8 + v * 4 * (8 - 8); 
-//             b = 135 + v * 4 * (161 - 135); 
-//         } else if (v < 0.5) { 
-//             r = 126 + (v - 0.25) * 4 * (203 - 126); 
-//             g = 8 + (v - 0.25) * 4 * (65 - 8); 
-//             b = 161 + (v - 0.25) * 4 * (107 - 161); 
-//         } else if (v < 0.75) { 
-//             r = 203 + (v - 0.5) * 4 * (248 - 203); 
-//             g = 65 + (v - 0.5) * 4 * (150 - 65); 
-//             b = 107 + (v - 0.5) * 4 * (58 - 107); 
-//         } else { 
-//             r = 248 + (v - 0.75) * 4 * (239 - 248); 
-//             g = 150 + (v - 0.75) * 4 * (204 - 150); 
-//             b = 58 + (v - 0.75) * 4 * (42 - 58); 
-//         }
-//         return [Math.round(r), Math.round(g), Math.round(b)];
-//     },
-    
-//     inferno: (val) => {
-//         const v = val / 255;
-//         let r, g, b;
-//         if (v < 0.2) { 
-//             r = 0 + v * 5 * 50; 
-//             g = 0 + v * 5 * 10; 
-//             b = 4 + v * 5 * 90; 
-//         } else if (v < 0.4) { 
-//             r = 50 + (v-0.2)*5 * (120-50); 
-//             g = 10 + (v-0.2)*5 * (28-10); 
-//             b = 94 + (v-0.2)*5 * (109-94); 
-//         } else if (v < 0.6) { 
-//             r = 120 + (v-0.4)*5 * (187-120); 
-//             g = 28 + (v-0.4)*5 * (55-28); 
-//             b = 109 + (v-0.4)*5 * (84-109); 
-//         } else if (v < 0.8) { 
-//             r = 187 + (v-0.6)*5 * (236-187); 
-//             g = 55 + (v-0.6)*5 * (104-55); 
-//             b = 84 + (v-0.6)*5 * (36-84); 
-//         } else { 
-//             r = 236 + (v-0.8)*5 * (251-236); 
-//             g = 104 + (v-0.8)*5 * (180-104); 
-//             b = 36 + (v-0.8)*5 * (26-36); 
-//         }
-//         return [Math.round(r), Math.round(g), Math.round(b)];
-//     },
-    
-//     cividis: (val) => {
-//         const v = val / 255;
-//         let r, g, b;
-//         if (v < 0.2) { 
-//             r = 0 + v*5 * 33; 
-//             g = 32 + v*5 * (61-32); 
-//             b = 76 + v*5 * (107-76); 
-//         } else if (v < 0.4) { 
-//             r = 33 + (v-0.2)*5 * (85-33); 
-//             g = 61 + (v-0.2)*5 * (91-61); 
-//             b = 107 + (v-0.2)*5 * (108-107); 
-//         } else if (v < 0.6) { 
-//             r = 85 + (v-0.4)*5 * (123-85); 
-//             g = 91 + (v-0.4)*5 * (122-91); 
-//             b = 108 + (v-0.4)*5 * (119-108); 
-//         } else if (v < 0.8) { 
-//             r = 123 + (v-0.6)*5 * (165-123); 
-//             g = 122 + (v-0.6)*5 * (156-122); 
-//             b = 119 + (v-0.6)*5 * (116-119); 
-//         } else { 
-//             r = 165 + (v-0.8)*5 * (217-165); 
-//             g = 156 + (v-0.8)*5 * (213-156); 
-//             b = 116 + (v-0.8)*5 * (122-116); 
-//         }
-//         return [Math.round(r), Math.round(g), Math.round(b)];
-//     },
-    
-//     hot: (val) => {
-//         const v = val / 255;
-//         let r, g, b;
-//         if (v < 1/3) { 
-//             r = v * 3 * 255; 
-//             g = 0; 
-//             b = 0; 
-//         } else if (v < 2/3) { 
-//             r = 255; 
-//             g = (v - 1/3) * 3 * 255; 
-//             b = 0; 
-//         } else { 
-//             r = 255; 
-//             g = 255; 
-//             b = (v - 2/3) * 3 * 255; 
-//         }
-//         return [Math.round(r), Math.round(g), Math.round(b)];
-//     },
-    
-//     cool: (val) => {
-//         const v = val / 255;
-//         return [Math.round(v * 255), Math.round((1 - v) * 255), 255];
-//     },
-    
-//     grayscale: (val) => [val, val, val],
-    
-//     jet: (val) => {
-//         const v = val / 255;
-//         let r = 0, g = 0, b = 0;
-//         if (v < 0.125) { 
-//             b = 0.5 + 4 * v; 
-//         } else if (v < 0.375) { 
-//             g = 4 * (v - 0.125); 
-//             b = 1.0; 
-//         } else if (v < 0.625) { 
-//             r = 4 * (v - 0.375); 
-//             g = 1.0; 
-//             b = 1.0 - 4 * (v - 0.375); 
-//         } else if (v < 0.875) { 
-//             r = 1.0; 
-//             g = 1.0 - 4 * (v - 0.625); 
-//         } else { 
-//             r = 1.0 - 4 * (v - 0.875); 
-//         }
-//         return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-//     }
-// };
 
 // Helper function to convert RGB array to hex color
 function rgbToHex(r, g, b) {
@@ -158,54 +7,200 @@ function rgbToHex(r, g, b) {
 // Update the catalog dropdown menu
 function updateCatalogDropdown(catalogs) {
     const dropdown = document.getElementById('catalog-dropdown');
-    
-    // Clear existing items except the refresh option
+    // Constrain dropdown width for better readability
+    if (dropdown && dropdown.style) {
+        dropdown.style.minWidth = '260px';
+        dropdown.style.maxWidth = '520px';
+        dropdown.style.whiteSpace = 'normal';
+        dropdown.style.wordBreak = 'break-word';
+    }
+
+    // Fallback to cached catalogs if none provided
+    if (!catalogs) {
+        catalogs = Array.isArray(window.availableCatalogs) ? window.availableCatalogs : [];
+    }
+
+    // Preserve existing refresh option if present
     const refreshOption = dropdown.querySelector('a[onclick="refreshCatalogs()"]');
     dropdown.innerHTML = '';
-    if (refreshOption) {
-        dropdown.appendChild(refreshOption);
-    }
-    
-    // Add a "None" option to clear catalogs
+    if (refreshOption) dropdown.appendChild(refreshOption);
+
+    // Optional: quick clear option at the top
     const noneOption = document.createElement('a');
-    noneOption.href = "#";
-    noneOption.textContent = "None (Clear catalogs)";
-    noneOption.onclick = function() {
-        clearCatalog();
-        return false;
-    };
+    noneOption.href = '#';
+    noneOption.textContent = 'None (Clear catalogs)';
+    noneOption.onclick = function() { clearCatalog(); return false; };
     dropdown.appendChild(noneOption);
-    
-    // Add separator
-    const separator = document.createElement('div');
-    separator.style.borderBottom = '1px solid rgba(255, 255, 255, 0.3)';
-    separator.style.margin = '5px 0';
-    dropdown.appendChild(separator);
-    
-    // Add catalog options
+
+    const separatorTop = document.createElement('div');
+    separatorTop.style.borderBottom = '1px solid rgba(255, 255, 255, 0.3)';
+    separatorTop.style.margin = '6px 0';
+    dropdown.appendChild(separatorTop);
+
+    // Tabs container
+    const tabsBar = document.createElement('div');
+    tabsBar.style.display = 'flex';
+    tabsBar.style.gap = '6px';
+    tabsBar.style.margin = '4px 0 8px 0';
+    tabsBar.style.position = 'relative';
+    tabsBar.style.paddingBottom = '6px';
+
+    // Inject styles for smooth tab transitions (one-time)
+    if (!document.getElementById('catalog-tabs-style')) {
+        const style = document.createElement('style');
+        style.id = 'catalog-tabs-style';
+        style.textContent = `
+            #catalog-dropdown .cat-tab-content { transition: opacity 200ms ease, transform 200ms ease; }
+            #catalog-dropdown .cat-tab-hidden { opacity: 0; transform: translateX(-6px); pointer-events: none; height: 0; overflow: hidden; }
+            #catalog-dropdown .cat-tab-visible { opacity: 1; transform: translateX(0); }
+            #catalog-dropdown .cat-tab-underline { position: absolute; bottom: 0; left: 0; height: 2px; width: 0; background: #8B5CF6; border-radius: 2px; transition: left 220ms ease, width 220ms ease; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function makeTabButton(text) {
+        const btn = document.createElement('button');
+        btn.textContent = text;
+        btn.style.background = '#374151';
+        btn.style.color = '#fff';
+        btn.style.border = '1px solid #4b5563';
+        btn.style.borderRadius = '8px';
+        btn.style.padding = '6px 10px';
+        btn.style.cursor = 'pointer';
+        btn.style.fontSize = '12px';
+        btn.style.fontWeight = '600';
+        return btn;
+    }
+
+    const btnMain = makeTabButton('Main Catalogs');
+    const btnUploads = makeTabButton('Uploaded Catalogs');
+    tabsBar.appendChild(btnMain);
+    tabsBar.appendChild(btnUploads);
+    dropdown.appendChild(tabsBar);
+
+    // Tab contents
+    const mainWrap = document.createElement('div');
+    mainWrap.className = 'cat-tab-content cat-tab-visible';
+    const uploadsWrap = document.createElement('div');
+    uploadsWrap.className = 'cat-tab-content cat-tab-hidden';
+
+    // Animated underline indicator
+    const underline = document.createElement('div');
+    underline.className = 'cat-tab-underline';
+    tabsBar.appendChild(underline);
+
+    function moveUnderline(targetBtn) {
+        try {
+            const barRect = tabsBar.getBoundingClientRect();
+            const btnRect = targetBtn.getBoundingClientRect();
+            underline.style.left = `${Math.max(0, btnRect.left - barRect.left)}px`;
+            underline.style.width = `${btnRect.width}px`;
+        } catch (_) {}
+    }
+
+    function setActive(which) {
+        const activeBg = '#6D28D9';
+        const inactiveBg = '#374151';
+        if (which === 'main') {
+            mainWrap.classList.remove('cat-tab-hidden');
+            mainWrap.classList.add('cat-tab-visible');
+            uploadsWrap.classList.remove('cat-tab-visible');
+            uploadsWrap.classList.add('cat-tab-hidden');
+            btnMain.style.background = activeBg;
+            btnUploads.style.background = inactiveBg;
+            moveUnderline(btnMain);
+        } else {
+            uploadsWrap.classList.remove('cat-tab-hidden');
+            uploadsWrap.classList.add('cat-tab-visible');
+            mainWrap.classList.remove('cat-tab-visible');
+            mainWrap.classList.add('cat-tab-hidden');
+            btnMain.style.background = inactiveBg;
+            btnUploads.style.background = activeBg;
+            moveUnderline(btnUploads);
+        }
+    }
+
+    btnMain.onclick = () => setActive('main');
+    btnUploads.onclick = () => setActive('uploads');
+
+    // Populate Main Catalogs (from catalogs directory)
     if (catalogs && catalogs.length > 0) {
         catalogs.forEach(catalog => {
-            const option = document.createElement('a');
-            option.href = "#";
-            option.textContent = catalog.name;
-            option.onclick = function() {
-                // Show the style customizer FIRST
+            const a = document.createElement('a');
+            a.href = '#';
+            a.textContent = catalog.name;
+            a.onclick = function() {
                 showStyleCustomizerPopup(catalog.name);
-                // Don't load immediately, let the popup handle it via Apply button
-                // loadCatalog(catalog.name); // Remove or comment this out
                 return false;
             };
-            dropdown.appendChild(option);
+            mainWrap.appendChild(a);
         });
     } else {
         const noItems = document.createElement('a');
-        noItems.href = "#";
-        noItems.textContent = "No catalogs found";
+        noItems.href = '#';
+        noItems.textContent = 'No catalogs found';
         noItems.style.color = 'gray';
         noItems.style.cursor = 'default';
         noItems.onclick = function() { return false; };
-        dropdown.appendChild(noItems);
+        mainWrap.appendChild(noItems);
     }
+
+    // Populate Uploaded Catalogs (files/uploads) filtered by patterns
+    (async () => {
+        try {
+            const res = await apiFetch('/list-files/files/uploads');
+            const js = await res.json();
+            const files = (js.files || []).filter(f => {
+                const name = (f && f.name) || '';
+                const isFits = /\.(fits|fit)$/i.test(name);
+                const matches = /^(injected_catalog_|peak_catalog_|upload_).+\.(fits|fit)$/i.test(name);
+                return f.type === 'file' && isFits && matches;
+            });
+            if (files.length === 0) {
+                const noUp = document.createElement('a');
+                noUp.href = '#';
+                noUp.textContent = 'No uploaded catalogs found.';
+                noUp.style.color = 'gray';
+                noUp.style.cursor = 'default';
+                noUp.onclick = function() { return false; };
+                uploadsWrap.appendChild(noUp);
+            } else {
+                files.forEach(f => {
+                    const a = document.createElement('a');
+                    a.href = '#';
+                    a.textContent = f.name;
+                    a.title = 'Open uploaded catalog';
+                    a.onclick = function() {
+                        // Open like main catalogs using full relative path under files/uploads
+                        const relPath = `files/uploads/${f.name}`;
+                        showStyleCustomizerPopup(relPath);
+                        return false;
+                    };
+                    uploadsWrap.appendChild(a);
+                });
+            }
+        } catch (e) {
+            const err = document.createElement('a');
+            err.href = '#';
+            err.textContent = 'Failed to load uploaded catalogs';
+            err.style.color = 'tomato';
+            err.style.cursor = 'default';
+            err.onclick = function() { return false; };
+            uploadsWrap.appendChild(err);
+        }
+    })();
+
+    dropdown.appendChild(mainWrap);
+    dropdown.appendChild(uploadsWrap);
+
+    // Default active tab (allow forcing to 'uploads' after an upload)
+    try {
+        const desired = (window.__forceCatalogTab === 'uploads') ? 'uploads' : 'main';
+        setActive(desired);
+    } finally {
+        if (window.__forceCatalogTab) window.__forceCatalogTab = null;
+    }
+    setTimeout(() => moveUnderline(btnMain), 0);
 }
 
 // Refresh the catalog list
@@ -499,6 +494,7 @@ function updateCanvasOverlay() {
         // Convert RA/DEC to pixel coordinates if we have WCS
         if (obj.ra !== undefined && obj.dec !== undefined && window.parsedWCS && window.parsedWCS.hasWCS) {
             const pixelCoords = celestialToPixel(obj.ra, obj.dec, window.parsedWCS);
+            console.log('pixelCoords2:::::',pixelCoords);
             x = pixelCoords.x;
             y = pixelCoords.y;
         }
@@ -1519,35 +1515,36 @@ function addCatalogOverlay(catalogData, styles) {
             return;
         }
 
-        // Use the new worldToPixels function
-        const pixelCoords = wcs.worldToPixels(ra, dec);
-        console.log(`[addCatalogOverlay] Object ${index}: RA=${ra}, Dec=${dec} -> Pixel X=${pixelCoords?.x}, Y=${pixelCoords?.y}`);
+        // // Use the new worldToPixels function
+        // const pixelCoords = wcs.worldToPixels(ra, dec);
+        // console.log('hello??!?!,pixelCoords:::::',pixelCoords);
+        // console.log(`[addCatalogOverlay] Object ${index}: RA=${ra}, Dec=${dec} -> Pixel X=${pixelCoords?.x}, Y=${pixelCoords?.y}`);
 
-        if (pixelCoords) {
-            const pixelX = pixelCoords.x;
-            const pixelY = pixelCoords.y;
+        // if (pixelCoords) {
+        //     const pixelX = pixelCoords.x;
+        //     const pixelY = pixelCoords.y;
 
-            // OpenSeadragon's imageToViewportCoordinates handles the coordinate system correctly.
-            if (pixelX >= 0 && pixelX < imageWidth && pixelY >= 0 && pixelY < imageHeight) {
-                console.log(`[addCatalogOverlay] Object ${index} is within image bounds. Creating dot.`);
-                const dotElement = createCatalogDotWithStyles(obj, index, styles);
+        //     // OpenSeadragon's imageToViewportCoordinates handles the coordinate system correctly.
+        //     if (pixelX >= 0 && pixelX < imageWidth && pixelY >= 0 && pixelY < imageHeight) {
+        //         console.log(`[addCatalogOverlay] Object ${index} is within image bounds. Creating dot.`);
+        //         const dotElement = createCatalogDotWithStyles(obj, index, styles);
 
-                // Use pixelY directly, OpenSeadragon will handle the correct placement.
-                const viewportPoint = activeViewer.viewport.imageToViewportCoordinates(pixelX, pixelY);
-                console.log(`[addCatalogOverlay] Viewport point for object ${index}:`, viewportPoint);
+        //         // Use pixelY directly, OpenSeadragon will handle the correct placement.
+        //         const viewportPoint = activeViewer.viewport.imageToViewportCoordinates(pixelX, pixelY);
+        //         console.log(`[addCatalogOverlay] Viewport point for object ${index}:`, viewportPoint);
 
-                activeViewer.addOverlay({
-                    element: dotElement,
-                    location: viewportPoint,
-                    placement: 'CENTER'
-                });
-                console.log(`[addCatalogOverlay] Added overlay for object ${index}`);
-            } else {
-                console.warn(`[addCatalogOverlay] Object ${index} is outside image bounds.`);
-            }
-        } else {
-            console.warn(`[addCatalogOverlay] Could not convert world to pixel coordinates for object ${index}`);
-        }
+        //         activeViewer.addOverlay({
+        //             element: dotElement,
+        //             location: viewportPoint,
+        //             placement: 'CENTER'
+        //         });
+        //         console.log(`[addCatalogOverlay] Added overlay for object ${index}`);
+        //     } else {
+        //         console.warn(`[addCatalogOverlay] Object ${index} is outside image bounds.`);
+        //     }
+        // } else {
+        //     console.warn(`[addCatalogOverlay] Could not convert world to pixel coordinates for object ${index}`);
+        // }
     });
     console.log('[addCatalogOverlay] Function finished');
 }
@@ -1727,6 +1724,7 @@ function applyStylesToRegions(catalogName, styles) {
     // Store both the original and normalized catalog names for reloading
     window.currentCatalogName = window.catalogData[catalogIndex].name; // Use the actual stored name
     window.activeCatalog = window.catalogData[catalogIndex].name;
+    try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: window.activeCatalog } })); } catch (_) {}
 
     // If we have overlay data, update the styles for immediate visual feedback
     if (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay)) {
@@ -1792,7 +1790,7 @@ function populateDropdowns(catalogName) {
     console.log('Populating dropdowns for catalog:', catalogName);
     console.log('Using API name:', catalogNameForApi);
 
-    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
+    apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
         .then(response => { 
             if (!response.ok) {
                 throw new Error(`Failed to load columns: ${response.status} - ${response.statusText}`);
@@ -1845,7 +1843,7 @@ function populateDropdowns(catalogName) {
 
             const raKeywords = ['ra', 'right_ascension'];
             const decKeywords = ['dec', 'declination'];
-            const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'major', 'maj'];
+            const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'bmaj', 'maj'];
 
             if (allColumns.length > 0) {
                 const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
@@ -1878,6 +1876,41 @@ function createUpdatedApplyButtonHandler(catalogName, popup, newStyles) {
         
         if (result && result.success) {
             console.log('[Apply Styles] Styles applied successfully');
+            // Persist the selected RA/DEC/SIZE mapping on the server to avoid relying on per-request overrides
+            try {
+                const apiName = (result.apiName || result.catalogName || catalogName);
+                const payload = {
+                    catalog_name: apiName,
+                    ra_col: newStyles && newStyles.raColumn ? newStyles.raColumn : null,
+                    dec_col: newStyles && newStyles.decColumn ? newStyles.decColumn : null,
+                    resolution_col: newStyles && newStyles.sizeColumn ? newStyles.sizeColumn : null,
+                };
+                console.log('[Apply Styles] Saving server-side column mapping:', payload);
+                apiFetch('/save-catalog-mapping/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).then(r => r.json()).then(resp => {
+                    console.log('[Apply Styles] Mapping save response:', resp);
+                }).catch(err => {
+                    console.warn('[Apply Styles] Failed to save mapping:', err);
+                });
+            } catch (e) {
+                console.warn('[Apply Styles] Error preparing mapping save:', e);
+            }
+            // Persist the selected RA/DEC/SIZE column overrides so subsequent loads can use them
+            try {
+                window.catalogOverridesByCatalog = window.catalogOverridesByCatalog || {};
+                const catalogNameForReload = result.apiName || result.catalogName || catalogName;
+                window.catalogOverridesByCatalog[catalogNameForReload] = {
+                    ra_col: newStyles && newStyles.raColumn ? newStyles.raColumn : null,
+                    dec_col: newStyles && newStyles.decColumn ? newStyles.decColumn : null,
+                    size_col: newStyles && newStyles.sizeColumn ? newStyles.sizeColumn : null,
+                };
+                console.log('[Apply Styles] Saved overrides for', catalogNameForReload, window.catalogOverridesByCatalog[catalogNameForReload]);
+            } catch (e) {
+                console.warn('[Apply Styles] Could not persist overrides:', e);
+            }
             
             // Use the apiName for reloading (this is the name without catalogs/ prefix)
             const catalogNameForReload = result.apiName || result.catalogName;
@@ -1885,7 +1918,7 @@ function createUpdatedApplyButtonHandler(catalogName, popup, newStyles) {
             
             if (typeof loadCatalog === 'function') {
                 // Load using the API-compatible name
-                loadCatalog(catalogNameForReload);
+                loadCatalog(catalogNameForReload, newStyles);
             } else {
                 console.error("loadCatalog function not found! Cannot reload catalog after applying styles.");
             }
@@ -1930,6 +1963,7 @@ function loadCatalog(catalogName, styles = null) {
     // Store the current catalog name globally
     window.currentCatalogName = catalogName;
     activeCatalog = catalogName;
+    try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
     
     // Show loading indicator
     showNotification(true, 'Loading catalog...');
@@ -1945,10 +1979,41 @@ function loadCatalog(catalogName, styles = null) {
     window.catalogDataWithFlags = null;
     
     console.log(`[loadCatalog] Fetching data from: /catalog-with-flags/${encodeURIComponent(catalogName)}`);
+
+    // Prepare optional RA/DEC/size overrides from UI styles if present
+    const urlParams = new URLSearchParams();
+    // Try persisted overrides by several keys: raw name, api name (basename), and current catalog
+    const apiName = (catalogName || '').toString().split('/').pop().split('\\').pop();
+    const persisted = (window.catalogOverridesByCatalog && (
+        window.catalogOverridesByCatalog[catalogName] ||
+        window.catalogOverridesByCatalog[apiName]
+    )) || null;
+    const raCol = (styles && styles.raColumn) || (persisted && persisted.ra_col);
+    const decCol = (styles && styles.decColumn) || (persisted && persisted.dec_col);
+    const sizeCol = (styles && styles.sizeColumn) || (persisted && persisted.size_col);
+    if (raCol) urlParams.set('ra_col', raCol);
+    if (decCol) urlParams.set('dec_col', decCol);
+    if (sizeCol) urlParams.set('size_col', sizeCol);
+    // Also mirror overrides in headers for robustness
+    const extraHeaders = {};
+    if (raCol) extraHeaders['X-RA-Col'] = raCol;
+    if (decCol) extraHeaders['X-DEC-Col'] = decCol;
+    if (sizeCol) extraHeaders['X-Size-Col'] = sizeCol;
+    const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+    if (!urlParams.has('ra_col') && raColBin) urlParams.set('ra_col', raColBin);
+    if (!urlParams.has('dec_col') && decColBin) urlParams.set('dec_col', decColBin);
+    const finalQuery = urlParams.toString();
+    const finalUrl = `/catalog-binary/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`;
+    // Mirror overrides in headers for robustness
+    const extraHeadersBin = {};
+    if (styles && styles.raColumn) extraHeadersBin['X-RA-Col'] = styles.raColumn;
+    if (styles && styles.decColumn) extraHeadersBin['X-DEC-Col'] = styles.decColumn;
+    if (styles && styles.sizeColumn) extraHeadersBin['X-Size-Col'] = styles.sizeColumn;
     
     // Fetch catalog data from server
-    fetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}`, {
-        method: 'GET'
+    apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}${querySuffix}` , {
+        method: 'GET',
+        headers: extraHeaders
     })
     .then(response => {
         if (!response.ok) {
@@ -2038,10 +2103,10 @@ console.log('[loadCatalog] Prepared overlay data with styles. Sample object:', w
                 }
                 
                 // Create flag filter button
-                createFlagFilterButton();
+                // createFlagFilterButton();
                 
                 showNotification(false);
-                showNotification(`Catalog loaded: ${catalogData.length} objects`, 2000, 'success');
+                showNotification(`Catalog loaded.`, 2000, 'success');
                 
             } else {
                 console.log('[loadCatalog] Viewer not ready, retrying...');
@@ -2078,6 +2143,7 @@ function loadCatalogBinary(catalogName, styles = null) {
     // Store the current catalog name globally
     window.currentCatalogName = catalogName;
     activeCatalog = catalogName;
+    try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
     
     // Show loading indicator
     showNotification(true, 'Loading catalog...');
@@ -2092,30 +2158,98 @@ function loadCatalogBinary(catalogName, styles = null) {
     // Clear any existing flag data
     window.catalogDataWithFlags = null;
     
-    console.log(`[loadCatalogBinary] Fetching binary data from: /catalog-binary/${encodeURIComponent(catalogName)}`);
+    // Normalize to API name (server expects basename inside catalogs dir)
+    const catalogNameForApi = (catalogName || '').toString().split('/').pop().split('\\').pop();
+    // We log final URL after building query
     
+    // Prepare optional RA/DEC/size overrides from UI styles or persisted overrides if present
+    const urlParams = new URLSearchParams();
+    const persistedBin = (window.catalogOverridesByCatalog && (
+        window.catalogOverridesByCatalog[catalogName] ||
+        window.catalogOverridesByCatalog[catalogNameForApi]
+    )) || null;
+    const raColBin = (styles && styles.raColumn) || (persistedBin && persistedBin.ra_col);
+    const decColBin = (styles && styles.decColumn) || (persistedBin && persistedBin.dec_col);
+    const sizeColBin = (styles && styles.sizeColumn) || (persistedBin && persistedBin.size_col);
+    if (raColBin) urlParams.set('ra_col', raColBin);
+    if (decColBin) urlParams.set('dec_col', decColBin);
+    if (sizeColBin) urlParams.set('size_col', sizeColBin);
+
+    const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+    // Build final URL explicitly (guarantee ra_col/dec_col in URL if present)
+    const finalQuery = urlParams.toString();
+    const finalUrl = `/catalog-binary/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`;
+
     // Fetch binary catalog data from server
-    fetch(`/catalog-binary/${encodeURIComponent(catalogName)}`, {
+    console.log(`[loadCatalogBinary] Request URL: ${finalUrl}`);
+    console.log('[loadCatalogBinary] Overrides resolved:', { ra: raColBin, dec: decColBin, size: sizeColBin, persisted: !!persistedBin });
+
+    // Build headers for overrides (scoped to this function)
+    const extraHeadersBin = {};
+    if (raColBin) extraHeadersBin['X-RA-Col'] = raColBin;
+    if (decColBin) extraHeadersBin['X-DEC-Col'] = decColBin;
+    if (sizeColBin) extraHeadersBin['X-Size-Col'] = sizeColBin;
+    console.log('[loadCatalogBinary] Headers to send:', extraHeadersBin);
+    apiFetch(finalUrl, {
         method: 'GET',
-        headers: {
-            'Accept-Encoding': 'gzip'  // Request compressed data
-        }
+        headers: { ...extraHeadersBin }
     })
-    .then(response => {
+    .then(async response => {
         if (!response.ok) {
+            // Fallback for sessions without WCS: try raw endpoint
+            if (response.status === 500) {
+                console.warn('[loadCatalogBinary] /catalog-binary failed (likely no WCS). Falling back to /catalog-binary-raw');
+                const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}` , {
+                    method: 'GET',
+                    headers: { ...extraHeadersBin }
+                });
+                if (!rawResp.ok) {
+                    throw new Error(`Failed to load catalog (raw): ${rawResp.statusText}`);
+                }
+                return rawResp.arrayBuffer();
+            }
             throw new Error(`Failed to load catalog: ${response.statusText}`);
         }
         return response.arrayBuffer();
     })
-    .then(arrayBuffer => {
+    .then(async arrayBuffer => {
         console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength);
         
         // Parse binary data
-        const catalogData = parseBinaryCatalog(arrayBuffer);
+        let catalogData = parseBinaryCatalog(arrayBuffer);
+        console.log('[loadCatalogBinary] Header from primary endpoint:', catalogData && catalogData.header);
+        console.log(`[loadCatalogBinary] Parsed ${catalogData.records.length} objects from binary data (primary).`);
         
-        console.log(`[loadCatalogBinary] Parsed ${catalogData.records.length} objects from binary data.`);
+        // If no records from session/WCS-scoped endpoint, fall back to raw
+        if (!catalogData.records || catalogData.records.length === 0) {
+            console.warn('[loadCatalogBinary] Primary endpoint returned 0 records. Falling back to /catalog-binary-raw ...');
+            try {
+                const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`, {
+                    method: 'GET',
+                    headers: { ...extraHeadersBin }
+                });
+                if (!rawResp.ok) {
+                    throw new Error(`Fallback /catalog-binary-raw failed: ${rawResp.status} ${rawResp.statusText}`);
+                }
+                const rawBuf = await rawResp.arrayBuffer();
+                console.log('[loadCatalogBinary] Received fallback raw binary, size:', rawBuf.byteLength);
+                const parsedRaw = parseBinaryCatalog(rawBuf);
+                console.log('[loadCatalogBinary] Header from fallback endpoint:', parsedRaw && parsedRaw.header);
+                console.log(`[loadCatalogBinary] Parsed ${parsedRaw.records.length} objects from binary data (fallback).`);
+                catalogData = parsedRaw;
+            } catch (fallbackErr) {
+                console.error('[loadCatalogBinary] Fallback to /catalog-binary-raw failed:', fallbackErr);
+            }
+        }
+        
+        // Track current in-memory flags dataset name to avoid using stale data across catalogs
+        try {
+            const activeName = (catalogData && catalogData.header && catalogData.header.catalog_name) ? catalogData.header.catalog_name : null;
+            window.catalogDataWithFlagsName = activeName;
+        } catch(_) { window.catalogDataWithFlagsName = null; }
         
         if (!catalogData.records || catalogData.records.length === 0) {
+            console.error('[loadCatalogBinary] No records even after fallback. Header was:', catalogData && catalogData.header);
             throw new Error('No catalog data found or invalid format.');
         }
         
@@ -2181,11 +2315,11 @@ function loadCatalogBinary(catalogName, styles = null) {
                 
                 // Create flag filter button if boolean columns exist
                 if (catalogData.header.boolean_columns && catalogData.header.boolean_columns.length > 0) {
-                    createFlagFilterButton();
+                    // createFlagFilterButton();
                 }
                 
                 showNotification(false);
-                showNotification(`Catalog loaded: ${catalogData.records.length} objects`, 2000, 'success');
+                showNotification(`Catalog loaded.`, 2000, 'success');
                 
             } else {
                 console.log('[loadCatalogBinary] Viewer not ready, retrying...');
@@ -2205,6 +2339,53 @@ function loadCatalogBinary(catalogName, styles = null) {
 
 // Parse binary catalog format
 function parseBinaryCatalog(arrayBuffer) {
+    function sanitizeNonStandardNumbers(s) {
+        // Replace NaN, Infinity, -Infinity with null, but only outside of strings
+        let result = '';
+        let i = 0;
+        let inString = false;
+        let escapeNext = false;
+        while (i < s.length) {
+            const ch = s[i];
+            if (inString) {
+                result += ch;
+                if (escapeNext) {
+                    escapeNext = false;
+                } else if (ch === '\\') {
+                    escapeNext = true;
+                } else if (ch === '"') {
+                    inString = false;
+                }
+                i++;
+                continue;
+            }
+            if (ch === '"') {
+                inString = true;
+                result += ch;
+                i++;
+                continue;
+            }
+            // Outside of strings: replace tokens
+            if (s.startsWith('NaN', i)) {
+                result += 'null';
+                i += 3;
+                continue;
+            }
+            if (s.startsWith('Infinity', i)) {
+                result += 'null';
+                i += 8;
+                continue;
+            }
+            if (s.startsWith('-Infinity', i)) {
+                result += 'null';
+                i += 9;
+                continue;
+            }
+            result += ch;
+            i++;
+        }
+        return result;
+    }
     const dataView = new DataView(arrayBuffer);
     let offset = 0;
     
@@ -2215,7 +2396,14 @@ function parseBinaryCatalog(arrayBuffer) {
     // Read header JSON
     const headerBytes = new Uint8Array(arrayBuffer, offset, headerLength);
     const headerJson = new TextDecoder().decode(headerBytes);
-    const header = JSON.parse(headerJson);
+    let header;
+    try {
+        header = JSON.parse(headerJson);
+    } catch (e) {
+        // Fallback if header ever contains NaN/Infinity
+        const sanitized = sanitizeNonStandardNumbers(headerJson);
+        header = JSON.parse(sanitized);
+    }
     offset += headerLength;
     
     console.log('[parseBinaryCatalog] Header:', header);
@@ -2247,7 +2435,18 @@ function parseBinaryCatalog(arrayBuffer) {
         
         const metadataBytes = new Uint8Array(arrayBuffer, offset, metadataLength);
         const metadataJson = new TextDecoder().decode(metadataBytes);
-        const metadata = JSON.parse(metadataJson);
+        let metadata;
+        try {
+            metadata = JSON.parse(metadataJson);
+        } catch (e) {
+            try {
+                const sanitized = sanitizeNonStandardNumbers(metadataJson);
+                metadata = JSON.parse(sanitized);
+            } catch (e2) {
+                console.warn('[parseBinaryCatalog] Failed to parse metadata JSON, using empty object. Sample:', metadataJson.slice(0, 200));
+                metadata = {};
+            }
+        }
         offset += metadataLength;
         
         // Combine into record
@@ -2282,6 +2481,7 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
     // Initialize
     window.currentCatalogName = catalogName;
     activeCatalog = catalogName;
+    try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
     showNotification(true, 'Loading catalog...');
     
     // Clear existing overlays
@@ -2290,7 +2490,7 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
     }
     
     try {
-        const response = await fetch(`/catalog-binary/${encodeURIComponent(catalogName)}`, {
+        const response = await apiFetch(`/catalog-binary/${encodeURIComponent(catalogName)}`, {
             method: 'GET',
             headers: {
                 'Accept-Encoding': 'gzip'
@@ -2351,6 +2551,21 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
 
 // Helper function to prepare overlay data with styles
 function prepareCatalogOverlayData(records, styles) {
+    // Derive arcsec/pixel from current WCS if available
+    let arcsecPerPixel = null;
+    try {
+        const w = window?.fitsData?.wcs;
+        if (w) {
+            const cd11 = Number(w.CD1_1 ?? w.cd11 ?? w.CDELT1 ?? w.cdelt1 ?? 0);
+            const cd12 = Number(w.CD1_2 ?? w.cd12 ?? 0);
+            const cd21 = Number(w.CD2_1 ?? w.cd21 ?? 0);
+            const cd22 = Number(w.CD2_2 ?? w.cd22 ?? w.CDELT2 ?? w.cdelt2 ?? 0);
+            const scaleXDeg = Math.sqrt(cd11*cd11 + cd21*cd21);
+            const scaleYDeg = Math.sqrt(cd12*cd12 + cd22*cd22);
+            const avgDeg = (isFinite(scaleXDeg) && isFinite(scaleYDeg) && scaleXDeg>0 && scaleYDeg>0) ? (scaleXDeg + scaleYDeg) / 2 : (isFinite(scaleXDeg) && scaleXDeg>0 ? scaleXDeg : (isFinite(scaleYDeg) && scaleYDeg>0 ? scaleYDeg : 0.0));
+            if (avgDeg > 0) arcsecPerPixel = 3600 * avgDeg;
+        }
+    } catch (_) {}
     return records.map((obj, index) => {
         const styledObj = {
             ...obj,
@@ -2366,6 +2581,14 @@ function prepareCatalogOverlayData(records, styles) {
             styledObj.opacity = styles.opacity || 0.8;
             styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
             styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+            // If a size column (arcsec) was chosen and WCS is known, convert to pixels per-object
+            if (styles.sizeColumn && obj.hasOwnProperty(styles.sizeColumn)) {
+                const sizeArcsec = parseFloat(obj[styles.sizeColumn]);
+                if (isFinite(sizeArcsec) && sizeArcsec > 0 && arcsecPerPixel && arcsecPerPixel > 0) {
+                    styledObj.size_arcsec = sizeArcsec;
+                    styledObj.size_pixels = sizeArcsec / arcsecPerPixel;
+                }
+            }
         } else {
             styledObj.color = '#FF0000';
             styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
@@ -2373,6 +2596,16 @@ function prepareCatalogOverlayData(records, styles) {
             styledObj.opacity = 0.8;
             styledObj.useTransparentFill = true;
             styledObj.radius_pixels = obj.radius_pixels || 5;
+            // No styles provided, still convert size column if present
+            const defaultSizeCol = (window?.catalogMetadata?.sizeColumnName) || null;
+            const sizeCol = defaultSizeCol && obj.hasOwnProperty(defaultSizeCol) ? defaultSizeCol : null;
+            if (sizeCol) {
+                const sizeArcsec = parseFloat(obj[sizeCol]);
+                if (isFinite(sizeArcsec) && sizeArcsec > 0 && arcsecPerPixel && arcsecPerPixel > 0) {
+                    styledObj.size_arcsec = sizeArcsec;
+                    styledObj.size_pixels = sizeArcsec / arcsecPerPixel;
+                }
+            }
         }
         
         return styledObj;
@@ -2394,7 +2627,7 @@ async function waitForViewerAndAddOverlay() {
                 }
                 
                 if (window.catalogMetadata?.boolean_columns?.length > 0) {
-                    createFlagFilterButton();
+                    // createFlagFilterButton();
                 }
                 
                 resolve();
@@ -2430,6 +2663,8 @@ function showStyleCustomizerPopup(catalogName) {
     if (catalogName.startsWith('catalogs/')) {
         catalogNameForApi = catalogName.replace('catalogs/', '');
     }
+    // Track current catalog in case the user changes catalog while popup is open
+    let currentCatalogNameForApi = catalogNameForApi;
     
     console.log('showStyleCustomizerPopup - Original catalog name:', catalogName);
     console.log('showStyleCustomizerPopup - API catalog name:', catalogNameForApi);
@@ -2590,7 +2825,24 @@ function showStyleCustomizerPopup(catalogName) {
     const coordsFieldSet = createFieldSet('Coordinate & Size Settings');
     const raDropdown = createSearchableDropdown('RA Column:');
     const decDropdown = createSearchableDropdown('Dec Column:');
-    const sizeDropdown = createSearchableDropdown('Size Column (Optional):');
+    const sizeDropdown = createSearchableDropdown('Size Column (arcsec):');
+    // Display selected size value (arcsec) and pixel equivalent
+    let lastSizeMedianArcsec = null;
+    const medianCache = Object.create(null); // key: `${catalog}|${column}` -> median arcsec
+    const medianPending = Object.create(null); // key -> true while fetching
+    const sizeInfo = document.createElement('div');
+    const sizeValueText = document.createElement('div');
+    const sizePixelText = document.createElement('div');
+    Object.assign(sizeInfo.style, { marginTop: '6px', color: '#cfe6ff', fontFamily: 'Arial, sans-serif', fontSize: '12px' });
+    sizeInfo.appendChild(sizeValueText);
+    sizeInfo.appendChild(sizePixelText);
+    function toggleSizeControls(show) {
+        // Always keep the Size Column dropdown visible so users can make a selection.
+        try { sizeDropdown.container.style.display = ''; } catch(_){}
+        // Only hide/show the computed size summary block.
+        sizeInfo.style.display = show ? '' : 'none';
+    }
+    toggleSizeControls(true);
     const radiusInput = document.createElement('input');
     radiusInput.type = 'number';
     radiusInput.min = '0';
@@ -2598,13 +2850,188 @@ function showStyleCustomizerPopup(catalogName) {
     Object.assign(radiusInput.style, inputStyle);
     const radiusGroup = document.createElement('div');
     const radiusLabel = document.createElement('label');
-    radiusLabel.textContent = 'Radius (pixels):';
+    radiusLabel.textContent = 'Radius (arcsec):';
     Object.assign(radiusLabel.style, { display: 'block', marginBottom: '5px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+    // Pixel scale info (arcsec/pixel) and live pixel conversion helper
+    const pixelScaleInfo = document.createElement('div');
+    const pixelScaleText = document.createElement('div');
+    const pixelRadiusText = document.createElement('div');
+    Object.assign(pixelScaleInfo.style, { marginTop: '6px', color: '#9ecbff', fontFamily: 'Arial, sans-serif', fontSize: '12px' });
+    pixelScaleInfo.appendChild(pixelScaleText);
+    pixelScaleInfo.appendChild(pixelRadiusText);
+    function getArcsecPerPixel() {
+        try {
+            const w = window?.fitsData?.wcs;
+            if (!w) {
+                try { console.log('[RegionStyle] getArcsecPerPixel: window.fitsData.wcs missing'); } catch (_) {}
+                return null;
+            }
+            // Prefer CD matrix; fall back to CDELT if needed
+            const cd11 = Number(w.CD1_1 ?? w.cd11 ?? w.CDELT1 ?? w.cdelt1 ?? 0);
+            const cd12 = Number(w.CD1_2 ?? w.cd12 ?? 0);
+            const cd21 = Number(w.CD2_1 ?? w.cd21 ?? 0);
+            const cd22 = Number(w.CD2_2 ?? w.cd22 ?? w.CDELT2 ?? w.cdelt2 ?? 0);
+            // Pixel scale along X and Y in deg/pixel
+            const scaleXDeg = Math.sqrt(cd11*cd11 + cd21*cd21);
+            const scaleYDeg = Math.sqrt(cd12*cd12 + cd22*cd22);
+            let arcsecPerPixel = 3600 * (isFinite(scaleXDeg) && isFinite(scaleYDeg) && scaleXDeg>0 && scaleYDeg>0
+                ? (scaleXDeg + scaleYDeg) / 2
+                : (isFinite(scaleXDeg) && scaleXDeg>0 ? scaleXDeg : (isFinite(scaleYDeg) && scaleYDeg>0 ? scaleYDeg : 0.0)));
+            if (!(arcsecPerPixel > 0)) return null;
+            try { console.log('[RegionStyle] getArcsecPerPixel:', { cd11, cd12, cd21, cd22, scaleXDeg, scaleYDeg, arcsecPerPixel }); } catch (_) {}
+            return arcsecPerPixel;
+        } catch (_) { return null; }
+    }
+    function computeMedian(nums) {
+        if (!Array.isArray(nums) || nums.length === 0) return null;
+        const arr = nums.slice().sort((a,b)=>a-b);
+        const mid = Math.floor(arr.length/2);
+        return (arr.length % 2) ? arr[mid] : (arr[mid-1] + arr[mid]) / 2;
+    }
+
+    async function refreshSizeSummary(asp) {
+        try { console.log('[RegionStyle] refreshSizeSummary called with asp:', asp); } catch (_) {}
+        try {
+            let sizeCol = sizeDropdown.hiddenSelect.value;
+            const cat = currentCatalogNameForApi || catalogNameForApi || '';
+            const cacheKey = `${cat}|${sizeCol}`;
+            let values = [];
+            // If no size column selected, hide summary and exit (no overlay-based text)
+            if (!sizeCol) {
+                toggleSizeControls(false);
+                sizeValueText.textContent = '';
+                sizePixelText.textContent = '';
+                lastSizeMedianArcsec = null;
+                try { console.log('[RegionStyle] No size column selected — hiding controls'); } catch (_) {}
+                return;
+            }
+            if (Array.isArray(window.catalogDataWithFlags) && window.catalogDataWithFlags.length > 0 && window.catalogDataWithFlagsName === cat) {
+                try { console.log('[RegionStyle] Using in-memory records for median. count=', window.catalogDataWithFlags.length, 'sizeCol=', sizeCol); } catch (_) {}
+                values = window.catalogDataWithFlags.map(r => parseFloat(r[sizeCol])).filter(v => isFinite(v) && v > 0);
+            } else if (Array.isArray(window.catalogDataWithFlags) && window.catalogDataWithFlags.length > 0 && window.catalogDataWithFlagsName !== cat) {
+                // Stale cache from a previous catalog — ignore and clear to prevent confusion
+                try { console.log('[RegionStyle] Ignoring stale in-memory records from', window.catalogDataWithFlagsName, 'expected', cat); } catch(_){}
+                window.catalogDataWithFlags = null;
+                window.catalogDataWithFlagsName = null;
+            } else if (typeof cat === 'string' && cat.length > 0) {
+                // Try cache first to avoid repeated requests
+                if (cacheKey in medianCache) {
+                    const cached = medianCache[cacheKey];
+                    if (typeof cached === 'number' && isFinite(cached)) {
+                        values = [cached];
+                        try { console.log('[RegionStyle] Using cached median arcsec=', cached, 'for', cacheKey); } catch (_) {}
+                    }
+                } else if (!medianPending[cacheKey]) {
+                    // Fallback: ask server for column analysis (returns JSON with median)
+                    const url = `/catalog-column-analysis/${encodeURIComponent(cat)}/${encodeURIComponent(sizeCol)}?sample_size=2000`;
+                    medianPending[cacheKey] = true;
+                    try { console.log('[RegionStyle] Fetching column analysis for median:', url); } catch (_) {}
+                    try {
+                        const resp = await apiFetch(url);
+                        try { console.log('[RegionStyle] Analysis fetch status:', resp.status, resp.statusText); } catch (_) {}
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            const median = data?.numeric_stats?.median;
+                            if (typeof median === 'number' && isFinite(median)) {
+                                medianCache[cacheKey] = median;
+                                values = [median];
+                                try { console.log('[RegionStyle] Analysis median arcsec=', median); } catch (_) {}
+                            } else {
+                                try { console.log('[RegionStyle] Analysis missing numeric_stats.median'); } catch (_) {}
+                            }
+                        }
+                    } finally {
+                        delete medianPending[cacheKey];
+                    }
+                } else {
+                    // Already fetching; skip this cycle
+                    try { console.log('[RegionStyle] Analysis fetch already pending for', cacheKey); } catch (_) {}
+                    return;
+                }
+            }
+
+            if (values.length > 0 && asp && asp > 0) {
+                const medianArcsec = computeMedian(values);
+                const medianPix = medianArcsec / asp;
+                try { console.log('[RegionStyle] Median computed:', { sizeCol, count: values.length, medianArcsec, medianPix, asp }); } catch (_) {}
+                lastSizeMedianArcsec = medianArcsec;
+                toggleSizeControls(true);
+                sizeValueText.textContent = `Size column (${sizeCol}) median: ${medianArcsec.toFixed(3)} arcsec`;
+                sizePixelText.textContent = `≈ ${medianPix.toFixed(2)} px`;
+            } else {
+                try { console.log('[RegionStyle] No values or asp not ready — hiding size controls', { valuesCount: values.length, asp }); } catch (_) {}
+                toggleSizeControls(false);
+                sizeValueText.textContent = '';
+                sizePixelText.textContent = '';
+            }
+        } catch (_) {
+            try { console.log('[RegionStyle] refreshSizeSummary threw'); } catch (_) {}
+            toggleSizeControls(false);
+            sizeValueText.textContent = '';
+            sizePixelText.textContent = '';
+        }
+    }
+
+    async function refreshPixelScaleReadout() {
+        const asp = getArcsecPerPixel();
+        try { console.log('[RegionStyle] refreshPixelScaleReadout asp=', asp); } catch (_) {}
+        if (asp) {
+            pixelScaleText.textContent = `Pixel size: ${asp.toFixed(4)} arcsec/pixel`;
+            const rArcsec = parseFloat(radiusInput.value);
+            try { console.log('[RegionStyle] Radius arcsec input=', rArcsec); } catch (_) {}
+            if (isFinite(rArcsec) && rArcsec > 0) {
+                const rPix = rArcsec / asp;
+                try { console.log('[RegionStyle] Radius px=', rPix); } catch (_) {}
+                pixelRadiusText.textContent = `Radius ≈ ${rPix.toFixed(2)} px`;
+            } else {
+                pixelRadiusText.textContent = '';
+            }
+            // Update size column summary (median arcsec and pixel)
+            await refreshSizeSummary(asp);
+        } else {
+            pixelScaleText.textContent = 'Pixel size: (unknown - WCS not ready)';
+            pixelRadiusText.textContent = '';
+            toggleSizeControls(false);
+            sizeValueText.textContent = '';
+            sizePixelText.textContent = '';
+        }
+    }
+    radiusInput.addEventListener('input', refreshPixelScaleReadout);
+    // Update size summary when size column selection changes, and toggle radius editability
+    sizeDropdown.hiddenSelect.addEventListener('change', () => {
+        const hasSize = !!sizeDropdown.hiddenSelect.value;
+        // Disable manual radius when a size column is chosen
+        radiusInput.disabled = hasSize;
+        radiusInput.style.opacity = hasSize ? '0.6' : '1';
+        radiusInput.style.pointerEvents = hasSize ? 'none' : 'auto';
+        refreshPixelScaleReadout();
+    });
+    // Initial attempt and light polling to handle WCS arriving after popup opens
+    setTimeout(refreshPixelScaleReadout, 0);
+    (function pollWcsReady(maxTries = 12, intervalMs = 500) {
+        let tries = 0;
+        const timer = setInterval(() => {
+            tries++;
+            refreshPixelScaleReadout();
+            const hasWcs = !!(window?.parsedWCS?.hasWCS || window?.fitsData?.wcs);
+            if (hasWcs || tries >= maxTries) clearInterval(timer);
+        }, intervalMs);
+    })();
+    // Also refresh once when WCS becomes available (event-driven)
+    try {
+        const onWcsReady = () => {
+            try { console.log('[RegionStyle] wcs-ready event received'); } catch(_) {}
+            refreshPixelScaleReadout();
+        };
+        window.addEventListener('wcs-ready', onWcsReady, { once: true });
+    } catch (_) {}
     radiusGroup.appendChild(radiusLabel);
     radiusGroup.appendChild(radiusInput);
+    radiusGroup.appendChild(pixelScaleInfo);
     coordsFieldSet.appendChild(raDropdown.container);
     coordsFieldSet.appendChild(decDropdown.container);
     coordsFieldSet.appendChild(sizeDropdown.container);
+    coordsFieldSet.appendChild(sizeInfo);
     coordsFieldSet.appendChild(radiusGroup);
     leftColumn.appendChild(coordsFieldSet);
 
@@ -2708,7 +3135,7 @@ function showStyleCustomizerPopup(catalogName) {
         console.log('populateDropdowns called with:', catalogNameParam);
         console.log('Using catalogNameForApi:', catalogNameForApi);
 
-        fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
+        apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogNameForApi)}`)
             .then(response => { 
                 if (!response.ok) {
                     throw new Error(`Failed to load columns: ${response.status} - ${response.statusText}`);
@@ -2761,7 +3188,7 @@ function showStyleCustomizerPopup(catalogName) {
 
                 const raKeywords = ['ra', 'right_ascension'];
                 const decKeywords = ['dec', 'declination'];
-                const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'major', 'maj'];
+                const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'bmaj', 'maj'];
 
                 if (allColumns.length > 0) {
                     const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
@@ -2791,9 +3218,14 @@ function showStyleCustomizerPopup(catalogName) {
 
     sizeDropdown.hiddenSelect.addEventListener('change', () => {
         const hasSizeColumn = sizeDropdown.hiddenSelect.value !== '';
-        radiusInput.disabled = hasSizeColumn;
-        radiusInput.style.opacity = hasSizeColumn ? '0.5' : '1';
-        if (hasSizeColumn) radiusInput.value = '';
+        // Always allow manual entry. If size column is chosen, we still keep input enabled
+        // so users can override.
+        radiusInput.disabled = false;
+        radiusInput.style.opacity = '1';
+        if (hasSizeColumn && radiusInput.value) {
+            // Optional: clear to avoid mixing values; comment out if you prefer retaining
+            // radiusInput.value = '';
+        }
     });
     
     function updatePreview() {
@@ -2812,6 +3244,12 @@ function showStyleCustomizerPopup(catalogName) {
     Object.assign(viewCatalogButton.style, { padding: '8px 16px', border: '1px solid #666', borderRadius: '4px', backgroundColor: '#555', color: '#fff', cursor: 'pointer', marginRight: 'auto' });
     viewCatalogButton.onclick = (e) => {
         e.preventDefault();
+        try {
+            const key = catalogNameForApi.startsWith('catalogs/') ? catalogNameForApi.replace('catalogs/', '') : catalogNameForApi;
+            if (window.catalogBinaryCache && window.catalogBinaryCache[key]) {
+                delete window.catalogBinaryCache[key];
+            }
+        } catch (_) {}
         showCatalogViewer(catalogNameForApi);
     };
 
@@ -2821,11 +3259,37 @@ function showStyleCustomizerPopup(catalogName) {
     
 
     applyButton.addEventListener('click', () => {
+        // Compute pixel scale and radius in pixels
+        const arcsecPerPixel = (function(){
+            try {
+                const w = window?.fitsData?.wcs;
+                if (!w) return null;
+                const cd11 = Number(w.CD1_1 ?? w.cd11 ?? w.CDELT1 ?? w.cdelt1 ?? 0);
+                const cd12 = Number(w.CD1_2 ?? w.cd12 ?? 0);
+                const cd21 = Number(w.CD2_1 ?? w.cd21 ?? 0);
+                const cd22 = Number(w.CD2_2 ?? w.cd22 ?? w.CDELT2 ?? w.cdelt2 ?? 0);
+                const scaleXDeg = Math.sqrt(cd11*cd11 + cd21*cd21);
+                const scaleYDeg = Math.sqrt(cd12*cd12 + cd22*cd22);
+                let asp = 3600 * (isFinite(scaleXDeg) && isFinite(scaleYDeg) && scaleXDeg>0 && scaleYDeg>0
+                    ? (scaleXDeg + scaleYDeg) / 2
+                    : (isFinite(scaleXDeg) && scaleXDeg>0 ? scaleXDeg : (isFinite(scaleYDeg) && scaleYDeg>0 ? scaleYDeg : 0.0)));
+                if (!(asp > 0)) return null;
+                return asp;
+            } catch (_) { return null; }
+        })();
+        // Prefer size column median (arcsec) for radius when available; otherwise use manual radius input
+        const sizeColMedianArcsec = (typeof lastSizeMedianArcsec === 'number' && isFinite(lastSizeMedianArcsec)) ? lastSizeMedianArcsec : null;
+        const radiusArcsec = sizeColMedianArcsec ?? (radiusInput.value ? parseFloat(radiusInput.value) : 5);
+        const radiusPixels = (arcsecPerPixel && arcsecPerPixel > 0 && isFinite(radiusArcsec)) ? (radiusArcsec / arcsecPerPixel) : radiusArcsec;
         const newStyles = {
             raColumn: raDropdown.hiddenSelect.value,
             decColumn: decDropdown.hiddenSelect.value,
             sizeColumn: sizeDropdown.hiddenSelect.value,
-            radius: radiusInput.value ? parseFloat(radiusInput.value) : 5,
+            // Send pixel-based radius to overlay/plotting, plus arcsec metadata
+            radius: radiusPixels,
+            radius_pixels: radiusPixels,
+            radius_arcsec: radiusArcsec,
+            arcsec_per_pixel: arcsecPerPixel,
             borderColor: borderColorInput.value,
             backgroundColor: transparentCheckbox.checked ? 'transparent' : bgColorInput.value,
             borderWidth: parseInt(borderWidthSlider.value, 10),
@@ -2837,7 +3301,9 @@ function showStyleCustomizerPopup(catalogName) {
         console.log('  - backgroundColor:', transparentCheckbox.checked ? 'transparent' : bgColorInput.value);
         console.log('  - borderWidth (from slider):', parseInt(borderWidthSlider.value, 10));
         console.log('  - opacity (from slider):', parseFloat(opacitySlider.value));
-        console.log('  - radius:', radiusInput.value ? parseFloat(radiusInput.value) : 5);
+        console.log('  - arcsec_per_pixel:', arcsecPerPixel);
+        console.log('  - radius_arcsec:', radiusArcsec);
+        console.log('  - radius_pixels:', radiusPixels);
         console.log('  - Complete newStyles object:', newStyles);
         
         // Get the catalog name for loading
@@ -3260,39 +3726,59 @@ async function uploadCatalog() {
         showNotification(true, 'Uploading catalog...');
 
         try {
-            const response = await fetch('/upload-catalog/', {
-                method: 'POST',
-                body: formData,
-            });
+            // Use XHR with session header and circular progress UI (#progress-container)
+            const sid = (typeof sessionStorage !== 'undefined') ? (sessionStorage.getItem('sid') || '') : '';
+            const progressContainer = document.getElementById('progress-container');
+            const progressBar = document.getElementById('progress-bar');
+            const progressEta = document.getElementById('progress-eta');
 
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
-                throw new Error(`Upload failed: ${response.status} - ${errorData.error || 'Unknown error'}`);
-            }
+            const showCircleProgress = (show) => {
+                if (!progressContainer) return;
+                progressContainer.style.display = show ? '' : 'none';
+                if (progressEta && show) progressEta.textContent = 'Uploading...';
+            };
+            const updateCircleProgress = (percent) => {
+                if (!progressBar) return;
+                const p = Math.max(0, Math.min(100, Number(percent || 0)));
+                progressBar.style.strokeDashoffset = String(100 - p);
+                if (progressEta) progressEta.textContent = `${Math.round(p)}%`;
+            };
 
-            const result = await response.json();
-            const newFilename = result.filename; // Get the unique filename from the response
-
-            showNotification(result.message || 'Catalog uploaded successfully!', 3000, 'success');
-            
-            // --- REMOVED MAPPING POPUP ---
-            // Don't show the mapping popup anymore
-            // showCatalogFieldMappingPopup(newFilename);
-
-            // Refresh the catalog list in the dropdown instead
-            if (typeof refreshCatalogs === 'function') {
-                 refreshCatalogs();
-            }
-            
-            // Optional: Automatically load the newly uploaded catalog?
-            // loadCatalog(newFilename);
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/upload-catalog/', true);
+            if (sid) xhr.setRequestHeader('X-Session-ID', sid);
+            xhr.upload.onprogress = (evt) => {
+                if (evt.lengthComputable) updateCircleProgress((evt.loaded / Math.max(1, evt.total)) * 100);
+            };
+            xhr.onreadystatechange = () => {
+                if (xhr.readyState !== 4) return;
+                try {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        const result = JSON.parse(xhr.responseText || '{}');
+                        showNotification((result && result.message) || 'Catalog uploaded successfully!', 3000, 'success');
+                        // Force dropdown to show uploads tab on next render and refresh lists
+                        window.__forceCatalogTab = 'uploads';
+                        if (typeof refreshCatalogs === 'function') refreshCatalogs();
+                    } else {
+                        let errMsg = 'Upload failed';
+                        try { errMsg = (JSON.parse(xhr.responseText || '{}').error) || errMsg; } catch (_) {}
+                        showNotification(`Error: ${xhr.status} - ${errMsg}`, 4000, 'error');
+                    }
+                } finally {
+                    showCircleProgress(false);
+                    updateCircleProgress(0);
+                    showNotification(false);
+                    document.body.removeChild(fileInput);
+                }
+            };
+            showCircleProgress(true);
+            updateCircleProgress(0);
+            xhr.send(formData);
 
         } catch (error) {
             console.error('Error uploading catalog:', error);
             showNotification(`Error: ${error.message}`, 4000, 'error');
-        } finally {
             showNotification(false);
-            // Clean up the dynamically created input element
             document.body.removeChild(fileInput);
         }
     });
@@ -3370,6 +3856,9 @@ function clearAllCatalogs() {
     window.loadedCatalogs = [];
     window.catalogData = [];
     window.catalogDataForOverlay = [];
+    // Also clear any cached full catalog-with-flags data to avoid stale in-memory usage
+    window.catalogDataWithFlags = null;
+    window.catalogDataWithFlagsName = null;
 
     // Clear the catalog selection dropdown in the UI
     const dropdown = document.getElementById('catalog-select');

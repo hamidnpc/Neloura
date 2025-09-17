@@ -316,6 +316,9 @@ window.canvasPopup = {
         const hasY = 'y' in this.content;
         const hasRA = 'ra' in this.content;
         const hasDec = 'dec' in this.content;
+        const hasImgX = 'imageX' in this.content;
+        const hasImgY = 'imageY' in this.content;
+
         const hasRadiusPixels = 'radius_pixels' in this.content;
         
         if (hasX && hasY) baseHeight += 24;
@@ -336,22 +339,22 @@ window.canvasPopup = {
         
         // Calculate final height
         this.height = Math.min(baseHeight + remainingProps * 22, 400);
-        
+        // console.log('hasImgX:::::', this.content.imageX, this.content.imageY);
+        // console.log('x:::::', this.content.x, this.content.y);
+        // console.log('this.content::::: need', this.content.x_bottom_left, this.content.y_bottom_left);
         // Update DOM content
         const contentElement = document.getElementById('canvas-dom-popup-content');
         if (contentElement) {
             let html = '';
-            
-            // Format coordinates with 6 decimal places
-            if (hasX && hasY) {
-                const x = typeof this.content.x === 'number' ? this.content.x.toFixed(2) : this.content.x;
-                const y = typeof this.content.y === 'number' ? this.content.y.toFixed(2) : this.content.y;
-                html += `
-                    <div style="margin-bottom: 8px;">
-                        <span style="color: #aaa;">Position (x, y):</span> ${x}, ${y}
-                    </div>
-                `;
-            }
+                    // Format coordinates with 6 decimal places
+        const x = typeof this.content.x_bottom_left === 'number' ? this.content.x_bottom_left.toFixed(2) : this.content.x_bottom_left;
+        const y = typeof this.content.y_bottom_left === 'number' ? this.content.y_bottom_left.toFixed(2) : this.content.y_bottom_left;
+        html += `
+            <div style="margin-bottom: 8px;">
+                <span style="color: #aaa;">Position (image x, y):</span> ${x}, ${y}
+            </div>
+        `;
+        
             
             if (hasRA && hasDec) {
                 const ra = typeof this.content.ra === 'number' ? this.content.ra.toFixed(6) : this.content.ra;
@@ -383,6 +386,8 @@ window.canvasPopup = {
                 galaxyName = this.content.name.trim();
             } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
                 galaxyName = this.content.galaxy.trim();
+            } else if (this.content.PHANGS_GALAXY && typeof this.content.PHANGS_GALAXY === 'string' && this.content.PHANGS_GALAXY.trim() !== "") {
+                galaxyName = this.content.PHANGS_GALAXY.trim();
             } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
                 galaxyName = window.galaxyNameFromSearch.trim();
             }
@@ -392,13 +397,21 @@ window.canvasPopup = {
             `;
             
             // Add buttons container with all three buttons
-            html += `
+            if(this.content.source_type === 'peak_finder'){
+                html += `
+               
+            `;
+            }
+            else{
+                html += `
                 <div style="margin-top: 12px; text-align: center;">
                     <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show SED</button>
                     <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show Properties</button>
                     <button id="show-rgb-btn" class="rgb-button" style="padding: 6px 12px; background-color: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show RGB</button>
                 </div>
             `;
+            }
+          
             
             // Additional properties section removed - only showing coordinates and buttons
             
@@ -421,7 +434,7 @@ window.canvasPopup = {
                                                 // Get galaxy name (robust)
                         const getGalaxyFrom = (obj) => {
                             if (!obj) return null;
-                            const candidates = [obj.galaxy_name, obj.NAME, obj.name, obj.galaxy];
+                            const candidates = [obj.galaxy_name, obj.PHANGS_GALAXY, obj.NAME, obj.name, obj.galaxy];
                             for (const v of candidates) {
                                 if (typeof v === 'string') {
                                     const s = v.trim();
@@ -486,17 +499,20 @@ window.canvasPopup = {
                         }
                         
                         let galaxyNameForRgb = "UnknownGalaxy";
-                        
-                        // Try to get galaxy name from content or global variables
-                        if (this.content.galaxy_name && typeof this.content.galaxy_name === 'string' && this.content.galaxy_name.trim() !== "") {
-                            galaxyNameForRgb = this.content.galaxy_name.trim();
-                        } else if (this.content.NAME && typeof this.content.NAME === 'string' && this.content.NAME.trim() !== "") {
-                            galaxyNameForRgb = this.content.NAME.trim();
-                        } else if (this.content.name && typeof this.content.name === 'string' && this.content.name.trim() !== "") {
-                            galaxyNameForRgb = this.content.name.trim();
-                        } else if (this.content.galaxy && typeof this.content.galaxy === 'string' && this.content.galaxy.trim() !== "") {
-                            galaxyNameForRgb = this.content.galaxy.trim();
-                        } else if (window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
+                        // Flexible resolver (case-insensitive, multiple aliases)
+                        try {
+                            const lowerToOrig = {};
+                            for (const k in this.content) lowerToOrig[k.toLowerCase()] = k;
+                            const candidates = ['gal_name','PHANGS_GALAXY','phangs_galaxy','galaxy','galaxy_name','name','object_name','obj_name','target'];
+                            for (const key of candidates) {
+                                const orig = lowerToOrig[key];
+                                if (orig && typeof this.content[orig] === 'string') {
+                                    const v = this.content[orig].trim();
+                                    if (v) { galaxyNameForRgb = v; break; }
+                                }
+                            }
+                        } catch(_) {}
+                        if (galaxyNameForRgb === 'UnknownGalaxy' && window.galaxyNameFromSearch && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== "") {
                             galaxyNameForRgb = window.galaxyNameFromSearch.trim();
                         }
                         
@@ -615,7 +631,7 @@ function canvasHighlightSource(selectedIndex) {
 
 
 function canvasUpdateOverlay() {
-    // console.log('canvasUpdateOverlay called');
+    // console.log('info:::::',msource.x, source.y, source.radius_pixels);
     const activeOsViewer = window.viewer || window.tiledViewer;
     if (!activeOsViewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
         return;
@@ -630,18 +646,37 @@ function canvasUpdateOverlay() {
     // Reset source map
     window.catalogSourceMap = [];
 
-    // Show all sources - no visibility filtering
+    // Resolve image coordinates for each source (handle RC maps / missing x,y)
     const visibleSources = catalogData.filter((source, index) => {
-        if (!source || typeof source.x === 'undefined' || typeof source.y === 'undefined') {
-            return false;
+        if (!source) return false;
+
+        // Prefer explicit image coords if finite
+        let imgX = (Number.isFinite(source.x) ? source.x : (Number.isFinite(source.x_pixels) ? source.x_pixels : null));
+        let imgY = (Number.isFinite(source.y) ? source.y : (Number.isFinite(source.y_pixels) ? source.y_pixels : null));
+
+        // If missing, compute from RA/Dec via current WCS
+        if ((!Number.isFinite(imgX) || !Number.isFinite(imgY)) && Number.isFinite(source.ra) && Number.isFinite(source.dec) && window.parsedWCS && window.parsedWCS.hasWCS) {
+            try {
+                const p = celestialToPixel(source.ra, source.dec, window.parsedWCS);
+                if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                    imgX = p.x;
+                    imgY = p.y;
+                }
+            } catch (_) {}
         }
-        
+
+        if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) return false;
+
+        // Persist resolved coordinates so renderer can use them
+        source.x = imgX;
+        source.y = imgY;
+
         // Ensure the source has an index property
         if (typeof source.index === 'undefined') {
             source.index = index;
         }
-        
-        return true; // Show all sources
+
+        return true;
     });
 
     // Draw each source with its individual style
@@ -780,7 +815,7 @@ function canvasHandleClick_forCanvasPopup(event) {
     
     // Show info if source found
     if (closestSource) {
-        // console.log("Found closest source:", closestSource);
+        console.log("Found closest source:", closestSource.x, closestSource.y, closestSource.radius );
         
         // Add better error checking for sourceIndex
         if (typeof closestSource.sourceIndex === 'undefined') {
@@ -1022,6 +1057,8 @@ function connectPopupToSedFunctions() {
                         if (sourceObj && typeof sourceObj === 'object') {
                             if (typeof sourceObj.galaxy_name === 'string' && sourceObj.galaxy_name.trim() !== "") {
                                 galaxyNameForSed = sourceObj.galaxy_name.trim();
+                            } else if (typeof sourceObj.PHANGS_GALAXY === 'string' && sourceObj.PHANGS_GALAXY.trim() !== "") {
+                                galaxyNameForSed = sourceObj.PHANGS_GALAXY.trim();
                             } else if (typeof sourceObj.NAME === 'string' && sourceObj.NAME.trim() !== "") {
                                 galaxyNameForSed = sourceObj.NAME.trim();
                             } else if (typeof sourceObj.name === 'string' && sourceObj.name.trim() !== "") {
@@ -1036,6 +1073,15 @@ function connectPopupToSedFunctions() {
                     
                         // Call the showSed function with galaxy name
                         if (typeof window.showSed === 'function') {
+                            // Forward RA/DEC column overrides for SED
+                            try {
+                                const apiName = (catalogName || '').toString().split('/').pop();
+                                const ov = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[catalogName] || window.catalogOverridesByCatalog[apiName])) || {};
+                                if (ov && (ov.ra_col || ov.dec_col)) {
+                                    // Append to URL via global hook consumed by sed.js through apiFetch
+                                    window.__lastSedOverrides = { ra_col: ov.ra_col || null, dec_col: ov.dec_col || null };
+                                }
+                            } catch(_) {}
                             window.showSed(sourceObj.ra, sourceObj.dec, catalogName, galaxyNameForSed);
                         }
                     } else if (isPropLinkClicked) {
@@ -1047,6 +1093,14 @@ function connectPopupToSedFunctions() {
                         
                         // Call the showProperties function with the source coordinates
                         if (typeof window.showProperties === 'function') {
+                            try {
+                                const apiName = (catalogName || '').toString().split('/').pop();
+                                const ov = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[catalogName] || window.catalogOverridesByCatalog[apiName])) || {};
+                                if (ov && (ov.ra_col || ov.dec_col)) {
+                                    window.catalogOverridesByCatalog = window.catalogOverridesByCatalog || {};
+                                    window.catalogOverridesByCatalog[apiName] = { ...window.catalogOverridesByCatalog[apiName], ...ov };
+                                }
+                            } catch(_) {}
                             window.showProperties(sourceObj.ra, sourceObj.dec, catalogName);
                         }
                     }
@@ -1062,109 +1116,109 @@ connectPopupToSedFunctions();
 // This is the version that *should* be calling showRegionInfo from main.js
 // -- MODIFIED FOR MAIN.JS POPUP ---
 // --- MODIFICATION START ---
-// This function is intended to replace the one below if using main.js popups
-function canvasHandleClick_forMainJsPopup(event) { // RENAMED and THIS IS THE INTENDED HANDLER
-    // console.log("[[DEBUG]] INTENDED canvasHandleClick (for showRegionInfo) CALLED. Event:", event);
+// // This function is intended to replace the one below if using main.js popups
+// function canvasHandleClick_forMainJsPopup(event) { // RENAMED and THIS IS THE INTENDED HANDLER
+//     // console.log("[[DEBUG]] INTENDED canvasHandleClick (for showRegionInfo) CALLED. Event:", event);
 
-    if (!window.catalogSourceMap || !window.catalogDataForOverlay) {
-        console.error("Missing data for click handling", {
-            sourcesAvailable: !!window.catalogSourceMap,
-            catalogAvailable: !!window.catalogDataForOverlay
-        });
-        return;
-    }
+//     if (!window.catalogSourceMap || !window.catalogDataForOverlay) {
+//         console.error("Missing data for click handling", {
+//             sourcesAvailable: !!window.catalogSourceMap,
+//             catalogAvailable: !!window.catalogDataForOverlay
+//         });
+//         return;
+//     }
     
-    // Get click coordinates relative to the viewer
-    const viewerElement = document.getElementById('openseadragon');
-    const rect = viewerElement.getBoundingClientRect();
-    const clickX = event.clientX - rect.left;
-    const clickY = event.clientY - rect.top;
+//     // Get click coordinates relative to the viewer
+//     const viewerElement = document.getElementById('openseadragon');
+//     const rect = viewerElement.getBoundingClientRect();
+//     const clickX = event.clientX - rect.left;
+//     const clickY = event.clientY - rect.top;
     
-    console.log("Click coordinates:", clickX, clickY);
+//     console.log("Click coordinates:", clickX, clickY);
     
-    // Check if popup is already active and was clicked
-    if (window.canvasPopup.active) {
-        // Check if close button was clicked
-        if (window.canvasPopup.isCloseButtonClicked(clickX, clickY)) {
-            window.canvasPopup.hide();
-            return;
-        }
+//     // Check if popup is already active and was clicked
+//     if (window.canvasPopup.active) {
+//         // Check if close button was clicked
+//         if (window.canvasPopup.isCloseButtonClicked(clickX, clickY)) {
+//             window.canvasPopup.hide();
+//             return;
+//         }
         
-        // Check if drag handle was clicked (or header area)
-        if (window.canvasPopup.isDragHandleClicked(clickX, clickY) || 
-           (window.canvasPopup.isPopupClicked(clickX, clickY) && clickY < window.canvasPopup.y - window.canvasPopup.height/2 + 36)) {
-            window.canvasPopup.startDrag(clickX, clickY);
-            return;
-        }
+//         // Check if drag handle was clicked (or header area)
+//         if (window.canvasPopup.isDragHandleClicked(clickX, clickY) || 
+//            (window.canvasPopup.isPopupClicked(clickX, clickY) && clickY < window.canvasPopup.y - window.canvasPopup.height/2 + 36)) {
+//             window.canvasPopup.startDrag(clickX, clickY);
+//             return;
+//         }
         
-        // Check if popup area was clicked (to prevent processing clicks through it)
-        if (window.canvasPopup.isPopupClicked(clickX, clickY)) {
-            return;
-        }
-    }
+//         // Check if popup area was clicked (to prevent processing clicks through it)
+//         if (window.canvasPopup.isPopupClicked(clickX, clickY)) {
+//             return;
+//         }
+//     }
     
-    // Find closest source to the click point
-    let closestSource = null;
-    let closestDistance = Infinity;
-    const hitRadius = 10;
+//     // Find closest source to the click point
+//     let closestSource = null;
+//     let closestDistance = Infinity;
+//     const hitRadius = 10;
     
-    for (const source of window.catalogSourceMap) {
-        const dx = source.x - clickX;
-        const dy = source.y - clickY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+//     for (const source of window.catalogSourceMap) {
+//         const dx = source.x - clickX;
+//         const dy = source.y - clickY;
+//         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        if (distance <= Math.max(hitRadius, source.radius) && distance < closestDistance) {
-            closestDistance = distance;
-            closestSource = source;
-        }
-    }
+//         if (distance <= Math.max(hitRadius, source.radius) && distance < closestDistance) {
+//             closestDistance = distance;
+//             closestSource = source;
+//         }
+//     }
     
-    // Show info if source found
-    if (closestSource) {
-        console.log("Found closest source (in the truly active canvasHandleClick that originally called window.canvasPopup.show):", closestSource);
-        const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
-        if (!sourceObj) {
-            console.error("Source object not found at index (in truly active canvasHandleClick):", closestSource.sourceIndex);
-            return;
-        }
+//     // Show info if source found
+//     if (closestSource) {
+//         console.log("Found closest source (in the truly active canvasHandleClick that originally called window.canvasPopup.show):", closestSource);
+//         const sourceObj = window.catalogDataForOverlay[closestSource.sourceIndex];
+//         if (!sourceObj) {
+//             console.error("Source object not found at index (in truly active canvasHandleClick):", closestSource.sourceIndex);
+//             return;
+//         }
         
-        console.log("Source object (in truly active canvasHandleClick):", sourceObj);
+//         console.log("Source object (in truly active canvasHandleClick):", sourceObj);
         
-        // Highlight the source on canvas
-        canvasHighlightSource(closestSource.sourceIndex);
+//         // Highlight the source on canvas
+//         canvasHighlightSource(closestSource.sourceIndex);
         
-        // --- MODIFICATION START ---
-        // REPLACED the original window.canvasPopup.show(...) call with this:
-        const tempDot = {
-            dataset: {
-                x: closestSource.imageX, // Use imageX from the source map
-                y: closestSource.imageY, // Use imageY from the source map
-                ra: closestSource.ra,
-                dec: closestSource.dec,
-                radius: closestSource.radius_pixels, // Use actual radius if available
-                index: closestSource.sourceIndex
-            }
-        };
+//         // --- MODIFICATION START ---
+//         // REPLACED the original window.canvasPopup.show(...) call with this:
+//         const tempDot = {
+//             dataset: {
+//                 x: closestSource.imageX, // Use imageX from the source map
+//                 y: closestSource.imageY, // Use imageY from the source map
+//                 ra: closestSource.ra,
+//                 dec: closestSource.dec,
+//                 radius: closestSource.radius_pixels, // Use actual radius if available
+//                 index: closestSource.sourceIndex
+//             }
+//         };
         
-        console.log("[TRULY Active canvasHandleClick] Calling showRegionInfo from main.js. tempDot:", tempDot, "sourceObj:", sourceObj, "event:", event);
+//         console.log("[TRULY Active canvasHandleClick] Calling showRegionInfo from main.js. tempDot:", tempDot, "sourceObj:", sourceObj, "event:", event);
         
-        if (typeof showRegionInfo === 'function') {
-            // console.log("[[DEBUG]] INTENDED canvasHandleClick: Attempting to call showRegionInfo.");
-            showRegionInfo(tempDot, sourceObj, event); // Pass the original event for positioning
-        } else {
-            console.error("[TRULY Active canvasHandleClick] showRegionInfo function from main.js is NOT defined or not accessible!");
-        }
-        // --- MODIFICATION END ---
+//         if (typeof showRegionInfo === 'function') {
+//             // console.log("[[DEBUG]] INTENDED canvasHandleClick: Attempting to call showRegionInfo.");
+//             showRegionInfo(tempDot, sourceObj, event); // Pass the original event for positioning
+//         } else {
+//             console.error("[TRULY Active canvasHandleClick] showRegionInfo function from main.js is NOT defined or not accessible!");
+//         }
+//         // --- MODIFICATION END ---
 
-    } else {
-        console.log("No source found near click position");
+//     } else {
+//         console.log("No source found near click position");
         
-        // If clicking empty space, hide any active popup (this was part of the original logic)
-        if (window.canvasPopup && window.canvasPopup.active) {
-            window.canvasPopup.hide();
-        }
-    }
-}
+//         // If clicking empty space, hide any active popup (this was part of the original logic)
+//         if (window.canvasPopup && window.canvasPopup.active) {
+//             window.canvasPopup.hide();
+//         }
+//     }
+// }
 
 
 // Update the canvasHandleClick function to handle drag and drop
@@ -1238,7 +1292,16 @@ function canvasHandleClick_forCanvasPopup(event) { // RENAMED. THIS WAS THE CURR
         // To ensure all data is present for the popup, we'll use the rich `closestSource`
         // object we created earlier, which now contains all necessary properties.
         // We will merge it with any extra properties from `sourceObj` just in case.
-        const mergedSourceData = { ...sourceObj, ...closestSource };
+        // const mergedSourceData = { ...sourceObj, ...closestSource };
+        
+        const mergedSourceData = {
+            ...closestSource,
+            ...sourceObj,               // sourceObj.x/sourceObj.y (image pixels) win
+            imageX: closestSource.imageX,
+            imageY: closestSource.imageY,
+            screenX: closestSource.x,
+            screenY: closestSource.y
+          };
 
         console.log("Source object for popup:", mergedSourceData);
 
@@ -1253,6 +1316,17 @@ function canvasHandleClick_forCanvasPopup(event) { // RENAMED. THIS WAS THE CURR
             mergedSourceData // Pass the complete source data
         );
         // --- FIX END ---
+
+        console.log(
+            `[Hit] screen: (${closestSource.x.toFixed(2)}, ${closestSource.y.toFixed(2)}) | ` +
+            `image: (${
+              Number.isFinite(closestSource.imageX) ? closestSource.imageX.toFixed(2) : 'NA'
+            }, ${
+              Number.isFinite(closestSource.imageY) ? closestSource.imageY.toFixed(2) : 'NA'
+            }) | r(px): ${
+              typeof closestSource.radius === 'number' ? closestSource.radius.toFixed(2) : closestSource.radius
+            } | idx: ${closestSource.sourceIndex}`
+          );
 
     } else {
         console.log("No source found near click position");
@@ -1336,6 +1410,26 @@ function canvasAddCatalogOverlay(catalogData) {
     
     // Store catalog data for later use
     window.catalogDataForOverlay = catalogData;
+
+    // Helper to resolve galaxy name from any common column (case-insensitive)
+    function getGalaxyFlexible(obj) {
+        if (!obj || typeof obj !== 'object') return null;
+        const lowerToOrig = {};
+        try {
+            for (const k in obj) {
+                lowerToOrig[k.toLowerCase()] = k;
+            }
+        } catch(_) {}
+        const candidates = ['gal_name','phangs_galaxy','galaxy','galaxy_name','name','object_name','obj_name','target'];
+        for (const key of candidates) {
+            const orig = lowerToOrig[key];
+            if (orig && typeof obj[orig] === 'string') {
+                const v = obj[orig].trim();
+                if (v) return v;
+            }
+        }
+        return null;
+    }
     
     // Create container for the canvas
     const container = document.createElement('div');

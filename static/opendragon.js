@@ -38,10 +38,7 @@ function runPeakFinder(filepath, customParams = {}) {
         formData.append(key, customParams[key]);
     });
 
-    fetch('/start-peak-finder/', {
-        method: 'POST',
-        body: formData
-    })
+     apiFetch('/start-peak-finder/', { method: 'POST', body: formData })
     .then(response => response.json())
     .then(data => {
         if (data.error || !data.job_id) {
@@ -52,7 +49,7 @@ function runPeakFinder(filepath, customParams = {}) {
         console.log(`Job started with ID: ${jobId}`);
 
         const intervalId = setInterval(() => {
-            fetch(`/peak-finder-status/${jobId}`)
+            apiFetch(`/peak-finder-status/${jobId}`)
             .then(response => response.json())
             .then(statusData => {
                 if (statusData.status === 'complete') {

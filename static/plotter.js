@@ -124,8 +124,13 @@ function generateHistogram() {
     // Add the loading container to the plot area
     plotArea.appendChild(loadingContainer);
     
-    // Use the existing data if available
-    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0) {
+    // Determine current catalog
+    const catalogSelect = document.getElementById('catalog-select');
+    const selectedCatalog = catalogSelect ? catalogSelect.value : null;
+    const catalogToUse = selectedCatalog || activeCatalog;
+
+    // Use the existing data only if it matches the current catalog
+    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0 && window.sourcePropertiesCatalogName === catalogToUse) {
         // Process the existing data
         processHistogramData(
             plotArea, 
@@ -150,11 +155,8 @@ function generateHistogram() {
         return;
     }
     
-    // If we don't have data already, load it from the selected catalog
-    const catalogSelect = document.getElementById('catalog-select');
-    const selectedCatalog = catalogSelect ? catalogSelect.value : null;
-    
-    if (!selectedCatalog && !activeCatalog) {
+    // If we don't have data already or cache is for another catalog, load it
+    if (!catalogToUse) {
         // Clear loading container and show error message
         plotArea.innerHTML = '';
         
@@ -173,13 +175,33 @@ function generateHistogram() {
     }
     
     // Use either the selected catalog or active catalog
-    const catalogToUse = selectedCatalog || activeCatalog;
     
     // Update loading message
     loadingText.textContent = 'Loading catalog data...';
     
-    // Load the catalog data
-    fetch(`/load-catalog/${catalogToUse}`)
+    // Load the catalog data (pass RA/DEC overrides if available)
+    {
+        const urlParams = new URLSearchParams();
+        // Try persisted overrides by several keys: raw name and API basename
+        const apiName = (catalogToUse || '').toString().split('/').pop().split('\\').pop();
+        const persisted = (window.catalogOverridesByCatalog && (
+            window.catalogOverridesByCatalog[catalogToUse] ||
+            window.catalogOverridesByCatalog[apiName]
+        )) || null;
+        const raCol = persisted && persisted.ra_col ? persisted.ra_col : 'ra';
+        const decCol = persisted && persisted.dec_col ? persisted.dec_col : 'dec';
+        const sizeCol = persisted && persisted.size_col ? persisted.size_col : null;
+        if (raCol) urlParams.set('ra_col', raCol);
+        if (decCol) urlParams.set('dec_col', decCol);
+        if (sizeCol) urlParams.set('size_col', sizeCol);
+        const headers = {};
+        if (raCol) headers['X-RA-Col'] = raCol;
+        if (decCol) headers['X-DEC-Col'] = decCol;
+        if (sizeCol) headers['X-Size-Col'] = sizeCol;
+        const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+        // Load the catalog data
+        console.log('[plotter] /load-catalog bootstrap URL:', `/load-catalog/${apiName}${suffix}`, 'headers:', headers);
+        apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
         .then(response => {
             if (!response.ok) {
                 throw new Error('Failed to load catalog');
@@ -213,7 +235,7 @@ function generateHistogram() {
                 return new Promise((resolve, reject) => {
                     // Add a small delay to prevent overwhelming the server
                     setTimeout(() => {
-                        fetch(`/source-properties/?ra=${obj.ra}&dec=${obj.dec}&catalog_name=${catalogToUse}`)
+                        apiFetch(`/source-properties/?ra=${obj.ra}&dec=${obj.dec}&catalog_name=${catalogToUse}`)
                             .then(response => {
                                 if (!response.ok) {
                                     throw new Error(`Failed to load properties for object ${index}`);
@@ -255,6 +277,7 @@ function generateHistogram() {
                     
                     // Store the data for future use
                     window.sourcePropertiesData = validResults;
+                    try { window.sourcePropertiesCatalogName = catalogToUse; } catch(_) {}
                     
                     // Clear the loading container completely
                     plotArea.innerHTML = '';
@@ -300,6 +323,7 @@ function generateHistogram() {
             
             plotArea.appendChild(errorMessage);
         });
+    }
 }
 
 // Process data for histogram
@@ -376,7 +400,6 @@ function processHistogramData(plotArea, allData, xAxisName, customizationOptions
         customizationOptions
     );
 }
-
 // Create a histogram with the processed data
 function createHistogram(plotArea, values, xAxisName, categoryMap, customizationOptions) {
     // Extract customization options with defaults
@@ -414,22 +437,41 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
         max = autoLimits ? Math.max(...values) : (xMax !== null ? xMax : Math.max(...values));
     }
     
-    // Calculate bin width and create bins
-    const binWidth = (max - min) / numBins;
+    // Prepare bins and edges
     const bins = Array(numBins).fill(0);
-    const totalValues = values.length;
+    const binEdges = [];
+    let binWidths = [];
     
-    // Fill the bins
-    values.forEach(value => {
-        // Skip non-positive values for log scale
-        if (xScale === 'log' && value <= 0) return;
-        
-        if (value >= min && value <= max) {
-            // Calculate bin index
-            const binIndex = Math.min(Math.floor((value - min) / binWidth), numBins - 1);
-            bins[binIndex]++;
+    if (xScale === 'log') {
+        const logMin = Math.log10(min);
+        const logMax = Math.log10(max);
+        const logRange = logMax - logMin;
+        for (let i = 0; i <= numBins; i++) {
+            const edge = Math.pow(10, logMin + (i / numBins) * logRange);
+            binEdges.push(edge);
+            if (i > 0) {
+                binWidths.push(edge - binEdges[i - 1]);
+            }
         }
-    });
+        values.forEach(value => {
+            if (value <= 0) return;
+            if (value >= min && value <= max) {
+                const idx = Math.min(Math.floor(((Math.log10(value) - logMin) / (logRange)) * numBins), numBins - 1);
+                bins[idx]++;
+            }
+        });
+    } else {
+        const linearBinWidth = (max - min) / numBins;
+        for (let i = 0; i <= numBins; i++) binEdges.push(min + i * linearBinWidth);
+        binWidths = Array(numBins).fill(linearBinWidth);
+        values.forEach(value => {
+            if (value >= min && value <= max) {
+                const idx = Math.min(Math.floor((value - min) / linearBinWidth), numBins - 1);
+                bins[idx]++;
+            }
+        });
+    }
+    const totalValues = values.length;
     
     // Normalize bin values based on the selected normalization type
     let normalizedBins = [...bins];
@@ -437,13 +479,13 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
     
     switch (normalization) {
         case 'frequency':
-            normalizedBins = bins.map(count => count / binWidth);
+            normalizedBins = bins.map((count, i) => count / (binWidths[i] || 1));
             normalizedYLabel = yLabel !== 'Count' ? yLabel : 'Frequency (count/bin width)';
             break;
         case 'density':
             // Normalize so the total area equals 1
-            const totalArea = bins.reduce((sum, count) => sum + count * binWidth, 0);
-            normalizedBins = bins.map(count => totalArea > 0 ? count / totalArea : 0);
+            const totalArea = bins.reduce((sum, count, i) => sum + count * (binWidths[i] || 0), 0);
+            normalizedBins = bins.map((count, i) => totalArea > 0 ? count / totalArea : 0);
             normalizedYLabel = yLabel !== 'Count' ? yLabel : 'Density (area = 1)';
             break;
         case 'percent':
@@ -582,10 +624,11 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
     
     // Create x-axis ticks
     const numXTicks = Math.min(10, numBins);
+    const categoryThreshold = (max - min) / numBins;
     
     for (let i = 0; i <= numXTicks; i++) {
         const position = i / numXTicks;
-        const tickX = position * width;
+        let tickX;
         let tickValue;
         
         if (xScale === 'log') {
@@ -593,9 +636,12 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
             const logMin = Math.log10(min);
             const logMax = Math.log10(max);
             tickValue = Math.pow(10, logMin + position * (logMax - logMin));
+            const tickPos = (Math.log10(tickValue) - logMin) / (logMax - logMin);
+            tickX = tickPos * width;
         } else {
             // For linear scale
             tickValue = min + position * (max - min);
+            tickX = position * width;
         }
         
         // Create tick line
@@ -627,7 +673,7 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
                 return (Math.abs(curr[1] - tickValue) < Math.abs(prev[1] - tickValue)) ? curr : prev;
             });
             
-            if (Math.abs(closest[1] - tickValue) < binWidth) {
+            if (Math.abs(closest[1] - tickValue) < categoryThreshold) {
                 labelText = closest[0];
             }
         }
@@ -695,14 +741,32 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
     g.appendChild(barsGroup);
     
     // Draw the histogram bars
-    const barWidth = width / numBins;
     
     normalizedBins.forEach((value, i) => {
         // Skip empty bins
         if (value === 0) return;
         
         // Calculate bar position and dimensions
-        const x = i * barWidth;
+        let x;
+        let barWidthPx;
+        if (xScale === 'log') {
+            const logMin = Math.log10(min);
+            const logMax = Math.log10(max);
+            const logRange = logMax - logMin;
+            const startEdge = binEdges[i];
+            const endEdge = binEdges[i + 1];
+            const startPos = (Math.log10(startEdge) - logMin) / logRange;
+            const endPos = (Math.log10(endEdge) - logMin) / logRange;
+            x = startPos * width;
+            barWidthPx = Math.max(1, (endPos - startPos) * width - 1);
+        } else {
+            const startEdge = binEdges[i];
+            const endEdge = binEdges[i + 1];
+            const startPos = (startEdge - min) / (max - min);
+            const endPos = (endEdge - min) / (max - min);
+            x = startPos * width;
+            barWidthPx = Math.max(1, (endPos - startPos) * width - 1);
+        }
         
         // Calculate y position and height based on scale
         let y, barHeight;
@@ -732,7 +796,7 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
         const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         bar.setAttribute('x', x);
         bar.setAttribute('y', y);
-        bar.setAttribute('width', barWidth - 1); // -1 for spacing between bars
+        bar.setAttribute('width', barWidthPx); // spacing already applied
         bar.setAttribute('height', barHeight);
         bar.setAttribute('fill', barColor);
         bar.setAttribute('stroke', '#333');
@@ -748,17 +812,17 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
             const tooltip = document.createElement('div');
             tooltip.className = 'histogram-tooltip';
             tooltip.style.position = 'absolute';
-            tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+            tooltip.style.backgroundColor = 'rgba(154, 25, 214, 0.8)';
             tooltip.style.color = 'white';
             tooltip.style.padding = '5px 10px';
             tooltip.style.borderRadius = '4px';
             tooltip.style.fontSize = '12px';
             tooltip.style.pointerEvents = 'none';
-            tooltip.style.zIndex = '1001';
+            tooltip.style.zIndex = '30001';
             
             // Calculate bin start and end values
-            const binStart = min + i * binWidth;
-            const binEnd = min + (i + 1) * binWidth;
+            const binStart = binEdges[i];
+            const binEnd = binEdges[i + 1];
             
             // Format the tooltip content
             let tooltipContent = '';
@@ -804,7 +868,7 @@ function createHistogram(plotArea, values, xAxisName, categoryMap, customization
             
             // Position the tooltip
             const rect = svg.getBoundingClientRect();
-            const tooltipX = rect.left + margin.left + x + barWidth / 2;
+            const tooltipX = rect.left + margin.left + x + (barWidthPx / 2);
             const tooltipY = rect.top + margin.top + y - 10;
             
             tooltip.style.left = `${tooltipX}px`;
@@ -1524,6 +1588,73 @@ function populateAxisDropdowns() {
         showLoadingIndicators();
         setTimeout(() => {
             processDropdownOptions(window.sourcePropertiesData);
+            // Populate boolean filter columns using backend helper
+            const boolSelect = document.getElementById('boolean-filter-column-select');
+            if (boolSelect) {
+                const catalogSelectEl = document.getElementById('catalog-select');
+                const selectedCatalog = catalogSelectEl ? catalogSelectEl.value : null;
+                const catalogToUse = selectedCatalog || activeCatalog;
+                if (catalogToUse) {
+                    detectBooleanColumns(catalogToUse).then(cols => {
+                        // Reset options (keep 'None')
+                        for (let i = boolSelect.options.length - 1; i >= 1; i--) boolSelect.remove(i);
+                        const dropdown = document.getElementById('boolean-filter-dropdown');
+                        if (dropdown) {
+                            while (dropdown.firstChild) dropdown.removeChild(dropdown.firstChild);
+                            // Add 'None' option
+                            const noneItem = document.createElement('div');
+                            noneItem.className = 'dropdown-item';
+                            noneItem.textContent = 'None';
+                            noneItem.style.padding = '8px';
+                            noneItem.style.cursor = 'pointer';
+                            noneItem.style.borderBottom = '1px solid #444';
+                            noneItem.style.transition = 'background-color 0.2s';
+                            noneItem.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                            noneItem.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                            noneItem.addEventListener('click', function(){
+                                const searchEl = document.getElementById('boolean-filter-search');
+                                const selectEl = document.getElementById('boolean-filter-column-select');
+                                const dd = document.getElementById('boolean-filter-dropdown');
+                                const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                if (searchEl) searchEl.value = '';
+                                if (selectEl) selectEl.value = '';
+                                if (valWrap) valWrap.style.display = 'none';
+                                if (dd) dd.style.display = 'none';
+                            });
+                            dropdown.appendChild(noneItem);
+                        }
+                        (cols || []).forEach(c => {
+                            // hidden select option
+                            const o = document.createElement('option');
+                            o.value = c; o.textContent = c;
+                            boolSelect.appendChild(o);
+                            // visual dropdown item
+                            if (dropdown) {
+                                const item = document.createElement('div');
+                                item.className = 'dropdown-item';
+                                item.textContent = c;
+                                item.style.padding = '8px';
+                                item.style.cursor = 'pointer';
+                                item.style.borderBottom = '1px solid #444';
+                                item.style.transition = 'background-color 0.2s';
+                                item.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                                item.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                                item.addEventListener('click', function(){
+                                    const searchEl = document.getElementById('boolean-filter-search');
+                                    const selectEl = document.getElementById('boolean-filter-column-select');
+                                    const dd = document.getElementById('boolean-filter-dropdown');
+                                    const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                    if (searchEl) searchEl.value = c;
+                                    if (selectEl) selectEl.value = c;
+                                    if (valWrap) valWrap.style.display = 'block';
+                                    if (dd) dd.style.display = 'none';
+                                });
+                                dropdown.appendChild(item);
+                            }
+                        });
+                    }).catch(()=>{});
+                }
+            }
         }, 10); // Small delay to allow loading indicators to be displayed
         return;
     }
@@ -1535,9 +1666,14 @@ function populateAxisDropdowns() {
         // Get a sample object to fetch properties
         const sampleObject = window.catalogDataForOverlay[0];
         
-        // Fetch properties for the sample object to get column names
-        fetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${activeCatalog}`)
-            .then(response => response.json())
+        // Fetch properties for the sample object to get column names (use apiFetch to ensure session)
+        apiFetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${activeCatalog}`)
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => { throw new Error(err.detail || 'Failed to load properties'); });
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.error) {
                     console.error('Error fetching properties:', data.error);
@@ -1551,6 +1687,63 @@ function populateAxisDropdowns() {
                 
                 // Process the sample data to populate dropdowns
                 processDropdownOptions(sampleData);
+                // Populate boolean filter columns
+                const boolSelect = document.getElementById('boolean-filter-column-select');
+                if (boolSelect && activeCatalog) {
+                    detectBooleanColumns(activeCatalog).then(cols => {
+                        for (let i = boolSelect.options.length - 1; i >= 1; i--) boolSelect.remove(i);
+                        const dropdown = document.getElementById('boolean-filter-dropdown');
+                        if (dropdown) {
+                            while (dropdown.firstChild) dropdown.removeChild(dropdown.firstChild);
+                            // Add 'None' option
+                            const noneItem = document.createElement('div');
+                            noneItem.className = 'dropdown-item';
+                            noneItem.textContent = 'None';
+                            noneItem.style.padding = '8px';
+                            noneItem.style.cursor = 'pointer';
+                            noneItem.style.borderBottom = '1px solid #444';
+                            noneItem.style.transition = 'background-color 0.2s';
+                            noneItem.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                            noneItem.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                            noneItem.addEventListener('click', function(){
+                                const searchEl = document.getElementById('boolean-filter-search');
+                                const selectEl = document.getElementById('boolean-filter-column-select');
+                                const dd = document.getElementById('boolean-filter-dropdown');
+                                const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                if (searchEl) searchEl.value = '';
+                                if (selectEl) selectEl.value = '';
+                                if (valWrap) valWrap.style.display = 'none';
+                                if (dd) dd.style.display = 'none';
+                            });
+                            dropdown.appendChild(noneItem);
+                        }
+                        (cols || []).forEach(c => {
+                            const o = document.createElement('option'); o.value=c; o.textContent=c; boolSelect.appendChild(o);
+                            if (dropdown) {
+                                const item = document.createElement('div');
+                                item.className = 'dropdown-item';
+                                item.textContent = c;
+                                item.style.padding = '8px';
+                                item.style.cursor = 'pointer';
+                                item.style.borderBottom = '1px solid #444';
+                                item.style.transition = 'background-color 0.2s';
+                                item.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                                item.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                                item.addEventListener('click', function(){
+                                    const searchEl = document.getElementById('boolean-filter-search');
+                                    const selectEl = document.getElementById('boolean-filter-column-select');
+                                    const dd = document.getElementById('boolean-filter-dropdown');
+                                    const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                    if (searchEl) searchEl.value = c;
+                                    if (selectEl) selectEl.value = c;
+                                    if (valWrap) valWrap.style.display = 'block';
+                                    if (dd) dd.style.display = 'none';
+                                });
+                                dropdown.appendChild(item);
+                            }
+                        });
+                    }).catch(()=>{});
+                }
             })
             .catch(error => {
                 console.error('Error loading catalog data:', error);
@@ -1567,16 +1760,32 @@ function populateAxisDropdowns() {
         showErrorMessage('No catalog selected');
         return;
     }
-    
     // Use either the selected catalog or active catalog
     const catalogToUse = selectedCatalog || activeCatalog;
-    
     // Show loading indicators
     showLoadingIndicators();
-    
-    // Load the catalog data - use the source-properties endpoint with a sample object
+    // Load the catalog data - ensure RA/DEC overrides are sent
     // First, load the catalog to get a sample object
-    fetch(`/load-catalog/${catalogToUse}`)
+    {
+        const apiName = (catalogToUse || '').toString().split('/').pop().split('\\').pop();
+        const persisted = (window.catalogOverridesByCatalog && (
+            window.catalogOverridesByCatalog[catalogToUse] ||
+            window.catalogOverridesByCatalog[apiName]
+        )) || null;
+        const raCol = persisted && persisted.ra_col ? persisted.ra_col : 'ra';
+        const decCol = persisted && persisted.dec_col ? persisted.dec_col : 'dec';
+        const sizeCol = persisted && persisted.size_col ? persisted.size_col : null;
+        const urlParams = new URLSearchParams();
+        if (raCol) urlParams.set('ra_col', raCol);
+        if (decCol) urlParams.set('dec_col', decCol);
+        if (sizeCol) urlParams.set('size_col', sizeCol);
+        const headers = {};
+        if (raCol) headers['X-RA-Col'] = raCol;
+        if (decCol) headers['X-DEC-Col'] = decCol;
+        if (sizeCol) headers['X-Size-Col'] = sizeCol;
+        const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+        console.log('[plotter] /load-catalog detect-string URL:', `/load-catalog/${encodeURIComponent(apiName)}${suffix}`, 'headers:', headers);
+        apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
         .then(response => {
             if (!response.ok) {
                 throw new Error('Failed to load catalog');
@@ -1592,7 +1801,7 @@ function populateAxisDropdowns() {
             const sampleObject = catalogData[0];
             
             // Fetch properties for the sample object
-            return fetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${catalogToUse}`);
+            return apiFetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${catalogToUse}`);
         })
         .then(response => {
             if (!response.ok) {
@@ -1618,6 +1827,7 @@ function populateAxisDropdowns() {
             console.error('Error loading catalog data:', error);
             showErrorMessage('Error: ' + error.message);
         });
+    }
     
     function processDropdownOptions(data) {
         // Get column names from all objects
@@ -1934,9 +2144,6 @@ function populateAxisDropdowns() {
         console.log("Dropdowns populated with", addedToX.size, "columns");
     }
 }
-
-
-
 // Enhanced createPlotterContainer function with better tab styling
 function createPlotterContainer() {
     const containerId = 'dynamic-plotter-panel';
@@ -2036,7 +2243,7 @@ function createPlotterContainer() {
     plotterContainer.style.padding = '15px';
     plotterContainer.style.boxSizing = 'border-box';
     plotterContainer.style.boxShadow = '-2px 0 20px rgba(0, 0, 0, 0.8)';
-    plotterContainer.style.zIndex = '1000';
+    plotterContainer.style.zIndex = '3000';
     plotterContainer.style.transition = 'transform 0.3s ease';
     plotterContainer.style.overflowY = 'auto';
     plotterContainer.style.overflowX = 'hidden';
@@ -2077,6 +2284,8 @@ function createPlotterContainer() {
     header.appendChild(closeButton);
     plotterContainer.appendChild(header);
 
+    // (Top status bar removed; inline status is shown within scatter/histogram controls)
+
     // Create tab container with indicator
     const plotTypeContainer = document.createElement('div');
     plotTypeContainer.className = 'plotter-tab-container';
@@ -2092,9 +2301,9 @@ function createPlotterContainer() {
     scatterButton.className = 'plotter-tab-button active';
     scatterButton.textContent = 'Scatter Plot';
     
-    // Create histogram button
+    // Create histogram button (use unique ID to avoid conflict with toolbar histogram button)
     const histogramButton = document.createElement('button');
-    histogramButton.id = 'histogram-button';
+    histogramButton.id = 'plotter-histogram-button';
     histogramButton.className = 'plotter-tab-button';
     histogramButton.textContent = 'Histogram';
     
@@ -2151,6 +2360,7 @@ function createPlotterContainer() {
     
     // Axis selection section
     const axisSelectionSection = document.createElement('div');
+    axisSelectionSection.id = 'axis-selection-section';
     axisSelectionSection.style.marginBottom = '20px';
     
     const axisSelectionTitle = document.createElement('h3');
@@ -2475,6 +2685,7 @@ function createPlotterContainer() {
     
     // Plot customization section
     const customizationSection = document.createElement('div');
+    customizationSection.id = 'customization-section';
     customizationSection.style.marginBottom = '20px';
     
     const customizationTitle = document.createElement('h3');
@@ -2513,7 +2724,7 @@ function createPlotterContainer() {
     const xLabelInput = document.createElement('input');
     xLabelInput.id = 'x-label-input';
     xLabelInput.type = 'text';
-    xLabelInput.placeholder = 'Enter x-axis label (e.g. "Mass (M_\\odot)")';
+    xLabelInput.placeholder = 'Enter x-axis label (e.g. "Mass)';
     xLabelInput.style.width = '100%';
     xLabelInput.style.padding = '5px';
     xLabelInput.style.marginBottom = '10px';
@@ -2533,7 +2744,7 @@ function createPlotterContainer() {
     const yLabelInput = document.createElement('input');
     yLabelInput.id = 'y-label-input';
     yLabelInput.type = 'text';
-    yLabelInput.placeholder = 'Enter y-axis label (e.g. "Luminosity (L_\\odot)")';
+    yLabelInput.placeholder = 'Enter y-axis label (e.g. "Luminosity")';
     yLabelInput.style.width = '100%';
     yLabelInput.style.padding = '5px';
     yLabelInput.style.marginBottom = '10px';
@@ -2729,7 +2940,6 @@ function createPlotterContainer() {
     binsSlider.addEventListener('input', function() {
         binsValue.textContent = this.value;
     });
-    
     binsSliderContainer.appendChild(binsSlider);
     binsSliderContainer.appendChild(binsValue);
     binsDiv.appendChild(binsSliderContainer);
@@ -2945,6 +3155,128 @@ function createPlotterContainer() {
     
     customizationSection.appendChild(manualLimitsDiv);
     
+    // Boolean filter (below axis limits)
+    const booleanFilterContainer = document.createElement('div');
+    booleanFilterContainer.id = 'boolean-filter-container';
+    booleanFilterContainer.style.marginTop = '12px';
+    booleanFilterContainer.style.marginBottom = '12px';
+    
+    const booleanFilterTitle = document.createElement('h4');
+    booleanFilterTitle.textContent = 'Boolean Filter';
+    booleanFilterTitle.style.fontSize = '14px';
+    booleanFilterTitle.style.margin = '0 0 8px 0';
+    booleanFilterContainer.appendChild(booleanFilterTitle);
+    // Hide boolean filter when Histogram tab is active
+    try {
+        const plotTypeSel = document.getElementById('plot-type-select');
+        const isHistogram = plotTypeSel && plotTypeSel.value === 'histogram';
+        if (isHistogram) {
+            booleanFilterContainer.style.display = 'none';
+        }
+        // Also react to changes
+        if (plotTypeSel && !plotTypeSel.__bfListenerAttached) {
+            plotTypeSel.addEventListener('change', () => {
+                const hist = plotTypeSel.value === 'histogram';
+                booleanFilterContainer.style.display = hist ? 'none' : '';
+            });
+            plotTypeSel.__bfListenerAttached = true;
+        }
+    } catch(_) {}
+    
+    const booleanRow = document.createElement('div');
+    booleanRow.style.display = 'flex';
+    booleanRow.style.gap = '10px';
+    booleanRow.style.flexWrap = 'wrap'; // allow wrapping to next line
+    
+    const boolColWrap = document.createElement('div');
+    boolColWrap.style.flex = '2';
+    const boolColLabel = document.createElement('label');
+    boolColLabel.textContent = 'Column:';
+    boolColLabel.style.display = 'block';
+    boolColLabel.style.marginBottom = '5px';
+    // Container for search + dropdown + hidden select
+    const boolColContainer = document.createElement('div');
+    boolColContainer.style.position = 'relative';
+    // Search input for boolean columns
+    const boolColSearch = document.createElement('input');
+    boolColSearch.id = 'boolean-filter-search';
+    boolColSearch.type = 'text';
+    boolColSearch.placeholder = 'Search boolean columns...';
+    Object.assign(boolColSearch.style, {
+        width: '100%', padding: '8px', backgroundColor: '#333', color: 'white', border: '1px solid #555', borderRadius: '4px', marginBottom: '6px'
+    });
+    // Dropdown list for boolean columns
+    const boolColDropdown = document.createElement('div');
+    boolColDropdown.id = 'boolean-filter-dropdown';
+    boolColDropdown.style.display = 'none';
+    boolColDropdown.style.position = 'absolute';
+    boolColDropdown.style.width = '100%';
+    boolColDropdown.style.maxHeight = '200px';
+    boolColDropdown.style.overflowY = 'auto';
+    boolColDropdown.style.backgroundColor = '#333';
+    boolColDropdown.style.border = '1px solid #555';
+    boolColDropdown.style.borderRadius = '4px';
+    boolColDropdown.style.zIndex = '1002';
+    // Hidden select to store value
+    const boolColSelect = document.createElement('select');
+    boolColSelect.id = 'boolean-filter-column-select';
+    boolColSelect.style.display = 'none';
+    const boolNoneOpt = document.createElement('option');
+    boolNoneOpt.value = '';
+    boolNoneOpt.textContent = 'None';
+    boolColSelect.appendChild(boolNoneOpt);
+    // Wire search focus/blur/input like X-axis
+    boolColSearch.addEventListener('focus', function() {
+        boolColDropdown.style.display = 'block';
+    });
+    boolColSearch.addEventListener('blur', function() {
+        setTimeout(() => { boolColDropdown.style.display = 'none'; }, 200);
+    });
+    boolColSearch.addEventListener('input', function() {
+        const term = this.value.toLowerCase();
+        const options = boolColDropdown.querySelectorAll('.dropdown-item');
+        options.forEach(option => {
+            const text = option.textContent.toLowerCase();
+            option.style.display = text.includes(term) ? 'block' : 'none';
+        });
+    });
+    boolColContainer.appendChild(boolColSearch);
+    boolColContainer.appendChild(boolColDropdown);
+    boolColContainer.appendChild(boolColSelect);
+    boolColWrap.appendChild(boolColLabel);
+    boolColWrap.appendChild(boolColContainer);
+    
+    const boolValWrap = document.createElement('div');
+    boolValWrap.id = 'boolean-filter-value-wrap';
+    boolValWrap.style.flex = '1';
+    boolValWrap.style.flexBasis = '100%'; // force onto next line
+    const boolValLabel = document.createElement('label');
+    boolValLabel.textContent = 'Include rows where value is:';
+    boolValLabel.style.display = 'block';
+    boolValLabel.style.marginBottom = '5px';
+    const boolValSelect = document.createElement('select');
+    boolValSelect.id = 'boolean-filter-value-select';
+    Object.assign(boolValSelect.style, {
+        width: '100%', padding: '8px', backgroundColor: '#333', color: 'white', border: '1px solid #555', borderRadius: '4px'
+    });
+    const boolTrue = document.createElement('option');
+    boolTrue.value = 'true';
+    boolTrue.textContent = 'true';
+    const boolFalse = document.createElement('option');
+    boolFalse.value = 'false';
+    boolFalse.textContent = 'false';
+    boolValSelect.appendChild(boolTrue);
+    boolValSelect.appendChild(boolFalse);
+    boolValWrap.appendChild(boolValLabel);
+    boolValWrap.appendChild(boolValSelect);
+    // Hide value selection by default until a boolean column is chosen
+    boolValWrap.style.display = 'none';
+    
+    booleanRow.appendChild(boolColWrap);
+    booleanRow.appendChild(boolValWrap);
+    booleanFilterContainer.appendChild(booleanRow);
+    customizationSection.appendChild(booleanFilterContainer);
+    
     // Toggle manual limits visibility based on checkbox
     autoLimitsCheckbox.addEventListener('change', function() {
         manualLimitsDiv.style.display = this.checked ? 'none' : 'block';
@@ -3025,6 +3357,27 @@ function createPlotterContainer() {
     
     scatterControls.appendChild(saveButton);
 
+    // Inline status inside scatter/histogram tools
+    const inlineStatus = document.createElement('div');
+    inlineStatus.id = 'plotter-inline-status';
+    inlineStatus.style.margin = '0 0 8px 0';
+    inlineStatus.style.fontSize = '12px';
+    inlineStatus.style.color = '#ccc';
+    scatterControls.appendChild(inlineStatus);
+
+    // Preload notice (shown when image/catalog not loaded)
+    const preloadNotice = document.createElement('div');
+    preloadNotice.id = 'plotter-preload-notice';
+    preloadNotice.style.display = 'none';
+    preloadNotice.style.margin = '8px 0 12px 0';
+    preloadNotice.style.padding = '10px 12px';
+    preloadNotice.style.backgroundColor = 'rgba(255, 193, 7, 0.12)';
+    preloadNotice.style.border = '1px solid rgba(255, 193, 7, 0.35)';
+    preloadNotice.style.borderRadius = '6px';
+    preloadNotice.style.color = '#f0c36d';
+    preloadNotice.style.fontSize = '12px';
+    scatterControls.appendChild(preloadNotice);
+
     // Plot area
     const plotArea = document.createElement('div');
     plotArea.id = 'plot-area';
@@ -3048,6 +3401,10 @@ function createPlotterContainer() {
         console.log(`[Plotter] setTimeout calling populateAxisDropdowns for ${containerId}`);
         populateAxisDropdowns(); 
     }, 10);
+    // Initial availability state update
+    if (typeof window.updatePlotterAvailability === 'function') {
+        window.updatePlotterAvailability();
+    }
 }
 
 // Helper function to switch tabs with animation
@@ -3080,7 +3437,7 @@ function switchToTab(tabName, container) {
             break;
             
         case 'histogram':
-            activeButton = document.getElementById('histogram-button');
+            activeButton = document.getElementById('plotter-histogram-button');
             targetPanel = document.getElementById('scatter-controls');
             window.currentPlotType = 'histogram';
             updateScatterControlsVisibility('histogram');
@@ -3125,6 +3482,11 @@ function switchToTab(tabName, container) {
             }, 10);
         }, 150);
     }
+
+    // Refresh availability/UI prompts when switching tabs
+    if (typeof window.updatePlotterAvailability === 'function') {
+        window.updatePlotterAvailability();
+    }
 }
 
 // Helper function to update indicator position
@@ -3150,6 +3512,7 @@ function updateScatterControlsVisibility(plotType) {
     const colorScaleContainer = document.getElementById('color-scale-container');
     const alphaDiv = document.getElementById('alpha-div');
     const histogramControls = document.getElementById('histogram-controls');
+    const booleanFilterContainer = document.getElementById('boolean-filter-container');
     const generateButton = document.getElementById('generate-plot-button');
     
     if (plotType === 'histogram') {
@@ -3176,6 +3539,7 @@ function updateScatterControlsVisibility(plotType) {
         if (alphaDiv) alphaDiv.style.display = 'none';
         if (histogramControls) histogramControls.style.display = 'block';
         if (generateButton) generateButton.textContent = 'Generate Histogram';
+        if (booleanFilterContainer) booleanFilterContainer.style.display = 'none';
         
     } else {
         // Show scatter controls
@@ -3201,11 +3565,102 @@ function updateScatterControlsVisibility(plotType) {
         if (alphaDiv) alphaDiv.style.display = 'block';
         if (histogramControls) histogramControls.style.display = 'none';
         if (generateButton) generateButton.textContent = 'Generate Plot';
+        if (booleanFilterContainer) booleanFilterContainer.style.display = '';
+    }
+
+    // Also re-evaluate availability whenever controls visibility toggles
+    if (typeof window.updatePlotterAvailability === 'function') {
+        window.updatePlotterAvailability();
     }
 }
 
+// Global helper to toggle Scatter/Histogram availability based on loaded image/catalog
+window.updatePlotterAvailability = function updatePlotterAvailability() {
+    try {
+        const hasImage = !!(window.currentFitsFile || (window.fitsData && (window.fitsData.filename || window.fitsData.width)));
+        const hasCatalog = !!(window.currentCatalogName || window.activeCatalog);
+        const isScatterOrHist = (window.currentPlotType === 'scatter' || window.currentPlotType === 'histogram');
 
+        const axis = document.getElementById('axis-selection-section');
+        const custom = document.getElementById('customization-section');
+        const generateBtn = document.getElementById('generate-plot-button');
+        const saveBtn = document.getElementById('save-plot-button');
+        const plotArea = document.getElementById('plot-area');
+        const notice = document.getElementById('plotter-preload-notice');
+        const status = null; // top status removed
+        const inlineStatus = document.getElementById('plotter-inline-status');
 
+        // Update status bar text
+        if (status || inlineStatus) {
+            const catalogNameRaw = (window.currentCatalogName || window.activeCatalog || '') + '';
+            const catalogName = catalogNameRaw ? catalogNameRaw.split('/').pop().replace(/\.fits$/i, '') : null;
+            const filepath = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
+            const imageName = filepath ? filepath.split('/').pop() : null;
+            const headerObject = (window.fitsData && window.fitsData.wcs && (window.fitsData.wcs.OBJECT || window.fitsData.wcs.object)) || null;
+            const galaxyName = headerObject || (imageName ? imageName.replace(/\.fits$/i, '') : null);
+            let text = '';
+            if (hasImage && hasCatalog) {
+                text = `Catalog: ${catalogName || 'unknown'}  |  Image: ${galaxyName || 'unknown'}`;
+            } else if (hasImage && !hasCatalog) {
+                text = `Image loaded${imageName ? ` (${imageName})` : ''}. Catalog: not loaded.`;
+            } else if (!hasImage && hasCatalog) {
+                text = `Catalog loaded${catalogName ? ` (${catalogName})` : ''}. Image: not loaded.`;
+            } else {
+                text = 'Image: not loaded. Catalog: not loaded.';
+            }
+            if (status) status.textContent = text;
+            if (inlineStatus) inlineStatus.textContent = text;
+        }
+
+        // If not in scatter/histogram, do not show notice, but keep everything as-is
+        if (!isScatterOrHist) {
+            if (notice) notice.style.display = 'none';
+            return;
+        }
+
+        // Build notice text
+        let msg = '';
+        if (!hasImage && !hasCatalog) {
+            msg = 'To use Scatter/Histogram, first load a FITS image, then load a catalog.';
+        } else if (!hasImage) {
+            msg = 'To use Scatter/Histogram, load a FITS image.';
+        } else if (!hasCatalog) {
+            msg = 'To use Scatter/Histogram, load a catalog.';
+        }
+
+        const shouldHide = !(hasImage && hasCatalog);
+
+        if (notice) {
+            notice.textContent = msg;
+            notice.style.display = shouldHide ? 'block' : 'none';
+        }
+
+        // Toggle controls visibility
+        const displayControls = shouldHide ? 'none' : 'block';
+        if (axis) axis.style.display = displayControls;
+        if (custom) custom.style.display = displayControls;
+        if (plotArea) plotArea.style.display = shouldHide ? 'none' : 'flex';
+        if (generateBtn) generateBtn.style.display = shouldHide ? 'none' : 'block';
+        if (saveBtn) saveBtn.style.display = shouldHide ? 'none' : 'block';
+    } catch (e) {
+        console.warn('updatePlotterAvailability error:', e);
+    }
+};
+
+// Helper to infer current galaxy name from FITS header (OBJECT) or filename
+function getCurrentGalaxyName() {
+    try {
+        const headerObj = (window?.fitsData?.wcs && (window.fitsData.wcs.OBJECT || window.fitsData.wcs.object)) || null;
+        if (headerObj && String(headerObj).trim()) return String(headerObj).trim();
+        const fp = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
+        if (fp) {
+            const base = fp.split('/').pop() || fp;
+            const name = base.replace(/\.fits$/i, '').trim();
+            if (name) return name;
+        }
+    } catch (_) {}
+    return null;
+}
 // Updated generatePlot function to handle color scale
 function generatePlot() {
     // Get the selected axes
@@ -3230,6 +3685,11 @@ function generatePlot() {
         showNotification('Please select both X and Y axes', 3000);
         return;
     }
+    
+    // Determine current catalog to use early so we can validate cache
+    const catalogSelect = document.getElementById('catalog-select');
+    const selectedCatalog = catalogSelect ? catalogSelect.value : null;
+    const catalogToUse = selectedCatalog || activeCatalog;
     
     // Get customization options
     const plotTitle = document.getElementById('plot-title-input')?.value || '';
@@ -3361,8 +3821,8 @@ function generatePlot() {
     loadingContainer.appendChild(loadingText);
     plotArea.appendChild(loadingContainer);
     
-    // Use existing data if available
-    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0) {
+    // Use existing data only if it matches the current catalog
+    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0 && window.sourcePropertiesCatalogName === catalogToUse) {
         processPlotData(
             plotArea, 
             window.sourcePropertiesData, 
@@ -3390,11 +3850,8 @@ function generatePlot() {
         return;
     }
     
-    // Load data from catalog if not available
-    const catalogSelect = document.getElementById('catalog-select');
-    const selectedCatalog = catalogSelect ? catalogSelect.value : null;
-    
-    if (!selectedCatalog && !activeCatalog) {
+    // Load data from catalog if not available (or cache for different catalog)
+    if (!catalogToUse) {
         plotArea.innerHTML = '';
         const errorMessage = document.createElement('div');
         errorMessage.textContent = 'No catalog selected. Please select a catalog first.';
@@ -3409,11 +3866,55 @@ function generatePlot() {
         return;
     }
     
-    const catalogToUse = selectedCatalog || activeCatalog;
     loadingText.textContent = 'Loading catalog data...';
     
-    // Load catalog data and process
-    fetch(`/load-catalog/${catalogToUse}`)
+    // Load catalog data and process (ensure RA/DEC overrides are sent)
+    {
+        const apiName = (catalogToUse || '').toString().split('/').pop().split('\\').pop();
+        const persisted = (window.catalogOverridesByCatalog && (
+            window.catalogOverridesByCatalog[catalogToUse] ||
+            window.catalogOverridesByCatalog[apiName]
+        )) || null;
+        // Only use persisted overrides; do NOT default to 'ra'/'dec'
+        const raCol = persisted && persisted.ra_col ? persisted.ra_col : null;
+        const decCol = persisted && persisted.dec_col ? persisted.dec_col : null;
+        const sizeCol = persisted && persisted.size_col ? persisted.size_col : null;
+        // If overrides are missing, auto-detect from columns first
+        const doFetch = (raFinal, decFinal, sizeFinal) => {
+            const urlParams = new URLSearchParams();
+            if (raFinal) urlParams.set('ra_col', raFinal);
+            if (decFinal) urlParams.set('dec_col', decFinal);
+            if (sizeFinal) urlParams.set('size_col', sizeFinal);
+            const headers = {};
+            if (raFinal) headers['X-RA-Col'] = raFinal;
+            if (decFinal) headers['X-DEC-Col'] = decFinal;
+            if (sizeFinal) headers['X-Size-Col'] = sizeFinal;
+            const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+            console.log('[plotter] /load-catalog generatePlot URL:', `/load-catalog/${apiName}${suffix}`, 'headers:', headers);
+            return apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
+        };
+
+        const fetchPromise = (raCol && decCol)
+            ? doFetch(raCol, decCol, sizeCol)
+            : apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(apiName)}`)
+                .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to load catalog columns')))
+                .then(data => {
+                    const cols = (data && data.columns) || [];
+                    const lower = new Map(cols.map(c => [String(c).toLowerCase(), c]));
+                    const tryKeys = (arr) => { for (const k of arr) { const m = lower.get(k.toLowerCase()); if (m) return m; } return null; };
+                    const RA_CANDIDATES = [
+                        'PHANGS_RA','XCTR_DEG','cen_ra','CEN_RA','RA','ra','Ra','RightAscension','right_ascension','raj2000','RAJ2000'
+                    ];
+                    const DEC_CANDIDATES = [
+                        'PHANGS_DEC','YCTR_DEG','cen_dec','CEN_DEC','DEC','dec','Dec','Declination','declination','DECLINATION','decj2000','DECJ2000','dej2000','DEJ2000'
+                    ];
+                    const raAuto = tryKeys(RA_CANDIDATES);
+                    const decAuto = tryKeys(DEC_CANDIDATES);
+                    if (!raAuto || !decAuto) throw new Error('Could not auto-detect RA/DEC columns');
+                    return doFetch(raAuto, decAuto, null);
+                });
+
+        fetchPromise
         .then(response => {
             if (!response.ok) {
                 throw new Error('Failed to load catalog');
@@ -3440,7 +3941,7 @@ function generatePlot() {
             const fetchPromises = objectsToFetch.map((obj, index) => {
                 return new Promise((resolve, reject) => {
                     setTimeout(() => {
-                        fetch(`/source-properties/?ra=${obj.ra}&dec=${obj.dec}&catalog_name=${catalogToUse}`)
+                        apiFetch(`/source-properties/?ra=${obj.ra}&dec=${obj.dec}&catalog_name=${catalogToUse}`)
                             .then(response => {
                                 if (!response.ok) {
                                     throw new Error(`Failed to load properties for object ${index}`);
@@ -3476,6 +3977,7 @@ function generatePlot() {
                     }
                     
                     window.sourcePropertiesData = validResults;
+                    try { window.sourcePropertiesCatalogName = catalogToUse; } catch(_) {}
                     plotArea.innerHTML = '';
                     
                     return processPlotData(
@@ -3518,6 +4020,7 @@ function generatePlot() {
             errorMessage.style.justifyContent = 'center';
             plotArea.appendChild(errorMessage);
         });
+    }
 }
 
 // Updated processPlotData function to handle color scale
@@ -3590,8 +4093,22 @@ function processPlotData(plotArea, allData, xAxisName, yAxisName, customizationO
         }
     }
     
+    // Optional boolean filtering
+    const boolCol = (document.getElementById('boolean-filter-column-select') || {}).value || '';
+    const boolValSel = (document.getElementById('boolean-filter-value-select') || {}).value || 'true';
+    const boolTarget = boolValSel === 'true';
+    
     // Second pass: create processed data points
     allData.forEach((obj, index) => {
+        // Apply boolean filter if set
+        if (boolCol) {
+            const v = obj[boolCol];
+            const normalized = (typeof v === 'string') ? v.trim().toLowerCase() : v;
+            const isTrue = normalized === true || normalized === 1 || normalized === '1' || normalized === 'true';
+            const isFalse = normalized === false || normalized === 0 || normalized === '0' || normalized === 'false';
+            const passes = boolTarget ? isTrue : isFalse;
+            if (!passes) return;
+        }
         const xValue = obj[xAxisName];
         const yValue = obj[yAxisName];
         const colorValue = colorAxisName ? obj[colorAxisName] : null;
@@ -3789,7 +4306,6 @@ function getColorFromMap(value, min, max, colormap, colorScale = 'linear') {
     const colorFunc = colormaps[colormap] || colormaps.viridis;
     return colorFunc(normalizedValue);
 }
-
 // COMPLETE createScatterPlot function - REPLACE the entire function
 function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, categoryMapsX, categoryMapsY, customizationOptions) {
     // Extract customization options with defaults
@@ -3834,19 +4350,26 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
     if (effectiveXScale === 'log' && xMinValue <= 0) xMinValue = 0.1;
     if (effectiveYScale === 'log' && yMinValue <= 0) yMinValue = 0.1;
     
-    // Add padding to the ranges
+    // Add padding to the ranges (disable padding for log scales to avoid bad auto limits)
     const xPadding = (xMaxValue - xMinValue) * 0.1 || 0.5;
     const yPadding = (yMaxValue - yMinValue) * 0.1 || 0.5;
-    
-    const xRange = [xMinValue - (autoLimits ? xPadding : 0), xMaxValue + (autoLimits ? xPadding : 0)];
-    const yRange = [yMinValue - (autoLimits ? yPadding : 0), yMaxValue + (autoLimits ? yPadding : 0)];
+    const padX = (autoLimits && effectiveXScale === 'linear') ? xPadding : 0;
+    const padY = (autoLimits && effectiveYScale === 'linear') ? yPadding : 0;
+    let xRange = [xMinValue - padX, xMaxValue + padX];
+    let yRange = [yMinValue - padY, yMaxValue + padY];
     
     // For log scale, ensure range bounds are positive
     if (effectiveXScale === 'log') {
         xRange[0] = Math.max(xRange[0], 0.1);
+        if (!(xRange[1] > xRange[0])) {
+            xRange[1] = xRange[0] * 10;
+        }
     }
     if (effectiveYScale === 'log') {
         yRange[0] = Math.max(yRange[0], 0.1);
+        if (!(yRange[1] > yRange[0])) {
+            yRange[1] = yRange[0] * 10;
+        }
     }
     
     // Create SVG element
@@ -3865,7 +4388,8 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
     const labelFontSize = 10;
     
     // Calculate plot area dimensions
-    const margin = { top: 40, right: colorAxisName ? 80 : 30, bottom: 50, left: 60 };
+    // Increase right margin to ensure colorbar labels are fully visible
+    const margin = { top: 40, right: colorAxisName ? 110 : 40, bottom: 50, left: 60 };
     const width = plotArea.clientWidth - margin.left - margin.right;
     const height = plotArea.clientHeight - margin.top - margin.bottom;
     
@@ -3913,7 +4437,7 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
     xAxisLabel.setAttribute('text-anchor', 'middle');
     xAxisLabel.setAttribute('fill', 'white');
     xAxisLabel.setAttribute('font-size', '12px');
-    xAxisLabel.innerHTML = renderLatexLabel(xLabel);
+    setSvgTextWithLatex(xAxisLabel, xLabel);
     g.appendChild(xAxisLabel);
     
     // ENHANCED: Add y-axis label with LaTeX support
@@ -3922,7 +4446,7 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
     yAxisLabel.setAttribute('text-anchor', 'middle');
     yAxisLabel.setAttribute('fill', 'white');
     yAxisLabel.setAttribute('font-size', '12px');
-    yAxisLabel.innerHTML = renderLatexLabel(yLabel);
+    setSvgTextWithLatex(yAxisLabel, yLabel);
     g.appendChild(yAxisLabel);
     
     // Helper function to format tick values
@@ -4358,7 +4882,6 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
         const colorFunc = colormaps[colormap] || colormaps.viridis;
         return colorFunc(normalizedValue);
     }
-    
     // Plot the data points
     const pointRadius = 4;
     const defaultPointColor = '#4CAF50';
@@ -4424,13 +4947,13 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
             const tooltip = document.createElement('div');
             tooltip.className = 'plot-tooltip';
             tooltip.style.position = 'absolute';
-            tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+            tooltip.style.backgroundColor = 'rgba(154, 25, 214, 0.8)';
             tooltip.style.color = 'white';
             tooltip.style.padding = '5px 10px';
             tooltip.style.borderRadius = '4px';
             tooltip.style.fontSize = '12px';
             tooltip.style.pointerEvents = 'none';
-            tooltip.style.zIndex = '1001';
+            tooltip.style.zIndex = '300001';
             
             // Format tooltip content
             let tooltipContent = `<strong>${renderLatexLabel(xAxisName)}:</strong> `;
@@ -4628,7 +5151,7 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
                     clearBtn.style.position = 'absolute';
                     clearBtn.style.top = '10px';
                     clearBtn.style.right = '10px';
-                    clearBtn.style.zIndex = '1000'; 
+                    clearBtn.style.zIndex = '3000'; 
                     clearBtn.style.padding = '3px 8px';
                     clearBtn.style.fontSize = '12px';
                     
@@ -4737,70 +5260,101 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
         g.appendChild(colorbarRect);
         
         // ENHANCED: Add colorbar ticks with log scale support
-        const numTicks = 5;
-        for (let i = 0; i <= numTicks; i++) {
-            let value;
-            let y;
-            
-            if (colorScale === 'log') {
-                // Log scale ticks
-                const logMin = Math.log10(colorMin);
-                const logMax = Math.log10(colorMax);
-                const logValue = logMin + (i / numTicks) * (logMax - logMin);
-                value = Math.pow(10, logValue);
-                y = colorbarY + colorbarHeight - (i / numTicks) * colorbarHeight;
+        if (colorScale === 'log') {
+            const logMin = Math.log10(colorMin);
+            const logMax = Math.log10(colorMax);
+            // Only place integer power ticks that fall within [logMin, logMax]
+            let startPow = Math.ceil(logMin);
+            let endPow = Math.floor(logMax);
+            // If no integer powers inside range, fallback to min/max ticks only
+            if (endPow < startPow) {
+                const ticks = [
+                    { t: 0, p: Math.round(logMin) },
+                    { t: 1, p: Math.round(logMax) },
+                ];
+                ticks.forEach(({ t, p }) => {
+                    const yRaw = colorbarY + colorbarHeight - t * colorbarHeight;
+                    const y = Math.max(colorbarY + 8, Math.min(colorbarY + colorbarHeight - 4, yRaw));
+                    const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    tick.setAttribute('x1', colorbarX + colorbarWidth);
+                    tick.setAttribute('y1', y);
+                    tick.setAttribute('x2', colorbarX + colorbarWidth + 5);
+                    tick.setAttribute('y2', y);
+                    tick.setAttribute('stroke', '#888');
+                    tick.setAttribute('stroke-width', '1');
+                    g.appendChild(tick);
+                    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    label.setAttribute('x', colorbarX + colorbarWidth + 8);
+                    label.setAttribute('y', y + 4);
+                    label.setAttribute('fill', '#aaa');
+                    label.setAttribute('font-size', '10px');
+                    label.setAttribute('text-anchor', 'start');
+                    label.appendChild(document.createTextNode('10'));
+                    const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+                    tspan.setAttribute('baseline-shift', 'super');
+                    tspan.setAttribute('font-size', '8px');
+                    tspan.textContent = String(p);
+                    label.appendChild(tspan);
+                    g.appendChild(label);
+                });
             } else {
-                // Linear scale ticks
-                value = colorMin + (i / numTicks) * (colorMax - colorMin);
-                y = colorbarY + colorbarHeight - (i / numTicks) * colorbarHeight;
-            }
-            
-            // Create tick
-            const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-            tick.setAttribute('x1', colorbarX + colorbarWidth);
-            tick.setAttribute('y1', y);
-            tick.setAttribute('x2', colorbarX + colorbarWidth + 5);
-            tick.setAttribute('y2', y);
-            tick.setAttribute('stroke', '#888');
-            tick.setAttribute('stroke-width', '1');
-            g.appendChild(tick);
-            
-            // Create label
-            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            label.setAttribute('x', colorbarX + colorbarWidth + 8);
-            label.setAttribute('y', y + 4);
-            label.setAttribute('fill', '#aaa');
-            label.setAttribute('font-size', '10px');
-            label.setAttribute('text-anchor', 'start');
-            
-            // Format the label based on scale and value
-            let labelText;
-            if (colorScale === 'log') {
-                // For log scale, use scientific notation for powers of 10
-                const exponent = Math.log10(value);
-                const roundedExponent = Math.round(exponent);
-                if (Math.abs(exponent - roundedExponent) < 0.01) {
-                    if (roundedExponent === 0) {
-                        labelText = '1';
-                    } else if (roundedExponent === 1) {
-                        labelText = '10';
-                    } else {
-                        labelText = `10^${roundedExponent}`;
-                    }
-                } else {
-                    labelText = value.toExponential(1);
+                // Thin ticks to ~6
+                let step = 1;
+                const count = endPow - startPow + 1;
+                if (count > 6) step = Math.ceil(count / 6);
+                for (let p = startPow; p <= endPow; p += step) {
+                    const t = (p - logMin) / (logMax - logMin);
+                    const yRaw = colorbarY + colorbarHeight - t * colorbarHeight;
+                    const y = Math.max(colorbarY + 8, Math.min(colorbarY + colorbarHeight - 4, yRaw));
+                    const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    tick.setAttribute('x1', colorbarX + colorbarWidth);
+                    tick.setAttribute('y1', y);
+                    tick.setAttribute('x2', colorbarX + colorbarWidth + 5);
+                    tick.setAttribute('y2', y);
+                    tick.setAttribute('stroke', '#888');
+                    tick.setAttribute('stroke-width', '1');
+                    g.appendChild(tick);
+                    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    label.setAttribute('x', colorbarX + colorbarWidth + 8);
+                    label.setAttribute('y', y + 4);
+                    label.setAttribute('fill', '#aaa');
+                    label.setAttribute('font-size', '10px');
+                    label.setAttribute('text-anchor', 'start');
+                    label.appendChild(document.createTextNode('10'));
+                    const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+                    tspan.setAttribute('baseline-shift', 'super');
+                    tspan.setAttribute('font-size', '8px');
+                    tspan.textContent = String(p);
+                    label.appendChild(tspan);
+                    g.appendChild(label);
                 }
-            } else {
-                // For linear scale
+            }
+        } else {
+            const numTicks = 5;
+            for (let i = 0; i <= numTicks; i++) {
+                const value = colorMin + (i / numTicks) * (colorMax - colorMin);
+                const y = colorbarY + colorbarHeight - (i / numTicks) * colorbarHeight;
+                const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                tick.setAttribute('x1', colorbarX + colorbarWidth);
+                tick.setAttribute('y1', y);
+                tick.setAttribute('x2', colorbarX + colorbarWidth + 5);
+                tick.setAttribute('y2', y);
+                tick.setAttribute('stroke', '#888');
+                tick.setAttribute('stroke-width', '1');
+                g.appendChild(tick);
+                const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                label.setAttribute('x', colorbarX + colorbarWidth + 8);
+                label.setAttribute('y', y + 4);
+                label.setAttribute('fill', '#aaa');
+                label.setAttribute('font-size', '10px');
+                label.setAttribute('text-anchor', 'start');
                 if (Math.abs(value) < 0.01 || Math.abs(value) > 1000) {
-                    labelText = value.toExponential(1);
+                    label.textContent = value.toExponential(1);
                 } else {
-                    labelText = value.toFixed(2);
+                    label.textContent = value.toFixed(2);
                 }
+                g.appendChild(label);
             }
-            
-            label.textContent = labelText;
-            g.appendChild(label);
         }
         
         // ENHANCED: Add colorbar title with LaTeX support
@@ -4810,7 +5364,7 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
         colorbarTitle.setAttribute('text-anchor', 'middle');
         colorbarTitle.setAttribute('fill', 'white');
         colorbarTitle.setAttribute('font-size', '12px');
-        colorbarTitle.innerHTML = renderLatexLabel(colorAxisName);
+        setSvgTextWithLatex(colorbarTitle, colorAxisName);
         g.appendChild(colorbarTitle);
     }
     
@@ -4891,7 +5445,15 @@ function renderLatexLabel(text) {
     return result;
 }
 
-
+// Helper to set SVG text content with basic LaTeX-like support including underscores with braces
+function setSvgTextWithLatex(textNode, text) {
+    if (!textNode) return;
+    // Allow labels like l_21um and l_{21um}
+    // Use the same rendering as renderLatexLabel but assign via innerHTML
+    const html = renderLatexLabel(String(text || ''));
+    // textNode may be <text>; safe to set innerHTML for <text> content spans
+    textNode.innerHTML = html;
+}
 function createSedTab(container) {
     console.log("createSedTab: Creating SED tab content programmatically.");
     // Clear any previous content
@@ -5160,7 +5722,7 @@ function createSedTab(container) {
     });
 
     // Populate catalog dropdown
-    fetch('/list-catalogs/')
+    apiFetch('/list-catalogs/')
         .then(response => response.json())
         .then(data => {
             console.log("Populating SED catalog dropdown with:", data);
@@ -5220,14 +5782,17 @@ function addRangeConditionRow(conditionsContainer, catalogName, showRemoveButton
             <option value=">=">&ge;</option>
             <option value="<=">&le;</option>
             <option value="==">=</option>
+            <option value="!=">!=</option>
         </select>
     `;
     
-    // Value input
+    // Value input container (will be populated based on column type)
     const valDiv = document.createElement('div');
     valDiv.style.flex = '2';
+    valDiv.className = 'sed-range-value-container';
+    // Start with text input that accepts both text and numbers
     valDiv.innerHTML = `
-        <input type="number" class="sed-range-value-input" placeholder="Value" style="width: 100%; padding: 8px; background-color: #333; color: white; border: 1px solid #555; border-radius: 4px;">
+        <input type="text" class="sed-range-value-input" placeholder="Enter value (text or number)" style="width: 100%; padding: 8px; background-color: #333; color: white; border: 1px solid #555; border-radius: 4px;">
     `;
     
     conditionRow.appendChild(colDiv);
@@ -5285,7 +5850,7 @@ function detectBooleanColumns(catalogName) {
         return Promise.resolve([]);
     }
 
-    return fetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
+    return apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
                 console.warn('Failed to load boolean columns, will treat all as numeric');
@@ -5308,7 +5873,7 @@ function detectBooleanColumns(catalogName) {
 
 // Helper function to get sample data for column type detection
 function getColumnSampleData(catalogName) {
-    return fetch(`/catalog-info/?catalog_name=${encodeURIComponent(catalogName)}`)
+    return apiFetch(`/catalog-info/?catalog_name=${encodeURIComponent(catalogName)}`)
         .then(response => response.ok ? response.json() : null)
         .then(data => data ? data.sample_data : [])
         .catch(() => []);
@@ -5425,7 +5990,7 @@ function populateSedFlagDropdown() {
         return;
     }
 
-    fetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
+    apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
                 return response.text().then(text => { 
@@ -5492,7 +6057,7 @@ function detectStringColumns(catalogName) {
     }
 
     // First check for known string columns by name
-    return fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+    return apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
         .then(response => {
             if (!response.ok) {
                 console.warn('Failed to load catalog columns for string detection');
@@ -5510,7 +6075,24 @@ function detectStringColumns(catalogName) {
             }
             
             // If no known string columns, try loading sample data
-            return fetch(`/load-catalog/${encodeURIComponent(catalogName)}`)
+            const apiName = (catalogName || '').toString().split('/').pop().split('\\').pop();
+            const persisted = (window.catalogOverridesByCatalog && (
+                window.catalogOverridesByCatalog[catalogName] ||
+                window.catalogOverridesByCatalog[apiName]
+            )) || null;
+            const raCol = persisted && persisted.ra_col ? persisted.ra_col : 'ra';
+            const decCol = persisted && persisted.dec_col ? persisted.dec_col : 'dec';
+            const sizeCol = persisted && persisted.size_col ? persisted.size_col : null;
+            const urlParams = new URLSearchParams();
+            if (raCol) urlParams.set('ra_col', raCol);
+            if (decCol) urlParams.set('dec_col', decCol);
+            if (sizeCol) urlParams.set('size_col', sizeCol);
+            const headers = {};
+            if (raCol) headers['X-RA-Col'] = raCol;
+            if (decCol) headers['X-DEC-Col'] = decCol;
+            if (sizeCol) headers['X-Size-Col'] = sizeCol;
+            const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
+            return apiFetch(`/load-catalog/${encodeURIComponent(apiName)}${suffix}`, { headers })
                 .then(response => {
                     if (!response.ok) {
                         console.warn('Failed to load catalog sample for string detection');
@@ -5571,7 +6153,7 @@ function populateSedColumnDropdown(columnSelectElement, catalogName) {
     }
 
     // First get all columns
-    fetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+    apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
         .then(response => {
             if (!response.ok) {
                 return response.text().then(text => { 
@@ -5594,24 +6176,51 @@ function populateSedColumnDropdown(columnSelectElement, catalogName) {
                 detectStringColumns(catalogName)
             ]).then(([booleanColumns, stringColumns]) => {
                 columnSelect.innerHTML = '';
-                
-                allColumns.forEach(colName => {
+
+                // Prioritize and annotate RA/DEC candidates in the dropdown
+                const RA_CANDIDATES = [
+                    'PHANGS_RA','XCTR_DEG','cen_ra','CEN_RA','RA','ra','Ra','RightAscension','right_ascension','raj2000','RAJ2000'
+                ];
+                const DEC_CANDIDATES = [
+                    'PHANGS_DEC','YCTR_DEG','cen_dec','CEN_DEC','DEC','dec','Dec','Declination','declination','DECLINATION','decj2000','DECJ2000','dej2000','DEJ2000'
+                ];
+                const lowerMap = new Map(allColumns.map(c => [String(c).toLowerCase(), c]));
+                const resolveMany = (arr) => {
+                    const seen = new Set();
+                    const out = [];
+                    for (const key of arr) {
+                        const m = lowerMap.get(key.toLowerCase());
+                        if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+                    }
+                    return out;
+                };
+                const raResolved = resolveMany(RA_CANDIDATES);
+                const decResolved = resolveMany(DEC_CANDIDATES);
+                const raSet = new Set(raResolved);
+                const decSet = new Set(decResolved);
+                const others = allColumns.filter(c => !(raSet.has(c) || decSet.has(c)));
+                const orderedColumns = [...raResolved, ...decResolved, ...others];
+
+                orderedColumns.forEach(colName => {
                     const option = document.createElement('option');
                     option.value = colName;
-                    option.textContent = colName;
+                    const isRa = raSet.has(colName);
+                    const isDec = decSet.has(colName);
+                    const baseLabel = isRa ? `${colName} (RA)` : isDec ? `${colName} (DEC)` : colName;
+                    option.textContent = baseLabel;
                     
                     // Determine column type - prioritize known string columns
                     if (booleanColumns && booleanColumns.includes && booleanColumns.includes(colName)) {
                         option.setAttribute('data-column-type', 'boolean');
-                        option.textContent = `${colName} (boolean)`;
+                        option.textContent = `${baseLabel} (boolean)`;
                     } else if (isKnownStringColumn(colName)) {
                         // PRIORITY: Known string columns like 'galaxy', 'name', etc.
                         option.setAttribute('data-column-type', 'string');
-                        option.textContent = `${colName} (text)`;
+                        option.textContent = `${baseLabel} (text)`;
                         console.log(`Marked ${colName} as string column by name pattern`);
                     } else if ((stringColumns && stringColumns.includes && stringColumns.includes(colName))) {
                         option.setAttribute('data-column-type', 'string');
-                        option.textContent = `${colName} (text)`;
+                        option.textContent = `${baseLabel} (text)`;
                     } else {
                         option.setAttribute('data-column-type', 'general');
                     }
@@ -5673,7 +6282,6 @@ function populateSedColumnDropdown(columnSelectElement, catalogName) {
             showNotification(error.message, 3000, 'error');
         });
 }
-
 // Enhanced function to handle column selection with better string column detection
 function handleColumnSelectionChange(event) {
     const columnSelect = event.target;
@@ -5806,6 +6414,8 @@ function handleColumnSelectionChange(event) {
 
 // Function to validate value input in real-time
 function validateValueInput(valueInput, operatorSelect, columnType) {
+    // Guard against cases where the input node was removed/replaced (e.g., after changing column)
+    if (!valueInput || !valueInput.parentElement) return;
     const value = valueInput.value.trim();
     const operator = operatorSelect.value;
     const helperText = valueInput.parentElement.querySelector('.helper-text');
@@ -5932,7 +6542,7 @@ function performRangeSearch() {
 
     console.log("Fetching with POST, body:", requestBody);
 
-    fetch('/range-search/', {
+    apiFetch('/range-search/', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -5989,7 +6599,7 @@ function performFlagSearch() {
     const url = `/flag-search/?catalog_name=${encodeURIComponent(catalog)}&flag_column=${encodeURIComponent(flagColumn)}`;
     console.log("Fetching URL:", url);
 
-    fetch(url)
+    apiFetch(url)
         .then(async response => {
             if (!response.ok) {
                 const errorText = await response.text();
@@ -6055,7 +6665,7 @@ function performSedSearch() {
     const url = `/cone-search/?ra=${ra}&dec=${dec}&radius=${radius}&catalog_name=${encodeURIComponent(catalog)}`;
     console.log("Fetching URL:", url);
 
-    fetch(url)
+    apiFetch(url)
         .then(response => {
             console.log("Received response from server:", response);
             if (!response.ok) {
@@ -6147,8 +6757,24 @@ function appendSedResults(catalogName) {
         leftDiv.style.flex = '1';
 
         let sourceName = source.Name || source.NAME || source.name || source.ID || source.id || `Source #${globalIndex + 1}`;
-        const sourceRa = source.ra ?? source.RA ?? source.Ra;
-        const sourceDec = source.dec ?? source.DEC ?? source.Dec;
+        // Normalize RA/DEC from multiple possible column names
+        const sourceRa = source.ra ?? source.RA ?? source.Ra ?? source.cen_ra ?? source.CEN_RA ?? source.PHANGS_RA ?? source.raj2000 ?? source.RAJ2000 ?? source.XCTR_DEG;
+        const sourceDec = source.dec ?? source.DEC ?? source.Dec ?? source.cen_dec ?? source.CEN_DEC ?? source.PHANGS_DEC ?? source.dej2000 ?? source.DECJ2000 ?? source.YCTR_DEG;
+        // Derive galaxy name from common columns; fallback to parsing from catalog filename
+        let galaxyName = (source.galaxy || source.GALAXY || source.PHANGS_GALAXY || source.gal_name || source.galaxy_name || source.object_name || source.obj_name || source.target || '').toString();
+        if (!galaxyName) {
+            try {
+                const base = (catalogName || '').toString().split('/').pop().toLowerCase();
+                const m = base.match(/(?<![a-z0-9])(ngc|ic|m|ugc|eso|pgc|arp)\s*0*(\d+)[a-z]*?(?=[^a-z0-9]|$)/i);
+                if (m) {
+                    const prefix = m[1].toLowerCase();
+                    const digits = m[2];
+                    if (prefix === 'ngc' || prefix === 'ic') galaxyName = `${prefix.toUpperCase()}${digits.padStart(4,'0')}`;
+                    else if (prefix === 'm') galaxyName = `M${digits}`;
+                    else galaxyName = `${prefix.toUpperCase()}${digits}`;
+                }
+            } catch(_) {}
+        }
 
         const nameDiv = document.createElement('div');
         nameDiv.innerHTML = `<strong>${sourceName}</strong>`;
@@ -6179,7 +6805,8 @@ function appendSedResults(catalogName) {
         sedButton.dataset.ra = sourceRa;
         sedButton.dataset.dec = sourceDec;
         sedButton.dataset.catalog = catalogName;
-        sedButton.onclick = (e) => { e.stopPropagation(); window.showSed?.(sedButton.dataset.ra, sedButton.dataset.dec, sedButton.dataset.catalog); };
+        sedButton.dataset.galaxy = galaxyName;
+        sedButton.onclick = (e) => { e.stopPropagation(); window.showSed?.(sedButton.dataset.ra, sedButton.dataset.dec, sedButton.dataset.catalog, sedButton.dataset.galaxy); };
 
         const rgbButton = document.createElement('button');
         rgbButton.textContent = 'RGB';
@@ -6188,7 +6815,8 @@ function appendSedResults(catalogName) {
         rgbButton.dataset.dec = sourceDec;
         rgbButton.dataset.catalog = catalogName;
         rgbButton.dataset.name = sourceName;
-        rgbButton.onclick = (e) => { e.stopPropagation(); window.fetchRgbCutouts?.(rgbButton.dataset.ra, rgbButton.dataset.dec, rgbButton.dataset.catalog, rgbButton.dataset.name); };
+        rgbButton.dataset.galaxy = galaxyName;
+        rgbButton.onclick = (e) => { e.stopPropagation(); window.fetchRgbCutouts?.(rgbButton.dataset.ra, rgbButton.dataset.dec, rgbButton.dataset.catalog, rgbButton.dataset.galaxy); };
 
         const propertiesButton = document.createElement('button');
         propertiesButton.textContent = 'Props';
@@ -6283,8 +6911,155 @@ document.addEventListener('DOMContentLoaded', function() {
         // Set initial state
         manualLimitsContainer.style.display = autoLimitsCheckbox.checked ? 'none' : 'block';
     }
-});
 
+    // When catalog or FITS image changes globally, refresh plotter availability/status
+    window.addEventListener('catalog:changed', ()=>{
+        if (typeof window.updatePlotterAvailability==='function') window.updatePlotterAvailability();
+        // If plotter is open, repopulate dropdowns after catalog change
+        if (document.getElementById('dynamic-plotter-panel')) {
+            try { window.sourcePropertiesData = null; } catch(_) {}
+            // Clear current plot so next Generate uses the updated catalog
+            try {
+                const plotArea = document.getElementById('plot-area');
+                if (plotArea) {
+                    plotArea.innerHTML = 'Select X and Y axes to generate a plot';
+                }
+                const saveBtn = document.getElementById('save-plot-button');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (window.highlightedScatterCircle) {
+                    try {
+                        window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                        window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                    } catch (_) {}
+                    window.highlightedScatterCircle = null;
+                }
+                // Reset axis selections so user selects valid fields for new catalog
+                const xSel = document.getElementById('x-axis-select');
+                const ySel = document.getElementById('y-axis-select');
+                const cSel = document.getElementById('color-axis-select');
+                const xInp = document.getElementById('x-axis-search');
+                const yInp = document.getElementById('y-axis-search');
+                const cInp = document.getElementById('color-axis-search');
+                if (xSel) xSel.value = '';
+                if (ySel) ySel.value = '';
+                if (cSel) cSel.value = '';
+                if (xInp) xInp.value = '';
+                if (yInp) yInp.value = '';
+                if (cInp) cInp.value = '';
+            } catch(_) {}
+            setTimeout(()=>{ try { populateAxisDropdowns(); } catch(_) {} }, 0);
+            // Also refresh boolean column list for new catalog
+            try {
+                const boolSelect = document.getElementById('boolean-filter-column-select');
+                const search = document.getElementById('boolean-filter-search');
+                const dropdown = document.getElementById('boolean-filter-dropdown');
+                const catalogSelectEl = document.getElementById('catalog-select');
+                const selectedCatalog = catalogSelectEl ? catalogSelectEl.value : null;
+                const catalogToUse = selectedCatalog || activeCatalog;
+                if (boolSelect && catalogToUse) {
+                    detectBooleanColumns(catalogToUse).then(cols => {
+                        // Reset options (keep 'None')
+                        for (let i = boolSelect.options.length - 1; i >= 1; i--) boolSelect.remove(i);
+                        if (dropdown) {
+                            while (dropdown.firstChild) dropdown.removeChild(dropdown.firstChild);
+                            // Add 'None' visual item
+                            const noneItem = document.createElement('div');
+                            noneItem.className = 'dropdown-item';
+                            noneItem.textContent = 'None';
+                            noneItem.style.padding = '8px';
+                            noneItem.style.cursor = 'pointer';
+                            noneItem.style.borderBottom = '1px solid #444';
+                            noneItem.style.transition = 'background-color 0.2s';
+                            noneItem.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                            noneItem.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                            noneItem.addEventListener('click', function(){
+                                const searchEl = document.getElementById('boolean-filter-search');
+                                const selectEl = document.getElementById('boolean-filter-column-select');
+                                const dd = document.getElementById('boolean-filter-dropdown');
+                                const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                if (searchEl) searchEl.value = '';
+                                if (selectEl) selectEl.value = '';
+                                if (valWrap) valWrap.style.display = 'none';
+                                if (dd) dd.style.display = 'none';
+                            });
+                            dropdown.appendChild(noneItem);
+                        }
+                        (cols || []).forEach(c => {
+                            // hidden select option
+                            const o = document.createElement('option');
+                            o.value = c; o.textContent = c;
+                            boolSelect.appendChild(o);
+                            // visual dropdown item
+                            if (dropdown) {
+                                const item = document.createElement('div');
+                                item.className = 'dropdown-item';
+                                item.textContent = c;
+                                item.style.padding = '8px';
+                                item.style.cursor = 'pointer';
+                                item.style.borderBottom = '1px solid #444';
+                                item.style.transition = 'background-color 0.2s';
+                                item.addEventListener('mouseover', function(){ this.style.backgroundColor = '#444'; });
+                                item.addEventListener('mouseout', function(){ this.style.backgroundColor = 'transparent'; });
+                                item.addEventListener('click', function(){
+                                    const searchEl = document.getElementById('boolean-filter-search');
+                                    const selectEl = document.getElementById('boolean-filter-column-select');
+                                    const dd = document.getElementById('boolean-filter-dropdown');
+                                    const valWrap = document.getElementById('boolean-filter-value-wrap');
+                                    if (searchEl) searchEl.value = c;
+                                    if (selectEl) selectEl.value = c;
+                                    if (valWrap) valWrap.style.display = 'block';
+                                    if (dd) dd.style.display = 'none';
+                                });
+                                dropdown.appendChild(item);
+                            }
+                        });
+                        if (search) {
+                            search.value = '';
+                            // Filtering handled by dropdown list
+                        }
+                    }).catch(()=>{});
+                }
+            } catch(_) {}
+        }
+    });
+    window.addEventListener('fits:imageLoaded', ()=>{
+        if (typeof window.updatePlotterAvailability==='function') window.updatePlotterAvailability();
+        // If plotter is open, repopulate dropdowns after image load
+        if (document.getElementById('dynamic-plotter-panel')) {
+            try { window.sourcePropertiesData = null; } catch(_) {}
+            // Clear current plot so next Generate uses the updated image+catalog
+            try {
+                const plotArea = document.getElementById('plot-area');
+                if (plotArea) {
+                    plotArea.innerHTML = 'Select X and Y axes to generate a plot';
+                }
+                const saveBtn = document.getElementById('save-plot-button');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (window.highlightedScatterCircle) {
+                    try {
+                        window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                        window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                    } catch (_) {}
+                    window.highlightedScatterCircle = null;
+                }
+                // Reset axis selections (image change may affect valid columns)
+                const xSel = document.getElementById('x-axis-select');
+                const ySel = document.getElementById('y-axis-select');
+                const cSel = document.getElementById('color-axis-select');
+                const xInp = document.getElementById('x-axis-search');
+                const yInp = document.getElementById('y-axis-search');
+                const cInp = document.getElementById('color-axis-search');
+                if (xSel) xSel.value = '';
+                if (ySel) ySel.value = '';
+                if (cSel) cSel.value = '';
+                if (xInp) xInp.value = '';
+                if (yInp) yInp.value = '';
+                if (cInp) cInp.value = '';
+            } catch(_) {}
+            setTimeout(()=>{ try { populateAxisDropdowns(); } catch(_) {} }, 0);
+        }
+    });
+});
 // Save the current plot as a high-quality PNG file with white background
 function savePlotAsPng() {
     const plotArea = document.getElementById('plot-area');
@@ -6411,6 +7186,3 @@ function savePlotAsPng() {
     
     img.src = svgUrl;
 }
-
-
-

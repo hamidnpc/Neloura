@@ -20,7 +20,7 @@ function createSedContainer() {
     sedContainer.style.color = 'white';
     sedContainer.style.padding = '10px';
     sedContainer.style.boxShadow = '0 -2px 10px rgba(0, 0, 0, 0.5)';
-    sedContainer.style.zIndex = '1000';
+    sedContainer.style.zIndex = '300000';
     sedContainer.style.display = 'none';
     sedContainer.style.textAlign = 'center';
     sedContainer.style.fontFamily = "'Raleway', sans-serif";
@@ -305,14 +305,25 @@ function fallbackToStandardMethod(ra, dec, catalogName, galaxyName = null) {
     // Reset progress for fallback method
     updateSedProgress(10, "Generating SED using standard method...");
     
-    // Construct the URL for the standard endpoint with galaxy name
+    // Construct the URL for the standard endpoint with galaxy name and RA/DEC overrides if present
     let url = `/generate-sed/?ra=${ra}&dec=${dec}&catalog_name=${encodeURIComponent(catalogName)}`;
+    try {
+        const apiName = (catalogName || '').toString().split('/').pop();
+        const ov = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[catalogName] || window.catalogOverridesByCatalog[apiName])) || {};
+        if (ov && ov.ra_col) url += `&ra_col=${encodeURIComponent(ov.ra_col)}`;
+        if (ov && ov.dec_col) url += `&dec_col=${encodeURIComponent(ov.dec_col)}`;
+        if (window.__lastSedOverrides) {
+            const o2 = window.__lastSedOverrides;
+            if (o2.ra_col) url += `&ra_col=${encodeURIComponent(o2.ra_col)}`;
+            if (o2.dec_col) url += `&dec_col=${encodeURIComponent(o2.dec_col)}`;
+        }
+    } catch(_) {}
     if (galaxyName && galaxyName !== null && galaxyName !== 'Unknown') {
         url += `&galaxy_name=${encodeURIComponent(galaxyName)}`;
     }
     
     // Fetch the SED data
-    fetch(url)
+    apiFetch(url)
     .then(response => {
         if (!response.ok) {
             throw new Error(`HTTP error! Status: ${response.status}`);
@@ -456,6 +467,7 @@ function createPropertiesContainer() {
     propertiesContainer.style.transition = 'transform 0.3s ease-in-out';
     propertiesContainer.style.transform = 'translateX(-100%)';
     propertiesContainer.style.fontFamily = "'Raleway', sans-serif";
+    propertiesContainer.style.zIndex = '999999999';
     
     // --- Header Section --- 
     const headerSection = document.createElement('div');
@@ -593,8 +605,13 @@ function showProperties(ra, dec, catalogName) {
     
     propertiesContent.innerHTML = '<div style="text-align: center; padding: 20px; color: white;">Loading properties...</div>';
 
-    // Fetch properties from the server
-    fetch(`/source-properties/?ra=${ra}&dec=${dec}&catalog_name=${catalogName}`)
+    // Resolve overrides from last-applied styles if available
+    const overrides = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[catalogName] || window.catalogOverridesByCatalog[(catalogName||'').toString().split('/').pop()])) || {};
+    const qp = new URLSearchParams({ ra: String(ra), dec: String(dec), catalog_name: catalogName });
+    if (overrides.ra_col) qp.set('ra_col', overrides.ra_col);
+    if (overrides.dec_col) qp.set('dec_col', overrides.dec_col);
+    // Fetch properties from the server with overrides
+    apiFetch(`/source-properties/?${qp.toString()}`)
         .then(response => {
             if (!response.ok) {
                 throw new Error('Failed to load properties');
@@ -647,8 +664,11 @@ function showProperties(ra, dec, catalogName) {
             
             html += `<div class="property-entry" style="display: contents;"><div style="color: #aaa; white-space: nowrap;">RA:</div><div style="color: white; word-break: break-all;">${raValue}°</div></div>`;
             html += `<div class="property-entry" style="display: contents;"><div style="color: #aaa; white-space: nowrap;">DEC:</div><div style="color: white; word-break: break-all;">${decValue}°</div></div>`;
-            if (properties.galaxy) {
-                 html += `<div class="property-entry" style="display: contents;"><div style="color: #aaa; white-space: nowrap;">Galaxy:</div><div style="font-weight: bold; color: white; word-break: break-all;">${properties.galaxy}</div></div>`;
+            {
+                const galaxyVal = (properties.galaxy ?? properties.PHANGS_GALAXY);
+                if (galaxyVal) {
+                    html += `<div class="property-entry" style="display: contents;"><div style="color: #aaa; white-space: nowrap;">Galaxy:</div><div style="font-weight: bold; color: white; word-break: break-all;">${galaxyVal}</div></div>`;
+                }
             }
             html += `</div></div>`; // Close coordinates grid and section
             
@@ -695,7 +715,7 @@ function showProperties(ra, dec, catalogName) {
             
             // Add all remaining properties
             if (Object.keys(properties).length > 0) {
-                const remainingPropsExist = Object.keys(properties).some(key => typeof properties[key] !== 'boolean' && key.toLowerCase() !== 'galaxy');
+                const remainingPropsExist = Object.keys(properties).some(key => typeof properties[key] !== 'boolean' && key.toLowerCase() !== 'galaxy' && key.toLowerCase() !== 'phangs_galaxy');
                 if (remainingPropsExist) {
                     html += `<div class="property-section" style="font-family: 'Raleway', sans-serif;">
                         <h4 class="property-section-header" style="margin: 0 0 8px 0; color: #2196F3; border-bottom: 1px solid #2196F3; padding-bottom: 5px; font-family: 'Raleway', sans-serif; color: white;">Catalog Properties</h4>
@@ -753,7 +773,7 @@ function showProperties(ra, dec, catalogName) {
                             // Skip RA/DEC as they're already included separately
                             if (key.toLowerCase() === 'ra' || key.toLowerCase() === 'dec' || 
                                 key.toLowerCase().includes('right_ascension') || key.toLowerCase().includes('declination') ||
-                                key.toLowerCase() === 'galaxy') { // Also skip galaxy as it's already in the coordinates section
+                                key.toLowerCase() === 'galaxy' || key.toLowerCase() === 'phangs_galaxy') { // Also skip galaxy as it's already in the coordinates section
                                 continue;
                             }
                             if (typeof properties[key] === 'boolean') continue; // Already handled by booleanProps
