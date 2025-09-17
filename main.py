@@ -196,7 +196,7 @@ def _configure_logging():
 _configure_logging()
 
 # --- Global Configuration Constants for Performance Tuning ---
-MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 1000  # Max points for dynamic range calculation in SimpleTileGenerator
+MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 200  # Lower to speed percentile on slow storage
 # --- End Global Configuration Constants ---
 
 # Prime psutil.cpu_percent() for non-blocking calls later
@@ -704,15 +704,15 @@ SED_RGB_TEXT_X_ALT = 0.4
 # ------------------------------------------------------------------------------
 # When storage has poor random-read performance (see fio results), reduce disk
 # pressure by promoting image slices to RAM or by warming the OS page cache.
-ENABLE_IN_MEMORY_FITS = True
+ENABLE_IN_MEMORY_FITS = False
 IN_MEMORY_FITS_MAX_MB = 2048  # cap per promoted 2D slice
 IN_MEMORY_FITS_RAM_FRACTION = 0.5  # must be <= 50% of available RAM
 ENABLE_PAGECACHE_WARMUP = False
 PAGECACHE_WARMUP_CHUNK_ROWS = 4096
-IN_MEMORY_FITS_MODE = 'auto'  # 'auto' | 'always' | 'never'
-RANDOM_READ_BENCH_SAMPLES = 1024
+IN_MEMORY_FITS_MODE = 'never'  # 'auto' | 'always' | 'never'
+RANDOM_READ_BENCH_SAMPLES = 128
 RANDOM_READ_CHUNK_BYTES = 4096
-RANDOM_READ_THRESHOLD_MBPS = 5.0
+RANDOM_READ_THRESHOLD_MBPS = 1.0
 
 # ------------------------------------------------------------------------------
 # Shared I/O optimization helpers (app-wide)
@@ -1845,14 +1845,16 @@ class SimpleTileGenerator:
         
         self.height, self.width = self.image_data.shape[-2:] # Use last two dimensions for height/width
 
-        # Optional: apply app-wide I/O optimization policy
+        # Optional: apply app-wide I/O optimization policy (deferred by default for Ceph)
+        self.io_strategy = 'deferred'
         try:
-            self.image_data, self.io_strategy = optimize_array_io(
-                self.image_data, self.height, self.width,
-                os.path.basename(self.fits_file_path), self.hdu_index
-            )
+            if os.getenv('FITS_OPTIMIZE_ON_INIT', '0') in ('1', 'true', 'True'):
+                self.image_data, self.io_strategy = optimize_array_io(
+                    self.image_data, self.height, self.width,
+                    os.path.basename(self.fits_file_path), self.hdu_index
+                )
         except Exception as e:
-            logger.warning(f"[FITS I/O] Optimization failed: {e}")
+            logger.warning(f"[FITS I/O] Optimization skipped during init: {e}")
         
         # NOTE: Percentile calculation is deferred.
         
@@ -5218,6 +5220,7 @@ async def pixel_to_world(
 
 
 @app.get("/fits-binary/")
+@app.get("/canfits-binary/")
 async def fits_binary(
     request: Request,
     type: str = Query(None),
@@ -8535,15 +8538,15 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
-        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "2"))
+        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "6"))
     except Exception:
         max_workers = 4
     try:
-        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "2"))
+        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "4"))
     except Exception:
         render_limit = 3
     try:
-        fits_limit = int(os.getenv("FITS_INIT_CONCURRENCY", "1"))
+        fits_limit = int(os.getenv("FITS_INIT_CONCURRENCY", "2"))
     except Exception:
         fits_limit = 2
     try:
