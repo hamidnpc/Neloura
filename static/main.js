@@ -4301,7 +4301,16 @@ async function initializeTiledViewer() {
             springStiffness: 7,
             visibilityRatio: 0.1,
             constrainDuringPan: true,
-            imageSmoothingEnabled: false 
+            imageSmoothingEnabled: false,
+            // Network/concurrency tuning for slow backends (e.g., Ceph)
+            // Increase or decrease to match server throughput. 6 is the OSD default.
+            imageLoaderLimit: 6,
+            // Use XHR for tiles so they can be canceled if needed by OSD internals
+            loadTilesWithAjax: true,
+            ajaxWithCredentials: true,
+            ajaxHeaders: (function(){
+                try { const sid = sessionStorage.getItem('sid'); return sid ? { 'X-Session-ID': sid } : {}; } catch(_){ return {}; }
+            })()
         };
 
         if (!window.tiledViewer) {
@@ -4590,7 +4599,7 @@ function parseWCS(header) {
     }
 
     wcsInfo.worldToPixels = (ra, dec) => {
-        console.log('worldToPixels called:::::',ra, dec);
+        // console.log('worldToPixels called:::::',ra, dec);
         if (wcsInfo.ctype1.includes('RA---TAN') && wcsInfo.ctype2.includes('DEC--TAN')) {
             const D2R = Math.PI / 180.0;
             const R2D = 180.0 / Math.PI;
@@ -4683,14 +4692,20 @@ function handleFastLoadingResponse(data, filepath) {
     // Store basic FITS information globally. THIS IS THE 2ND FIX.
     // The data is now nested inside the tile_info object from the server.
     const tileInfo = data.tile_info;
+    // Preserve previously fetched WCS (and flip_y) if the fast path didn't include it
+    const prevFits = window.fitsData || {};
+    const preservedWcs = (tileInfo && tileInfo.wcs) ? tileInfo.wcs : (prevFits.wcs || null);
+    const preservedFlipY = (tileInfo && typeof tileInfo.flip_y === 'boolean') ? tileInfo.flip_y
+                           : (typeof prevFits.flip_y === 'boolean' ? prevFits.flip_y : null);
     window.fitsData = {
         width: tileInfo.width,
         height: tileInfo.height,
         min_value: tileInfo.min_value,
         max_value: tileInfo.max_value,
         overview: tileInfo.overview, // This might be an object or a base64 string
-        wcs: tileInfo.wcs,
-        filename: filepath
+        wcs: preservedWcs,
+        filename: filepath,
+        ...(preservedFlipY != null ? { flip_y: preservedFlipY } : {})
     };
 
     // Hide any previous notifications

@@ -165,8 +165,9 @@ function getImageSizeFromViewer(v) {
 
 function buildLinearWcsTransform() {
     const hasParsed = !!(window.parsedWCS &&
-                         typeof window.worldToPixel === 'function' &&
-                         typeof window.pixelToWorld === 'function');
+                         window.parsedWCS.hasWCS === true &&
+                         typeof window.parsedWCS.worldToPixels === 'function' &&
+                         typeof window.parsedWCS.pixelsToWorld === 'function');
   
     // Utility: RA wrap-safe difference in degrees (-180..+180)
     const raDiff = (a, b) => {
@@ -221,8 +222,10 @@ function buildLinearWcsTransform() {
           let err = 0;
           for (const s of samples) {
             const yF = map.toFitsY(s.y);
-            const w = window.pixelToWorld(window.parsedWCS, s.x, yF);
-            const p = window.worldToPixel(window.parsedWCS, w.ra, w.dec);
+            const w = window.parsedWCS.pixelsToWorld(s.x, yF);
+            if (!w || !isFinite(w.ra) || !isFinite(w.dec)) return Number.POSITIVE_INFINITY;
+            const p = window.parsedWCS.worldToPixels(w.ra, w.dec);
+            if (!p || !isFinite(p.x) || !isFinite(p.y)) return Number.POSITIVE_INFINITY;
             const yBack = map.fromFitsY(p.y);
             err += Math.hypot((p.x - s.x), (yBack - s.y));
           }
@@ -234,19 +237,25 @@ function buildLinearWcsTransform() {
           const e = scoreMap(c);
           if (e < bestErr) { bestErr = e; best = c; }
         }
-        console.log('[WCS] H=', H, 'chosen map:', best.name, 'avgRTerr=', bestErr.toFixed(3), 'px');
+        // console.log('[WCS] H=', H, 'chosen map:', best && best.name, 'avgRTerr=', isFinite(bestErr) ? bestErr.toFixed(3) : '∞', 'px');
       
         const parsedPixelToWorld = (xTL, yTL) => {
           const yF = best.toFitsY(yTL);
-          const w = window.pixelToWorld(window.parsedWCS, xTL, yF);
+          const w = window.parsedWCS.pixelsToWorld(xTL, yF);
+          if (!w || !isFinite(w.ra) || !isFinite(w.dec)) return { ra: NaN, dec: NaN };
           return { ra: w.ra, dec: w.dec };
         };
         const parsedWorldToPixel = (raDeg, decDeg) => {
-          const p = window.worldToPixel(window.parsedWCS, raDeg, decDeg);
+          const p = window.parsedWCS.worldToPixels(raDeg, decDeg);
+          if (!p || !isFinite(p.x) || !isFinite(p.y)) return { x: NaN, y: NaN };
           return { x: p.x, y: best.fromFitsY(p.y) };
         };
-      
-        function solveXForRaAtY_full(raTargetDeg, yConstTL, xSpanImg) {
+
+        // If sampling failed, fall back to linear WCS below
+        if (!isFinite(bestErr) || bestErr === Infinity) {
+          // no return; continue to linear path
+        } else {
+          function solveXForRaAtY_full(raTargetDeg, yConstTL, xSpanImg) {
           const x0 = xSpanImg.min, x1 = xSpanImg.max;
           const w0 = parsedPixelToWorld(x0, yConstTL);
           const w1 = parsedPixelToWorld(x1, yConstTL);
@@ -261,9 +270,9 @@ function buildLinearWcsTransform() {
           const decSol = 0.5 * (decLo + decHi);
           const p = parsedWorldToPixel(raTargetDeg, decSol);
           return p.x;
-        }
-      
-        function solveYForDecAtX_full(decTargetDeg, xConstImg, ySpanImg) {
+          }
+        
+          function solveYForDecAtX_full(decTargetDeg, xConstImg, ySpanImg) {
           const y0 = ySpanImg.min, y1 = ySpanImg.max;
           const w0 = parsedPixelToWorld(xConstImg, y0);
           const w1 = parsedPixelToWorld(xConstImg, y1);
@@ -282,14 +291,15 @@ function buildLinearWcsTransform() {
           const raSol = 0.5 * (raLo + raHi);
           const p = parsedWorldToPixel(raSol, decTargetDeg);
           return p.y;
+          }
+        
+          return {
+            pixelToWorld: (x, y) => parsedPixelToWorld(x, y),
+            _solveXForRaAtY_full: solveXForRaAtY_full,
+            _solveYForDecAtX_full: solveYForDecAtX_full,
+            useFull: true
+          };
         }
-      
-        return {
-          pixelToWorld: (x, y) => parsedPixelToWorld(x, y),
-          _solveXForRaAtY_full: solveXForRaAtY_full,
-          _solveYForDecAtX_full: solveYForDecAtX_full,
-          useFull: true
-        };
       }
   
     // Fallback: your existing linear CD path (kept as-is)
@@ -793,21 +803,7 @@ function buildLinearWcsTransform() {
     }, Math.max(200, pollMs));
   };
 
-  // Optional force from console: window.WCS_FORCE = { invert: true/false, offset: 0 or 0.5 }
-// REMOVE these lines at the bottom of static/wcs.js
-// Optional force from console: window.WCS_FORCE = { invert: true/false, offset: 0 or 0.5 }
-if (window.WCS_FORCE && typeof window.WCS_FORCE === 'object') {
-    const force = window.WCS_FORCE;
-    const forced = { invert: !!force.invert, offset: Number(force.offset) || 0 };
-    best = { ...best, toFitsY: (yTL) => {
-      const y = forced.invert ? (H > 0 ? (H - 1) - yTL : yTL) : yTL;
-      return y + forced.offset;
-    }, fromFitsY: (yBL) => {
-      const y = (yBL - forced.offset);
-      return forced.invert ? (H > 0 ? (H - 1) - y : y) : y;
-    }, name: `FORCED:${forced.invert?'invert':'direct'}(${forced.offset})` };
-    console.warn('[WCS] FORCED mapping:', best.name);
-  }
+  // Removed invalid WCS_FORCE override block that referenced out-of-scope variables
 
   // Idempotent auto-attach so axes always show without manual retries
 (function setupWcsAutoAttach() {

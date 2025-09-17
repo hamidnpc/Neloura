@@ -13,6 +13,11 @@ async function ensureSession() {
     } catch (e) { console.warn('Session init failed', e); return null; }
 }
 
+// Abort/timeout helpers for long-running fetches (e.g., /fits-binary)
+let __fitsBinaryAbortController = null;
+let __fitsBinaryTimeout = null;
+let __currentBinaryXhr = null;
+
 async function apiFetch(url, options = {}) {
     const sid = await ensureSession();
     const headers = options.headers ? { ...options.headers } : {};
@@ -85,7 +90,18 @@ function loadFitsFile(filepath) {
             console.log(`Using fast/tiled loading for ${filepath}.`);
 
             // Use JSON endpoint for fast loading mode
-            return apiFetch(`/fits-binary/?fast_loading=true`)
+            // Abort any previous /fits-binary attempt before starting a new one
+            if (__fitsBinaryAbortController) {
+                try { __fitsBinaryAbortController.abort(); } catch(_) {}
+                __fitsBinaryAbortController = null;
+            }
+            if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; }
+            __fitsBinaryAbortController = new AbortController();
+            __fitsBinaryTimeout = setTimeout(() => {
+                try { __fitsBinaryAbortController.abort(); } catch(_) {}
+            }, 30000); // 30s safety timeout
+
+            return apiFetch(`/fits-binary/?fast_loading=true`, { signal: __fitsBinaryAbortController.signal })
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
@@ -102,10 +118,13 @@ function loadFitsFile(filepath) {
                     } else {
                         // This is a fallback in case the server doesn't respond as expected.
                         console.warn("[loadFitsFile] Server did not confirm fast_loading. Falling back to client-side binary processing.");
+                        // Abort XHR fallback if running
+                        if (__currentBinaryXhr) { try { __currentBinaryXhr.abort(); } catch(_) {} __currentBinaryXhr = null; }
                         return fetchBinaryWithProgress('/fits-binary/?fast_loading=false')
                             .then(arrayBuffer => processBinaryData(arrayBuffer, filepath));
                     }
                 })
+                .finally(() => { if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; } })
                 .then(()=>{ try { window.dispatchEvent(new CustomEvent('fits:imageLoaded', { detail: { filepath } })); } catch (_) {} });
         })
         .catch(error => {
@@ -757,7 +776,18 @@ function selectHdu(hduIndex, filepath) {
             console.log(`Using fast/tiled loading for HDU ${hduIndex}.`);
             
             // Use JSON endpoint for fast loading mode with HDU parameter
-            return apiFetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`)
+            // Abort any in-flight fits-binary request (newer selection wins)
+            if (__fitsBinaryAbortController) {
+                try { __fitsBinaryAbortController.abort(); } catch(_) {}
+                __fitsBinaryAbortController = null;
+            }
+            if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; }
+            __fitsBinaryAbortController = new AbortController();
+            __fitsBinaryTimeout = setTimeout(() => {
+                try { __fitsBinaryAbortController.abort(); } catch(_) {}
+            }, 30000); // 30s timeout
+
+            return apiFetch(`/fits-binary/?fast_loading=true&hdu=${hduIndex}`, { signal: __fitsBinaryAbortController.signal })
                 .then(response => {
                     // Check content type to determine how to process the response
                     const contentType = response.headers.get('content-type');
@@ -793,7 +823,8 @@ function selectHdu(hduIndex, filepath) {
                     }
                     // If we got here with binary data, it's already been processed by the fallback.
                     return data;
-                });
+                })
+                .finally(() => { if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; } });
         })
         .catch(error => {
             console.error('Error loading FITS file:', error);
