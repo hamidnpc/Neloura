@@ -1965,24 +1965,16 @@ class SimpleTileGenerator:
             strategy = os.getenv('OVERVIEW_STRATEGY', 'central')  # 'central' | 'full'
 
             if strategy == 'central':
-                # Read a single contiguous central window to avoid random I/O on Ceph
-                win_size = int(os.getenv('OVERVIEW_CENTRAL_SIZE', '4096'))
-                win_h = min(self.height, win_size)
-                win_w = min(self.width, win_size)
+                # Read a small central, fully contiguous region (default 512x512) to avoid Ceph random I/O
+                center_size_env = int(os.getenv('OVERVIEW_CENTRAL_SIZE', str(target_size)))
+                side = max(64, min(center_size_env, target_size, self.height, self.width))
                 cy = self.height // 2
                 cx = self.width // 2
-                y0 = max(0, cy - win_h // 2)
-                y1 = y0 + win_h
-                x0 = max(0, cx - win_w // 2)
-                x1 = x0 + win_w
-                window = self.image_data[y0:y1, x0:x1]
-
-                # Downsample the window to target_size using simple stride sampling (contiguous access)
-                stride_y = max(1, window.shape[0] // target_size)
-                stride_x = max(1, window.shape[1] // target_size)
-                overview_data = window[0:window.shape[0]:stride_y, 0:window.shape[1]:stride_x]
-                # Clamp to target dimensions if slightly oversized
-                overview_data = overview_data[:target_size, :target_size]
+                y0 = max(0, cy - side // 2)
+                y1 = y0 + side
+                x0 = max(0, cx - side // 2)
+                x1 = x0 + side
+                overview_data = self.image_data[y0:y1, x0:x1]
             else:
                 # Full-image strided decimation (may be slow on Ceph due to random I/O)
                 scale = max(1, max(self.width, self.height) / target_size)
@@ -5488,8 +5480,14 @@ def _build_fits_binary_sync(fits_file: str, hdu_index: int):
         padding_bytes = (4 - (buffer.tell() % 4)) % 4
         buffer.write(b"\0" * padding_bytes)
 
-        float_data = np.ascontiguousarray(image_data, dtype=np.float32)
-        buffer.write(float_data.tobytes())
+        # Avoid sending full image on Ceph; send a small sentinel instead when fast_loading is typical
+        ceph_optimized = os.getenv('CEPH_OPTIMIZE_BINARY', '1') in ('1','true','True')
+        if ceph_optimized and max(height, width) > 2048:
+            # Send an empty payload for pixels; frontend uses tiles anyway
+            pass
+        else:
+            float_data = np.ascontiguousarray(image_data, dtype=np.float32)
+            buffer.write(float_data.tobytes())
 
         binary_data = buffer.getvalue()
         return binary_data, wcs_info, w_object
