@@ -55,6 +55,7 @@ import time
 from types import SimpleNamespace  # Add this import
 from datetime import datetime # Add datetime import
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from astropy.time import Time # Added for type handling
 import psutil # Added for system stats
 import asyncio # <--- ADD THIS IMPORT
@@ -4223,8 +4224,9 @@ async def get_fits_tile_information(request: Request):
 
     if not tile_generator:
         try:
-            # Initialize generator in a worker thread to avoid blocking
-            tile_generator = await asyncio.to_thread(SimpleTileGenerator, fits_file, hdu_index)
+            # Initialize generator using the shared executor
+            loop = asyncio.get_running_loop()
+            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
             session_generators[file_id] = tile_generator
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
@@ -4238,7 +4240,8 @@ async def get_fits_tile_information(request: Request):
         # Fire-and-forget overview generation in background
         try:
             if not getattr(tile_generator, "overview_generated", False):
-                asyncio.create_task(asyncio.to_thread(tile_generator.ensure_overview_generated))
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
         except Exception:
             pass
         # If overview already available, include it
@@ -4266,9 +4269,10 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         if not tile_generator:
             if not Path(fits_file).exists():
                 return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
-            # Initialize generator and dynamic range in background threads
-            tile_generator = await asyncio.to_thread(SimpleTileGenerator, fits_file, hdu_index)
-            await asyncio.to_thread(tile_generator.ensure_dynamic_range_calculated)
+            # Initialize generator and dynamic range using shared executor
+            loop = asyncio.get_running_loop()
+            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+            await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
             session_generators[file_id] = tile_generator
 
         # Per-session tile cache
@@ -4279,8 +4283,14 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         if cached_tile:
             return Response(content=cached_tile, media_type="image/png")
 
-        # Generate tile in a worker thread (PNG encoding can be heavy)
-        tile_data = await asyncio.to_thread(tile_generator.get_tile, level, x, y)
+        # Generate tile in a worker thread (PNG encoding can be heavy), limited by semaphore
+        render_sem = getattr(app.state, "tile_render_semaphore", None)
+        if render_sem is None:
+            render_sem = asyncio.Semaphore(3)
+            app.state.tile_render_semaphore = render_sem
+        async with render_sem:
+            loop = asyncio.get_running_loop()
+            tile_data = await loop.run_in_executor(app.state.thread_executor, tile_generator.get_tile, level, x, y)
         if tile_data is None:
             return JSONResponse(status_code=404, content={"error": f"Tile ({level},{x},{y}) data not found or generation failed"})
 
@@ -5252,7 +5262,8 @@ async def fits_binary(
                 generator_instance = session_generators.get(file_id)
                 if generator_instance is None:
                     # Load/correct data in a worker thread to avoid blocking the event loop
-                    image_data, header = await asyncio.to_thread(_load_image_data_and_header_corrected, fits_file, hdu_index)
+                    loop = asyncio.get_running_loop()
+                    image_data, header = await loop.run_in_executor(app.state.thread_executor, _load_image_data_and_header_corrected, fits_file, hdu_index)
                     generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
                     # mark flip applied if we provided corrected_data
                     setattr(generator_instance, "_flip_applied", True)
@@ -5266,7 +5277,8 @@ async def fits_binary(
                             def _read_header_sync():
                                 with fits.open(fits_file) as hdul:
                                     return hdul[hdu_index].header
-                            header = await asyncio.to_thread(_read_header_sync)
+                            loop = asyncio.get_running_loop()
+                            header = await loop.run_in_executor(app.state.thread_executor, _read_header_sync)
                         flip_y, _, _ = analyze_wcs_orientation(header, None)
                         if flip_y and not getattr(generator_instance, "_flip_applied", False):
                             generator_instance.image_data = np.flipud(generator_instance.image_data)
@@ -5281,11 +5293,13 @@ async def fits_binary(
                 # Start overview generation in the background to avoid blocking
                 if not generator_instance.overview_generated:
                     try:
-                        asyncio.create_task(asyncio.to_thread(generator_instance.ensure_overview_generated))
+                        loop = asyncio.get_running_loop()
+                        asyncio.create_task(loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated))
                     except Exception:
                         # As a fallback, run synchronously but still proceed
                         try:
-                            await asyncio.to_thread(generator_instance.ensure_overview_generated)
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(app.state.thread_executor, generator_instance.ensure_overview_generated)
                         except Exception as _bg_e:
                             print(f"Overview generation failed: {_bg_e}")
 
@@ -5302,7 +5316,8 @@ async def fits_binary(
 
         # Non-fast path: return binary with header + stats for initial render
         try:
-            binary_data, wcs_info, w_object = await asyncio.to_thread(_build_fits_binary_sync, fits_file, int(hdu_index))
+            loop = asyncio.get_running_loop()
+            binary_data, wcs_info, w_object = await loop.run_in_executor(app.state.thread_executor, _build_fits_binary_sync, fits_file, int(hdu_index))
             # Persist WCS for later use
             if wcs_info is not None:
                 app.state.current_wcs = wcs_info
@@ -8497,6 +8512,24 @@ async def system_stats_sender(manager: ConnectionManager):
         await asyncio.sleep(SYSTEM_STATS_UPDATE_INTERVAL)  # Updated from 2
 @app.on_event("startup")
 async def startup_event():
+    # Initialize shared executor and tile render semaphore
+    try:
+        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "4"))
+    except Exception:
+        max_workers = 4
+    try:
+        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "3"))
+    except Exception:
+        render_limit = 3
+    try:
+        if not hasattr(app.state, "thread_executor") or app.state.thread_executor is None:
+            app.state.thread_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tiles")
+        if not hasattr(app.state, "tile_render_semaphore") or app.state.tile_render_semaphore is None:
+            app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
+        print(f"[startup] Thread executor (max_workers={max_workers}) and tile semaphore (limit={render_limit}) initialized")
+    except Exception as _e:
+        print(f"[startup] Failed to initialize executor/semaphore: {_e}")
+
     # Start the background task
     asyncio.create_task(system_stats_sender(manager))
     # Start uploads auto-clean worker
@@ -8520,13 +8553,24 @@ async def startup_event():
         print("[startup] Ensured settings_profiles.json exists with default profile")
     except Exception as _e:
         print(f"[startup] Failed to seed settings profiles: {_e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    try:
+        exec_obj = getattr(app.state, "thread_executor", None)
+        if exec_obj is not None:
+            exec_obj.shutdown(wait=False, cancel_futures=True)
+            print("[shutdown] Thread executor shut down")
+    except Exception as _e:
+        print(f"[shutdown] Failed to shut down executor: {_e}")
 @app.websocket("/ws/system-stats")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         # Send initial data immediately on connection
-        # Offload initial stats fetch to a worker thread
-        initial_data = await asyncio.to_thread(get_system_stats_data)
+        # Offload initial stats fetch to a worker thread (shared executor)
+        loop = asyncio.get_running_loop()
+        initial_data = await loop.run_in_executor(app.state.thread_executor, get_system_stats_data)
         if initial_data:
             await websocket.send_text(json.dumps(initial_data))
             
