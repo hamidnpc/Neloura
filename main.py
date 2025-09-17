@@ -1962,18 +1962,39 @@ class SimpleTileGenerator:
         try:
             # Create a small overview (max 512x512)
             target_size = 512
-            scale = max(1, max(self.width, self.height) / target_size)
-            overview_width = int(self.width / scale)
-            overview_height = int(self.height / scale)
-            
-            # Fast stride sampling instead of fancy indexing
-            if scale > 1:
-                stride_y = max(1, int(self.height / overview_height))
-                stride_x = max(1, int(self.width / overview_width))
-                overview_data = self.image_data[0:self.height:stride_y, 0:self.width:stride_x]
-                overview_data = overview_data[:overview_height, :overview_width]
+            strategy = os.getenv('OVERVIEW_STRATEGY', 'central')  # 'central' | 'full'
+
+            if strategy == 'central':
+                # Read a single contiguous central window to avoid random I/O on Ceph
+                win_size = int(os.getenv('OVERVIEW_CENTRAL_SIZE', '4096'))
+                win_h = min(self.height, win_size)
+                win_w = min(self.width, win_size)
+                cy = self.height // 2
+                cx = self.width // 2
+                y0 = max(0, cy - win_h // 2)
+                y1 = y0 + win_h
+                x0 = max(0, cx - win_w // 2)
+                x1 = x0 + win_w
+                window = self.image_data[y0:y1, x0:x1]
+
+                # Downsample the window to target_size using simple stride sampling (contiguous access)
+                stride_y = max(1, window.shape[0] // target_size)
+                stride_x = max(1, window.shape[1] // target_size)
+                overview_data = window[0:window.shape[0]:stride_y, 0:window.shape[1]:stride_x]
+                # Clamp to target dimensions if slightly oversized
+                overview_data = overview_data[:target_size, :target_size]
             else:
-                overview_data = np.array(self.image_data)  # Small image, use as-is
+                # Full-image strided decimation (may be slow on Ceph due to random I/O)
+                scale = max(1, max(self.width, self.height) / target_size)
+                overview_width = int(self.width / scale)
+                overview_height = int(self.height / scale)
+                if scale > 1:
+                    stride_y = max(1, int(self.height / overview_height))
+                    stride_x = max(1, int(self.width / overview_width))
+                    overview_data = self.image_data[0:self.height:stride_y, 0:self.width:stride_x]
+                    overview_data = overview_data[:overview_height, :overview_width]
+                else:
+                    overview_data = np.array(self.image_data)  # Small image, use as-is
             
             # Handle NaN and infinity values
             overview_data = np.nan_to_num(overview_data, nan=0, posinf=0, neginf=0)
