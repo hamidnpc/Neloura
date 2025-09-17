@@ -4223,9 +4223,9 @@ async def get_fits_tile_information(request: Request):
 
     if not tile_generator:
         try:
-            generator_instance = SimpleTileGenerator(fits_file, hdu_index)
-            session_generators[file_id] = generator_instance
-            tile_generator = generator_instance
+            # Initialize generator in a worker thread to avoid blocking
+            tile_generator = await asyncio.to_thread(SimpleTileGenerator, fits_file, hdu_index)
+            session_generators[file_id] = tile_generator
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
@@ -4235,13 +4235,15 @@ async def get_fits_tile_information(request: Request):
         # Ensure fields the frontend expects
         if "minLevel" not in info:
             info["minLevel"] = 0
-        # Try to include an overview for faster first paint (optional)
+        # Fire-and-forget overview generation in background
         try:
-            tile_generator.ensure_overview_generated()
-            if getattr(tile_generator, "overview_image", None):
-                info["overview"] = tile_generator.overview_image
+            if not getattr(tile_generator, "overview_generated", False):
+                asyncio.create_task(asyncio.to_thread(tile_generator.ensure_overview_generated))
         except Exception:
             pass
+        # If overview already available, include it
+        if getattr(tile_generator, "overview_image", None):
+            info["overview"] = tile_generator.overview_image
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
@@ -4264,8 +4266,9 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         if not tile_generator:
             if not Path(fits_file).exists():
                 return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
-            tile_generator = SimpleTileGenerator(fits_file, hdu_index)
-            tile_generator.ensure_dynamic_range_calculated()
+            # Initialize generator and dynamic range in background threads
+            tile_generator = await asyncio.to_thread(SimpleTileGenerator, fits_file, hdu_index)
+            await asyncio.to_thread(tile_generator.ensure_dynamic_range_calculated)
             session_generators[file_id] = tile_generator
 
         # Per-session tile cache
@@ -4276,7 +4279,8 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         if cached_tile:
             return Response(content=cached_tile, media_type="image/png")
 
-        tile_data = tile_generator.get_tile(level, x, y)
+        # Generate tile in a worker thread (PNG encoding can be heavy)
+        tile_data = await asyncio.to_thread(tile_generator.get_tile, level, x, y)
         if tile_data is None:
             return JSONResponse(status_code=404, content={"error": f"Tile ({level},{x},{y}) data not found or generation failed"})
 
@@ -8521,7 +8525,8 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         # Send initial data immediately on connection
-        initial_data = get_system_stats_data()
+        # Offload initial stats fetch to a worker thread
+        initial_data = await asyncio.to_thread(get_system_stats_data)
         if initial_data:
             await websocket.send_text(json.dumps(initial_data))
             
