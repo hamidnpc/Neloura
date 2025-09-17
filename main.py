@@ -640,7 +640,6 @@ SED_HA_TOKEN_EXTEND_TEMPLATES = [
 SED_HA_WAVELENGTH = 21.5
 SED_HA_X_OFFSET = -0.7
 SED_HA_Y_POSITION = 0.72
-
 # Processing configuration
 SED_MAX_WORKERS_FILES = 8
 
@@ -5248,22 +5247,8 @@ async def fits_binary(
 
                 generator_instance = session_generators.get(file_id)
                 if generator_instance is None:
-                    # Create generator with orientation-corrected data
-                    with fits.open(fits_file, memmap=True, lazy_load_hdus=True) as hdul:
-                        if not (0 <= hdu_index < len(hdul)):
-                            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-                        image_data = hdul[hdu_index].data
-                        header = hdul[hdu_index].header
-                        if image_data is None:
-                            raise HTTPException(status_code=400, detail=f"No image data found in HDU {hdu_index}.")
-                        if getattr(image_data, "ndim", 0) > 2:
-                            if image_data.ndim == 3:
-                                image_data = image_data[0, :, :]
-                            elif image_data.ndim == 4:
-                                image_data = image_data[0, 0, :, :]
-                        _, _, corrected_data = analyze_wcs_orientation(header, image_data)
-                        if corrected_data is not None:
-                            image_data = corrected_data
+                    # Load/correct data in a worker thread to avoid blocking the event loop
+                    image_data, header = await asyncio.to_thread(_load_image_data_and_header_corrected, fits_file, hdu_index)
                     generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
                     # mark flip applied if we provided corrected_data
                     setattr(generator_instance, "_flip_applied", True)
@@ -5273,8 +5258,11 @@ async def fits_binary(
                     try:
                         header = getattr(generator_instance, "header", None)
                         if header is None:
-                            with fits.open(fits_file) as hdul:
-                                header = hdul[hdu_index].header
+                            # Read header in a worker thread
+                            def _read_header_sync():
+                                with fits.open(fits_file) as hdul:
+                                    return hdul[hdu_index].header
+                            header = await asyncio.to_thread(_read_header_sync)
                         flip_y, _, _ = analyze_wcs_orientation(header, None)
                         if flip_y and not getattr(generator_instance, "_flip_applied", False):
                             generator_instance.image_data = np.flipud(generator_instance.image_data)
@@ -5286,8 +5274,16 @@ async def fits_binary(
                     except Exception as _e:
                         print(f"Orientation check on existing generator failed: {_e}")
 
+                # Start overview generation in the background to avoid blocking
                 if not generator_instance.overview_generated:
-                    generator_instance.ensure_overview_generated()
+                    try:
+                        asyncio.create_task(asyncio.to_thread(generator_instance.ensure_overview_generated))
+                    except Exception:
+                        # As a fallback, run synchronously but still proceed
+                        try:
+                            await asyncio.to_thread(generator_instance.ensure_overview_generated)
+                        except Exception as _bg_e:
+                            print(f"Overview generation failed: {_bg_e}")
 
                 tile_info = generator_instance.get_tile_info()
                 return JSONResponse(content={
@@ -5301,94 +5297,21 @@ async def fits_binary(
             # Fall through to non-tiled; frontend can handle the binary path as a fallback
 
         # Non-fast path: return binary with header + stats for initial render
-        with fits.open(fits_file) as hdul:
-            if hdu_index < 0 or hdu_index >= len(hdul):
-                return JSONResponse(status_code=400, content={"error": f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs."})
-            hdu_obj = hdul[hdu_index]
-            if not hasattr(hdu_obj, "data") or hdu_obj.data is None:
-                return JSONResponse(status_code=400, content={"error": f"HDU {hdu_index} does not contain image data"})
-            image_data = hdu_obj.data
-            if getattr(image_data, "ndim", 0) > 2:
-                if image_data.ndim == 3:
-                    image_data = image_data[0, :, :]
-                elif image_data.ndim == 4:
-                    image_data = image_data[0, 0, :, :]
-            header = hdu_obj.header
-            _, _, corrected_data = analyze_wcs_orientation(header, image_data)
-            if corrected_data is not None:
-                image_data = corrected_data
-
-            if image_data is None:
-                return JSONResponse(status_code=400, content={"error": f"No data in HDU {hdu_index} after potential slicing."})
-
-            height, width = image_data.shape[-2:]
-            valid_data = image_data[np.isfinite(image_data)]
-            if valid_data.size == 0:
-                min_value = 0.0
-                max_value = 1.0
-            else:
-                min_value = float(np.percentile(valid_data, 0.5))
-                max_value = float(np.percentile(valid_data, 99.5))
-                if min_value >= max_value:
-                    min_value = float(np.min(valid_data))
-                    max_value = float(np.max(valid_data))
-                    if min_value >= max_value:
-                        max_value = min_value + 1e-6
-
-            wcs_info = None
-            try:
-                w = WCS(_prepare_jwst_header_for_wcs(header))
-                if w.has_celestial:
-                    wcs_info = {
-                        "ra_ref": float(header.get("CRVAL1", 0)),
-                        "dec_ref": float(header.get("CRVAL2", 0)),
-                        "x_ref": float(header.get("CRPIX1", 0)),
-                        "y_ref": float(header.get("CRPIX2", 0)),
-                        "cd1_1": float(header.get("CD1_1", header.get("CDELT1", 0))),
-                        "cd1_2": float(header.get("CD1_2", 0)),
-                        "cd2_1": float(header.get("CD2_1", 0)),
-                        "cd2_2": float(header.get("CD2_2", header.get("CDELT2", 0))),
-                        "bunit": header.get("BUNIT", "")
-                    }
-                    app.state.current_wcs = wcs_info
-                    app.state.current_wcs_object = w
-            except Exception:
-                wcs_info = None
-
-            buffer = io.BytesIO()
-            buffer.write(struct.pack("<i", width))
-            buffer.write(struct.pack("<i", height))
-            buffer.write(struct.pack("<f", min_value))
-            buffer.write(struct.pack("<f", max_value))
-
-            if wcs_info:
-                buffer.write(struct.pack("<?", True))
-                wcs_json = json.dumps(wcs_info)
-                wcs_bytes = wcs_json.encode("utf-8")
-                buffer.write(struct.pack("<i", len(wcs_bytes)))
-                buffer.write(wcs_bytes)
-            else:
-                buffer.write(struct.pack("<?", False))
-                buffer.write(struct.pack("<i", 0))
-
-            bunit = header.get("BUNIT", "")
-            bunit_bytes = bunit.encode("utf-8")
-            buffer.write(struct.pack("<i", len(bunit_bytes)))
-            if bunit_bytes:
-                buffer.write(bunit_bytes)
-
-            padding_bytes = (4 - (buffer.tell() % 4)) % 4
-            buffer.write(b"\0" * padding_bytes)
-
-            float_data = np.ascontiguousarray(image_data, dtype=np.float32)
-            buffer.write(float_data.tobytes())
-
-            binary_data = buffer.getvalue()
+        try:
+            binary_data, wcs_info, w_object = await asyncio.to_thread(_build_fits_binary_sync, fits_file, int(hdu_index))
+            # Persist WCS for later use
+            if wcs_info is not None:
+                app.state.current_wcs = wcs_info
+                app.state.current_wcs_object = w_object
             return Response(
                 content=binary_data,
                 media_type="application/octet-stream",
                 headers={"Content-Disposition": "attachment; filename=fits_data.bin"},
             )
+        except HTTPException:
+            raise
+        except Exception as e_nonfast:
+            raise HTTPException(status_code=500, detail=f"Failed to build FITS binary: {e_nonfast}")
 
     except HTTPException:
         raise
@@ -5398,6 +5321,114 @@ async def fits_binary(
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+
+def _load_image_data_and_header_corrected(fits_file: str, hdu_index: int):
+    """Blocking helper: load image data and header, normalize dimensions, apply orientation correction."""
+    with fits.open(fits_file, memmap=True, lazy_load_hdus=True) as hdul:
+        if not (0 <= hdu_index < len(hdul)):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        image_data = hdul[hdu_index].data
+        header = hdul[hdu_index].header
+        if image_data is None:
+            raise HTTPException(status_code=400, detail=f"No image data found in HDU {hdu_index}.")
+        if getattr(image_data, "ndim", 0) > 2:
+            if image_data.ndim == 3:
+                image_data = image_data[0, :, :]
+            elif image_data.ndim == 4:
+                image_data = image_data[0, 0, :, :]
+        _, _, corrected_data = analyze_wcs_orientation(header, image_data)
+        if corrected_data is not None:
+            image_data = corrected_data
+        return image_data, header
+
+
+def _build_fits_binary_sync(fits_file: str, hdu_index: int):
+    """Blocking helper: open FITS and build the binary payload and WCS info."""
+    with fits.open(fits_file) as hdul:
+        if hdu_index < 0 or hdu_index >= len(hdul):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        hdu_obj = hdul[hdu_index]
+        if not hasattr(hdu_obj, "data") or hdu_obj.data is None:
+            raise HTTPException(status_code=400, detail=f"HDU {hdu_index} does not contain image data")
+        image_data = hdu_obj.data
+        if getattr(image_data, "ndim", 0) > 2:
+            if image_data.ndim == 3:
+                image_data = image_data[0, :, :]
+            elif image_data.ndim == 4:
+                image_data = image_data[0, 0, :, :]
+        header = hdu_obj.header
+        _, _, corrected_data = analyze_wcs_orientation(header, image_data)
+        if corrected_data is not None:
+            image_data = corrected_data
+
+        if image_data is None:
+            raise HTTPException(status_code=400, detail=f"No data in HDU {hdu_index} after potential slicing.")
+
+        height, width = image_data.shape[-2:]
+        valid_data = image_data[np.isfinite(image_data)]
+        if valid_data.size == 0:
+            min_value = 0.0
+            max_value = 1.0
+        else:
+            min_value = float(np.percentile(valid_data, 0.5))
+            max_value = float(np.percentile(valid_data, 99.5))
+            if min_value >= max_value:
+                min_value = float(np.min(valid_data))
+                max_value = float(np.max(valid_data))
+                if min_value >= max_value:
+                    max_value = min_value + 1e-6
+
+        wcs_info = None
+        w_object = None
+        try:
+            w_object = WCS(_prepare_jwst_header_for_wcs(header))
+            if w_object.has_celestial:
+                wcs_info = {
+                    "ra_ref": float(header.get("CRVAL1", 0)),
+                    "dec_ref": float(header.get("CRVAL2", 0)),
+                    "x_ref": float(header.get("CRPIX1", 0)),
+                    "y_ref": float(header.get("CRPIX2", 0)),
+                    "cd1_1": float(header.get("CD1_1", header.get("CDELT1", 0))),
+                    "cd1_2": float(header.get("CD1_2", 0)),
+                    "cd2_1": float(header.get("CD2_1", 0)),
+                    "cd2_2": float(header.get("CD2_2", header.get("CDELT2", 0))),
+                    "bunit": header.get("BUNIT", "")
+                }
+        except Exception:
+            wcs_info = None
+            w_object = None
+
+        buffer = io.BytesIO()
+        buffer.write(struct.pack("<i", width))
+        buffer.write(struct.pack("<i", height))
+        buffer.write(struct.pack("<f", min_value))
+        buffer.write(struct.pack("<f", max_value))
+
+        if wcs_info:
+            buffer.write(struct.pack("<?", True))
+            wcs_json = json.dumps(wcs_info)
+            wcs_bytes = wcs_json.encode("utf-8")
+            buffer.write(struct.pack("<i", len(wcs_bytes)))
+            buffer.write(wcs_bytes)
+        else:
+            buffer.write(struct.pack("<?", False))
+            buffer.write(struct.pack("<i", 0))
+
+        bunit = header.get("BUNIT", "")
+        bunit_bytes = bunit.encode("utf-8")
+        buffer.write(struct.pack("<i", len(bunit_bytes)))
+        if bunit_bytes:
+            buffer.write(bunit_bytes)
+
+        padding_bytes = (4 - (buffer.tell() % 4)) % 4
+        buffer.write(b"\0" * padding_bytes)
+
+        float_data = np.ascontiguousarray(image_data, dtype=np.float32)
+        buffer.write(float_data.tobytes())
+
+        binary_data = buffer.getvalue()
+        return binary_data, wcs_info, w_object
 
 
 def initialize_tile_generator_background(request: Request, file_id, fits_file, image_data, header, hdu_index):
