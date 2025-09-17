@@ -5261,13 +5261,18 @@ async def fits_binary(
 
                 generator_instance = session_generators.get(file_id)
                 if generator_instance is None:
-                    # Load/correct data in a worker thread to avoid blocking the event loop
+                    # Load/correct data in a worker thread, limited by FITS init semaphore
                     loop = asyncio.get_running_loop()
-                    image_data, header = await loop.run_in_executor(app.state.thread_executor, _load_image_data_and_header_corrected, fits_file, hdu_index)
-                    generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
-                    # mark flip applied if we provided corrected_data
-                    setattr(generator_instance, "_flip_applied", True)
-                    session_generators[file_id] = generator_instance
+                    fits_sem = getattr(app.state, "fits_init_semaphore", None)
+                    if fits_sem is None:
+                        fits_sem = asyncio.Semaphore(2)
+                        app.state.fits_init_semaphore = fits_sem
+                    async with fits_sem:
+                        image_data, header = await loop.run_in_executor(app.state.thread_executor, _load_image_data_and_header_corrected, fits_file, hdu_index)
+                        generator_instance = SimpleTileGenerator(fits_file, hdu_index, image_data=image_data)
+                        # mark flip applied if we provided corrected_data
+                        setattr(generator_instance, "_flip_applied", True)
+                        session_generators[file_id] = generator_instance
                 else:
                     # Reused generator: ensure orientation is corrected once
                     try:
@@ -5317,7 +5322,12 @@ async def fits_binary(
         # Non-fast path: return binary with header + stats for initial render
         try:
             loop = asyncio.get_running_loop()
-            binary_data, wcs_info, w_object = await loop.run_in_executor(app.state.thread_executor, _build_fits_binary_sync, fits_file, int(hdu_index))
+            fits_sem = getattr(app.state, "fits_init_semaphore", None)
+            if fits_sem is None:
+                fits_sem = asyncio.Semaphore(2)
+                app.state.fits_init_semaphore = fits_sem
+            async with fits_sem:
+                binary_data, wcs_info, w_object = await loop.run_in_executor(app.state.thread_executor, _build_fits_binary_sync, fits_file, int(hdu_index))
             # Persist WCS for later use
             if wcs_info is not None:
                 app.state.current_wcs = wcs_info
@@ -8522,11 +8532,17 @@ async def startup_event():
     except Exception:
         render_limit = 3
     try:
+        fits_limit = int(os.getenv("FITS_INIT_CONCURRENCY", "2"))
+    except Exception:
+        fits_limit = 2
+    try:
         if not hasattr(app.state, "thread_executor") or app.state.thread_executor is None:
             app.state.thread_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tiles")
         if not hasattr(app.state, "tile_render_semaphore") or app.state.tile_render_semaphore is None:
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
-        print(f"[startup] Thread executor (max_workers={max_workers}) and tile semaphore (limit={render_limit}) initialized")
+        if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
+            app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
+        print(f"[startup] Thread executor (max_workers={max_workers}), tile semaphore (limit={render_limit}), fits semaphore (limit={fits_limit}) initialized")
     except Exception as _e:
         print(f"[startup] Failed to initialize executor/semaphore: {_e}")
 
