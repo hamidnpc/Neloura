@@ -4379,12 +4379,22 @@ async def get_fits_tile_information(request: Request):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
-    # Return minimal tile info quickly without triggering dynamic range or data loads
+    # Always return tile info (even if generator already existed)
     try:
-        info = tile_generator.get_minimal_tile_info()
+        info = tile_generator.get_tile_info()
+        # Ensure fields the frontend expects
         if "minLevel" not in info:
             info["minLevel"] = 0
-        # Do NOT auto-generate overview here; frontend may request /fits-overview when needed
+        # Fire-and-forget overview generation in background
+        try:
+            if not getattr(tile_generator, "overview_generated", False):
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
+        except Exception:
+            pass
+        # If overview already available, include it
+        if getattr(tile_generator, "overview_image", None):
+            info["overview"] = tile_generator.overview_image
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
