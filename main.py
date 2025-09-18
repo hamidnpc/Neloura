@@ -706,7 +706,7 @@ SED_RGB_TEXT_X_ALT = 0.4
 # pressure by promoting image slices to RAM or by warming the OS page cache.
 # These can be overridden via environment variables at runtime.
 ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true', 'True')
-IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '8192'))  # cap per promoted 2D slice
+IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '12000'))  # cap per promoted 2D slice
 IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.5'))
 ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '0') in ('1', 'true', 'True')
 PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
