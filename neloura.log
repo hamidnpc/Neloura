@@ -1,0 +1,537 @@
+[2025-09-18 10:45:31,609] INFO uvicorn.error: Started server process [87896]
+[2025-09-18 10:45:31,609] ERROR stderr: INFO:     Started server process [87896]
+[2025-09-18 10:45:31,609] INFO uvicorn.error: Started server process [87896]
+[2025-09-18 10:45:31,610] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 10:45:31,610] ERROR stderr: INFO:     Waiting for application startup.
+[2025-09-18 10:45:31,610] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 10:45:31,610] INFO stdout: [startup] CPU=8, executor(max_workers=40), tile(limit=16), fits(limit=8)
+[2025-09-18 10:45:31,611] INFO stdout: [startup] Math threads: OMP=2, OPENBLAS=8, MKL=8, NUMEXPR=8
+[2025-09-18 10:45:31,611] INFO stdout: [startup] uploads_auto_clean_worker scheduled
+[2025-09-18 10:45:31,614] INFO stdout: [startup] Ensured settings_profiles.json exists with default profile
+[2025-09-18 10:45:31,614] INFO stdout: [uploads_auto_clean] sleeping for 3600.0s (enable=False)
+[2025-09-18 10:45:31,626] INFO uvicorn.error: Application startup complete.
+[2025-09-18 10:45:31,632] ERROR stderr: INFO:     Application startup complete.
+[2025-09-18 10:45:31,626] INFO uvicorn.error: Application startup complete.
+[2025-09-18 10:45:31,670] INFO uvicorn.error: ('127.0.0.1', 51123) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,671] ERROR stderr: INFO:     ('127.0.0.1', 51123) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,670] INFO uvicorn.error: ('127.0.0.1', 51123) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,737] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,737] ERROR stderr: INFO:     connection open
+[2025-09-18 10:45:31,737] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,770] INFO uvicorn.error: ('127.0.0.1', 51142) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,771] ERROR stderr: INFO:     ('127.0.0.1', 51142) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,770] INFO uvicorn.error: ('127.0.0.1', 51142) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,772] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,772] ERROR stderr: INFO:     connection open
+[2025-09-18 10:45:31,772] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,807] INFO stdout: INFO:     127.0.0.1:51141 - "GET / HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,807] INFO uvicorn.access: 127.0.0.1:51141 - "GET / HTTP/1.1" 200
+[2025-09-18 10:45:31,808] INFO uvicorn.error: ('127.0.0.1', 51143) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,808] ERROR stderr: INFO:     ('127.0.0.1', 51143) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,808] INFO uvicorn.error: ('127.0.0.1', 51143) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,808] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,809] ERROR stderr: INFO:     connection open
+[2025-09-18 10:45:31,808] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,863] INFO uvicorn.error: ('127.0.0.1', 51144) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,864] ERROR stderr: INFO:     ('127.0.0.1', 51144) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,863] INFO uvicorn.error: ('127.0.0.1', 51144) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:31,875] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,882] ERROR stderr: INFO:     connection open
+[2025-09-18 10:45:31,875] INFO uvicorn.error: connection open
+[2025-09-18 10:45:31,900] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/style.css?debug6 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,900] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/style.css?debug6 HTTP/1.1" 200
+[2025-09-18 10:45:31,901] INFO stdout: INFO:     127.0.0.1:51158 - "GET /static/progress.css HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,900] INFO uvicorn.access: 127.0.0.1:51158 - "GET /static/progress.css HTTP/1.1" 200
+[2025-09-18 10:45:31,901] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/vendor/openseadragon/openseadragon.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,901] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/vendor/openseadragon/openseadragon.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,902] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/vendor/codemirror/codemirror.min.css HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,902] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/vendor/codemirror/codemirror.min.css HTTP/1.1" 200
+[2025-09-18 10:45:31,902] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/vendor/codemirror/addon/hint/show-hint.min.css HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,902] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/vendor/codemirror/addon/hint/show-hint.min.css HTTP/1.1" 200
+[2025-09-18 10:45:31,902] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/vendor/codemirror/theme/dracula.min.css HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,902] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/vendor/codemirror/theme/dracula.min.css HTTP/1.1" 200
+[2025-09-18 10:45:31,907] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/vendor/fabric/fabric.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,907] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/vendor/fabric/fabric.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,907] INFO stdout: INFO:     127.0.0.1:51158 - "GET /static/vendor/codemirror/codemirror.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,907] INFO uvicorn.access: 127.0.0.1:51158 - "GET /static/vendor/codemirror/codemirror.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,907] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/catalog_viewer.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,907] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/catalog_viewer.js HTTP/1.1" 200
+[2025-09-18 10:45:31,907] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/vendor/codemirror/mode/python/python.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,907] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/vendor/codemirror/mode/python/python.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,907] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/vendor/codemirror/addon/comment/comment.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,907] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/vendor/codemirror/addon/comment/comment.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,910] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/vendor/codemirror/addon/hint/show-hint.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,910] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/vendor/codemirror/addon/hint/show-hint.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,922] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/vendor/codemirror/addon/hint/anyword-hint.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,921] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/vendor/codemirror/addon/hint/anyword-hint.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,922] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/vendor/sweetalert2/sweetalert2.all.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,922] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/vendor/sweetalert2/sweetalert2.all.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,923] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/vendor/lodash/lodash.min.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,923] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/vendor/lodash/lodash.min.js HTTP/1.1" 200
+[2025-09-18 10:45:31,923] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/coding.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,923] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/coding.js HTTP/1.1" 200
+[2025-09-18 10:45:31,938] INFO stdout: INFO:     127.0.0.1:51141 - "GET /settings/me HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,937] INFO uvicorn.access: 127.0.0.1:51141 - "GET /settings/me HTTP/1.1" 200
+[2025-09-18 10:45:31,944] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/peak.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,944] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/peak.js HTTP/1.1" 200
+[2025-09-18 10:45:31,946] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/image-processing.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,946] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/image-processing.js HTTP/1.1" 200
+[2025-09-18 10:45:31,949] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/main.js?v=debug8 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,949] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/main.js?v=debug8 HTTP/1.1" 200
+[2025-09-18 10:45:31,949] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/coords_overlay.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,949] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/coords_overlay.js HTTP/1.1" 200
+[2025-09-18 10:45:31,956] INFO stdout: INFO:     127.0.0.1:51151 - "GET /static/plotter.js?v=debug5 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,956] INFO uvicorn.access: 127.0.0.1:51151 - "GET /static/plotter.js?v=debug5 HTTP/1.1" 200
+[2025-09-18 10:45:31,956] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/sed.js?v=debug5 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,956] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/sed.js?v=debug5 HTTP/1.1" 200
+[2025-09-18 10:45:31,957] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/asttest.js?v=debug5 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,957] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/asttest.js?v=debug5 HTTP/1.1" 200
+[2025-09-18 10:45:31,958] INFO stdout: INFO:     127.0.0.1:51158 - "GET /static/mast.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,958] INFO uvicorn.access: 127.0.0.1:51158 - "GET /static/mast.js HTTP/1.1" 200
+[2025-09-18 10:45:31,959] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/files.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,959] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/files.js HTTP/1.1" 200
+[2025-09-18 10:45:31,959] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/catalogs.js?v=debug6 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,959] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/catalogs.js?v=debug6 HTTP/1.1" 200
+[2025-09-18 10:45:31,966] INFO stdout: INFO:     127.0.0.1:51141 - "GET /settings/me HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,966] INFO uvicorn.access: 127.0.0.1:51141 - "GET /settings/me HTTP/1.1" 200
+[2025-09-18 10:45:31,971] INFO stdout: INFO:     127.0.0.1:51158 - "GET /static/canvas.js?v=debug5 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,971] INFO uvicorn.access: 127.0.0.1:51158 - "GET /static/canvas.js?v=debug5 HTTP/1.1" 200
+[2025-09-18 10:45:31,976] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/settings.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,976] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/settings.js HTTP/1.1" 200
+[2025-09-18 10:45:31,986] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/save.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,986] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/save.js HTTP/1.1" 200
+[2025-09-18 10:45:31,989] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/fonts/raleway-v28-latin-regular.woff2 HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,989] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/fonts/raleway-v28-latin-regular.woff2 HTTP/1.1" 200
+[2025-09-18 10:45:31,990] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/toolbar.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:31,990] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/toolbar.js HTTP/1.1" 200
+[2025-09-18 10:45:32,039] INFO stdout: INFO:     127.0.0.1:51158 - "GET /settings/me HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,039] INFO uvicorn.access: 127.0.0.1:51158 - "GET /settings/me HTTP/1.1" 200
+[2025-09-18 10:45:32,040] INFO stdout: INFO:     127.0.0.1:51156 - "GET /static/usage.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,039] INFO uvicorn.access: 127.0.0.1:51156 - "GET /static/usage.js HTTP/1.1" 200
+[2025-09-18 10:45:32,040] INFO stdout: INFO:     127.0.0.1:51152 - "GET /static/wcs.js?v=debug8 HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,040] INFO uvicorn.access: 127.0.0.1:51152 - "GET /static/wcs.js?v=debug8 HTTP/1.1" 200
+[2025-09-18 10:45:32,040] INFO stdout: INFO:     127.0.0.1:51154 - "GET /static/credit.js HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,040] INFO uvicorn.access: 127.0.0.1:51154 - "GET /static/credit.js HTTP/1.1" 200
+[2025-09-18 10:45:32,041] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/fonts/raleway-v28-latin-400.woff2 HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,041] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/fonts/raleway-v28-latin-400.woff2 HTTP/1.1" 200
+[2025-09-18 10:45:32,049] INFO stdout: INFO:     127.0.0.1:51141 - "GET /session/start HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,049] INFO uvicorn.access: 127.0.0.1:51141 - "GET /session/start HTTP/1.1" 200
+[2025-09-18 10:45:32,050] INFO uvicorn.error: ('127.0.0.1', 51160) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:32,050] ERROR stderr: INFO:     ('127.0.0.1', 51160) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:32,050] INFO uvicorn.error: ('127.0.0.1', 51160) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:45:32,050] INFO uvicorn.error: connection open
+[2025-09-18 10:45:32,057] ERROR stderr: INFO:     connection open
+[2025-09-18 10:45:32,050] INFO uvicorn.error: connection open
+[2025-09-18 10:45:32,093] INFO stdout: INFO:     127.0.0.1:51152 - "GET /session/start HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,093] INFO uvicorn.access: 127.0.0.1:51152 - "GET /session/start HTTP/1.1" 200
+[2025-09-18 10:45:32,096] INFO stdout: INFO:     127.0.0.1:51156 - "GET /session/start HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,096] INFO uvicorn.access: 127.0.0.1:51156 - "GET /session/start HTTP/1.1" 200
+[2025-09-18 10:45:32,097] INFO stdout: INFO:     127.0.0.1:51141 - "GET /static/logo/logo.png HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,097] INFO uvicorn.access: 127.0.0.1:51141 - "GET /static/logo/logo.png HTTP/1.1" 200
+[2025-09-18 10:45:32,098] INFO stdout: INFO:     127.0.0.1:51152 - "GET /list-catalogs/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,098] INFO uvicorn.access: 127.0.0.1:51152 - "GET /list-catalogs/ HTTP/1.1" 200
+[2025-09-18 10:45:32,099] INFO stdout: INFO:     127.0.0.1:51156 - "GET /list-catalogs/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,099] INFO uvicorn.access: 127.0.0.1:51156 - "GET /list-catalogs/ HTTP/1.1" 200
+[2025-09-18 10:45:32,103] INFO stdout: INFO:     127.0.0.1:51156 - "GET /list-files/files/uploads HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,103] INFO uvicorn.access: 127.0.0.1:51156 - "GET /list-files/files/uploads HTTP/1.1" 200
+[2025-09-18 10:45:32,105] INFO stdout: INFO:     127.0.0.1:51152 - "GET /list-files/files/uploads HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,105] INFO uvicorn.access: 127.0.0.1:51152 - "GET /list-files/files/uploads HTTP/1.1" 200
+[2025-09-18 10:45:32,603] INFO stdout: INFO:     127.0.0.1:51141 - "GET /list-files-for-frontend/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:32,603] INFO uvicorn.access: 127.0.0.1:51141 - "GET /list-files-for-frontend/ HTTP/1.1" 200
+[2025-09-18 10:45:37,081] INFO stdout: INFO:     127.0.0.1:51183 - "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 401 Unauthorized
+[2025-09-18 10:45:37,076] INFO uvicorn.access: 127.0.0.1:51183 - "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 401
+[2025-09-18 10:45:37,150] INFO stdout: INFO:     127.0.0.1:51183 - "GET /static/vendor/openseadragon/openseadragon.min.js.map HTTP/1.1" 404 Not Found
+[2025-09-18 10:45:37,150] INFO uvicorn.access: 127.0.0.1:51183 - "GET /static/vendor/openseadragon/openseadragon.min.js.map HTTP/1.1" 404
+[2025-09-18 10:45:38,494] INFO stdout: INFO:     127.0.0.1:51183 - "GET /fits-hdu-info/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,492] INFO uvicorn.access: 127.0.0.1:51183 - "GET /fits-hdu-info/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits HTTP/1.1" 200
+[2025-09-18 10:45:38,512] INFO stdout: INFO:     127.0.0.1:51183 - "GET /fits-header/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits?hdu_index=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,511] INFO uvicorn.access: 127.0.0.1:51183 - "GET /fits-header/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits?hdu_index=0 HTTP/1.1" 200
+[2025-09-18 10:45:38,514] INFO stdout: Colormap LUT updated for 'grayscale'
+[2025-09-18 10:45:38,573] INFO main: SimpleTileGenerator initialized: 1600x1600, max_level: 3. Dynamic range calculation deferred.
+[2025-09-18 10:45:38,574] INFO stdout: INFO:     127.0.0.1:51189 - "GET /load-file/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits?hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,574] INFO uvicorn.access: 127.0.0.1:51189 - "GET /load-file/ngc0628_12m%2B7m%2Btp_co21_broad_mom0.fits?hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:38,581] INFO stdout: Coordinate types: CTYPE1=RA---SIN, CTYPE2=DEC--SIN
+[2025-09-18 10:45:38,581] INFO stdout: Using simple CDELT format: CDELT1=-5.555555555556e-05, CDELT2=5.555555555556e-05
+[2025-09-18 10:45:38,581] INFO stdout: Equivalent CD matrix: CD11=-5.555555555556e-05, CD12=0, CD21=0, CD22=5.555555555556e-05
+[2025-09-18 10:45:38,581] INFO stdout: Transformation matrix determinant: -3.0864197530869132e-09
+[2025-09-18 10:45:38,581] INFO stdout: Negative determinant detected: coordinate system is flipped
+[2025-09-18 10:45:38,581] INFO stdout: CD22 (Y-axis scale): 5.555555555556e-05
+[2025-09-18 10:45:38,581] INFO stdout: CD22 is positive: Y-axis is normal in WCS
+[2025-09-18 10:45:38,581] INFO stdout: Final decision: flip_y = True
+[2025-09-18 10:45:38,581] INFO stdout: INFO:     127.0.0.1:51189 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,581] INFO uvicorn.access: 127.0.0.1:51189 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:38,585] INFO stdout: Dynamic range for files/ngc0628_12m+7m+tp_co21_broad_mom0.fits:0 not calculated, calculating now...
+[2025-09-18 10:45:38,589] INFO main: [FITS I/O] (global) mode=auto, promote_enabled=True, pagecache_warmup=True, max_mb=12000, ram_fraction=0.7, threshold_mbps=2.0
+[2025-09-18 10:45:38,589] INFO main: [FITS I/O] (global) Data already in RAM (ndarray). file=ngc0628_12m+7m+tp_co21_broad_mom0.fits hdu=0
+[2025-09-18 10:45:38,689] INFO stdout: Dynamic range for files/ngc0628_12m+7m+tp_co21_broad_mom0.fits:0 calculated.
+[2025-09-18 10:45:38,690] INFO stdout: Overview for files/ngc0628_12m+7m+tp_co21_broad_mom0.fits:0 not found, generating...
+[2025-09-18 10:45:38,690] INFO stdout: INFO:     127.0.0.1:51189 - "GET /fits-tile-info/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,690] INFO uvicorn.access: 127.0.0.1:51189 - "GET /fits-tile-info/ HTTP/1.1" 200
+[2025-09-18 10:45:38,704] INFO stdout: Histogram: Strided sampling (stride=50) on (1600, 1600), ~516 finite points.
+[2025-09-18 10:45:38,803] INFO stdout: Overview for files/ngc0628_12m+7m+tp_co21_broad_mom0.fits:0 generated.
+[2025-09-18 10:45:38,803] INFO stdout: Overview for files/ngc0628_12m+7m+tp_co21_broad_mom0.fits:0 was generated by another thread.
+[2025-09-18 10:45:38,805] INFO stdout: INFO:     127.0.0.1:51189 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,805] INFO uvicorn.access: 127.0.0.1:51189 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200
+[2025-09-18 10:45:38,806] INFO stdout: INFO:     127.0.0.1:51183 - "GET /fits-overview/0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,806] INFO uvicorn.access: 127.0.0.1:51183 - "GET /fits-overview/0 HTTP/1.1" 200
+[2025-09-18 10:45:38,827] INFO stdout: INFO:     127.0.0.1:51191 - "GET /fits-tile/2/1/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,827] INFO uvicorn.access: 127.0.0.1:51191 - "GET /fits-tile/2/1/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,830] INFO stdout: INFO:     127.0.0.1:51195 - "GET /fits-tile/2/1/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,830] INFO uvicorn.access: 127.0.0.1:51195 - "GET /fits-tile/2/1/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,832] INFO stdout: INFO:     127.0.0.1:51189 - "GET /fits-tile/2/0/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,832] INFO uvicorn.access: 127.0.0.1:51189 - "GET /fits-tile/2/0/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,834] INFO stdout: INFO:     127.0.0.1:51197 - "GET /fits-tile/2/2/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,834] INFO uvicorn.access: 127.0.0.1:51197 - "GET /fits-tile/2/2/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,836] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,836] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,837] INFO stdout: INFO:     127.0.0.1:51183 - "GET /fits-tile/2/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,837] INFO uvicorn.access: 127.0.0.1:51183 - "GET /fits-tile/2/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,841] INFO stdout: INFO:     127.0.0.1:51191 - "GET /fits-tile/2/2/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,841] INFO uvicorn.access: 127.0.0.1:51191 - "GET /fits-tile/2/2/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,878] INFO stdout: INFO:     127.0.0.1:51191 - "GET /fits-tile/2/0/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,878] INFO uvicorn.access: 127.0.0.1:51191 - "GET /fits-tile/2/0/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,889] INFO stdout: INFO:     127.0.0.1:51183 - "GET /fits-tile/2/2/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,889] INFO uvicorn.access: 127.0.0.1:51183 - "GET /fits-tile/2/2/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,890] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/1/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,890] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/1/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,898] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/3/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,898] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/3/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,918] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,917] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,929] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/2/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,929] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/2/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,947] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/3/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,946] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/3/2?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,963] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/0/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,963] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/0/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,979] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/3/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,979] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/3/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:38,996] INFO stdout: INFO:     127.0.0.1:51193 - "GET /fits-tile/2/3/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:38,996] INFO uvicorn.access: 127.0.0.1:51193 - "GET /fits-tile/2/3/3?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:39,112] INFO stdout: INFO:     127.0.0.1:51193 - "GET /session/start HTTP/1.1" 200 OK
+[2025-09-18 10:45:39,112] INFO uvicorn.access: 127.0.0.1:51193 - "GET /session/start HTTP/1.1" 200
+[2025-09-18 10:45:39,129] INFO stdout: INFO:     127.0.0.1:51193 - "GET /settings/effective HTTP/1.1" 200 OK
+[2025-09-18 10:45:39,129] INFO uvicorn.access: 127.0.0.1:51193 - "GET /settings/effective HTTP/1.1" 200
+[2025-09-18 10:45:40,971] INFO stdout: INFO:     127.0.0.1:51193 - "GET /list-files-for-frontend/hst HTTP/1.1" 200 OK
+[2025-09-18 10:45:40,970] INFO uvicorn.access: 127.0.0.1:51193 - "GET /list-files-for-frontend/hst HTTP/1.1" 200
+[2025-09-18 10:45:41,541] INFO stdout: INFO:     127.0.0.1:51212 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,541] INFO uvicorn.access: 127.0.0.1:51212 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits HTTP/1.1" 200
+[2025-09-18 10:45:41,546] INFO stdout: INFO:     127.0.0.1:51212 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits?hdu_index=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,546] INFO uvicorn.access: 127.0.0.1:51212 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits?hdu_index=0 HTTP/1.1" 200
+[2025-09-18 10:45:41,549] INFO stdout: Colormap LUT updated for 'grayscale'
+[2025-09-18 10:45:41,576] INFO main: SimpleTileGenerator initialized: 10611x7241, max_level: 4. Dynamic range calculation deferred.
+[2025-09-18 10:45:41,578] INFO stdout: INFO:     127.0.0.1:51214 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits?hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,578] INFO uvicorn.access: 127.0.0.1:51214 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits?hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:41,581] INFO stdout: Coordinate types: CTYPE1=RA---TAN, CTYPE2=DEC--TAN
+[2025-09-18 10:45:41,581] INFO stdout: Using PC matrix: PC11=-1.1005555555555e-05, PC12=0, PC21=0, PC22=1.1005555555556e-05
+[2025-09-18 10:45:41,581] INFO stdout: CDELT1=1.0, CDELT2=1.0
+[2025-09-18 10:45:41,581] INFO stdout: Equivalent CD matrix: CD11=-1.1005555555555e-05, CD12=0.0, CD21=0.0, CD22=1.1005555555556e-05
+[2025-09-18 10:45:41,581] INFO stdout: Transformation matrix determinant: -1.2112225308641852e-10
+[2025-09-18 10:45:41,582] INFO stdout: Negative determinant detected: coordinate system is flipped
+[2025-09-18 10:45:41,582] INFO stdout: CD22 (Y-axis scale): 1.1005555555556e-05
+[2025-09-18 10:45:41,582] INFO stdout: CD22 is positive: Y-axis is normal in WCS
+[2025-09-18 10:45:41,582] INFO stdout: Final decision: flip_y = True
+[2025-09-18 10:45:41,582] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,582] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:41,584] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits:0 not calculated, calculating now...
+[2025-09-18 10:45:41,587] INFO main: [FITS I/O] (global) mode=auto, promote_enabled=True, pagecache_warmup=True, max_mb=12000, ram_fraction=0.7, threshold_mbps=2.0
+[2025-09-18 10:45:41,587] INFO main: [FITS I/O] (global) Data already in RAM (ndarray). file=hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits hdu=0
+[2025-09-18 10:45:41,758] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits:0 calculated.
+[2025-09-18 10:45:41,759] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits:0 not found, generating...
+[2025-09-18 10:45:41,759] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-tile-info/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,759] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-tile-info/ HTTP/1.1" 200
+[2025-09-18 10:45:41,785] INFO stdout: Histogram: Strided sampling (stride=277) on (7241, 10611), ~467 finite points.
+[2025-09-18 10:45:41,787] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200 OK
+[2025-09-18 10:45:41,787] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200
+[2025-09-18 10:45:41,917] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis-acs-wfc_ngc628mosaic_f555w-f658-f814w_v1_ha-img.fits:0 generated.
+[2025-09-18 10:45:42,215] INFO stdout: INFO:     127.0.0.1:51212 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:42,215] INFO uvicorn.access: 127.0.0.1:51212 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:42,217] INFO stdout: INFO:     127.0.0.1:51216 - "GET /fits-tile/1/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:42,217] INFO uvicorn.access: 127.0.0.1:51216 - "GET /fits-tile/1/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:42,230] INFO stdout: INFO:     127.0.0.1:51222 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:42,230] INFO uvicorn.access: 127.0.0.1:51222 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:42,237] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-tile/1/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:42,236] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-tile/1/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:45,218] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,218] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits HTTP/1.1" 200
+[2025-09-18 10:45:45,267] INFO stdout: Colormap LUT updated for 'grayscale'
+[2025-09-18 10:45:45,309] INFO main: SimpleTileGenerator initialized: 13000x13000, max_level: 4. Dynamic range calculation deferred.
+[2025-09-18 10:45:45,310] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits?hdu_index=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,310] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits?hdu_index=0 HTTP/1.1" 200
+[2025-09-18 10:45:45,310] INFO stdout: INFO:     127.0.0.1:51222 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits?hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,310] INFO uvicorn.access: 127.0.0.1:51222 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits?hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:45,314] INFO stdout: Coordinate types: CTYPE1=RA---TAN, CTYPE2=DEC--TAN
+[2025-09-18 10:45:45,314] INFO stdout: Using CD matrix: CD11=-1.1005555555555e-05, CD12=8.470329472543e-22, CD21=8.470329472543e-22, CD22=1.10055555555555e-05
+[2025-09-18 10:45:45,314] INFO stdout: Transformation matrix determinant: -1.2112225308641304e-10
+[2025-09-18 10:45:45,314] INFO stdout: Negative determinant detected: coordinate system is flipped
+[2025-09-18 10:45:45,314] INFO stdout: CD22 (Y-axis scale): 1.10055555555555e-05
+[2025-09-18 10:45:45,314] INFO stdout: CD22 is positive: Y-axis is normal in WCS
+[2025-09-18 10:45:45,314] INFO stdout: Final decision: flip_y = True
+[2025-09-18 10:45:45,314] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,314] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200
+[2025-09-18 10:45:45,316] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits:0 not calculated, calculating now...
+[2025-09-18 10:45:45,321] INFO main: [FITS I/O] (global) mode=auto, promote_enabled=True, pagecache_warmup=True, max_mb=12000, ram_fraction=0.7, threshold_mbps=2.0
+[2025-09-18 10:45:45,321] INFO main: [FITS I/O] (global) Data already in RAM (ndarray). file=hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits hdu=0
+[2025-09-18 10:45:45,506] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits:0 calculated.
+[2025-09-18 10:45:45,506] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits:0 not found, generating...
+[2025-09-18 10:45:45,507] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-tile-info/ HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,506] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-tile-info/ HTTP/1.1" 200
+[2025-09-18 10:45:45,533] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:45:45,535] INFO stdout: INFO:     127.0.0.1:51214 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200 OK
+[2025-09-18 10:45:45,535] INFO uvicorn.access: 127.0.0.1:51214 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200
+[2025-09-18 10:45:45,581] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f275w_v1_exp-drc-sci.fits:0 generated.
+[2025-09-18 10:45:46,147] INFO stdout: INFO:     127.0.0.1:51222 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,147] INFO uvicorn.access: 127.0.0.1:51222 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:46,152] INFO stdout: INFO:     127.0.0.1:51240 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,152] INFO uvicorn.access: 127.0.0.1:51240 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:46,836] INFO stdout: INFO:     127.0.0.1:51244 - "GET /fits-tile/1/1/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,836] INFO uvicorn.access: 127.0.0.1:51244 - "GET /fits-tile/1/1/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:46,848] INFO stdout: INFO:     127.0.0.1:51242 - "GET /fits-tile/1/0/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,847] INFO uvicorn.access: 127.0.0.1:51242 - "GET /fits-tile/1/0/1?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:46,873] INFO stdout: INFO:     127.0.0.1:51240 - "GET /fits-tile/1/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,873] INFO uvicorn.access: 127.0.0.1:51240 - "GET /fits-tile/1/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:45:46,878] INFO stdout: INFO:     127.0.0.1:51222 - "GET /fits-tile/1/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:45:46,878] INFO uvicorn.access: 127.0.0.1:51222 - "GET /fits-tile/1/1/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:46:05,974] INFO stdout: INFO:     127.0.0.1:51339 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits HTTP/1.1" 200 OK
+[2025-09-18 10:46:05,973] INFO uvicorn.access: 127.0.0.1:51339 - "GET /fits-hdu-info/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits HTTP/1.1" 200
+[2025-09-18 10:46:06,066] INFO stdout: INFO:     127.0.0.1:51339 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits?hdu_index=0 HTTP/1.1" 200 OK
+[2025-09-18 10:46:06,066] INFO uvicorn.access: 127.0.0.1:51339 - "GET /fits-header/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits?hdu_index=0 HTTP/1.1" 200
+[2025-09-18 10:46:06,082] INFO stdout: Colormap LUT updated for 'grayscale'
+[2025-09-18 10:46:06,141] INFO main: SimpleTileGenerator initialized: 13000x13000, max_level: 4. Dynamic range calculation deferred.
+[2025-09-18 10:46:06,145] INFO stdout: INFO:     127.0.0.1:51341 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits?hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:46:06,145] INFO uvicorn.access: 127.0.0.1:51341 - "GET /load-file/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits?hdu=0 HTTP/1.1" 200
+[2025-09-18 10:46:06,149] INFO stdout: Coordinate types: CTYPE1=RA---TAN, CTYPE2=DEC--TAN
+[2025-09-18 10:46:06,149] INFO stdout: Using CD matrix: CD11=-1.1005555555555e-05, CD12=0.0, CD21=0.0, CD22=1.10055555555555e-05
+[2025-09-18 10:46:06,149] INFO stdout: Transformation matrix determinant: -1.2112225308641304e-10
+[2025-09-18 10:46:06,149] INFO stdout: Negative determinant detected: coordinate system is flipped
+[2025-09-18 10:46:06,149] INFO stdout: CD22 (Y-axis scale): 1.10055555555555e-05
+[2025-09-18 10:46:06,149] INFO stdout: CD22 is positive: Y-axis is normal in WCS
+[2025-09-18 10:46:06,149] INFO stdout: Final decision: flip_y = True
+[2025-09-18 10:46:06,149] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200 OK
+[2025-09-18 10:46:06,149] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-binary/?fast_loading=true&hdu=0 HTTP/1.1" 200
+[2025-09-18 10:46:06,151] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits:0 not calculated, calculating now...
+[2025-09-18 10:46:06,154] INFO main: [FITS I/O] (global) mode=auto, promote_enabled=True, pagecache_warmup=True, max_mb=12000, ram_fraction=0.7, threshold_mbps=2.0
+[2025-09-18 10:46:06,154] INFO main: [FITS I/O] (global) Data already in RAM (ndarray). file=hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits hdu=0
+[2025-09-18 10:46:06,380] INFO stdout: Dynamic range for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits:0 calculated.
+[2025-09-18 10:46:06,380] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits:0 not found, generating...
+[2025-09-18 10:46:06,381] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-tile-info/ HTTP/1.1" 200 OK
+[2025-09-18 10:46:06,381] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-tile-info/ HTTP/1.1" 200
+[2025-09-18 10:46:06,416] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:06,419] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200 OK
+[2025-09-18 10:46:06,419] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-histogram/?bins=1024 HTTP/1.1" 200
+[2025-09-18 10:46:06,518] INFO stdout: Overview for files/hst/hlsp_phangs-hst_hst_wfc3-uvis_ngc628mosaic_f555w_v1_exp-drc-sci.fits:0 generated.
+[2025-09-18 10:46:07,082] INFO stdout: INFO:     127.0.0.1:51348 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:46:07,082] INFO uvicorn.access: 127.0.0.1:51348 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:46:07,087] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200 OK
+[2025-09-18 10:46:07,087] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213931978 HTTP/1.1" 200
+[2025-09-18 10:46:08,242] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:08,245] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0.015959848882630467&max_val=0.16970720514655113 HTTP/1.1" 200 OK
+[2025-09-18 10:46:08,245] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0.015959848882630467&max_val=0.16970720514655113 HTTP/1.1" 200
+[2025-09-18 10:46:09,485] INFO stdout: INFO:     127.0.0.1:51341 - "POST /update-dynamic-range/ HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,484] INFO uvicorn.access: 127.0.0.1:51341 - "POST /update-dynamic-range/ HTTP/1.1" 200
+[2025-09-18 10:46:09,506] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:09,510] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,510] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200
+[2025-09-18 10:46:09,528] INFO stdout: INFO:     127.0.0.1:51348 - "POST /update-dynamic-range/ HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,526] INFO uvicorn.access: 127.0.0.1:51348 - "POST /update-dynamic-range/ HTTP/1.1" 200
+[2025-09-18 10:46:09,529] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:09,539] INFO stdout: INFO:     127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,539] INFO uvicorn.access: 127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200
+[2025-09-18 10:46:09,553] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:09,557] INFO stdout: INFO:     127.0.0.1:51348 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,557] INFO uvicorn.access: 127.0.0.1:51348 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200
+[2025-09-18 10:46:09,562] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:09,564] INFO stdout: INFO:     127.0.0.1:51364 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,564] INFO uvicorn.access: 127.0.0.1:51364 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.169707 HTTP/1.1" 200
+[2025-09-18 10:46:09,661] INFO stdout: INFO:     127.0.0.1:51362 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969539 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,660] INFO uvicorn.access: 127.0.0.1:51362 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969539 HTTP/1.1" 200
+[2025-09-18 10:46:09,666] INFO stdout: INFO:     127.0.0.1:51364 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969539 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,665] INFO uvicorn.access: 127.0.0.1:51364 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969539 HTTP/1.1" 200
+[2025-09-18 10:46:09,675] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969516 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,674] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969516 HTTP/1.1" 200
+[2025-09-18 10:46:09,682] INFO stdout: INFO:     127.0.0.1:51362 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969516 HTTP/1.1" 200 OK
+[2025-09-18 10:46:09,682] INFO uvicorn.access: 127.0.0.1:51362 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213969516 HTTP/1.1" 200
+[2025-09-18 10:46:10,097] INFO stdout: INFO:     127.0.0.1:51362 - "POST /update-dynamic-range/ HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,097] INFO uvicorn.access: 127.0.0.1:51362 - "POST /update-dynamic-range/ HTTP/1.1" 200
+[2025-09-18 10:46:10,111] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:10,113] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,113] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200
+[2025-09-18 10:46:10,113] INFO stdout: INFO:     127.0.0.1:51364 - "POST /update-dynamic-range/ HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,113] INFO uvicorn.access: 127.0.0.1:51364 - "POST /update-dynamic-range/ HTTP/1.1" 200
+[2025-09-18 10:46:10,126] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:10,130] INFO stdout: INFO:     127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,129] INFO uvicorn.access: 127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200
+[2025-09-18 10:46:10,148] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:10,150] INFO stdout: INFO:     127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,150] INFO uvicorn.access: 127.0.0.1:51362 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200
+[2025-09-18 10:46:10,153] INFO stdout: Histogram: Strided sampling (stride=411) on (13000, 13000), ~1024 finite points.
+[2025-09-18 10:46:10,155] INFO stdout: INFO:     127.0.0.1:51364 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,155] INFO uvicorn.access: 127.0.0.1:51364 - "GET /fits-histogram/?bins=1024&min_val=0&max_val=0.1 HTTP/1.1" 200
+[2025-09-18 10:46:10,216] INFO stdout: INFO:     127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213970139 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,216] INFO uvicorn.access: 127.0.0.1:51341 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213970139 HTTP/1.1" 200
+[2025-09-18 10:46:10,222] INFO stdout: INFO:     127.0.0.1:51364 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213970139 HTTP/1.1" 200 OK
+[2025-09-18 10:46:10,222] INFO uvicorn.access: 127.0.0.1:51364 - "GET /fits-tile/0/0/0?sid=gFwCjwbCkWgZLV3nEtEeBnUGGzvtQyjhIOK3gFbshdg&v=1758213970139 HTTP/1.1" 200
+[2025-09-18 10:46:15,346] INFO stdout: INFO:     127.0.0.1:51393 - "GET /static/fonts/raleway-v28-latin-600.woff2 HTTP/1.1" 200 OK
+[2025-09-18 10:46:15,346] INFO uvicorn.access: 127.0.0.1:51393 - "GET /static/fonts/raleway-v28-latin-600.woff2 HTTP/1.1" 200
+[2025-09-18 10:46:37,495] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:46:37,505] INFO uvicorn.error: connection closed
+[2025-09-18 10:46:37,509] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:46:37,505] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,159] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:47:15,246] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,275] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:47:15,246] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,293] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:47:15,295] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,295] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:47:15,295] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,297] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:47:15,298] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,298] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:47:15,298] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,299] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:47:15,300] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:15,301] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:47:15,300] INFO uvicorn.error: connection closed
+[2025-09-18 10:47:20,235] INFO uvicorn.error: ('127.0.0.1', 51719) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,236] ERROR stderr: INFO:     ('127.0.0.1', 51719) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,235] INFO uvicorn.error: ('127.0.0.1', 51719) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,241] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,249] ERROR stderr: INFO:     connection open
+[2025-09-18 10:47:20,241] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,328] INFO uvicorn.error: ('127.0.0.1', 51724) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,334] ERROR stderr: INFO:     ('127.0.0.1', 51724) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,328] INFO uvicorn.error: ('127.0.0.1', 51724) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,355] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,364] ERROR stderr: INFO:     connection open
+[2025-09-18 10:47:20,355] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,421] INFO uvicorn.error: ('127.0.0.1', 51726) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,421] ERROR stderr: INFO:     ('127.0.0.1', 51726) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,421] INFO uvicorn.error: ('127.0.0.1', 51726) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,422] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,429] ERROR stderr: INFO:     connection open
+[2025-09-18 10:47:20,422] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,459] INFO uvicorn.error: ('127.0.0.1', 51728) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,459] ERROR stderr: INFO:     ('127.0.0.1', 51728) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,459] INFO uvicorn.error: ('127.0.0.1', 51728) - "WebSocket /ws/system-stats" [accepted]
+[2025-09-18 10:47:20,467] INFO uvicorn.error: connection open
+[2025-09-18 10:47:20,474] ERROR stderr: INFO:     connection open
+[2025-09-18 10:47:20,467] INFO uvicorn.error: connection open
+[2025-09-18 10:50:49,276] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:50:49,298] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,300] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:50:49,298] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,306] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:50:49,307] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:50:49,310] INFO stdout: Client disconnected from system stats WebSocket.
+[2025-09-18 10:50:49,312] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,312] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:50:49,312] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,312] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,312] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:50:49,312] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,313] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:49,313] ERROR stderr: INFO:     connection closed
+[2025-09-18 10:50:49,313] INFO uvicorn.error: connection closed
+[2025-09-18 10:50:50,108] ERROR asyncio: Task exception was never retrieved
+future: <Task finished name='Task-3' coro=<system_stats_sender() done, defined at /Users/hamidhassani/Documents/Neloura-main/main.py:8729> exception=AttributeError("'NoneType' object has no attribute 'lower'")>
+Traceback (most recent call last):
+  File "/Users/hamidhassani/Documents/Neloura-main/main.py", line 8733, in system_stats_sender
+    stats_data = await loop.run_in_executor(None, get_system_stats_data)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hamidhassani/Documents/Neloura-main/main.py", line 8593, in get_system_stats_data
+    if app_process_names and any(name in proc.info['name'].lower() for name in app_process_names):
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hamidhassani/Documents/Neloura-main/main.py", line 8593, in <genexpr>
+    if app_process_names and any(name in proc.info['name'].lower() for name in app_process_names):
+                                         ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'lower'
+[2025-09-18 11:17:19,345] INFO uvicorn.error: Shutting down
+[2025-09-18 11:17:19,377] ERROR stderr: INFO:     Shutting down
+[2025-09-18 11:17:19,345] INFO uvicorn.error: Shutting down
+[2025-09-18 11:17:19,502] INFO uvicorn.error: Finished server process [87896]
+[2025-09-18 11:17:19,506] ERROR stderr: INFO:     Finished server process [87896]
+[2025-09-18 11:17:19,502] INFO uvicorn.error: Finished server process [87896]
+[2025-09-18 11:17:25,802] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:4655: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+  @validator('operator')
+
+[2025-09-18 11:17:25,814] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:5757: DeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+
+[2025-09-18 11:17:25,820] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:6200: DeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+
+[2025-09-18 11:17:25,823] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:6544: DeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
+
+[2025-09-18 11:17:25,828] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:6997: DeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  format: str = Query(DEFAULT_EXPORT_FORMAT, regex="^(csv|json|fits)$"),
+
+[2025-09-18 11:17:25,832] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:8628: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+
+[2025-09-18 11:17:25,832] WARNING py.warnings: /Users/hamidhassani/Documents/Neloura-main/main.py:8699: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("shutdown")
+
+[2025-09-18 11:17:25,839] ERROR stderr: INFO:     Will watch for changes in these directories: ['/Users/hamidhassani/Documents/Neloura-main']
+[2025-09-18 11:17:25,839] ERROR stderr: INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[2025-09-18 11:17:25,839] ERROR stderr: INFO:     Started reloader process [13823] using WatchFiles
+[2025-09-18 11:17:28,771] INFO uvicorn.error: Started server process [13899]
+[2025-09-18 11:17:28,771] ERROR stderr: INFO:     Started server process [13899]
+[2025-09-18 11:17:28,771] INFO uvicorn.error: Started server process [13899]
+[2025-09-18 11:17:28,771] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 11:17:28,771] ERROR stderr: INFO:     Waiting for application startup.
+[2025-09-18 11:17:28,771] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 11:17:28,772] INFO stdout: [startup] CPU=8, executor(max_workers=40), tile(limit=16), fits(limit=8)
+[2025-09-18 11:17:28,772] INFO stdout: [startup] Math threads: OMP=2, OPENBLAS=8, MKL=8, NUMEXPR=8
+[2025-09-18 11:17:28,772] INFO stdout: [startup] uploads_auto_clean_worker scheduled
+[2025-09-18 11:17:28,776] INFO stdout: [startup] Ensured settings_profiles.json exists with default profile
+[2025-09-18 11:17:28,776] INFO stdout: [uploads_auto_clean] sleeping for 3600.0s (enable=False)
+[2025-09-18 11:17:28,790] INFO uvicorn.error: Application startup complete.
+[2025-09-18 11:17:28,796] ERROR stderr: INFO:     Application startup complete.
+[2025-09-18 11:17:28,790] INFO uvicorn.error: Application startup complete.
+[2025-09-18 11:17:28,863] INFO watchfiles.main: 3 changes detected
+[2025-09-18 11:20:01,778] INFO watchfiles.main: 1 change detected
+[2025-09-18 11:20:01,795] ERROR stderr: WARNING:  WatchFiles detected changes in 'main.py'. Reloading...
+[2025-09-18 11:20:01,825] INFO uvicorn.error: Shutting down
+[2025-09-18 11:20:01,826] ERROR stderr: INFO:     Shutting down
+[2025-09-18 11:20:01,825] INFO uvicorn.error: Shutting down
+[2025-09-18 11:20:01,929] INFO uvicorn.error: Waiting for application shutdown.
+[2025-09-18 11:20:01,929] ERROR stderr: INFO:     Waiting for application shutdown.
+[2025-09-18 11:20:01,929] INFO uvicorn.error: Waiting for application shutdown.
+[2025-09-18 11:20:01,932] INFO stdout: [shutdown] Thread executor shut down
+[2025-09-18 11:20:01,933] INFO uvicorn.error: Application shutdown complete.
+[2025-09-18 11:20:01,933] ERROR stderr: INFO:     Application shutdown complete.
+[2025-09-18 11:20:01,933] INFO uvicorn.error: Application shutdown complete.
+[2025-09-18 11:20:01,933] INFO uvicorn.error: Finished server process [13899]
+[2025-09-18 11:20:01,933] ERROR stderr: INFO:     Finished server process [13899]
+[2025-09-18 11:20:01,933] INFO uvicorn.error: Finished server process [13899]
+[2025-09-18 11:20:02,337] INFO watchfiles.main: 1 change detected
+[2025-09-18 11:20:09,960] INFO uvicorn.error: Started server process [15654]
+[2025-09-18 11:20:09,960] ERROR stderr: INFO:     Started server process [15654]
+[2025-09-18 11:20:09,960] INFO uvicorn.error: Started server process [15654]
+[2025-09-18 11:20:09,961] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 11:20:09,961] ERROR stderr: INFO:     Waiting for application startup.
+[2025-09-18 11:20:09,961] INFO uvicorn.error: Waiting for application startup.
+[2025-09-18 11:20:09,961] INFO stdout: [startup] CPU=8, executor(max_workers=40), tile(limit=16), fits(limit=8)
+[2025-09-18 11:20:09,961] INFO stdout: [startup] Math threads: OMP=2, OPENBLAS=8, MKL=8, NUMEXPR=8
+[2025-09-18 11:20:09,961] INFO stdout: [startup] uploads_auto_clean_worker scheduled
+[2025-09-18 11:20:09,964] INFO stdout: [startup] Ensured settings_profiles.json exists with default profile
+[2025-09-18 11:20:09,965] INFO stdout: [uploads_auto_clean] sleeping for 3600.0s (enable=False)
+[2025-09-18 11:20:09,978] INFO uvicorn.error: Application startup complete.
+[2025-09-18 11:20:09,984] ERROR stderr: INFO:     Application startup complete.
+[2025-09-18 11:20:09,978] INFO uvicorn.error: Application startup complete.
+[2025-09-18 11:20:10,073] INFO watchfiles.main: 6 changes detected
