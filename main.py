@@ -253,7 +253,7 @@ UPLOADS_AUTO_CLEAN_INTERVAL_MINUTES = 60
 # III. FITS Image & Tile Processing
 # ------------------------------------------------------------------------------
 DEFAULT_HDU_INDEX = 0
-IMAGE_TILE_SIZE_PX = 256
+IMAGE_TILE_SIZE_PX = 1024
 DYNAMIC_RANGE_PERCENTILES = {'q_min': 0.5, 'q_max': 99.5}
 
 # ------------------------------------------------------------------------------
