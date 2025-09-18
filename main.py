@@ -752,8 +752,8 @@ PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '8192
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '10'))  # Higher threshold
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # Always use central for Ceph
 DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))  # Larger central region
-DYN_RANGE_STRIDE_THRESHOLD = int(os.getenv('DYN_RANGE_STRIDE_THRESHOLD', '1024')) # Stride if central box > this
-DYN_RANGE_STRIDE_STEP = int(os.getenv('DYN_RANGE_STRIDE_STEP', '4')) # Use 1/16th of pixels
+DYN_RANGE_STRIDE_THRESHOLD = int(os.getenv('DYN_RANGE_STRIDE_THRESHOLD', '512')) # Stride if central box > this
+DYN_RANGE_STRIDE_STEP = int(os.getenv('DYN_RANGE_STRIDE_STEP', '8')) # Use 1/16th of pixels
 
 # FITS Tile Info timeout: Extend for potentially slower first-time access on Ceph
 FITS_TILE_INFO_TIMEOUT = int(os.getenv('FITS_TILE_INFO_TIMEOUT', '120'))  # 2 minutes
