@@ -381,7 +381,7 @@ RGB_FILTERS = {
     "HA": (['ha',"halpha", "f657n", "f658n", "f656n"], "H-alpha")  # Removed "ha" from the list
 }
 
-TILE_CACHE_MAX_SIZE = 100
+TILE_CACHE_MAX_SIZE = int(os.getenv('TILE_CACHE_MAX_SIZE', '100'))
 SED_HST_FILTERS = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']
 SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
 SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
@@ -704,15 +704,23 @@ SED_RGB_TEXT_X_ALT = 0.4
 # ------------------------------------------------------------------------------
 # When storage has poor random-read performance (see fio results), reduce disk
 # pressure by promoting image slices to RAM or by warming the OS page cache.
-ENABLE_IN_MEMORY_FITS = False
-IN_MEMORY_FITS_MAX_MB = 2048  # cap per promoted 2D slice
-IN_MEMORY_FITS_RAM_FRACTION = 0.5  # must be <= 50% of available RAM
-ENABLE_PAGECACHE_WARMUP = False
-PAGECACHE_WARMUP_CHUNK_ROWS = 4096
-IN_MEMORY_FITS_MODE = 'never'  # 'auto' | 'always' | 'never'
-RANDOM_READ_BENCH_SAMPLES = 128
-RANDOM_READ_CHUNK_BYTES = 4096
-RANDOM_READ_THRESHOLD_MBPS = 1.0
+# These can be overridden via environment variables at runtime.
+ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '0') in ('1', 'true', 'True')
+IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '2048'))  # cap per promoted 2D slice
+IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.5'))  # must be <= 0.5
+ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '0') in ('1', 'true', 'True')
+PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
+IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'never')  # 'auto' | 'always' | 'never'
+RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
+RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
+RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '1.0'))
+
+# Dynamic range and warmup tuning
+DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # 'central' | 'strided'
+DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))
+FITS_OPTIMIZE_ON_FIRST_ACCESS = os.getenv('FITS_OPTIMIZE_ON_FIRST_ACCESS', '0') in ('1', 'true', 'True')
+FITS_WARMUP_ON_INIT = os.getenv('FITS_WARMUP_ON_INIT', '0') in ('1', 'true', 'True')
+TILE_GLOBAL_CACHE_ENABLE = os.getenv('TILE_GLOBAL_CACHE_ENABLE', '1') in ('1', 'true', 'True')
 
 # ------------------------------------------------------------------------------
 # Shared I/O optimization helpers (app-wide)
@@ -1899,6 +1907,22 @@ class SimpleTileGenerator:
                 setattr(self, "_flip_applied", True)
             except Exception:
                 pass
+        # Optionally optimize access on first touch (promote memmap to RAM or warm page cache)
+        if FITS_OPTIMIZE_ON_FIRST_ACCESS:
+            try:
+                promoted, strategy = optimize_array_io(
+                    data, int(hdu.header.get('NAXIS2', data.shape[-2])), int(hdu.header.get('NAXIS1', data.shape[-1])),
+                    os.path.basename(self.fits_file_path), self.hdu_index
+                )
+                data = promoted
+                self.io_strategy = strategy
+            except Exception:
+                pass
+        elif FITS_WARMUP_ON_INIT and isinstance(data, np.memmap):
+            try:
+                _ = float(np.sum(data[0:PAGECACHE_WARMUP_CHUNK_ROWS, :]))
+            except Exception:
+                pass
         self.image_data = data
         self.height, self.width = self.image_data.shape[-2:]
         # Recompute max_level if width/height were unknown
@@ -1906,69 +1930,48 @@ class SimpleTileGenerator:
         self._image_data_loaded = True
     
     def _calculate_initial_dynamic_range(self):
-        """Calculates and sets the initial dynamic range (min/max values) using percentiles."""
-        # Ensure data is loaded lazily (avoid heavy I/O during fast init on Ceph)
+        """Calculates and sets the initial dynamic range (min/max) with Ceph-friendly access."""
         self._ensure_image_data_loaded()
-        # MAX_SAMPLE_POINTS = 1_000_000  # Target for number of points to use for percentile <- REMOVE THIS
-
-        # self.image_data is expected to be 2D at this point due to __init__
-        current_image_data = self.image_data 
-
+        current_image_data = self.image_data
         if not isinstance(current_image_data, np.ndarray) or current_image_data.size == 0:
-            print("Warning: Image data is not a non-empty NumPy array or is empty. Defaulting min/max.")
-            self.min_value = 0.0
-            self.max_value = 1.0
+            self.min_value, self.max_value = 0.0, 1.0
             return
 
-        sampled_data_flat = None
-        if current_image_data.size > MAX_SAMPLE_POINTS_FOR_DYN_RANGE: # USE GLOBAL CONSTANT
-            if current_image_data.ndim == 2: # Primary path for large 2D images
-                ratio = current_image_data.size / MAX_SAMPLE_POINTS_FOR_DYN_RANGE # USE GLOBAL CONSTANT
-                # Ensure stride is at least 1
-                stride = max(1, int(np.sqrt(ratio))) 
-                
-                sampled_data = current_image_data[::stride, ::stride]
-                sampled_data_flat = sampled_data.ravel()
-                print(f"Strided sampling (stride={stride}) on 2D data ({current_image_data.shape}). Sampled ~{sampled_data_flat.size} points for dynamic range.")
-            else: # Fallback: if self.image_data wasn't 2D (e.g. 1D, or >4D not sliced in __init__)
-                  # This is less ideal as ravel() on large N-D memmap is slow.
-                  # But __init__ should make self.image_data 2D for common 3D/4D cases.
-                temp_flat = current_image_data.ravel()
-                num_to_sample = min(MAX_SAMPLE_POINTS_FOR_DYN_RANGE, temp_flat.size) # USE GLOBAL CONSTANT, ensure not asking for more than available
-                if num_to_sample > 0:
-                    indices = np.random.choice(temp_flat.size, size=num_to_sample, replace=False)
-                    sampled_data_flat = temp_flat[indices]
-                    print(f"Random sampling on non-2D/fallback data ({current_image_data.shape}). Sampled {sampled_data_flat.size} points for dynamic range.")
-        else: # Data size is <= MAX_SAMPLE_POINTS_FOR_DYN_RANGE
-            sampled_data_flat = current_image_data.ravel()
-            print(f"Using all {sampled_data_flat.size} points (data smaller than max sample size).")
-
-        if sampled_data_flat is None or sampled_data_flat.size == 0: # Check if sampling produced anything
-            print("Warning: Sampled data is empty (either from source or after sampling). Defaulting min/max.")
-            # Assign empty array to prevent error with np.isfinite if sampled_data_flat is None
-            data_for_percentile = np.array([])
+        # Prefer a contiguous central window to minimize random reads on network storage
+        if DYN_RANGE_STRATEGY == 'central':
+            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
+            win = int(DYN_RANGE_CENTRAL_SIZE)
+            win_h = min(h, win)
+            win_w = min(w, win)
+            cy = h // 2
+            cx = w // 2
+            y0 = max(0, cy - win_h // 2)
+            x0 = max(0, cx - win_w // 2)
+            y1 = y0 + win_h
+            x1 = x0 + win_w
+            sample = current_image_data[y0:y1, x0:x1]
         else:
-            data_for_percentile = sampled_data_flat[np.isfinite(sampled_data_flat)]
-        
-        print(f"Using {data_for_percentile.size} finite points from sample for percentile calculation.")
+            # Fallback to coarse strided sampling (still avoids full ravel on memmap)
+            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
+            target_points = max(1, int(os.getenv('MAX_SAMPLE_POINTS_FOR_DYN_RANGE', '200')))
+            ratio = max(1.0, (h * w) / float(target_points))
+            stride = max(1, int(np.sqrt(ratio)))
+            sample = current_image_data[0:h:stride, 0:w:stride]
 
-        if data_for_percentile.size > 0:
-            self.min_value = float(np.percentile(data_for_percentile, DYNAMIC_RANGE_PERCENTILES['q_min']))
-            self.max_value = float(np.percentile(data_for_percentile, DYNAMIC_RANGE_PERCENTILES['q_max']))
-            if self.min_value >= self.max_value:
-                # Fallback for noisy or flat data where percentiles are too close or inverted
-                print(f"Warning: Percentile min ({self.min_value}) >= max ({self.max_value}). Falling back to overall min/max of finite sample.")
-                self.min_value = float(np.min(data_for_percentile))
-                self.max_value = float(np.max(data_for_percentile))
-                if self.min_value >= self.max_value: # Handle case where all values in sample are identical
-                    # Ensure max_value is slightly greater than min_value to avoid division by zero in scaling
-                    self.max_value = self.min_value + (1e-6 if self.min_value != 0 else 1.0) # Add small epsilon, or use 1.0 if min is 0
-                    print(f"All finite sampled values are identical ({self.min_value}). Adjusted max to {self.max_value}.")
-        else:
-            print("Warning: No finite data available for percentile calculation after sampling. Defaulting min/max to 0.0/1.0")
-            self.min_value = 0.0
-            self.max_value = 1.0 # Default max_value if no finite data
-        print(f"Initial dynamic range set: min={self.min_value}, max={self.max_value}")
+        sample = np.nan_to_num(sample, nan=0.0, posinf=0.0, neginf=0.0)
+        if sample.size == 0:
+            self.min_value, self.max_value = 0.0, 1.0
+            return
+        vmin = float(np.percentile(sample, DYNAMIC_RANGE_PERCENTILES['q_min']))
+        vmax = float(np.percentile(sample, DYNAMIC_RANGE_PERCENTILES['q_max']))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            vmin = float(np.min(sample))
+            vmax = float(np.max(sample))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                vmin, vmax = 0.0, 1.0
+            elif vmin == vmax:
+                vmax = vmin + (1e-6 if vmin != 0 else 1.0)
+        self.min_value, self.max_value = vmin, vmax
     
     def ensure_dynamic_range_calculated(self):
         """Ensures the dynamic range is calculated, thread-safe."""
