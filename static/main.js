@@ -4304,7 +4304,8 @@ async function initializeTiledViewer() {
             imageSmoothingEnabled: false,
             // Network/concurrency tuning for slow backends (e.g., Ceph)
             // Increase or decrease to match server throughput. 6 is the OSD default.
-            imageLoaderLimit: 6,
+            imageLoaderLimit: 3,
+            maxImageCacheCount: 64,
             // Use XHR for tiles so they can be canceled if needed by OSD internals
             loadTilesWithAjax: true,
             ajaxWithCredentials: true,
@@ -4315,6 +4316,11 @@ async function initializeTiledViewer() {
 
         if (!window.tiledViewer) {
             window.tiledViewer = OpenSeadragon(viewerOptions);
+            // Defer first histogram until a tile actually loads (or fallback timer)
+            let __histogramTriggered = false;
+            window.tiledViewer.addOnceHandler('tile-loaded', function(){
+                if (!__histogramTriggered) { __histogramTriggered = true; requestHistogramUpdate(); }
+            });
             // emit fits:opened with best-known file/hdu
 document.dispatchEvent(new CustomEvent('fits:opened', {
     detail: {
@@ -4328,7 +4334,8 @@ document.dispatchEvent(new CustomEvent('fits:opened', {
                 showNotification(false);
                 hideOverviewImage();
                 hideImmediatePlaceholder();
-                requestHistogramUpdate();
+                // Fallback trigger in case tile-loaded hasn't fired soon
+                setTimeout(function(){ if (!__histogramTriggered) { __histogramTriggered = true; requestHistogramUpdate(); } }, 1200);
                 attachHistogramInteractionWhenReady();
               
                 // add these two lines
