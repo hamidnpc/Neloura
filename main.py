@@ -2004,7 +2004,7 @@ class SimpleTileGenerator:
 
             if strategy == 'central':
                 # Read a single contiguous central window to avoid random I/O on Ceph
-                win_size = int(os.getenv('OVERVIEW_CENTRAL_SIZE', '4096'))
+                win_size = int(os.getenv('OVERVIEW_CENTRAL_SIZE', '2048'))
                 win_h = min(self.height, win_size)
                 win_w = min(self.width, win_size)
                 cy = self.height // 2
@@ -8595,7 +8595,7 @@ async def startup_event():
     except Exception:
         max_workers = 4
     try:
-        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "4"))
+        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "6"))
     except Exception:
         render_limit = 3
     try:
