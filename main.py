@@ -196,7 +196,7 @@ def _configure_logging():
 _configure_logging()
 
 # --- Global Configuration Constants for Performance Tuning ---
-MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 50  # Lower to speed percentile on slow storage
+MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 200  # Lower to speed percentile on slow storage
 # --- End Global Configuration Constants ---
 
 # Prime psutil.cpu_percent() for non-blocking calls later
@@ -4320,7 +4320,6 @@ async def request_tiles(request: Request):
         return JSONResponse(content={"status": "success"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to request tiles: {str(e)}"})
-
 @app.get("/fits-tile-info/")
 async def get_fits_tile_information(request: Request):
     session = getattr(request.state, "session", None)
@@ -4340,248 +4339,32 @@ async def get_fits_tile_information(request: Request):
 
     if not tile_generator:
         try:
-            # Fast header-only initialization
+            # Initialize generator using the shared executor
             loop = asyncio.get_running_loop()
-            tile_generator = await loop.run_in_executor(
-                app.state.thread_executor, 
-                _create_minimal_tile_generator, 
-                fits_file, 
-                hdu_index
-            )
+            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
             session_generators[file_id] = tile_generator
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
-    # Always return info immediately - no blocking operations
+    # Always return tile info (even if generator already existed)
     try:
-        info = {
-            "width": tile_generator.width,
-            "height": tile_generator.height,
-            "tileSize": tile_generator.tile_size,
-            "maxLevel": tile_generator.max_level,
-            "minLevel": 0,
-            "color_map": tile_generator.color_map,
-            "scaling_function": tile_generator.scaling_function,
-            "bunit": tile_generator.header.get('BUNIT', None) if tile_generator.header else None
-        }
-        
-        # Use cached dynamic range if available, otherwise use fast fallback
-        if tile_generator.min_value is not None and tile_generator.max_value is not None:
-            info["initial_display_min"] = float(tile_generator.min_value)
-            info["initial_display_max"] = float(tile_generator.max_value)
-        else:
-            # Try header values first (instant)
-            header_min, header_max = _get_header_dynamic_range(tile_generator.header)
-            if header_min is not None and header_max is not None:
-                info["initial_display_min"] = header_min
-                info["initial_display_max"] = header_max
-                tile_generator.min_value = header_min
-                tile_generator.max_value = header_max
-            else:
-                # Use safe defaults and calculate in background
-                info["initial_display_min"] = 0.0
-                info["initial_display_max"] = 1000.0  # Reasonable default for most astronomical data
-                
-                # Start background calculation (don't await)
-                asyncio.create_task(_calculate_dynamic_range_background(tile_generator, file_id, session_data))
-        
+        info = tile_generator.get_tile_info()
+        # Ensure fields the frontend expects
+        if "minLevel" not in info:
+            info["minLevel"] = 0
+        # Fire-and-forget overview generation in background
+        try:
+            if not getattr(tile_generator, "overview_generated", False):
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
+        except Exception:
+            pass
+        # If overview already available, include it
+        if getattr(tile_generator, "overview_image", None):
+            info["overview"] = tile_generator.overview_image
         return JSONResponse(content=info)
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
-
-
-def _create_minimal_tile_generator(fits_file_path, hdu_index):
-    """Create tile generator with minimal I/O - header and dimensions only."""
-    
-    class FastTileGenerator:
-        def __init__(self, fits_file_path, hdu_index):
-            self.fits_file_path = fits_file_path
-            self.hdu_index = hdu_index
-            self.tile_size = IMAGE_TILE_SIZE_PX
-            self.color_map = 'grayscale'
-            self.scaling_function = 'linear'
-            self.min_value = None
-            self.max_value = None
-            self.overview_image = None
-            self._image_data_loaded = False
-            self.image_data = None
-            self.io_strategy = 'deferred'
-            
-            # Open file and read ONLY header + dimensions
-            with fits.open(fits_file_path, memmap=False, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
-                hdu = hdul[hdu_index]
-                self.header = hdu.header.copy()
-                
-                # Get dimensions from header (no data access)
-                self.width = int(self.header.get('NAXIS1', 0))
-                self.height = int(self.header.get('NAXIS2', 0))
-                
-                if self.width == 0 or self.height == 0:
-                    raise ValueError(f"Invalid image dimensions: {self.width}x{self.height}")
-                
-                # Calculate max zoom level
-                self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
-                
-                # Setup WCS from header only
-                self.wcs = None
-                try:
-                    prepared_header = _prepare_jwst_header_for_wcs(self.header)
-                    self.wcs = WCS(prepared_header)
-                    if not self.wcs.has_celestial:
-                        self.wcs = None
-                except Exception:
-                    self.wcs = None
-            
-            # Create LUT for colormap
-            self._update_colormap_lut()
-        
-        def _update_colormap_lut(self):
-            """Generate a Lookup Table (LUT) for the current colormap."""
-            cmap_key = self.color_map if isinstance(self.color_map, str) else 'grayscale'
-            color_map_func = COLOR_MAPS_PY.get(cmap_key, COLOR_MAPS_PY['grayscale'])
-            self.lut = np.zeros((256, 3), dtype=np.uint8)
-            for i in range(256):
-                self.lut[i] = color_map_func(i)
-        
-        def get_tile(self, level, x, y):
-            """Generate tile - will load data on first call."""
-            # This will be called later by the tile endpoint
-            if not self._image_data_loaded:
-                self._load_image_data()
-            return self._generate_tile(level, x, y)
-        
-        def _load_image_data(self):
-            """Load image data only when actually needed for tile generation."""
-            if self._image_data_loaded:
-                return
-                
-            with fits.open(self.fits_file_path, memmap=True, lazy_load_hdus=True) as hdul:
-                hdu = hdul[self.hdu_index]
-                data = hdu.data
-                
-                if data.ndim > 2:
-                    if data.ndim == 3:
-                        data = data[0, :, :]
-                    elif data.ndim == 4:
-                        data = data[0, 0, :, :]
-                
-                # Apply I/O optimization if needed
-                try:
-                    data, self.io_strategy = optimize_array_io(
-                        data, self.height, self.width,
-                        os.path.basename(self.fits_file_path), self.hdu_index
-                    )
-                except Exception:
-                    pass
-                
-                self.image_data = data
-                self._image_data_loaded = True
-        
-        def _generate_tile(self, level, x, y):
-            """Generate actual tile data."""
-            # Implementation similar to your existing get_tile method
-            # but simplified for this example
-            return b''  # Placeholder
-    
-    return FastTileGenerator(fits_file_path, hdu_index)
-
-
-def _get_header_dynamic_range(header):
-    """Extract dynamic range from FITS header if available."""
-    if header is None:
-        return None, None
-    
-    try:
-        # Try various header keywords for data range
-        datamin = header.get('DATAMIN')
-        datamax = header.get('DATAMAX')
-        
-        if datamin is not None and datamax is not None:
-            return float(datamin), float(datamax)
-        
-        # Try BZERO/BSCALE if available
-        bzero = header.get('BZERO', 0)
-        bscale = header.get('BSCALE', 1)
-        
-        # For integer data, estimate range
-        bitpix = header.get('BITPIX')
-        if bitpix == 8:  # 8-bit unsigned
-            return bzero, bzero + bscale * 255
-        elif bitpix == 16:  # 16-bit signed
-            return bzero + bscale * (-32768), bzero + bscale * 32767
-        elif bitpix == -32:  # 32-bit float
-            return None, None  # Can't estimate from header
-            
-    except Exception:
-        pass
-    
-    return None, None
-
-
-async def _calculate_dynamic_range_background(tile_generator, file_id, session_data):
-    """Calculate dynamic range in background without blocking."""
-    try:
-        loop = asyncio.get_running_loop()
-        
-        # Use a very small sample for Ceph
-        await loop.run_in_executor(
-            app.state.thread_executor,
-            _calculate_minimal_dynamic_range,
-            tile_generator
-        )
-        
-        print(f"Background dynamic range calculated for {file_id}: {tile_generator.min_value} to {tile_generator.max_value}")
-        
-    except Exception as e:
-        print(f"Background dynamic range calculation failed for {file_id}: {e}")
-
-
-def _calculate_minimal_dynamic_range(tile_generator):
-    """Calculate dynamic range using minimal data sampling."""
-    try:
-        # Load only if not already loaded
-        if not tile_generator._image_data_loaded:
-            tile_generator._load_image_data()
-        
-        data = tile_generator.image_data
-        if data is None or data.size == 0:
-            tile_generator.min_value = 0.0
-            tile_generator.max_value = 1000.0
-            return
-        
-        # Use tiny central sample (64x64 max)
-        h, w = data.shape[-2], data.shape[-1]
-        sample_size = min(64, min(h, w) // 8)
-        
-        cy, cx = h // 2, w // 2
-        y0 = max(0, cy - sample_size // 2)
-        y1 = min(h, y0 + sample_size)
-        x0 = max(0, cx - sample_size // 2)
-        x1 = min(w, x0 + sample_size)
-        
-        sample = data[y0:y1, x0:x1]
-        sample = np.nan_to_num(sample, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        if sample.size > 0:
-            vmin = float(np.percentile(sample, 0.5))
-            vmax = float(np.percentile(sample, 99.5))
-            
-            if np.isfinite(vmin) and np.isfinite(vmax) and vmin < vmax:
-                tile_generator.min_value = vmin
-                tile_generator.max_value = vmax
-            else:
-                tile_generator.min_value = 0.0
-                tile_generator.max_value = 1000.0
-        else:
-            tile_generator.min_value = 0.0
-            tile_generator.max_value = 1000.0
-            
-    except Exception as e:
-        print(f"Minimal dynamic range calculation failed: {e}")
-        tile_generator.min_value = 0.0
-        tile_generator.max_value = 1000.0
-
 @app.get("/fits-tile/{level}/{x}/{y}")
 async def get_fits_tile(level: int, x: int, y: int, request: Request):
     session = getattr(request.state, "session", None)
