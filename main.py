@@ -744,6 +744,20 @@ def _random_read_bench_global(arr: np.ndarray, samples: int = RANDOM_READ_BENCH_
         return float((total_bytes / (1024*1024)) / elapsed)
     except Exception:
         return 0.0
+def _is_memmap_backed(arr: np.ndarray) -> bool:
+    try:
+        if isinstance(arr, np.memmap):
+            return True
+        base = getattr(arr, 'base', None)
+        # Walk base chain to detect memmap-backed ndarray views (e.g., after flip/stride)
+        while isinstance(base, np.ndarray):
+            if isinstance(base, np.memmap):
+                return True
+            base = getattr(base, 'base', None)
+        return False
+    except Exception:
+        return False
+
 def _should_promote_global(arr: np.ndarray, required_bytes: int) -> bool:
     if not ENABLE_IN_MEMORY_FITS:
         return False
@@ -757,6 +771,14 @@ def _should_promote_global(arr: np.ndarray, required_bytes: int) -> bool:
         return True
     if IN_MEMORY_FITS_MODE == 'never':
         return False
+    # If this array is backed by a memmap (even if it's an ndarray view), bias towards promotion
+    if _is_memmap_backed(arr) and IN_MEMORY_FITS_MODE in ('auto', 'always'):
+        # Skip expensive probe on clearly memmap-backed data when mode is aggressive
+        if IN_MEMORY_FITS_MODE == 'always':
+            return True
+        bench_mbps = _random_read_bench_global(arr)
+        logger.info(f"[FITS I/O] random-read probe (global): {bench_mbps:.2f} MiB/s (threshold {RANDOM_READ_THRESHOLD_MBPS} MiB/s)")
+        return bench_mbps < RANDOM_READ_THRESHOLD_MBPS
     bench_mbps = _random_read_bench_global(arr)
     logger.info(f"[FITS I/O] random-read probe (global): {bench_mbps:.2f} MiB/s (threshold {RANDOM_READ_THRESHOLD_MBPS} MiB/s)")
     return bench_mbps < RANDOM_READ_THRESHOLD_MBPS
@@ -768,7 +790,7 @@ def optimize_array_io(arr: np.ndarray, height: int, width: int, filename: str, h
             f"pagecache_warmup={ENABLE_PAGECACHE_WARMUP}, max_mb={IN_MEMORY_FITS_MAX_MB}, "
             f"ram_fraction={IN_MEMORY_FITS_RAM_FRACTION}, threshold_mbps={RANDOM_READ_THRESHOLD_MBPS}"
         )
-        if isinstance(arr, np.memmap):
+        if _is_memmap_backed(arr):
             required_bytes = int(height) * int(width) * arr.dtype.itemsize
             if _should_promote_global(arr, required_bytes):
                 out = np.array(arr, copy=True)
