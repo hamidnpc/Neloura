@@ -716,12 +716,45 @@ RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '2'))
 
+
 # Dynamic range and warmup tuning
-DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # 'central' | 'strided'
-DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '1024'))
 FITS_OPTIMIZE_ON_FIRST_ACCESS = os.getenv('FITS_OPTIMIZE_ON_FIRST_ACCESS', '1') in ('1', 'true', 'True')
 FITS_WARMUP_ON_INIT = os.getenv('FITS_WARMUP_ON_INIT', '0') in ('1', 'true', 'True')
-TILE_GLOBAL_CACHE_ENABLE = os.getenv('TILE_GLOBAL_CACHE_ENABLE', '1') in ('1', 'true', 'True')
+
+
+CPU_COUNT = os.cpu_count() or 4
+
+# Tile rendering: Higher concurrency since we're often waiting on I/O
+# Ceph benefit: More concurrent requests can overlap I/O wait times
+TILE_EXECUTOR_WORKERS = int(os.getenv('TILE_EXECUTOR_WORKERS', str(max(16, min(128, CPU_COUNT * 8)))))
+
+# Tile render concurrency: Aggressive for Ceph since rendering is CPU-bound after I/O
+# Each tile render is independent and can utilize different CPU cores
+TILE_RENDER_CONCURRENCY = int(os.getenv('TILE_RENDER_CONCURRENCY', str(max(8, min(64, CPU_COUNT * 4)))))
+
+# FITS initialization: Conservative for Ceph to avoid overwhelming storage
+# Too many concurrent file opens can hurt Ceph performance
+FITS_INIT_CONCURRENCY = int(os.getenv('FITS_INIT_CONCURRENCY', str(max(2, min(8, CPU_COUNT // 2)))))
+
+# Ceph-specific I/O settings
+CEPH_READ_AHEAD_KB = int(os.getenv('CEPH_READ_AHEAD_KB', '1024'))  # 1MB read-ahead
+CEPH_MAX_CONCURRENT_READS = int(os.getenv('CEPH_MAX_CONCURRENT_READS', str(max(4, min(16, CPU_COUNT)))))
+
+OMP_NUM_THREADS = int(os.getenv('OMP_NUM_THREADS', str(max(2, CPU_COUNT // 2))))
+OPENBLAS_NUM_THREADS = int(os.getenv('OPENBLAS_NUM_THREADS', str(max(2, CPU_COUNT // 2))))
+MKL_NUM_THREADS = int(os.getenv('MKL_NUM_THREADS', str(max(2, CPU_COUNT // 2))))
+NUMEXPR_NUM_THREADS = int(os.getenv('NUMEXPR_NUM_THREADS', str(max(2, CPU_COUNT // 2))))
+
+ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true', 'True')
+IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '20000'))  # Increased from 12000
+IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.8'))  # More aggressive
+ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '1') in ('1', 'true', 'True')
+PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '8192'))  # Larger chunks
+
+RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '10'))  # Higher threshold
+DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # Always use central for Ceph
+DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))  # Larger central region
+
 
 # ------------------------------------------------------------------------------
 # Shared I/O optimization helpers (app-wide)
@@ -1873,7 +1906,7 @@ class SimpleTileGenerator:
         print(f"Using memmap?!?!: False")
         self._hdul = fits.open(
             fits_file_path,
-            memmap=False,
+            memmap=True,
             lazy_load_hdus=True,
             do_not_scale_image_data=True
         )
@@ -4346,37 +4379,22 @@ async def get_fits_tile_information(request: Request):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
-    # Return minimal, fast tile info and offload heavy work to background threads
+    # Always return tile info (even if generator already existed)
     try:
-        # Minimal info avoids triggering image loads/dynamic range on Ceph
-        info = tile_generator.get_minimal_tile_info()
+        info = tile_generator.get_tile_info()
         # Ensure fields the frontend expects
         if "minLevel" not in info:
             info["minLevel"] = 0
-
-        # If dynamic range is already available, include it
-        if getattr(tile_generator, "min_value", None) is not None and getattr(tile_generator, "max_value", None) is not None:
-            try:
-                info["initial_display_min"] = float(tile_generator.min_value)
-                info["initial_display_max"] = float(tile_generator.max_value)
-            except Exception:
-                pass
-
-        # Fire-and-forget: calculate dynamic range and overview in background
+        # Fire-and-forget overview generation in background
         try:
-            loop = asyncio.get_running_loop()
-            # Dynamic range
-            asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated))
-            # Overview generation
             if not getattr(tile_generator, "overview_generated", False):
+                loop = asyncio.get_running_loop()
                 asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
         except Exception:
             pass
-
         # If overview already available, include it
         if getattr(tile_generator, "overview_image", None):
             info["overview"] = tile_generator.overview_image
-
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
