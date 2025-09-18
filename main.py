@@ -726,15 +726,15 @@ CPU_COUNT = os.cpu_count() or 4
 
 # Tile rendering: Higher concurrency since we're often waiting on I/O
 # Ceph benefit: More concurrent requests can overlap I/O wait times
-TILE_EXECUTOR_WORKERS = int(os.getenv('TILE_EXECUTOR_WORKERS', str(max(16, min(128, CPU_COUNT * 8)))))
+TILE_EXECUTOR_WORKERS = 16
 
 # Tile render concurrency: Aggressive for Ceph since rendering is CPU-bound after I/O
 # Each tile render is independent and can utilize different CPU cores
-TILE_RENDER_CONCURRENCY = int(os.getenv('TILE_RENDER_CONCURRENCY', str(max(8, min(64, CPU_COUNT * 4)))))
+TILE_RENDER_CONCURRENCY = 4
 
 # FITS initialization: Conservative for Ceph to avoid overwhelming storage
 # Too many concurrent file opens can hurt Ceph performance
-FITS_INIT_CONCURRENCY = int(os.getenv('FITS_INIT_CONCURRENCY', str(max(2, min(8, CPU_COUNT // 2)))))
+FITS_INIT_CONCURRENCY = 2
 
 # Ceph-specific I/O settings
 CEPH_READ_AHEAD_KB = int(os.getenv('CEPH_READ_AHEAD_KB', '1024'))  # 1MB read-ahead
