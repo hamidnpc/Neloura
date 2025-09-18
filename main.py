@@ -706,14 +706,15 @@ SED_RGB_TEXT_X_ALT = 0.4
 # pressure by promoting image slices to RAM or by warming the OS page cache.
 # These can be overridden via environment variables at runtime.
 ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true', 'True')
+# Conservative defaults baked into code; still overridable by env vars
 IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '12000'))  # cap per promoted 2D slice
-IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.5'))
-ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '0') in ('1', 'true', 'True')
+IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.7'))
+ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '1') in ('1', 'true', 'True')
 PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
 IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
-RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '1.0'))
+RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '2'))
 
 # Dynamic range and warmup tuning
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # 'central' | 'strided'
