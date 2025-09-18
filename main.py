@@ -381,7 +381,7 @@ RGB_FILTERS = {
     "HA": (['ha',"halpha", "f657n", "f658n", "f656n"], "H-alpha")  # Removed "ha" from the list
 }
 
-TILE_CACHE_MAX_SIZE = int(os.getenv('TILE_CACHE_MAX_SIZE', '100'))
+TILE_CACHE_MAX_SIZE = int(os.getenv('TILE_CACHE_MAX_SIZE', '300'))
 SED_HST_FILTERS = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']
 SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
 SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
@@ -705,12 +705,12 @@ SED_RGB_TEXT_X_ALT = 0.4
 # When storage has poor random-read performance (see fio results), reduce disk
 # pressure by promoting image slices to RAM or by warming the OS page cache.
 # These can be overridden via environment variables at runtime.
-ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '0') in ('1', 'true', 'True')
-IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '2048'))  # cap per promoted 2D slice
-IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.5'))  # must be <= 0.5
+ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true', 'True')
+IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '4096'))  # cap per promoted 2D slice
+IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.5'))
 ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '0') in ('1', 'true', 'True')
 PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
-IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'never')  # 'auto' | 'always' | 'never'
+IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '1.0'))
@@ -718,7 +718,7 @@ RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '1.0'
 # Dynamic range and warmup tuning
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # 'central' | 'strided'
 DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))
-FITS_OPTIMIZE_ON_FIRST_ACCESS = os.getenv('FITS_OPTIMIZE_ON_FIRST_ACCESS', '0') in ('1', 'true', 'True')
+FITS_OPTIMIZE_ON_FIRST_ACCESS = os.getenv('FITS_OPTIMIZE_ON_FIRST_ACCESS', '1') in ('1', 'true', 'True')
 FITS_WARMUP_ON_INIT = os.getenv('FITS_WARMUP_ON_INIT', '0') in ('1', 'true', 'True')
 TILE_GLOBAL_CACHE_ENABLE = os.getenv('TILE_GLOBAL_CACHE_ENABLE', '1') in ('1', 'true', 'True')
 
