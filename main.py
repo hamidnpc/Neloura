@@ -1870,6 +1870,7 @@ class SimpleTileGenerator:
 
 # In SimpleTileGenerator.__init__
         use_memmap = not _is_ceph_storage(fits_file_path)
+        print(f"Using memmap?!?!: {use_memmap}")
         self._hdul = fits.open(
             fits_file_path,
             memmap=use_memmap,
