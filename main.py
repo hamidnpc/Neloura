@@ -636,12 +636,14 @@ SED_HA_TOKEN_EXTEND_TEMPLATES = [
     "{base_dir}/*{token}*halpha*.fits",
     "{base_dir}/**/*{token}*halpha*.fits",
 ]
+
 # Ha wavelength and positioning
 SED_HA_WAVELENGTH = 21.5
 SED_HA_X_OFFSET = -0.7
 SED_HA_Y_POSITION = 0.72
 # Processing configuration
 SED_MAX_WORKERS_FILES = 8
+
 # Percentile values and gamma for image normalization (used by cutout insets)
 # - SED_SQRT_NORM_GAMMA controls the gamma used in PowerNorm for sqrt-like stretch
 # - Per-instrument percentiles set the vmax for normalization
@@ -712,7 +714,7 @@ PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096
 IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
-RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '30'))
+RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '2'))
 
 
 # Dynamic range and warmup tuning
@@ -724,11 +726,11 @@ CPU_COUNT = os.cpu_count() or 4
 
 # Tile rendering: Higher concurrency since we're often waiting on I/O
 # Ceph benefit: More concurrent requests can overlap I/O wait times
-TILE_EXECUTOR_WORKERS = 32
+TILE_EXECUTOR_WORKERS = 16
 
 # Tile render concurrency: Aggressive for Ceph since rendering is CPU-bound after I/O
 # Each tile render is independent and can utilize different CPU cores
-TILE_RENDER_CONCURRENCY = 8
+TILE_RENDER_CONCURRENCY = 4
 
 # FITS initialization: Conservative for Ceph to avoid overwhelming storage
 # Too many concurrent file opens can hurt Ceph performance
@@ -752,11 +754,7 @@ PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '8192
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '10'))  # Higher threshold
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # Always use central for Ceph
 DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))  # Larger central region
-DYN_RANGE_STRIDE_THRESHOLD = int(os.getenv('DYN_RANGE_STRIDE_THRESHOLD', '512')) # Stride if central box > this
-DYN_RANGE_STRIDE_STEP = int(os.getenv('DYN_RANGE_STRIDE_STEP', '8')) # Use 1/16th of pixels
 
-# FITS Tile Info timeout: Extend for potentially slower first-time access on Ceph
-FITS_TILE_INFO_TIMEOUT = int(os.getenv('FITS_TILE_INFO_TIMEOUT', '120'))  # 2 minutes
 
 # ------------------------------------------------------------------------------
 # Shared I/O optimization helpers (app-wide)
@@ -1288,6 +1286,7 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/me",
     "/settings/profiles",
 })
+
 @app.get("/session/start")
 async def start_session():
     # Create a fresh session and immediately resolve effective settings
@@ -1901,6 +1900,7 @@ class SimpleTileGenerator:
                 return 'ceph' in result.stdout.lower()
             except:
                 return False
+
 # In SimpleTileGenerator.__init__
         # use_memmap = not _is_ceph_storage(fits_file_path)
         print(f"Using memmap?!?!: False")
@@ -2019,8 +2019,6 @@ class SimpleTileGenerator:
             y1 = y0 + win_h
             x1 = x0 + win_w
             sample = current_image_data[y0:y1, x0:x1]
-            if win_h > DYN_RANGE_STRIDE_THRESHOLD or win_w > DYN_RANGE_STRIDE_THRESHOLD:
-                sample = sample[::DYN_RANGE_STRIDE_STEP, ::DYN_RANGE_STRIDE_STEP]
         else:
             # Fallback to coarse strided sampling (still avoids full ravel on memmap)
             h, w = current_image_data.shape[-2], current_image_data.shape[-1]
@@ -2515,6 +2513,8 @@ async def get_fits_histogram(
         import traceback
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": f"Failed to generate histogram: {str(e)}"})
+
+
 @app.get("/fits-header/{filepath:path}")
 async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
     """Retrieve the header of a specific HDU from a FITS file."""
@@ -3142,11 +3142,13 @@ async def generate_sed_optimized(
             for fn, fp in file_matches.items():
                 mark = "galaxy-specific" if any(tok in fp.lower() for tok in galaxy_tokens) else "generic"
                 print(f"  {fn}: {fp} ({mark})")
+
         # 7) Cutouts
         nircam_cutouts, miri_cutouts, hst_cutouts = {}, {}, {}
         nircam_header = miri_header = hst_header = None
         rgbsss = []          # CO data
         rgbsss2 = []         # HST HA data
+
         for i, (wavelength, filter_name) in enumerate(zip(SED_FILTER_WAVELENGTHS_EXTENDED[:len(SED_FILTER_NAMES)], SED_FILTER_NAMES)):
             if filter_name not in file_matches:
                 continue
@@ -3786,11 +3788,17 @@ async def upload_fits_file(file: UploadFile = File(...)):
             status_code=500,
             content={"error": f"Failed to upload file: {str(e)}"}
         )
+
+
+# Add this to your main.py file to improve the proxy functionality for NED
+
 import aiohttp
 import ssl
 import xml.etree.ElementTree as ET
 import certifi
 from fastapi.responses import Response
+
+
 import requests
 from fastapi import Request, Response, HTTPException
 from urllib.parse import quote_plus
@@ -4371,22 +4379,12 @@ async def get_fits_tile_information(request: Request):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
-    # Always return tile info (even if generator already existed)
+    # Return minimal tile info quickly without triggering dynamic range or data loads
     try:
-        info = tile_generator.get_tile_info()
-        # Ensure fields the frontend expects
+        info = tile_generator.get_minimal_tile_info()
         if "minLevel" not in info:
             info["minLevel"] = 0
-        # Fire-and-forget overview generation in background
-        try:
-            if not getattr(tile_generator, "overview_generated", False):
-                loop = asyncio.get_running_loop()
-                asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
-        except Exception:
-            pass
-        # If overview already available, include it
-        if getattr(tile_generator, "overview_image", None):
-            info["overview"] = tile_generator.overview_image
+        # Do NOT auto-generate overview here; frontend may request /fits-overview when needed
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
@@ -4438,6 +4436,7 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         return Response(content=tile_data, media_type="image/png")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to get tile: {str(e)}"})
+
 # Add this new endpoint to list available files in the "files" directory
 @app.get("/list-files-for-frontend/")
 @app.get("/list-files-for-frontend/{path:path}")
@@ -5669,6 +5668,7 @@ async def get_fits_overview(request: Request, quality: int = 0, file_id: str = Q
             raise HTTPException(status_code=404, detail="Overview not available or empty")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error serving overview for {file_id}: {str(e)}")
+
 def detect_coordinate_columns(colnames):
     """Detect RA and DEC column names from a list of column names."""
     ra_candidates = ra_columns
@@ -6827,6 +6827,8 @@ def create_safe_compressed_response(data: Dict[Any, Any]) -> Response:
     except Exception as e:
         logger.warning(f"Compression failed: {e}, falling back to uncompressed")
         return JSONResponse(content=data)
+
+
 @app.get("/catalog-metadata/{catalog_name:path}")
 async def catalog_metadata(catalog_name: str):
     """
@@ -8582,9 +8584,13 @@ class ConnectionManager:
     async def broadcast(self, message: str):
         for connection in self.active_connections:
             await connection.send_text(message)
+
 manager = ConnectionManager()
+
+
 import psutil
 import json
+
 def get_system_stats_data(app_process_names=['python']):
         # CPU
     cpu_percent = psutil.cpu_percent(interval=None)  # Non-blocking
