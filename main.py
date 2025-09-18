@@ -8591,11 +8591,11 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
-        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "14"))
+        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "24"))
     except Exception:
         max_workers = 4
     try:
-        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "14"))
+        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "24"))
     except Exception:
         render_limit = 3
     try:
