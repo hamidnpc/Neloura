@@ -4346,22 +4346,37 @@ async def get_fits_tile_information(request: Request):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
 
-    # Always return tile info (even if generator already existed)
+    # Return minimal, fast tile info and offload heavy work to background threads
     try:
-        info = tile_generator.get_tile_info()
+        # Minimal info avoids triggering image loads/dynamic range on Ceph
+        info = tile_generator.get_minimal_tile_info()
         # Ensure fields the frontend expects
         if "minLevel" not in info:
             info["minLevel"] = 0
-        # Fire-and-forget overview generation in background
+
+        # If dynamic range is already available, include it
+        if getattr(tile_generator, "min_value", None) is not None and getattr(tile_generator, "max_value", None) is not None:
+            try:
+                info["initial_display_min"] = float(tile_generator.min_value)
+                info["initial_display_max"] = float(tile_generator.max_value)
+            except Exception:
+                pass
+
+        # Fire-and-forget: calculate dynamic range and overview in background
         try:
+            loop = asyncio.get_running_loop()
+            # Dynamic range
+            asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated))
+            # Overview generation
             if not getattr(tile_generator, "overview_generated", False):
-                loop = asyncio.get_running_loop()
                 asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
         except Exception:
             pass
+
         # If overview already available, include it
         if getattr(tile_generator, "overview_image", None):
             info["overview"] = tile_generator.overview_image
+
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
