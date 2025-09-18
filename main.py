@@ -253,7 +253,7 @@ UPLOADS_AUTO_CLEAN_INTERVAL_MINUTES = 60
 # III. FITS Image & Tile Processing
 # ------------------------------------------------------------------------------
 DEFAULT_HDU_INDEX = 0
-IMAGE_TILE_SIZE_PX = 1024
+IMAGE_TILE_SIZE_PX = 2048
 DYNAMIC_RANGE_PERCENTILES = {'q_min': 0.5, 'q_max': 99.5}
 
 # ------------------------------------------------------------------------------
@@ -710,10 +710,10 @@ ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true',
 IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '12000'))  # cap per promoted 2D slice
 IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.7'))
 ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '1') in ('1', 'true', 'True')
-PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
+PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '12000'))
 IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
-RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
+RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '12000'))
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '2'))
 
 # Dynamic range and warmup tuning
