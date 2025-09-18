@@ -8594,25 +8594,46 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
-        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "8"))
+        # Scale CPU usage aggressively by default on Ceph-like servers
+        cpu_count = os.cpu_count() or 4
+        max_workers_env = os.getenv("TILE_EXECUTOR_WORKERS")
+        if max_workers_env is not None and max_workers_env.strip() != "":
+            max_workers = int(max_workers_env)
+        else:
+            # Favor high thread count since numpy/PIL often release the GIL
+            max_workers = max(8, min(64, cpu_count * 5))
     except Exception:
         max_workers = 4
     try:
-        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "6"))
+        render_limit_env = os.getenv("TILE_RENDER_CONCURRENCY")
+        if render_limit_env is not None and render_limit_env.strip() != "":
+            render_limit = int(render_limit_env)
+        else:
+            render_limit = max(4, min(32, cpu_count * 2))
     except Exception:
         render_limit = 3
     try:
-        fits_limit = int(os.getenv("FITS_INIT_CONCURRENCY", "1"))
+        fits_limit_env = os.getenv("FITS_INIT_CONCURRENCY")
+        if fits_limit_env is not None and fits_limit_env.strip() != "":
+            fits_limit = int(fits_limit_env)
+        else:
+            # Allow multiple concurrent header/data initializations
+            fits_limit = max(2, min(16, cpu_count))
     except Exception:
         fits_limit = 2
     try:
+        # Encourage multi-threaded math libs (only if not already set by operator)
+        for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            if os.getenv(_thr_var) in (None, ""):
+                os.environ[_thr_var] = str(cpu_count)
         if not hasattr(app.state, "thread_executor") or app.state.thread_executor is None:
             app.state.thread_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tiles")
         if not hasattr(app.state, "tile_render_semaphore") or app.state.tile_render_semaphore is None:
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
         if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
             app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
-        print(f"[startup] Thread executor (max_workers={max_workers}), tile semaphore (limit={render_limit}), fits semaphore (limit={fits_limit}) initialized")
+        print(f"[startup] CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
+        print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
     except Exception as _e:
         print(f"[startup] Failed to initialize executor/semaphore: {_e}")
 
