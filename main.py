@@ -642,7 +642,6 @@ SED_HA_X_OFFSET = -0.7
 SED_HA_Y_POSITION = 0.72
 # Processing configuration
 SED_MAX_WORKERS_FILES = 8
-
 # Percentile values and gamma for image normalization (used by cutout insets)
 # - SED_SQRT_NORM_GAMMA controls the gamma used in PowerNorm for sqrt-like stretch
 # - Per-instrument percentiles set the vmax for normalization
@@ -753,6 +752,8 @@ PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '8192
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '10'))  # Higher threshold
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # Always use central for Ceph
 DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))  # Larger central region
+DYN_RANGE_STRIDE_THRESHOLD = int(os.getenv('DYN_RANGE_STRIDE_THRESHOLD', '1024')) # Stride if central box > this
+DYN_RANGE_STRIDE_STEP = int(os.getenv('DYN_RANGE_STRIDE_STEP', '4')) # Use 1/16th of pixels
 
 # FITS Tile Info timeout: Extend for potentially slower first-time access on Ceph
 FITS_TILE_INFO_TIMEOUT = int(os.getenv('FITS_TILE_INFO_TIMEOUT', '120'))  # 2 minutes
@@ -2018,6 +2019,8 @@ class SimpleTileGenerator:
             y1 = y0 + win_h
             x1 = x0 + win_w
             sample = current_image_data[y0:y1, x0:x1]
+            if win_h > DYN_RANGE_STRIDE_THRESHOLD or win_w > DYN_RANGE_STRIDE_THRESHOLD:
+                sample = sample[::DYN_RANGE_STRIDE_STEP, ::DYN_RANGE_STRIDE_STEP]
         else:
             # Fallback to coarse strided sampling (still avoids full ravel on memmap)
             h, w = current_image_data.shape[-2], current_image_data.shape[-1]
@@ -3139,7 +3142,6 @@ async def generate_sed_optimized(
             for fn, fp in file_matches.items():
                 mark = "galaxy-specific" if any(tok in fp.lower() for tok in galaxy_tokens) else "generic"
                 print(f"  {fn}: {fp} ({mark})")
-
         # 7) Cutouts
         nircam_cutouts, miri_cutouts, hst_cutouts = {}, {}, {}
         nircam_header = miri_header = hst_header = None
@@ -3784,15 +3786,11 @@ async def upload_fits_file(file: UploadFile = File(...)):
             status_code=500,
             content={"error": f"Failed to upload file: {str(e)}"}
         )
-# Add this to your main.py file to improve the proxy functionality for NED
-
 import aiohttp
 import ssl
 import xml.etree.ElementTree as ET
 import certifi
 from fastapi.responses import Response
-
-
 import requests
 from fastapi import Request, Response, HTTPException
 from urllib.parse import quote_plus
@@ -4440,7 +4438,6 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         return Response(content=tile_data, media_type="image/png")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to get tile: {str(e)}"})
-
 # Add this new endpoint to list available files in the "files" directory
 @app.get("/list-files-for-frontend/")
 @app.get("/list-files-for-frontend/{path:path}")
@@ -8586,11 +8583,8 @@ class ConnectionManager:
         for connection in self.active_connections:
             await connection.send_text(message)
 manager = ConnectionManager()
-
-
 import psutil
 import json
-
 def get_system_stats_data(app_process_names=['python']):
         # CPU
     cpu_percent = psutil.cpu_percent(interval=None)  # Non-blocking
