@@ -2070,7 +2070,7 @@ class SimpleTileGenerator:
             img = Image.fromarray(rgb_img_data, 'RGB') # Ensure mode is RGB
             
             buffer = io.BytesIO()
-            img.save(buffer, format='PNG', optimize=False, compress_level=1)
+            img.save(buffer, format='PNG', optimize=False, compress_level=0)
             return base64.b64encode(buffer.getvalue()).decode('utf-8')
             
         except Exception as e:
@@ -2138,7 +2138,7 @@ class SimpleTileGenerator:
                 # To be safe, and ensure correct processing flow, let's return a PNG of a blank tile.
                 img = Image.new('L', (self.tile_size, self.tile_size), color=0) # Black tile
                 buffer = io.BytesIO()
-                img.save(buffer, format='PNG', optimize=False, compress_level=1)
+                img.save(buffer, format='PNG', optimize=False, compress_level=0)
                 return buffer.getvalue()
 
             # Handle full resolution (scale=1) and overzoom (scale<1)
@@ -2253,7 +2253,7 @@ class SimpleTileGenerator:
             from PIL import Image
             img = Image.fromarray(rgb_img_data, 'RGB') # Ensure mode is RGB
             buffer = io.BytesIO()
-            img.save(buffer, format='PNG', optimize=False, compress_level=1)
+            img.save(buffer, format='PNG', optimize=False, compress_level=0)
             return buffer.getvalue()
             
         except Exception as e:
@@ -8591,11 +8591,11 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
-        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "6"))
+        max_workers = int(os.getenv("TILE_EXECUTOR_WORKERS", "14"))
     except Exception:
         max_workers = 4
     try:
-        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "6"))
+        render_limit = int(os.getenv("TILE_RENDER_CONCURRENCY", "14"))
     except Exception:
         render_limit = 3
     try:
