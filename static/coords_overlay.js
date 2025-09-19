@@ -55,6 +55,13 @@
       const inner2 = osdRoot.querySelector('.openseadragon-container') || osdRoot;
       inner2.appendChild(overlayElement);
       positionOverlay();
+    } else {
+      // If overlay exists but is attached to the wrong parent, move it under the inner OSD container
+      const inner2 = osdRoot.querySelector('.openseadragon-container') || osdRoot;
+      if (overlayElement.parentElement !== inner2) {
+        inner2.appendChild(overlayElement);
+        positionOverlay();
+      }
     }
     overlayElement.style.display = 'block';
     overlayElement.style.opacity = '1';
@@ -616,7 +623,7 @@ function pixelsToWorldFromHeader(header, x, y) {
     }
   }
 
-  function waitForViewerAndInit(attemptsLeft = 10) {
+  function waitForViewerAndInit(attemptsLeft = 40) {
     if (window.viewer || window.tiledViewer) {
       ensureOverlayElement();
       attachHandlers();
@@ -624,6 +631,23 @@ function pixelsToWorldFromHeader(header, x, y) {
     }
     if (attemptsLeft <= 0) return;
     setTimeout(() => waitForViewerAndInit(attemptsLeft - 1), 250);
+  }
+
+  // Observe late creation of the OpenSeadragon container and attach overlay/handlers
+  function observeViewerContainer() {
+    try {
+      const osdRoot = document.getElementById('openseadragon');
+      if (!osdRoot || window._coordsOverlayObserver) return;
+      const obs = new MutationObserver(() => {
+        const inner = osdRoot.querySelector('.openseadragon-container');
+        if (inner) {
+          ensureOverlayElement();
+          attachHandlers();
+        }
+      });
+      obs.observe(osdRoot, { childList: true, subtree: true });
+      window._coordsOverlayObserver = obs;
+    } catch (_) { /* ignore */ }
   }
 
   // Expose a manual setup entry if needed elsewhere
@@ -654,9 +678,10 @@ function pixelsToWorldFromHeader(header, x, y) {
 
   // Auto-init on DOM ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { waitForViewerAndInit(); requestWcsIfMissing(); });
+    document.addEventListener('DOMContentLoaded', () => { waitForViewerAndInit(); observeViewerContainer(); requestWcsIfMissing(); });
   } else {
     waitForViewerAndInit();
+    observeViewerContainer();
     requestWcsIfMissing();
   }
 })();
