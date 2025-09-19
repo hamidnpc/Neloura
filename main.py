@@ -196,7 +196,7 @@ def _configure_logging():
 _configure_logging()
 
 # --- Global Configuration Constants for Performance Tuning ---
-MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 200  # Lower to speed percentile on slow storage
+MAX_SAMPLE_POINTS_FOR_DYN_RANGE = 50  # Lower to speed percentile on slow storage
 # --- End Global Configuration Constants ---
 
 # Prime psutil.cpu_percent() for non-blocking calls later
@@ -238,13 +238,13 @@ IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'True').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'false').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
 # ----------------------------------------------------------------------------
 # Enable automatic cleaning of the uploads directory
-UPLOADS_AUTO_CLEAN_ENABLE = False
+UPLOADS_AUTO_CLEAN_ENABLE = True
 # Interval in minutes between automatic clean operations
 UPLOADS_AUTO_CLEAN_INTERVAL_MINUTES = 60
 
@@ -706,14 +706,14 @@ SED_RGB_TEXT_X_ALT = 0.4
 # These can be overridden via environment variables at runtime.
 ENABLE_IN_MEMORY_FITS = os.getenv('ENABLE_IN_MEMORY_FITS', '1') in ('1', 'true', 'True')
 # Conservative defaults baked into code; still overridable by env vars
-IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '12000'))  # cap per promoted 2D slice
+IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '8000'))  # cap per promoted 2D slice
 IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.7'))
 ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '1') in ('1', 'true', 'True')
 PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
 IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
-RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '30'))
+RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '20'))
 
 
 # Dynamic range and warmup tuning
@@ -752,7 +752,7 @@ PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '8192
 
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '10'))  # Higher threshold
 DYN_RANGE_STRATEGY = os.getenv('DYN_RANGE_STRATEGY', 'central')  # Always use central for Ceph
-DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '2048'))  # Larger central region
+DYN_RANGE_CENTRAL_SIZE = int(os.getenv('DYN_RANGE_CENTRAL_SIZE', '256'))  # Larger central region
 
 # FITS Tile Info timeout: Extend for potentially slower first-time access on Ceph
 FITS_TILE_INFO_TIMEOUT = int(os.getenv('FITS_TILE_INFO_TIMEOUT', '120'))  # 2 minutes
@@ -2035,10 +2035,12 @@ class SimpleTileGenerator:
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
             vmin = float(np.min(sample))
             vmax = float(np.max(sample))
-            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin > vmax:
                 vmin, vmax = 0.0, 1.0
             elif vmin == vmax:
-                vmax = vmin + (1e-6 if vmin != 0 else 1.0)
+                # For constant images, use a centered window for neutral display
+                vmin = vmin - 0.5
+                vmax = vmin + 1.0
         self.min_value, self.max_value = vmin, vmax
     
     def ensure_dynamic_range_calculated(self):
@@ -2118,19 +2120,23 @@ class SimpleTileGenerator:
                     vmin, vmax = 0.0, 1.0
 
             # Vectorized normalization and scaling
-            t = (np.clip(overview_data, vmin, vmax) - vmin) / max(vmax - vmin, 1e-12)
-
-            sf = self.scaling_function
-            if sf == 'logarithmic':
-                norm = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
-            elif sf == 'sqrt':
-                norm = np.sqrt(t)
-            elif sf == 'power':
-                norm = t ** POWER_GAMMA
-            elif sf == 'asinh' and ASINH_BETA > 0:
-                norm = np.arcsinh(ASINH_BETA * t) / np.arcsinh(ASINH_BETA)
+            delta = float(vmax - vmin)
+            if not np.isfinite(delta) or delta <= 0.0:
+                # Neutral gray when no dynamic range
+                norm = np.full_like(overview_data, 0.5, dtype=float)
             else:
-                norm = t
+                t = (np.clip(overview_data, vmin, vmax) - vmin) / delta
+                sf = self.scaling_function
+                if sf == 'logarithmic':
+                    norm = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
+                elif sf == 'sqrt':
+                    norm = np.sqrt(t)
+                elif sf == 'power':
+                    norm = t ** POWER_GAMMA
+                elif sf == 'asinh' and ASINH_BETA > 0:
+                    norm = np.arcsinh(ASINH_BETA * t) / np.arcsinh(ASINH_BETA)
+                else:
+                    norm = t
 
             # Convert to 8-bit and apply LUT
             img_data_8bit = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
@@ -2295,11 +2301,12 @@ class SimpleTileGenerator:
             sf = self.scaling_function
             vmin, vmax = self.min_value, self.max_value
 
-            if vmin is None or vmax is None or vmin == vmax:
+            delta = None if (vmin is None or vmax is None) else float(vmax - vmin)
+            if delta is None or not np.isfinite(delta) or delta <= 0.0:
                 normalized_tile_data = np.full((self.tile_size, self.tile_size), 0.5, dtype=float)
             else:
                 clipped = np.clip(tile_data, vmin, vmax)
-                t = (clipped - vmin) / max(vmax - vmin, 1e-12)
+                t = (clipped - vmin) / delta
 
                 if sf == 'logarithmic':
                     normalized_tile_data = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
@@ -3007,13 +3014,65 @@ async def generate_sed_optimized(
         # Ensure main plot renders above inset RGB panels without hiding them
         ax.set_zorder(3)
         ax.set_facecolor('none')
+
+        # Determine y-scale based on data positivity; log requires positives
+        def _finite_pos(v):
+            try:
+                return (v is not None) and np.isfinite(v) and (float(v) > 0.0)
+            except Exception:
+                return False
+
+        all_values = []
+        for arr in (sed_fluxes, sed_fluxes_total, sed_fluxes_cigale):
+            all_values.extend([v for v in arr if v is not None and np.isfinite(v)])
+        has_positive = any(_finite_pos(v) for v in all_values)
+        yscale_mode = 'log' if has_positive else 'linear'
+
+        # For log scale, suppress non-positive/invalid values so Matplotlib ignores them
+        def _sanitize_for_scale(values, yscale):
+            out = []
+            for v in values:
+                if v is None or (not np.isfinite(v)):
+                    out.append(np.nan)
+                elif yscale == 'log' and not (v > 0):
+                    out.append(np.nan)
+                else:
+                    out.append(float(v))
+            return out
+
+        y_total_plot = _sanitize_for_scale(sed_fluxes_total, yscale_mode)
+        y_bkg_plot = _sanitize_for_scale(sed_fluxes, yscale_mode)
+        y_cigale_plot = _sanitize_for_scale(sed_fluxes_cigale, yscale_mode)
+
+        # Sanitize error bars: non-finite -> NaN, negatives -> abs, drop where y invalid or non-positive for log
+        def _sanitize_yerr(err_values, y_values, yscale):
+            out = []
+            for e, y in zip(err_values, y_values):
+                if y is None or (not np.isfinite(y)):
+                    out.append(np.nan)
+                    continue
+                if yscale == 'log' and not (y > 0):
+                    out.append(np.nan)
+                    continue
+                if e is None or (not np.isfinite(e)):
+                    out.append(np.nan)
+                    continue
+                try:
+                    out.append(abs(float(e)))
+                except Exception:
+                    out.append(np.nan)
+            return out
+
+        yerr_total_plot = _sanitize_yerr(sed_fluxes_err, y_total_plot, yscale_mode)
+        yerr_bkg_plot = _sanitize_yerr(sed_fluxes_err, y_bkg_plot, yscale_mode)
+
+        # Plot series conditionally
         try:
-            _vals_total = [v for v in sed_fluxes_total if v is not None and np.isfinite(v) and abs(v) > 0]
-            if _vals_total:
+            if any(np.isfinite(y_total_plot)):
                 ax.errorbar(
                     SED_FILTER_WAVELENGTHS,
-                    sed_fluxes_total,
-                    yerr=sed_fluxes_err,
+                    y_total_plot,
+                    yerr=yerr_total_plot,
                     fmt=SED_MARKER_FMT,
                     ecolor=SED_ERRORBAR_ECOLOR,
                     color=SED_OBS_COLOR,
@@ -3023,48 +3082,56 @@ async def generate_sed_optimized(
                     capsize=SED_CAPSIZE,
                     zorder=10,
                 )
-            ax.errorbar(
-                SED_FILTER_WAVELENGTHS,
-                sed_fluxes,
-                yerr=sed_fluxes_err,
-                fmt=SED_MARKER_FMT,
-                ecolor=SED_ERRORBAR_ECOLOR,
-                color=SED_BKG_SUB_COLOR,
-                label=(lambda _vals: (SED_BKG_SUB_LABEL if (bool(_vals) and any(abs(v) > 0 for v in _vals)) else '_nolegend_'))([v for v in sed_fluxes if v is not None and np.isfinite(v)]),
-                markersize=SED_MARKERSIZE,
-                capsize=SED_CAPSIZE,
-                zorder=10,
-                alpha=SED_ALPHA,
-            )
-            # Plot CIGALE fluxes only if there is at least one finite, non-zero value
-            try:
-                _vals = [v for v in sed_fluxes_cigale if v is not None and np.isfinite(v) and abs(v) > 0]
-                if _vals:
-                    ax.plot(SED_FILTER_WAVELENGTHS, sed_fluxes_cigale, '-', color='red', alpha=0.8, linewidth=1.5, label='CIGALE', zorder=11)
-                    ax.scatter(SED_FILTER_WAVELENGTHS, sed_fluxes_cigale, marker='s', facecolors='none', edgecolors='red', linewidths=1.5, s=max(60, SED_MARKERSIZE*3), label='_nolegend_', zorder=12)
-            except Exception as _e:
-                pass
-        except:
-            ax.errorbar(
-                SED_FILTER_WAVELENGTHS[:-1],
-                sed_fluxes,
-                yerr=sed_fluxes_err,
-                fmt=SED_MARKER_FMT,
-                ecolor=SED_ERRORBAR_ECOLOR,
-                color=SED_BKG_SUB_COLOR,
-                label=(lambda _vals: (SED_BKG_SUB_LABEL if (bool(_vals) and any(abs(v) > 0 for v in _vals)) else '_nolegend_'))([v for v in sed_fluxes if v is not None and np.isfinite(v)]),
-                markersize=SED_MARKERSIZE,
-                capsize=SED_CAPSIZE,
-                zorder=10,
-                alpha=SED_ALPHA,
-            )
+            if any(np.isfinite(y_bkg_plot)):
+                ax.errorbar(
+                    SED_FILTER_WAVELENGTHS,
+                    y_bkg_plot,
+                    yerr=yerr_bkg_plot,
+                    fmt=SED_MARKER_FMT,
+                    ecolor=SED_ERRORBAR_ECOLOR,
+                    color=SED_BKG_SUB_COLOR,
+                    label=SED_BKG_SUB_LABEL,
+                    markersize=SED_MARKERSIZE,
+                    capsize=SED_CAPSIZE,
+                    zorder=10,
+                    alpha=SED_ALPHA,
+                )
+            # Plot CIGALE only if at least one finite, non-zero after sanitization
+            if any(np.isfinite(y_cigale_plot)):
+                ax.plot(SED_FILTER_WAVELENGTHS, y_cigale_plot, '-', color='red', alpha=0.8, linewidth=1.5, label='CIGALE', zorder=11)
+                ax.scatter(SED_FILTER_WAVELENGTHS, y_cigale_plot, marker='s', facecolors='none', edgecolors='red', linewidths=1.5, s=max(60, SED_MARKERSIZE*3), label='_nolegend_', zorder=12)
+        except Exception:
+            # Fallback minimal plot to avoid total failure
+            if any(np.isfinite(y_bkg_plot)):
+                ax.errorbar(
+                    SED_FILTER_WAVELENGTHS,
+                    y_bkg_plot,
+                    yerr=yerr_bkg_plot,
+                    fmt=SED_MARKER_FMT,
+                    ecolor=SED_ERRORBAR_ECOLOR,
+                    color=SED_BKG_SUB_COLOR,
+                    label=SED_BKG_SUB_LABEL,
+                    markersize=SED_MARKERSIZE,
+                    capsize=SED_CAPSIZE,
+                    zorder=10,
+                    alpha=SED_ALPHA,
+                )
+
         ax.set_xlabel(SED_X_LABEL, fontsize=SED_FONTSIZE_LABELS)
         ax.set_ylabel(SED_Y_LABEL, fontsize=SED_FONTSIZE_LABELS)
-        ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR)
-        ax.set_xscale(SED_XSCALE); ax.set_yscale(SED_YSCALE)
+        ax.set_xscale(SED_XSCALE)
+        ax.set_yscale(yscale_mode)
         ax.set_xticks(SED_FILTER_WAVELENGTHS)
         ax.set_xticklabels([SED_XTICK_LABEL_FORMAT.format(w=w) for w in SED_FILTER_WAVELENGTHS], rotation=SED_XTICK_ROTATION_DEGREES, fontsize=SED_FONTSIZE_TICKS)
         ax.set_xlim(SED_X_LIM_MIN, SED_X_LIM_MAX)
+
+        # Only add legend if there are visible labeled artists
+        try:
+            handles, labels = ax.get_legend_handles_labels()
+            if any(lbl and not str(lbl).startswith('_') for lbl in labels):
+                ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR)
+        except Exception:
+            pass
 
         bbox = dict(boxstyle=SED_INFO_BOX_BOXSTYLE, alpha=SED_INFO_BOX_FACE_ALPHA, facecolor=SED_INFO_BOX_FACE_COLOR)
         galaxy_name_display = (str(closest_obj.get(SED_COL_GALAXY)).upper() if SED_COL_GALAXY in available_cols else target_galaxy_name.upper())
@@ -3128,11 +3195,18 @@ async def generate_sed_optimized(
 
         with ThreadPoolExecutor(max_workers=SED_MAX_WORKERS_FILES) as executor:
             futures = [executor.submit(find_files_for_filter, fn, pats) for fn, pats in filter_patterns.items()]
-            for fut in as_completed(futures, timeout=FIND_FILES_TIMEOUT):
+            try:
+                for fut in as_completed(futures, timeout=FIND_FILES_TIMEOUT):
+                    try:
+                        fut.result()
+                    except Exception:
+                        continue
+            except Exception as _timeout:
+                # If file discovery takes too long, proceed with whatever has been found so far
                 try:
-                    fut.result()
-                except:
-                    continue
+                    print(f"[SED] File search timed out after {FIND_FILES_TIMEOUT}s; proceeding with partial matches.")
+                except Exception:
+                    pass
 
         if target_galaxy_name and target_galaxy_name != SED_DEFAULT_GALAXY_NAME:
             print(f"Files found for galaxy '{target_galaxy_name}': {len(file_matches)} filters")
@@ -3294,7 +3368,7 @@ async def generate_sed_optimized(
                                              bbox_transform=fig.transFigure)
                         norm_mode = resolve_sed_norm_mode_for_filter('HA', default_group='HA')
                         norm = build_sed_norm(norm_mode, SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE, cutout_data)
-                        print(f"Using norm: {norm},filter: {filter_name}")
+                        print(f"Using norm: {norm}, filter: HA")
 
                         if norm is None:
                             ax_inset.imshow(
