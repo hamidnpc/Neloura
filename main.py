@@ -238,13 +238,13 @@ IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'false').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'true').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
 # ----------------------------------------------------------------------------
 # Enable automatic cleaning of the uploads directory
-UPLOADS_AUTO_CLEAN_ENABLE = True
+UPLOADS_AUTO_CLEAN_ENABLE = False
 # Interval in minutes between automatic clean operations
 UPLOADS_AUTO_CLEAN_INTERVAL_MINUTES = 60
 
