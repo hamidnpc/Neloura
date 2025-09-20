@@ -3505,7 +3505,8 @@ async def generate_sed_optimized(
             print(f"Error during plt.tight_layout(): {e_layout}")
 
         filename = SED_FILENAME_TEMPLATE.format(ra=ra, dec=dec)
-        image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), IMAGE_DIR)
+        # Save into images/ under the current working directory (~/Neloura in the Qt app)
+        image_dir = os.path.join(os.getcwd(), IMAGE_DIR)
         os.makedirs(image_dir, exist_ok=True)
         filepath = os.path.join(image_dir, filename)
         fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches=SED_SAVEFIG_BBOX_INCHES)
@@ -7174,6 +7175,7 @@ import subprocess
 import sys
 import os
 import json
+import traceback
 from fastapi import Form
 from fastapi.responses import JSONResponse
 
@@ -8921,9 +8923,12 @@ async def start_peak_finder(
         'error': None
     })
     
-    # Resolve the file path on the server
-    base_dir = Path(__file__).resolve().parent
-    full_file_path = base_dir / fits_file
+    # Resolve the file path relative to the server's working directory.
+    # In the Qt app, CWD is set to ~/Neloura; when running from source it's the project root.
+    candidate_path = Path(fits_file)
+    if not candidate_path.is_absolute():
+        candidate_path = Path.cwd() / fits_file
+    full_file_path = candidate_path
     
     if not os.path.exists(full_file_path):
         raise HTTPException(status_code=404, detail=f"File not found at {full_file_path}")

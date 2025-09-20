@@ -20,8 +20,9 @@ from PyQt6.QtWebEngineCore import QWebEnginePage
 def _configure_logging(logs_dir: str) -> None:
     """Configure Python logging to write rotating logs in ~/Neloura/logs/python.log"""
     try:
-        python_log = os.path.join(logs_dir, 'python.log')
-        handler = RotatingFileHandler(python_log, maxBytes=2_000_000, backupCount=3)
+
+        log_path = os.environ.get('NELOURA_LOG_FILE', os.path.join(logs_dir, 'python.log'))
+        handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3)
         formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
         handler.setFormatter(formatter)
         root = logging.getLogger()
@@ -328,6 +329,7 @@ def main():
     os.makedirs(user_data_dir, exist_ok=True)
     logs_dir = os.path.join(user_data_dir, 'logs')
     os.makedirs(logs_dir, exist_ok=True)
+    os.environ['NELOURA_LOG_FILE'] = os.path.join(user_data_dir, 'neloura.log')  # <— add here
     _configure_logging(logs_dir)
     # Persist Matplotlib config/cache to avoid rebuilding fonts every launch
     mpl_config_dir = os.path.join(user_data_dir, 'mplconfig')
@@ -347,7 +349,14 @@ def main():
     # Create links or copies in user_data_dir so main.py's relative paths resolve using constants:
     _ensure_link_or_copy(app_static_dir, os.path.join(user_data_dir, static_dir_name))
     if os.path.isdir(app_psf_dir):
-        _ensure_link_or_copy(app_psf_dir, os.path.join(user_data_dir, psf_dir_name))
+        # Seed a real, writable PSF directory in ~/Neloura/psf (avoid symlink issues)
+        try:
+            dest_psf = os.path.join(user_data_dir, psf_dir_name)
+            os.makedirs(dest_psf, exist_ok=True)
+            shutil.copytree(app_psf_dir, dest_psf, dirs_exist_ok=True)
+        except Exception:
+            # Fallback to link on failure
+            _ensure_link_or_copy(app_psf_dir, os.path.join(user_data_dir, psf_dir_name))
     if os.path.isdir(app_catalogs_dir):
         _ensure_link_or_copy(app_catalogs_dir, os.path.join(user_data_dir, catalogs_dir_name))
 
@@ -476,6 +485,8 @@ class ExternalLinksPage(QWebEnginePage):
 
 
 if __name__ == "__main__":
+    from multiprocessing import freeze_support
+    freeze_support()
     main()
 
 
