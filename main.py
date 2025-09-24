@@ -238,13 +238,13 @@ IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'true').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'false').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
 # ----------------------------------------------------------------------------
 # Enable automatic cleaning of the uploads directory
-UPLOADS_AUTO_CLEAN_ENABLE = False
+UPLOADS_AUTO_CLEAN_ENABLE = True
 # Interval in minutes between automatic clean operations
 UPLOADS_AUTO_CLEAN_INTERVAL_MINUTES = 60
 
@@ -1474,11 +1474,24 @@ async def ast_inject(request: AstInjectRequest):
                 break
         
         psf_file_path = None
-        possible_psf_paths = [base_dir / PSF_DIRECTORY / request.psfFile, base_dir / request.psfFile]
-        for path in possible_psf_paths:
-            if path.exists():
-                psf_file_path = str(path)
-                break
+        tried_psf_paths = []
+        if request.psfFile:
+            # Try as provided, and under PSF_DIRECTORY (also try basename)
+            from pathlib import PurePath as _PurePath
+            _psf_name = str(_PurePath(request.psfFile).name)
+            possible_psf_paths = [
+                base_dir / PSF_DIRECTORY / request.psfFile,
+                base_dir / request.psfFile,
+                base_dir / PSF_DIRECTORY / _psf_name,
+                base_dir / _psf_name,
+            ]
+            for path in possible_psf_paths:
+                tried_psf_paths.append(str(path))
+                if path.exists():
+                    psf_file_path = str(path)
+                    break
+        else:
+            tried_psf_paths.append("<missing psfFile in request>")
 
         catalog_file_path = None
         if request.useSeparation and request.catalogFile:
@@ -1487,6 +1500,12 @@ async def ast_inject(request: AstInjectRequest):
                 if path.exists():
                     catalog_file_path = str(path)
                     break
+
+        # Validate required inputs before dispatching heavy work
+        if not fits_file_path:
+            raise HTTPException(status_code=404, detail=f"FITS file not found. Provided: {request.fitsFile}")
+        if not psf_file_path:
+            raise HTTPException(status_code=404, detail=f"PSF file not found. Provided: {request.psfFile}; tried: {tried_psf_paths}")
 
         # Update the request object with the full paths
         request.fitsFile = fits_file_path
