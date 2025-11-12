@@ -2827,7 +2827,7 @@ async def generate_sed_optimized(
                     # hours for RA
                     if is_ra:
                         name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name) or (0.0 <= v <= 24.0):
+                        if ('hms' in name) or ('hour' in name):
                             return v * 15.0
                     return v
             except Exception:
@@ -3670,7 +3670,7 @@ async def source_properties(
                     # hours for RA
                     if is_ra:
                         name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name) or (0.0 <= v <= 24.0):
+                        if ('hms' in name) or ('hour' in name):
                             return v * 15.0
                     return v
             except Exception:
@@ -6117,7 +6117,7 @@ async def catalog_binary_raw(
                     # hours for RA
                     if is_ra:
                         name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name) or (0.0 <= v <= 24.0):
+                        if ('hms' in name) or ('hour' in name):
                             return v * 15.0
                     return v
             except Exception:
@@ -6477,7 +6477,7 @@ async def catalog_binary(
                     # hours for RA
                     if is_ra:
                         name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name) or (0.0 <= v <= 24.0):
+                        if ('hms' in name) or ('hour' in name):
                             return v * 15.0
                     return v
             except Exception:
@@ -7715,7 +7715,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     # hours for RA
                     if is_ra:
                         name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name) or (0.0 <= v <= 24.0):
+                        if ('hms' in name) or ('hour' in name):
                             return v * 15.0
                     return v
             except Exception:
