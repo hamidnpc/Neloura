@@ -1,9 +1,33 @@
+  function getPrimaryViewerTiledImage(viewer) {
+    if (!viewer || !viewer.world || typeof viewer.world.getItemCount !== 'function') {
+      return null;
+    }
+    try {
+      const count = viewer.world.getItemCount();
+      if (count > 0) {
+        const base = viewer.world.getItemAt(0);
+        if (base && typeof base.viewerElementToImageCoordinates === 'function') {
+          return base;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
 // Coordinate overlay for pixel (x, y) and WCS (RA, Dec)
 // Depends on OpenSeadragon and the global parseWCS(header) from static/main.js
 
 (function () {
+  function __paneSid() {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      return (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || null;
+    } catch (_) { return window.__forcedSid || null; }
+  }
   async function ensureSession() {
     try {
+      const forced = __paneSid();
+      if (forced) return forced;
       let sid = sessionStorage.getItem('sid');
       if (!sid) {
         const r = await fetch('/session/start');
@@ -20,14 +44,170 @@
     const sid = await ensureSession();
     const headers = options.headers ? { ...options.headers } : {};
     if (sid) headers['X-Session-ID'] = sid;
-    return fetch(url, { ...options, headers });
+    // Also propagate sid in query for routes that rely on query param
+    try {
+      const u = new URL(url, window.location.origin);
+      if (sid && !u.searchParams.get('sid')) u.searchParams.set('sid', sid);
+      return fetch(u.toString(), { ...options, headers });
+    } catch(_) {
+      return fetch(url, { ...options, headers });
+    }
   }
   let overlayElement = null;
   let hasAttachedHandlers = false;
+  let overlayRendered = false;
+  let overlayDataCache = null;
+
+  // Throttle server probing aggressively; mousemove can easily generate 100s req/s otherwise.
+  let _probeTimer = null;
+  let _probeLatest = null;
+  let _probeAbort = null;
+  let _probeLastKey = null;
+  let _probeLastTs = 0;
+
+  // NOTE: We send TOP-origin pixel coords to the backend (origin=top). OpenSeadragon image coordinates
+  // are naturally top-origin, and the backend will apply analyze_wcs_orientation-derived flip_y as needed.
+  function scheduleProbePixel(displayX, displayYTop, imageX, imageY, raDeg, decDeg, bunit, pixelValue) {
+    _probeLatest = { displayX, displayYTop, imageX, imageY, raDeg, decDeg, bunit, pixelValue };
+    if (_probeTimer) return;
+    _probeTimer = setTimeout(() => {
+      _probeTimer = null;
+      const p = _probeLatest;
+      if (!p) return;
+
+      const now = Date.now();
+      const fileKey = (window.currentLoadedFitsFileId || window.currentFitsFile || '');
+      const hduKey = (window.currentHduIndex != null ? String(window.currentHduIndex) : '');
+      const segKey = (window.segmentOverlayState && window.segmentOverlayState.id) ? String(window.segmentOverlayState.id) : '';
+      const segVer = (window.segmentOverlayState && window.segmentOverlayState.version) ? String(window.segmentOverlayState.version) : '';
+      const key = `${fileKey}|${hduKey}|${segKey}|${segVer}|${p.displayX},${p.displayYTop}`;
+      if (key === _probeLastKey && (now - _probeLastTs) < 120) return;
+      _probeLastKey = key;
+      _probeLastTs = now;
+
+      try { if (_probeAbort) _probeAbort.abort(); } catch (_) {}
+      _probeAbort = new AbortController();
+      // Guard against async races: only allow the most recent *fired* request to update the overlay.
+      // Important: do NOT advance this key when we early-return due to throttling, otherwise an
+      // in-flight response can get incorrectly ignored until the mouse moves again.
+      window._coordLastRequestKey = key;
+
+      // 1) Accurate RA/Dec via backend Astropy WCS (handles SIP/distortions).
+      // Throttled together with probe-pixel to avoid request spam.
+      if (window._disablePixelToWorld !== true) {
+        // Always pass filepath/HDU so the backend uses the correct generator header + analyze_wcs_orientation flip.
+        // Relying solely on session state can produce mirrored coordinates when multiple panes/files are used.
+        const rawPath = window.currentFitsFile || (window.fitsData && window.fitsData.filename);
+        const filepath = (typeof rawPath === 'string') ? rawPath : null;
+        const hduIndex = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+        const extra = (filepath ? `&filepath=${encodeURIComponent(filepath)}` : '') + `&hdu=${encodeURIComponent(hduIndex)}`;
+        // Add a cache-buster to avoid any intermediary/browser caching of repeated queries.
+        const wUrl = `/pixel-to-world/?x=${p.displayX}&y=${p.displayYTop}&origin=top${extra}&_t=${Date.now()}`;
+        const requestKey = key;
+        apiFetch(wUrl, { signal: _probeAbort.signal, cache: 'no-store' })
+          .then(r => (r && r.ok) ? r.json() : null)
+          .then(d => {
+            if (window._coordLastRequestKey !== requestKey) return;
+            if (d && typeof d.ra === 'number' && isFinite(d.ra) && typeof d.dec === 'number' && isFinite(d.dec)) {
+              // Cache only for the current pixel key (prevents stale overwrite across pixels).
+              window._coordLastWorld = { key: requestKey, ra: d.ra, dec: d.dec, ts: Date.now() };
+              const last = window._coordLastValue;
+              // Update overlay with backend-truth RA/Dec while preserving current value readout.
+              updateOverlayText(p.imageX, p.imageY, d.ra, d.dec, last && last.value, (last && last.unit) || p.bunit);
+            }
+          })
+          .catch(() => {});
+      }
+
+      // 2) Precise pixel value via backend (only when missing/zero).
+      // Also pass filepath/HDU to keep probe-pixel consistent with the active map context.
+      const rawPath2 = window.currentFitsFile || (window.fitsData && window.fitsData.filename);
+      const filepath2 = (typeof rawPath2 === 'string') ? rawPath2 : null;
+      const hduIndex2 = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+      const extra2 = (filepath2 ? `&filepath=${encodeURIComponent(filepath2)}` : '') + `&hdu=${encodeURIComponent(hduIndex2)}`;
+      const url = `/probe-pixel/?x=${p.displayX}&y=${p.displayYTop}&origin=top${extra2}&_t=${Date.now()}`;
+      if (window._disableProbePixel === true) return;
+      const needsProbeValue = !(typeof p.pixelValue === 'number' && isFinite(p.pixelValue)) || p.pixelValue === 0;
+      if (!needsProbeValue) {
+        // Still allow segment probe below (it has its own display state), but skip value probe.
+      } else {
+
+      apiFetch(url, { signal: _probeAbort.signal, cache: 'no-store' })
+        .then(r => {
+          if (!r || !r.ok) {
+            window._disableProbePixel = true;
+            return null;
+          }
+          return r.json();
+        })
+        .then(data => {
+          if (window._coordLastRequestKey !== key) return;
+          if (data && typeof data.value === 'number' && isFinite(data.value)) {
+            const unitFromSrv = data.unit;
+            const valFromSrv = data.value;
+            // cache last good value to avoid flicker to 0 when sampling is transient
+            window._coordLastValue = { value: valFromSrv, unit: p.bunit || unitFromSrv, ts: Date.now() };
+            // Use backend-truth RA/Dec only if it matches this pixel key; otherwise keep RA/Dec in "pending" state.
+            const lw = window._coordLastWorld;
+            const hasWorldForThis = !!(lw && lw.key === key && typeof lw.ra === 'number' && isFinite(lw.ra) && typeof lw.dec === 'number' && isFinite(lw.dec));
+            updateOverlayText(
+              p.imageX,
+              p.imageY,
+              hasWorldForThis ? lw.ra : NaN,
+              hasWorldForThis ? lw.dec : NaN,
+              valFromSrv,
+              p.bunit || unitFromSrv,
+              hasWorldForThis ? undefined : { forcePlaceholder: true }
+            );
+          }
+        })
+        .catch(() => {});
+      }
+
+      // If a segment overlay is active, also probe its label at this pixel.
+      try {
+        const seg = window.segmentOverlayState;
+        if (seg && seg.id) {
+          const segUrl = `/probe-segment-pixel/?segment_id=${encodeURIComponent(seg.id)}&x=${p.displayX}&y=${p.displayYTop}&origin=top`;
+          apiFetch(segUrl, { signal: _probeAbort.signal, cache: 'no-store' })
+            .then(r => (r && r.ok) ? r.json() : null)
+            .then(d => {
+              if (window._coordLastRequestKey !== key) return;
+              if (d && (typeof d.value === 'number') && isFinite(d.value)) {
+                window._coordLastSegmentValue = { value: d.value, ts: Date.now(), segment_id: seg.id };
+              } else {
+                window._coordLastSegmentValue = { value: NaN, ts: Date.now(), segment_id: seg.id };
+              }
+              const last = window._coordLastValue;
+              updateOverlayText(p.imageX, p.imageY, p.raDeg, p.decDeg, last && last.value, (last && last.unit) || p.bunit);
+            })
+            .catch(() => {});
+        } else {
+          window._coordLastSegmentValue = null;
+        }
+      } catch (_) {}
+    }, 10);
+  }
+
+  function removeOverlayElement() {
+    if (overlayElement && overlayElement.parentElement) {
+      try { overlayElement.parentElement.removeChild(overlayElement); } catch (_) {}
+    }
+    overlayElement = null;
+    overlayRendered = false;
+    overlayDataCache = null;
+  }
 
   function ensureOverlayElement() {
+    if (!window.fitsData) {
+      removeOverlayElement();
+      return null;
+    }
     const osdRoot = document.getElementById('openseadragon');
-    if (!osdRoot) return null;
+    if (!osdRoot) {
+      removeOverlayElement();
+      return null;
+    }
     const inner = osdRoot.querySelector('.openseadragon-container') || osdRoot;
 
     if (!overlayElement) {
@@ -48,7 +228,11 @@
       overlayElement.style.pointerEvents = 'none';
       overlayElement.style.zIndex = '99999';
       overlayElement.style.whiteSpace = 'nowrap';
-      overlayElement.innerHTML = '<div class="coord-row coord-val">Value: —</div><div class="coord-row coord-xy">x: —, y: —</div><div class="coord-row coord-ra">RA: —, Dec: —</div>';
+      overlayElement.innerHTML =
+        '<div class="coord-row coord-val">Value: —</div>' +
+        '<div class="coord-row coord-seg" style="display:none">Seg: —</div>' +
+        '<div class="coord-row coord-xy">x: —, y: —</div>' +
+        '<div class="coord-row coord-ra">RA: —, Dec: —</div>';
       inner.appendChild(overlayElement);
       positionOverlay();
     } else if (!overlayElement.parentElement) {
@@ -347,11 +531,13 @@ function pixelsToWorldFromHeader(header, x, y) {
       // Ensure container exists
       if (!window.fitsData) window.fitsData = {};
       if (window?.fitsData?.wcs) return;
-      if (!window?.fitsData?.filename || requestedWcs) return;
+      if (requestedWcs) return;
       requestedWcs = true;
       // Use the most reliable path/HDU we have
-      const filepath = window.currentFitsFile || window.fitsData.filename;
-      const path = filepath; // Do NOT encode; backend route expects raw path
+      const rawPath = window.currentFitsFile || window.fitsData.filename;
+      const filepath = (typeof rawPath === 'string') ? rawPath : (typeof window.fitsData?.filename === 'string' ? window.fitsData.filename : null);
+      const path = filepath;
+      if (!path) { requestedWcs = false; return; }
       const hduIndex = typeof window.currentHduIndex === 'number' ? window.currentHduIndex : 0;
       console.log('[coords_overlay] Fetching header for', { filepath, hduIndex });
       // Do NOT encode here; the backend route uses a {filepath:path} param and expects raw path
@@ -368,9 +554,21 @@ function pixelsToWorldFromHeader(header, x, y) {
         const dbg = collectWcsDebug();
         console.log('[coords_overlay] WCS essentials:', { file: dbg.file, hdu: dbg.hdu, ctype: dbg.ctype, matrix: dbg.matrix, ref: dbg.ref, axes: dbg.axes, hasSIP: dbg.hasSIP, hasPV: dbg.hasPV });
       } catch (_) {}
-      // Derive flip_y if server didn't provide
+      // Derive flip_y using the backend's analyze_wcs_orientation() (main.py),
+      // so overlay coordinate orientation matches the displayed map.
       if (window.fitsData.flip_y == null) {
-        window.fitsData.flip_y = analyzeWcsOrientationJs(normalized);
+        try {
+          const oriUrl = `/wcs-orientation/?filepath=${encodeURIComponent(path)}&hdu=${encodeURIComponent(hduIndex)}`;
+          const oriRes = await apiFetch(oriUrl, { cache: 'no-store' });
+          const ori = oriRes && oriRes.ok ? await oriRes.json().catch(() => null) : null;
+          if (ori && typeof ori.flip_y === 'boolean') {
+            window.fitsData.flip_y = ori.flip_y;
+          } else {
+            window.fitsData.flip_y = analyzeWcsOrientationJs(normalized);
+          }
+        } catch (_) {
+          window.fitsData.flip_y = analyzeWcsOrientationJs(normalized);
+        }
       }
       // Prime parsedWCS
       if (typeof window.parseWCS === 'function') {
@@ -397,7 +595,11 @@ function pixelsToWorldFromHeader(header, x, y) {
   }
 
 
-  function updateOverlayText(ix, iy, raDeg, decDeg, pixelValue, unit) {
+  function updateOverlayText(ix, iy, raDeg, decDeg, pixelValue, unit, opts) {
+    if (!window.fitsData) {
+      removeOverlayElement();
+      return;
+    }
     const el = ensureOverlayElement();
     if (!el) return;
   
@@ -412,6 +614,7 @@ function pixelsToWorldFromHeader(header, x, y) {
     const xyNode = el.querySelector('.coord-xy');
     const raNode = el.querySelector('.coord-ra');
     const valNode = el.querySelector('.coord-val');
+    const segNode = el.querySelector('.coord-seg');
   
     if (xyNode) xyNode.textContent = `x: ${xText}, y: ${yText}`;
   
@@ -419,83 +622,81 @@ function pixelsToWorldFromHeader(header, x, y) {
       const valStr = formatValueForReadout(pixelValue);
       valNode.textContent = valStr !== null ? `${valStr}${unit ? ' ' + unit : ''}` : 'Value: —';
     }
+
+    // Segment label readout (if an overlay is active)
+    try {
+      if (segNode) {
+        const segState = window.segmentOverlayState;
+        if (segState && segState.id) {
+          segNode.style.display = '';
+          const lastSeg = window._coordLastSegmentValue;
+          const segVal = lastSeg && typeof lastSeg.value === 'number' && isFinite(lastSeg.value) ? Math.trunc(lastSeg.value) : null;
+          segNode.textContent = (segVal !== null) ? `Seg: ${segVal}` : 'Seg: —';
+        } else {
+          segNode.style.display = 'none';
+          segNode.textContent = 'Seg: —';
+        }
+      }
+    } catch (_) {}
   
-    if (isFinite(raDeg) && isFinite(decDeg)) {
+    const forcePlaceholder = !!(opts && opts.forcePlaceholder);
+    // Important: avoid showing stale RA/Dec from a previous pixel.
+    // If a backend request is pending for the current pixel, force a placeholder.
+    if (forcePlaceholder) {
+      if (raNode) raNode.textContent = `RA: …, Dec: …`;
+    } else if (isFinite(raDeg) && isFinite(decDeg)) {
       const deg = '°';
       const raStr = `${raDeg.toFixed(6)}${deg}`;
       const decStr = `${decDeg.toFixed(6)}${deg}`;
       if (raNode) raNode.textContent = `RA: ${raStr}, Dec: ${decStr}`;
-    } else {
-      if (raNode) raNode.textContent = 'RA: —, Dec: —';
     }
   }
 
   function onMouseMove(evt) {
     const viewer = window.viewer || window.tiledViewer;
     if (!viewer) return;
+    const baseTiledImage = getPrimaryViewerTiledImage(viewer);
+    if (!baseTiledImage) {
+      if (!viewer.__coordsOverlayWarned) {
+        console.warn('[coords_overlay] Base tiled image not ready; skipping coordinate readout to avoid viewport warnings.');
+        viewer.__coordsOverlayWarned = true;
+      }
+      return;
+    }
     const container = viewer.container || document.getElementById('openseadragon');
     if (!container) return;
 
     const rect = container.getBoundingClientRect();
     const pixel = new OpenSeadragon.Point(evt.clientX - rect.left, evt.clientY - rect.top);
-    // Convert pixel (screen) -> viewport point -> image coordinates
-    let viewportPoint;
+    // Convert pixel (screen) -> image coordinates using base tiled image
+    let imagePoint;
     try {
-      viewportPoint = viewer.viewport.pointFromPixel(pixel);
+      imagePoint = baseTiledImage.viewerElementToImageCoordinates(pixel);
     } catch (e) {
       return;
     }
-    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
 
     let imageX = imagePoint.x;
     let imageY = imagePoint.y;
 
-    // If backend/app indicates a vertical flip was applied for display,
-    // adjust the y we pass into pixelsToWorld so RA/Dec are correct.
     const imgHeight = window?.fitsData?.height;
-    const flipY = !!(window?.fitsData?.flip_y);
-    const yForWorld = (flipY && typeof imgHeight === 'number') ? (imgHeight - 1 - imageY) : imageY;
     const displayX = Math.round(imageX);
-    const displayYBottom = Math.round(typeof imgHeight === 'number' ? (imgHeight - 1 - imageY) : imageY);
+    const displayYTop = Math.round(imageY);
 
+    // IMPORTANT:
+    // Do NOT compute RA/Dec in JS here (it can be wrong for SIP/distorted WCS and can conflict
+    // with backend flip_y decisions). We display a placeholder and let the backend (/pixel-to-world/)
+    // provide the only RA/Dec source of truth.
     let raDeg = NaN;
     let decDeg = NaN;
-    const dbg = { hduIndex: window.currentHduIndex, imageX, imageY, yForWorld };
+    const dbg = { hduIndex: window.currentHduIndex, imageX, imageY };
   // Pixel value readout (prefer instant approx, then refine via probe)
   let pixelValue = null;
   let bunit = '';
   try {
     if (typeof window.getBunit === 'function') bunit = window.getBunit();
   } catch (_) {}
-  // If direct readout is missing/zero, try precise server probe for current file/HDU.
-  // Pass exactly the displayed coordinates (bottom-left origin) to backend.
-  if (!(typeof pixelValue === 'number' && isFinite(pixelValue)) || pixelValue === 0) {
-    try {
-      // Probe with the exact displayed coords (bottom origin to match readout)
-      if (!Number.isFinite(displayX) || !Number.isFinite(displayYBottom)) {
-        throw new Error('invalid coords');
-      }
-      const url = `/probe-pixel/?x=${displayX}&y=${displayYBottom}&origin=bottom`;
-      if (window._disableProbePixel === true) {
-        throw new Error('probe disabled');
-      }
-      apiFetch(url).then(r => {
-        if (!r.ok) {
-          window._disableProbePixel = true;
-          return null;
-        }
-        return r.json();
-      }).then(data => {
-        if (data && typeof data.value === 'number' && isFinite(data.value)) {
-          const unitFromSrv = data.unit;
-          const valFromSrv = data.value;
-          // cache last good value to avoid flicker to 0 when sampling is transient
-          window._coordLastValue = { value: valFromSrv, unit: bunit || unitFromSrv, ts: Date.now() };
-          updateOverlayText(imageX, imageY, raDeg, decDeg, valFromSrv, bunit || unitFromSrv);
-        }
-      }).catch(() => {});
-    } catch (_) {}
-  }
+  // We'll schedule probe-pixel after RA/Dec are computed so async updates can't blank them.
   // Fallback: approximate from overview cache if still missing
   if (!(typeof pixelValue === 'number' && isFinite(pixelValue)) || pixelValue === 0) {
     try {
@@ -504,7 +705,7 @@ function pixelsToWorldFromHeader(header, x, y) {
         const scaleX = ov.width / (window?.fitsData?.width || ov.width);
         const scaleY = ov.height / (window?.fitsData?.height || ov.height);
         let ox = Math.max(0, Math.min(ov.width - 1, Math.floor(imageX * scaleX)));
-        let oy = Math.max(0, Math.min(ov.height - 1, Math.floor(yForWorld * scaleY)));
+        let oy = Math.max(0, Math.min(ov.height - 1, Math.floor(imageY * scaleY)));
         const native = ov.pixels[oy][ox]; // 0-255
         const dataMin = typeof ov.dataMin === 'number' ? ov.dataMin : 0;
         const dataMax = typeof ov.dataMax === 'number' ? ov.dataMax : 1;
@@ -514,31 +715,17 @@ function pixelsToWorldFromHeader(header, x, y) {
       }
     } catch (_) {}
   }
-    const wcs = getParsedWCS();
-    if (!wcs) {
-      // Try to parse on the fly if missing and we have a header
-      if (window?.fitsData?.wcs && typeof window.parseWCS === 'function') {
-        const parsed = window.parseWCS(window.fitsData.wcs);
-        parsed.__source = window.fitsData.wcs;
-        window.parsedWCS = parsed;
-      }
-    }
-    if (wcs && wcs.hasWCS && typeof wcs.pixelsToWorld === 'function') {
-      const world = wcs.pixelsToWorld(imageX, yForWorld);
-      if (world && isFinite(world.ra) && isFinite(world.dec)) {
-        raDeg = world.ra;
-        decDeg = world.dec;
-      }
-    }
+    // (RA/Dec intentionally not computed locally.)
 
-    // Fallback if above did not yield valid RA/Dec
-    if (!(isFinite(raDeg) && isFinite(decDeg)) && window?.fitsData?.wcs) {
-      const world2 = pixelsToWorldFromHeader(window.fitsData.wcs, imageX, yForWorld);
-      if (world2 && isFinite(world2.ra) && isFinite(world2.dec)) {
-        raDeg = world2.ra;
-        decDeg = world2.dec;
-      }
+  // If direct readout is missing/zero, try precise server probe for current file/HDU.
+  // Pass exactly the displayed coordinates (bottom-left origin) to backend.
+  try {
+    // Always schedule a throttled probe so RA/Dec can be refined via backend WCS (SIP-safe),
+    // and pixel/segment values can be fetched when needed.
+    if (Number.isFinite(displayX) && Number.isFinite(displayYTop)) {
+      scheduleProbePixel(displayX, displayYTop, imageX, imageY, raDeg, decDeg, bunit, pixelValue);
     }
+  } catch (_) {}
   // Stabilize: if no value yet, reuse last one briefly to avoid flicker
   if (!(typeof pixelValue === 'number' && isFinite(pixelValue))) {
     const last = window._coordLastValue;
@@ -547,7 +734,8 @@ function pixelsToWorldFromHeader(header, x, y) {
       if (!bunit && last.unit) bunit = last.unit;
     }
   }
-  updateOverlayText(imageX, imageY, raDeg, decDeg, pixelValue, bunit);
+  // Show x/y immediately, but keep RA/Dec in a "pending" placeholder until backend responds.
+  updateOverlayText(imageX, imageY, NaN, NaN, pixelValue, bunit, { forcePlaceholder: true });
   }
 
   function attachHandlers() {
@@ -684,6 +872,7 @@ function pixelsToWorldFromHeader(header, x, y) {
     observeViewerContainer();
     requestWcsIfMissing();
   }
+  window.removeCoordOverlay = removeOverlayElement;
 })();
 
 

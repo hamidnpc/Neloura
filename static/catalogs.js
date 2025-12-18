@@ -32,11 +32,6 @@ function updateCatalogDropdown(catalogs) {
     noneOption.onclick = function() { clearCatalog(); return false; };
     dropdown.appendChild(noneOption);
 
-    const separatorTop = document.createElement('div');
-    separatorTop.style.borderBottom = '1px solid rgba(255, 255, 255, 0.3)';
-    separatorTop.style.margin = '6px 0';
-    dropdown.appendChild(separatorTop);
-
     // Tabs container
     const tabsBar = document.createElement('div');
     tabsBar.style.display = 'flex';
@@ -78,11 +73,52 @@ function updateCatalogDropdown(catalogs) {
     tabsBar.appendChild(btnUploads);
     dropdown.appendChild(tabsBar);
 
+    // Search (filters the currently shown tab)
+    const searchWrap = document.createElement('div');
+    Object.assign(searchWrap.style, { margin: '0 0 10px 0' });
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search catalogs...';
+    searchInput.autocomplete = 'off';
+    searchInput.spellcheck = false;
+    searchInput.id = 'catalog-search-input';
+    Object.assign(searchInput.style, {
+        width: '95%',
+        boxSizing: 'border-box',
+        padding: '8px 10px',
+        borderRadius: '12px',
+        border: '1px solid rgba(255,255,255,0.16)',
+        background: 'rgba(0,0,0,0.22)',
+        color: '#fff',
+        outline: 'none',
+        fontSize: '13px',
+        padding: '13px',
+        marginleft: '10px',
+        marginright: '12px',
+    });
+    searchInput.addEventListener('focus', () => {
+        searchInput.style.borderColor = 'rgba(255,255,255,0.26)';
+        searchInput.style.boxShadow = '0 0 0 3px rgba(139, 92, 246, 0.18)';
+    });
+    searchInput.addEventListener('blur', () => {
+        searchInput.style.borderColor = 'rgba(255,255,255,0.16)';
+        searchInput.style.boxShadow = 'none';
+    });
+    searchWrap.appendChild(searchInput);
+    dropdown.appendChild(searchWrap);
+
     // Tab contents
     const mainWrap = document.createElement('div');
     mainWrap.className = 'cat-tab-content cat-tab-visible';
     const uploadsWrap = document.createElement('div');
     uploadsWrap.className = 'cat-tab-content cat-tab-hidden';
+
+    const noMatchMain = document.createElement('div');
+    noMatchMain.textContent = 'No matches.';
+    Object.assign(noMatchMain.style, { color: 'rgba(255,255,255,0.65)', padding: '10px 12px', display: 'none', fontSize: '12px' });
+    const noMatchUploads = document.createElement('div');
+    noMatchUploads.textContent = 'No matches.';
+    Object.assign(noMatchUploads.style, { color: 'rgba(255,255,255,0.65)', padding: '10px 12px', display: 'none', fontSize: '12px' });
 
     // Animated underline indicator
     const underline = document.createElement('div');
@@ -144,6 +180,7 @@ function updateCatalogDropdown(catalogs) {
         noItems.onclick = function() { return false; };
         mainWrap.appendChild(noItems);
     }
+    mainWrap.appendChild(noMatchMain);
 
     // Populate Uploaded Catalogs (files/uploads) filtered by patterns
     (async () => {
@@ -188,10 +225,51 @@ function updateCatalogDropdown(catalogs) {
             err.onclick = function() { return false; };
             uploadsWrap.appendChild(err);
         }
+        uploadsWrap.appendChild(noMatchUploads);
+        // Apply filter after async upload list is ready
+        try { applyCatalogFilter(); } catch (_) {}
     })();
 
     dropdown.appendChild(mainWrap);
     dropdown.appendChild(uploadsWrap);
+
+    function applyFilterToWrap(wrap, noMatchEl, q) {
+        const query = (q || '').trim().toLowerCase();
+        const links = Array.from(wrap.querySelectorAll('a')).filter(a => a && a.textContent);
+        let shown = 0;
+        for (const a of links) {
+            // Keep static "empty/error" links visible if they are the only content
+            const isStatic = (a.style && (a.style.cursor === 'default')) || /no .*found|failed to load/i.test(a.textContent || '');
+            if (!query) {
+                a.style.display = '';
+                if (!isStatic) shown++;
+                continue;
+            }
+            if (isStatic) {
+                a.style.display = 'none';
+                continue;
+            }
+            const ok = String(a.textContent || '').toLowerCase().includes(query);
+            a.style.display = ok ? '' : 'none';
+            if (ok) shown++;
+        }
+        if (noMatchEl) noMatchEl.style.display = (query && shown === 0) ? 'block' : 'none';
+    }
+
+    function applyCatalogFilter() {
+        const q = searchInput.value || '';
+        applyFilterToWrap(mainWrap, noMatchMain, q);
+        applyFilterToWrap(uploadsWrap, noMatchUploads, q);
+    }
+
+    // debounce light (avoid relayout spam)
+    let __catSearchT = null;
+    searchInput.addEventListener('input', () => {
+        try { if (__catSearchT) clearTimeout(__catSearchT); } catch (_) {}
+        __catSearchT = setTimeout(() => {
+            applyCatalogFilter();
+        }, 80);
+    });
 
     // Default active tab (allow forcing to 'uploads' after an upload)
     try {
@@ -201,13 +279,17 @@ function updateCatalogDropdown(catalogs) {
         if (window.__forceCatalogTab) window.__forceCatalogTab = null;
     }
     setTimeout(() => moveUnderline(btnMain), 0);
+    // Apply initial filter (empty -> show all)
+    try { applyCatalogFilter(); } catch (_) {}
 }
 
-// Refresh the catalog list
+// Refresh the catalog list (global helper used by the Catalog dropdown)
 function refreshCatalogs() {
-    loadCatalogs();
-    return false;
+    try { console.log('[catalogs] Refreshing catalog list'); } catch (_) {}
+    try { loadCatalogs(); } catch (err) { try { console.error('[catalogs] refreshCatalogs failed', err); } catch(_) {} }
+    return false; // Prevent default anchor behavior
 }
+try { window.refreshCatalogs = refreshCatalogs; } catch (_) {}
 
 // function loadCatalog(catalogName) {
 
@@ -460,12 +542,20 @@ function updateCanvasOverlay() {
     let visibleCount = 0;
     let filteredOutCount = 0;
     
-    // Set dot styling based on current styles
+    // Set dot styling based on current styles (used only as fallback per-object)
     const FIXED_RADIUS = 5; // Default radius in pixels
-    const dotBorderWidth = regionStyles.borderWidth || 1;
-    const dotBorderColor = regionStyles.borderColor || 'rgba(255, 165, 0, 0.7)';
-    const dotFillColor = regionStyles.backgroundColor || 'transparent';
-    const dotOpacity = regionStyles.opacity || 0.7;
+    const rs = (() => {
+        if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+        try {
+            const topRs = window.top && window.top.regionStyles;
+            if (topRs && typeof topRs === 'object') return topRs;
+        } catch (_) {}
+        return regionStyles;
+    })();
+    const dotBorderWidth = rs.borderWidth || 1;
+    const dotBorderColor = rs.borderColor || 'rgba(255, 165, 0, 0.7)';
+    const dotFillColor = rs.backgroundColor || 'transparent';
+    const dotOpacity = rs.opacity || 0.7;
     
     console.log('[updateCanvasOverlay] Using styles:', {
         borderWidth: dotBorderWidth,
@@ -474,8 +564,8 @@ function updateCanvasOverlay() {
         opacity: dotOpacity
     });
     
-    // Set global alpha for transparency
-    ctx.globalAlpha = dotOpacity;
+    // Per-object alpha is applied per draw; keep canvas default alpha at 1
+    ctx.globalAlpha = 1.0;
     
     // Process each catalog object
     for (let i = 0; i < window.catalogDataForOverlay.length; i++) {
@@ -499,8 +589,9 @@ function updateCanvasOverlay() {
             y = pixelCoords.y;
         }
         
-        // Convert image coordinates to viewport coordinates - USE ACTIVE VIEWER
-        const viewportPoint = activeViewer.viewport.imageToViewportCoordinates(x, y);
+        // Convert image coordinates to viewport coordinates - USE TILED IMAGE (fixes multi-image warning)
+        const tiledImage = activeViewer.world.getItemAt(0);
+        const viewportPoint = tiledImage ? tiledImage.imageToViewportCoordinates(x, y) : activeViewer.viewport.imageToViewportCoordinates(x, y);
         
         // Check if the point is within the viewport bounds
         if (viewportPoint.x >= viewportBounds.left && 
@@ -515,21 +606,43 @@ function updateCanvasOverlay() {
             const radius = (obj.radius_pixels || FIXED_RADIUS);
             
             // Draw the dot
+            const shapeHere = ((obj && obj.shape) ? String(obj.shape) : String(rs.shape || 'circle'));
+            const dotShape = (shapeHere === 'hexagon') ? 'hexagon' : 'circle';
             ctx.beginPath();
-            ctx.arc(pagePoint.x, pagePoint.y, radius, 0, 2 * Math.PI, false);
-            
-            // Set border style
-            ctx.lineWidth = dotBorderWidth;
-            ctx.strokeStyle = dotBorderColor;
-            
-            // Fill if not transparent
-            if (dotFillColor !== 'transparent') {
-                ctx.fillStyle = dotFillColor;
-                ctx.fill();
+            if (dotShape === 'hexagon') {
+                const sides = 6;
+                const angleOffset = -Math.PI / 2; // pointy top/bottom
+                for (let s = 0; s < sides; s++) {
+                    const ang = angleOffset + (s * 2 * Math.PI) / sides;
+                    const px = pagePoint.x + radius * Math.cos(ang);
+                    const py = pagePoint.y + radius * Math.sin(ang);
+                    if (s === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                }
+                ctx.closePath();
+            } else {
+                ctx.arc(pagePoint.x, pagePoint.y, radius, 0, 2 * Math.PI, false);
             }
             
-            // Draw border
+            // --- Per-object styling (enables multiple catalogs at once) ---
+            const objOpacity = (typeof obj.opacity === 'number') ? obj.opacity : dotOpacity;
+            ctx.globalAlpha = Math.max(0, Math.min(1, objOpacity));
+
+            const stroke = obj.color || dotBorderColor;
+            const lineW = (typeof obj.border_width === 'number') ? obj.border_width : dotBorderWidth;
+            ctx.lineWidth = lineW;
+            ctx.strokeStyle = stroke;
+
+            const fill = obj.fillColor || dotFillColor;
+            const fillIsTransparent = obj.useTransparentFill === true || fill === 'transparent' || fill === 'rgba(0, 0, 0, 0)';
+            if (!fillIsTransparent) {
+                ctx.fillStyle = fill;
+                ctx.fill();
+            }
             ctx.stroke();
+
+            // reset alpha so subsequent calculations aren't affected
+            ctx.globalAlpha = 1.0;
             
             // Store the source location for click detection
             window.catalogSourceMap.push({
@@ -540,7 +653,8 @@ function updateCanvasOverlay() {
                 imageX: x,
                 imageY: y,
                 ra: obj.ra,
-                dec: obj.dec
+                dec: obj.dec,
+                catalogName: obj.__catalogName || null
             });
             
             visibleCount++;
@@ -734,13 +848,6 @@ function highlightSelectedSource(selectedIndex) {
 }
 
 
-// Refresh the catalog list
-function refreshCatalogs() {
-    console.log("Refreshing catalog list");
-    loadCatalogs();
-    return false; // Prevent default anchor behavior
-}
-
 // Create a new info popup element
 function createInfoPopup(dotIndex) {
     // Create popup element
@@ -807,53 +914,48 @@ function createInfoPopup(dotIndex) {
 
 // Function to make an element draggable
 function makeDraggable(element, dragHandle) {
+    if (!element) return;
+    const doc = element.ownerDocument || document;
     let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    
-    // Use the header as drag handle if provided, otherwise use the element itself
+
     const handle = dragHandle || element;
-    
-    handle.onmousedown = dragMouseDown;
-    
-    function dragMouseDown(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // Get the mouse cursor position at startup
+    if (!handle) return;
+
+    const dragMouseDown = (e) => {
+        if (!e) return;
+        try {
+            e.preventDefault();
+            e.stopPropagation();
+        } catch(_) {}
         pos3 = e.clientX;
         pos4 = e.clientY;
-        
-        // Set a flag to indicate we're dragging
-        element.dataset.isDragging = 'true';
-        
-        // Add event listeners for mouse movement and release
-        document.onmousemove = elementDrag;
-        document.onmouseup = closeDragElement;
-    }
-    
-    function elementDrag(e) {
-        e.preventDefault();
-        
-        // Calculate the new cursor position
+        if (element.dataset) element.dataset.isDragging = 'true';
+        doc.addEventListener('mousemove', elementDrag, true);
+        doc.addEventListener('mouseup', closeDragElement, true);
+    };
+
+    const elementDrag = (e) => {
+        if (!e) return;
+        try { e.preventDefault(); } catch(_) {}
         pos1 = pos3 - e.clientX;
         pos2 = pos4 - e.clientY;
         pos3 = e.clientX;
         pos4 = e.clientY;
-        
-        // Set the element's new position
-        element.style.top = (element.offsetTop - pos2) + "px";
-        element.style.left = (element.offsetLeft - pos1) + "px";
-    }
-    
-    function closeDragElement() {
-        // Stop moving when mouse button is released
-        document.onmouseup = null;
-        document.onmousemove = null;
-        
-        // Clear the dragging flag
-        setTimeout(() => {
-            element.dataset.isDragging = 'false';
-        }, 10);
-    }
+        element.style.top = (element.offsetTop - pos2) + 'px';
+        element.style.left = (element.offsetLeft - pos1) + 'px';
+    };
+
+    const closeDragElement = () => {
+        doc.removeEventListener('mouseup', closeDragElement, true);
+        doc.removeEventListener('mousemove', elementDrag, true);
+        if (element.dataset) {
+            setTimeout(() => {
+                element.dataset.isDragging = 'false';
+            }, 10);
+        }
+    };
+
+    handle.addEventListener('mousedown', dragMouseDown, true);
 }
 
 
@@ -871,10 +973,137 @@ function displayCatalogInfo(catalogInfo) {
     }
 }
 
+function _ensureCatalogOverlayStore() {
+    if (!window.catalogOverlaysByCatalog || typeof window.catalogOverlaysByCatalog !== 'object') {
+        window.catalogOverlaysByCatalog = {};
+    }
+}
+
+function _catalogKey(name) {
+    const raw = String(name || '');
+    if (!raw) return '';
+    // Prefer the internal tracking name in window.catalogData (often "catalogs/<file>")
+    if (raw.startsWith('catalogs/')) return raw;
+    // Otherwise keep basename but prefix for consistency
+    const base = raw.split('/').pop().split('\\').pop();
+    return `catalogs/${base}`;
+}
+
+function rebuildCombinedCatalogOverlay() {
+    _ensureCatalogOverlayStore();
+    if (!window.catalogVisibilityByCatalog || typeof window.catalogVisibilityByCatalog !== 'object') {
+        window.catalogVisibilityByCatalog = {};
+    }
+    const keys = Object.keys(window.catalogOverlaysByCatalog);
+    const combined = [];
+    keys.forEach((k) => {
+        if (!(k in window.catalogVisibilityByCatalog)) window.catalogVisibilityByCatalog[k] = true;
+        if (window.catalogVisibilityByCatalog[k] === false) return;
+        const arr = window.catalogOverlaysByCatalog[k];
+        if (Array.isArray(arr)) combined.push(...arr);
+    });
+    window.catalogDataForOverlay = combined;
+    try {
+        if (typeof canvasUpdateOverlay === 'function' && window.catalogCanvas) {
+            canvasUpdateOverlay();
+        } else if (typeof updateCanvasOverlay === 'function' && window.catalogCanvas) {
+            updateCanvasOverlay();
+        }
+    } catch (_) {}
+
+    // Notify other UI modules (e.g., Plotter) that the set of loaded catalogs changed.
+    // This is emitted on load/unload/toggle visibility, not only when a catalog is clicked in controls.
+    try {
+        const evt = new CustomEvent('catalogs:updated', {
+            detail: {
+                keys: Object.keys(window.catalogOverlaysByCatalog || {}),
+                active: window.activeCatalog || window.currentCatalogName || (typeof activeCatalog !== 'undefined' ? activeCatalog : null) || null
+            }
+        });
+        window.dispatchEvent(evt);
+        // Multi-panel: also notify the top window so Plotter (which lives in top) can react immediately.
+        try {
+            const topWin = (window.top && window.top !== window) ? window.top : null;
+            if (topWin && typeof topWin.dispatchEvent === 'function') {
+                topWin.dispatchEvent(new CustomEvent('catalogs:updated', { detail: evt.detail }));
+            }
+        } catch (_) {}
+    } catch (_) {}
+}
+
+function getLoadedCatalogOverlays() {
+    _ensureCatalogOverlayStore();
+    if (!window.catalogVisibilityByCatalog || typeof window.catalogVisibilityByCatalog !== 'object') {
+        window.catalogVisibilityByCatalog = {};
+    }
+    const keys = Object.keys(window.catalogOverlaysByCatalog);
+    return keys.map((k) => {
+        if (!(k in window.catalogVisibilityByCatalog)) window.catalogVisibilityByCatalog[k] = true;
+        const arr = window.catalogOverlaysByCatalog[k];
+        return {
+            key: k,
+            visible: window.catalogVisibilityByCatalog[k] !== false,
+            count: Array.isArray(arr) ? arr.length : 0
+        };
+    });
+}
+
+function setCatalogOverlayVisible(catalogKeyOrName, visible) {
+    _ensureCatalogOverlayStore();
+    if (!window.catalogVisibilityByCatalog || typeof window.catalogVisibilityByCatalog !== 'object') {
+        window.catalogVisibilityByCatalog = {};
+    }
+    const key = _catalogKey(catalogKeyOrName);
+    window.catalogVisibilityByCatalog[key] = !!visible;
+    rebuildCombinedCatalogOverlay();
+}
+
+function setActiveCatalogForControls(catalogKeyOrName) {
+    const key = _catalogKey(catalogKeyOrName);
+    // set both globals used across modules
+    try { window.currentCatalogName = key; } catch (_) {}
+    try { window.activeCatalog = key; } catch (_) {}
+    try { activeCatalog = key; } catch (_) {}
+    // try to sync regionStyles from stored catalog style so slider reflects correct opacity
+    try {
+        const entry = Array.isArray(window.catalogData)
+            ? window.catalogData.find(c => String(c?.name || '') === key)
+            : null;
+        const style = entry?.style || (window.__catalogStylesByName && window.__catalogStylesByName[key]) || null;
+        if (style && typeof style === 'object') {
+            window.regionStyles = { ...(window.regionStyles || {}), ...style };
+        }
+    } catch (_) {}
+    try {
+        const evt = new CustomEvent('catalog:changed', { detail: { name: key } });
+        window.dispatchEvent(evt);
+        // Multi-panel: also notify the top window so Plotter (which lives in top) can react.
+        try {
+            const topWin = (window.top && window.top !== window) ? window.top : null;
+            if (topWin && typeof topWin.dispatchEvent === 'function') {
+                topWin.dispatchEvent(new CustomEvent('catalog:changed', { detail: evt.detail }));
+            }
+        } catch (_) {}
+    } catch (_) {}
+}
+
+try {
+    window.getLoadedCatalogOverlays = getLoadedCatalogOverlays;
+    window.setCatalogOverlayVisible = setCatalogOverlayVisible;
+    window.setActiveCatalogForControls = setActiveCatalogForControls;
+} catch (_) {}
+
 // Clear the active catalog
 function clearCatalog() {
     if (!activeCatalog) return;
-    
+    // Remove only the active catalog overlay; keep others loaded.
+    try {
+        _ensureCatalogOverlayStore();
+        const key = _catalogKey(activeCatalog);
+        if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) {
+            delete window.catalogOverlaysByCatalog[key];
+        }
+    } catch (_) {}
     activeCatalog = null;
     
     // Hide catalog info
@@ -883,8 +1112,17 @@ function clearCatalog() {
         catalogInfo.style.display = 'none';
     }
     
-    // Remove catalog overlay
-    clearCatalogOverlay();
+    // Rebuild combined overlay (may still contain other catalogs)
+    try {
+        rebuildCombinedCatalogOverlay();
+    } catch (_) {}
+    // If nothing left, clear canvas fully
+    try {
+        _ensureCatalogOverlayStore();
+        if (!Object.keys(window.catalogOverlaysByCatalog || {}).length) {
+            clearCatalogOverlay();
+        }
+    } catch (_) {}
     
     // Hide SED container
     hideSed();
@@ -894,6 +1132,9 @@ function clearCatalog() {
     
     // Clear active catalog
     window.currentCatalogName = null;
+    
+    // Remove any shared catalog controls
+    try { removeCatalogOverlayControls(true); } catch (_) {}
 }
 
 
@@ -936,8 +1177,9 @@ function updateOverlay() {
         const x = parseFloat(dot.dataset.x);
         const y = parseFloat(dot.dataset.y);
         
-        // Convert image coordinates to viewport coordinates
-        const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
+        // Convert image coordinates to viewport coordinates - USE TILED IMAGE (fixes multi-image warning)
+        const tiledImage = viewer.world.getItemAt(0);
+        const viewportPoint = tiledImage ? tiledImage.imageToViewportCoordinates(x, y) : viewer.viewport.imageToViewportCoordinates(x, y);
         
         // Check if the point is within the viewport bounds
         if (viewportPoint.x >= viewportBounds.left && 
@@ -1567,8 +1809,268 @@ let regionStyles = {
     borderColor: '#ff0000', // Default red border
     backgroundColor: 'transparent', // Default transparent background
     borderWidth: 1, // Default 1px border width
-    opacity: 0.7 // Default opacity
+    opacity: 0.7, // Default opacity
+    shape: 'circle', // Default shape
+    colorCodeColumn: null,
+    colorMapName: 'viridis'
 };
+
+const REGION_COLOR_MAPS = [
+    {
+        value: 'viridis',
+        text: 'Viridis',
+        colors: ['#440154', '#3b528b', '#21918c', '#5dc863', '#fde725'],
+        gradient: 'linear-gradient(90deg, #440154, #3b528b, #21918c, #5dc863, #fde725)'
+    },
+    {
+        value: 'plasma',
+        text: 'Plasma',
+        colors: ['#0d0887', '#7e03a8', '#cc4778', '#fca636', '#f0f921'],
+        gradient: 'linear-gradient(90deg, #0d0887, #7e03a8, #cc4778, #fca636, #f0f921)'
+    },
+    {
+        value: 'magma',
+        text: 'Magma',
+        colors: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
+        gradient: 'linear-gradient(90deg, #000004, #3b0f70, #8c2981, #de4968, #fe9f6d, #fcfdbf)'
+    },
+    {
+        value: 'cividis',
+        text: 'Cividis',
+        colors: ['#00204c', '#29397d', '#5c4f99', '#8b659c', '#ba7a8a', '#e79362', '#f7c966'],
+        gradient: 'linear-gradient(90deg, #00204c, #29397d, #5c4f99, #8b659c, #ba7a8a, #e79362, #f7c966)'
+    },
+    {
+        value: 'categorical',
+        text: 'Categorical',
+        colors: ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#a65628', '#f781bf', '#999999'],
+        gradient: 'linear-gradient(90deg, #e41a1c, #377eb8, #4daf4a, #984ea3, #ff7f00, #a65628, #f781bf, #999999)'
+    }
+];
+
+function getColorMapDefinition(name) {
+    return REGION_COLOR_MAPS.find((m) => m.value === name) || REGION_COLOR_MAPS[0];
+}
+
+function hexToRgb(hex) {
+    if (typeof hex !== 'string') return { r: 255, g: 255, b: 255 };
+    const normalized = hex.replace('#', '');
+    const bigint = parseInt(normalized.length === 3 ? normalized.split('').map(ch => ch + ch).join('') : normalized, 16);
+    return {
+        r: (bigint >> 16) & 255,
+        g: (bigint >> 8) & 255,
+        b: bigint & 255
+    };
+}
+
+function rgbToHex(r, g, b) {
+    const toHex = (value) => {
+        const clamped = Math.max(0, Math.min(255, value));
+        return clamped.toString(16).padStart(2, '0');
+    };
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function interpolatePaletteColor(palette, t) {
+    if (!Array.isArray(palette) || palette.length === 0) return '#ffffff';
+    if (palette.length === 1) return palette[0];
+    const clamped = Math.max(0, Math.min(1, t));
+    const scaled = clamped * (palette.length - 1);
+    const idxLow = Math.floor(scaled);
+    const idxHigh = Math.min(palette.length - 1, Math.ceil(scaled));
+    const frac = scaled - idxLow;
+    if (idxLow === idxHigh) return palette[idxLow];
+    const c1 = hexToRgb(palette[idxLow]);
+    const c2 = hexToRgb(palette[idxHigh]);
+    const r = Math.round(c1.r + (c2.r - c1.r) * frac);
+    const g = Math.round(c1.g + (c2.g - c1.g) * frac);
+    const b = Math.round(c1.b + (c2.b - c1.b) * frac);
+    return rgbToHex(r, g, b);
+}
+
+function hexToRgba(hex, alpha = 0.4) {
+    const { r, g, b } = hexToRgb(hex);
+    return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
+}
+
+function findValueCaseInsensitive(target, column) {
+    if (!target || !column) return undefined;
+    if (Object.prototype.hasOwnProperty.call(target, column)) return target[column];
+    const trimmed = column.trim ? column.trim() : column;
+    if (trimmed && Object.prototype.hasOwnProperty.call(target, trimmed)) return target[trimmed];
+    const lower = typeof trimmed === 'string' ? trimmed.toLowerCase() : trimmed;
+    for (const key in target) {
+        if (!Object.prototype.hasOwnProperty.call(target, key)) continue;
+        if (typeof key !== 'string') continue;
+        const normalizedKey = key.trim().toLowerCase();
+        if (normalizedKey === lower) {
+            return target[key];
+        }
+    }
+    return undefined;
+}
+
+function getRecordValue(record, column) {
+    if (!record || !column) return undefined;
+    const direct = findValueCaseInsensitive(record, column);
+    if (direct !== undefined) return direct;
+    const nestedSources = [
+        record.__catalog_columns,
+        record.metadata,
+        record.meta
+    ];
+    for (const source of nestedSources) {
+        const val = findValueCaseInsensitive(source, column);
+        if (val !== undefined) return val;
+    }
+    return undefined;
+}
+
+function buildColorCoder(records, column, colorMapName) {
+    if (!Array.isArray(records) || !column) return null;
+    const mapDef = getColorMapDefinition(colorMapName);
+    if (!mapDef || !Array.isArray(mapDef.colors) || mapDef.colors.length === 0) return null;
+    try {
+        console.log('[ColorCoder] building palette', {
+            column,
+            map: mapDef.value,
+            recordCount: records.length
+        });
+        if (records.length > 0) {
+            const keys = Object.keys(records[0] || {});
+            console.log('[ColorCoder] example keys', keys.slice(0, 20));
+            console.log('[ColorCoder] sample raw value', {
+                requestedColumn: column,
+                exactMatch: records[0][column],
+                resolvedValue: getRecordValue(records[0], column)
+            });
+        }
+    } catch (_) {}
+    const numericValues = [];
+    const categoryOrder = [];
+    const categoryIndex = new Map();
+    records.forEach((rec) => {
+        if (!rec) return;
+        const raw = getRecordValue(rec, column);
+        if (raw === undefined || raw === null || raw === '') return;
+        const num = Number(raw);
+        if (typeof raw === 'number' || (isFinite(num) && raw !== '')) {
+            numericValues.push(num);
+        } else {
+            const key = String(raw);
+            if (!categoryIndex.has(key)) {
+                categoryIndex.set(key, categoryOrder.length);
+                categoryOrder.push(key);
+            }
+        }
+    });
+    try {
+        console.log('[ColorCoder] stats', {
+            numericCount: numericValues.length,
+            categoryCount: categoryOrder.length
+        });
+    } catch (_) {}
+    if (numericValues.length >= 2) {
+        const minVal = Math.min(...numericValues);
+        const maxVal = Math.max(...numericValues);
+        if (maxVal === minVal) {
+            const staticColor = interpolatePaletteColor(mapDef.colors, 0.5);
+            return () => staticColor;
+        }
+        return (rawValue) => {
+            const num = Number(rawValue);
+            if (!isFinite(num)) return interpolatePaletteColor(mapDef.colors, 0);
+            const t = (num - minVal) / (maxVal - minVal);
+            return interpolatePaletteColor(mapDef.colors, Math.max(0, Math.min(1, t)));
+        };
+    }
+    if (numericValues.length === 1) {
+        const staticColor = interpolatePaletteColor(mapDef.colors, 0.5);
+        return () => staticColor;
+    }
+    if (categoryOrder.length > 0) {
+        const total = categoryOrder.length;
+        return (rawValue) => {
+            if (rawValue === undefined || rawValue === null) return interpolatePaletteColor(mapDef.colors, 0);
+            const key = String(rawValue);
+            const idx = categoryIndex.has(key) ? categoryIndex.get(key) : 0;
+            const t = total <= 1 ? 0.5 : idx / (total - 1);
+            return interpolatePaletteColor(mapDef.colors, t);
+        };
+    }
+    return null;
+}
+
+function resolveCatalogStyle(catalogName, explicitStyles) {
+    if (explicitStyles && typeof explicitStyles === 'object') {
+        return explicitStyles;
+    }
+
+    const catalogEntries = Array.isArray(window.catalogData) ? window.catalogData : [];
+    const normalized = typeof catalogName === 'string' && catalogName.startsWith('catalogs/')
+        ? catalogName
+        : `catalogs/${catalogName}`;
+    const basename = typeof catalogName === 'string'
+        ? catalogName.split('/').pop()
+        : catalogName;
+
+    // Multi-panel: styles are often created in one pane and need to be reused in another pane.
+    // Keep styles in a per-catalog store and also look up via window.top.
+    const tryGetStyleFromStore = (store, key) => {
+        try {
+            if (!store || typeof store !== 'object') return null;
+            const s = store[key];
+            return (s && typeof s === 'object') ? s : null;
+        } catch (_) {
+            return null;
+        }
+    };
+    const lookupKeys = (() => {
+        const keys = [];
+        if (catalogName) keys.push(String(catalogName));
+        if (normalized) keys.push(String(normalized));
+        if (basename) keys.push(String(basename));
+        if (basename) keys.push(`catalogs/${basename}`);
+        return keys;
+    })();
+    // First: local style store
+    try {
+        const localStore = window.__catalogStylesByName;
+        for (const k of lookupKeys) {
+            const s = tryGetStyleFromStore(localStore, k);
+            if (s) return s;
+        }
+    } catch (_) {}
+    // Second: top style store (other pane may have saved it)
+    try {
+        const topWin = (window.top && window.top !== window) ? window.top : null;
+        const topStore = topWin ? topWin.__catalogStylesByName : null;
+        for (const k of lookupKeys) {
+            const s = tryGetStyleFromStore(topStore, k);
+            if (s) return s;
+        }
+    } catch (_) {}
+
+    const entry = catalogEntries.find((c) => {
+        if (!c) return false;
+        if (c.name === catalogName || c.name === normalized) return true;
+        if (basename && typeof c.name === 'string' && c.name.split('/').pop() === basename) return true;
+        if (basename && typeof c.apiName === 'string' && c.apiName === basename) return true;
+        return false;
+    });
+
+    if (entry && entry.style) {
+        return entry.style;
+    }
+
+    if (window.regionStyles) return window.regionStyles;
+    try {
+        const topWin = (window.top && window.top !== window) ? window.top : null;
+        if (topWin && topWin.regionStyles) return topWin.regionStyles;
+    } catch (_) {}
+
+    return null;
+}
 
 
 
@@ -1704,7 +2206,9 @@ function applyStylesToRegions(catalogName, styles) {
     const previousStyles = { ...window.catalogData[catalogIndex].style };
     window.catalogData[catalogIndex].style = {
         ...window.catalogData[catalogIndex].style, // Preserve any existing styles
-        ...styles // Apply new styles
+        ...styles,
+        colorCodeColumn: styles.colorCodeColumn || null,
+        colorMapName: styles.colorMapName || null
     };
     
     console.log('Previous styles:', previousStyles);
@@ -1712,11 +2216,18 @@ function applyStylesToRegions(catalogName, styles) {
     console.log(`Final styles for catalog "${window.catalogData[catalogIndex].name}":`, window.catalogData[catalogIndex].style);
     
     // Also update the global regionStyles for immediate use
+    const resolvedShape = resolveShapeForStyleUpdate(
+        window.catalogData?.[catalogIndex]?.name || catalogName,
+        styles && styles.shape
+    );
     window.regionStyles = {
         borderColor: styles.borderColor || window.regionStyles?.borderColor || '#FF0000',
         backgroundColor: styles.backgroundColor || window.regionStyles?.backgroundColor || 'transparent',
         borderWidth: styles.borderWidth || window.regionStyles?.borderWidth || 2,
-        opacity: styles.opacity || window.regionStyles?.opacity || 0.8
+        opacity: styles.opacity || window.regionStyles?.opacity || 0.8,
+        shape: resolvedShape,
+        colorCodeColumn: styles.colorCodeColumn || null,
+        colorMapName: styles.colorMapName || window.regionStyles?.colorMapName || REGION_COLOR_MAPS[0].value
     };
     
     console.log('Updated global regionStyles:', window.regionStyles);
@@ -1726,26 +2237,47 @@ function applyStylesToRegions(catalogName, styles) {
     window.activeCatalog = window.catalogData[catalogIndex].name;
     try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: window.activeCatalog } })); } catch (_) {}
 
-    // If we have overlay data, update the styles for immediate visual feedback
-    if (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay)) {
+        // If we have overlay data, update the styles for immediate visual feedback
+        if (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay)) {
         console.log('Updating overlay data with new styles...');
-        
+        const overlayColorCoder = styles.colorCodeColumn
+            ? buildColorCoder(window.catalogDataForOverlay, styles.colorCodeColumn, styles.colorMapName)
+            : null;
         // Apply styles to each object in the overlay
-        window.catalogDataForOverlay.forEach((obj, index) => {
-            if (obj) {
-                // Apply visual styles
-                obj.color = styles.borderColor || '#FF0000';
-                obj.fillColor = styles.backgroundColor === 'transparent' ? 'rgba(255, 0, 0, 0.3)' : styles.backgroundColor;
-                obj.border_width = styles.borderWidth || 2;
-                obj.opacity = styles.opacity || 0.8;
-                obj.useTransparentFill = styles.backgroundColor === 'transparent';
-                
-                // Apply coordinate/size settings
-                if (styles.radius && typeof styles.radius === 'number') {
-                    obj.radius_pixels = styles.radius;
+        window.catalogDataForOverlay.forEach((obj) => {
+            if (!obj) return;
+                // Only update objects belonging to this catalog (multi-catalog support)
+                try {
+                    const key = _catalogKey(window.catalogData?.[catalogIndex]?.name || catalogName);
+                    if (obj.__catalogName && obj.__catalogName !== key) return;
+                } catch (_) {}
+            let colorApplied = false;
+            if (overlayColorCoder) {
+                const colorHex = overlayColorCoder(obj[styles.colorCodeColumn]);
+                if (colorHex) {
+                    const opacityVal = styles.opacity || obj.opacity || 0.8;
+                    obj.color = colorHex;
+                    obj.fillColor = hexToRgba(colorHex, Math.max(0.15, Math.min(0.9, opacityVal * 0.6)));
+                    obj.opacity = opacityVal;
+                    obj.useTransparentFill = false;
+                    colorApplied = true;
                 }
             }
+            if (!colorApplied) {
+                obj.color = styles.borderColor || '#FF0000';
+                obj.fillColor = styles.backgroundColor === 'transparent' ? 'rgba(255, 0, 0, 0.3)' : styles.backgroundColor;
+                obj.opacity = styles.opacity || 0.8;
+                obj.useTransparentFill = styles.backgroundColor === 'transparent';
+            }
+            obj.border_width = styles.borderWidth || 2;
+            // Persist shape per-source so canvas overlay can render hexagon/circle.
+            // If caller didn't send a shape, keep existing per-object shape; otherwise apply resolved.
+            obj.shape = (styles && styles.shape) ? resolvedShape : (obj.shape || resolvedShape);
+            if (styles.radius && typeof styles.radius === 'number') {
+                obj.radius_pixels = styles.radius;
+            }
         });
+            try { rebuildCombinedCatalogOverlay(); } catch (_) {}
         
         console.log('Updated overlay data with new styles');
         
@@ -1772,6 +2304,154 @@ function applyStylesToRegions(catalogName, styles) {
         apiName: window.catalogData[catalogIndex].apiName || catalogNameForEndpoint
     };
 }
+
+// Quick style presets for one-click catalog styling (used by toolbar controls)
+// These drive both toolbar buttons and the color swatches in the overlay controls.
+// Use simple, common color names so the choices are obvious.
+const CATALOG_QUICK_STYLE_OPTIONS = [
+    { id: 'red',      label: 'Red',      style: { borderColor: '#EF4444', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'orange',   label: 'Orange',   style: { borderColor: '#F97316', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'yellow',   label: 'Yellow',   style: { borderColor: '#EAB308', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'green',    label: 'Green',    style: { borderColor: '#22C55E', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'cyan',     label: 'Cyan',     style: { borderColor: '#22D3EE', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'blue',     label: 'Blue',     style: { borderColor: '#3B82F6', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'purple',   label: 'Purple',   style: { borderColor: '#8B5CF6', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'pink',     label: 'Pink',     style: { borderColor: '#EC4899', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'white',    label: 'White',    style: { borderColor: '#FFFFFF', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+    { id: 'black',    label: 'Black',    style: { borderColor: '#000000', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } }
+];
+
+function getCatalogQuickStyleOptions() {
+    return CATALOG_QUICK_STYLE_OPTIONS.slice();
+}
+
+function getEffectiveRegionStylesForOverlay() {
+    try {
+        if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+    } catch (_) {}
+    try {
+        const topRs = window.top && window.top.regionStyles;
+        if (topRs && typeof topRs === 'object') return topRs;
+    } catch (_) {}
+    try {
+        // Fallback to this module's default styles object if present
+        if (typeof regionStyles === 'object' && regionStyles) return regionStyles;
+    } catch (_) {}
+    return {};
+}
+
+function normalizeShape(value) {
+    return (String(value || '').toLowerCase() === 'hexagon') ? 'hexagon' : 'circle';
+}
+
+function getCurrentOverlayShapeHint(catalogName = null) {
+    try {
+        const key = catalogName ? _catalogKey(catalogName) : null;
+        const perCat = (key && window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) ? window.catalogOverlaysByCatalog[key] : null;
+        const arr = Array.isArray(perCat) ? perCat : window.catalogDataForOverlay;
+        if (Array.isArray(arr)) {
+            for (let i = 0; i < arr.length && i < 80; i++) {
+                const sh = arr[i]?.shape;
+                if (sh) return normalizeShape(sh);
+            }
+        }
+    } catch (_) {}
+    return null;
+}
+
+function getCatalogStoredShapeHint(catalogName) {
+    try {
+        const name = String(catalogName || '').trim();
+        if (!name) return null;
+        const list = Array.isArray(window.catalogData) ? window.catalogData : [];
+        const needle = name.includes('/') ? name.split('/').pop() : name;
+        const entry = list.find(c => {
+            const n = String(c?.name || '');
+            if (!n) return false;
+            const base = n.includes('/') ? n.split('/').pop() : n;
+            return n === name || base === needle;
+        });
+        const sh = entry?.style?.shape;
+        if (sh) return normalizeShape(sh);
+    } catch (_) {}
+    return null;
+}
+
+function resolveShapeForStyleUpdate(catalogName, explicitShape) {
+    // If caller explicitly passed a shape, honor it.
+    if (explicitShape !== undefined && explicitShape !== null && String(explicitShape).length) {
+        return normalizeShape(explicitShape);
+    }
+    // Prefer this catalog's current overlay shape (multi-catalog safe).
+    const fromOverlay = getCurrentOverlayShapeHint(catalogName);
+    if (fromOverlay) return fromOverlay;
+    // Then prefer catalog's stored style.
+    const fromCatalog = getCatalogStoredShapeHint(catalogName);
+    if (fromCatalog) return fromCatalog;
+    // Finally fall back to region styles.
+    const rs = getEffectiveRegionStylesForOverlay();
+    return normalizeShape(rs.shape);
+}
+
+function applyCatalogQuickStyle(catalogName, styleId) {
+    const name = catalogName || window.currentCatalogName || window.activeCatalog;
+    if (!name) {
+        console.warn('[catalogs] applyCatalogQuickStyle: no active catalog');
+        return;
+    }
+    const opt = CATALOG_QUICK_STYLE_OPTIONS.find(o => o.id === styleId) || CATALOG_QUICK_STYLE_OPTIONS[0];
+    if (!opt) return;
+    try {
+        const shape = resolveShapeForStyleUpdate(name, opt?.style?.shape);
+        const mergedStyle = { ...(opt.style || {}), shape };
+        console.log('[catalogs] Applying quick style', opt.id, 'to catalog', name, mergedStyle);
+        applyStylesToRegions(name, mergedStyle);
+    } catch (err) {
+        console.error('[catalogs] applyCatalogQuickStyle failed', err);
+    }
+}
+
+// Allow external UIs (e.g. main.js overlay controls) to smoothly adjust catalog
+// overlay opacity without having to know the full styling object.
+function setCatalogOverlayOpacity(opacity) {
+    const name = window.currentCatalogName || window.activeCatalog;
+    if (!name) {
+        console.warn('[catalogs] setCatalogOverlayOpacity: no active catalog');
+        return;
+    }
+    const numeric = Number(opacity);
+    if (!Number.isFinite(numeric)) {
+        console.warn('[catalogs] setCatalogOverlayOpacity: non‑numeric value', opacity);
+        return;
+    }
+    const clamped = Math.max(0, Math.min(1, numeric));
+    const baseStyles = getEffectiveRegionStylesForOverlay();
+    // IMPORTANT:
+    // - Do not pass `shape` here (opacity slider should not change shape).
+    // - Do not pass any radius/size fields here (opacity slider should not change marker size).
+    const merged = { ...baseStyles, opacity: clamped };
+    try {
+        delete merged.shape;
+        delete merged.radius;
+        delete merged.radius_pixels;
+        delete merged.radius_arcsec;
+        delete merged.arcsec_per_pixel;
+        delete merged.sizeColumn;
+        delete merged.size_col;
+        delete merged.resolution_col;
+    } catch (_) {}
+    try {
+        applyStylesToRegions(name, merged);
+    } catch (err) {
+        console.error('[catalogs] setCatalogOverlayOpacity failed', err);
+    }
+}
+
+try {
+    window.getCatalogQuickStyleOptions = getCatalogQuickStyleOptions;
+    window.applyCatalogQuickStyle = applyCatalogQuickStyle;
+    window.setCatalogOverlayOpacity = setCatalogOverlayOpacity;
+} catch (_) {}
 
 // Updated populateDropdowns function in showStyleCustomizerPopup
 function populateDropdowns(catalogName) {
@@ -1954,6 +2634,23 @@ function loadCatalog(catalogName, styles = null) {
         showNotification('Please select a catalog first', 3000);
         return;
     }
+
+    const effectiveStyles = resolveCatalogStyle(catalogName, styles);
+    if (!styles && effectiveStyles) {
+        styles = effectiveStyles;
+    }
+    if (styles) {
+        try {
+            console.log('[loadCatalog] styles summary', {
+                colorCodeColumn: styles.colorCodeColumn,
+                colorMapName: styles.colorMapName,
+                borderColor: styles.borderColor,
+                bg: styles.backgroundColor
+            });
+        } catch (_) {}
+    } else {
+        try { console.log('[loadCatalog] No styles available (falling back to defaults)'); } catch (_) {}
+    }
     
     // Initialize catalogData if needed
     if (!window.catalogData || !Array.isArray(window.catalogData)) {
@@ -1963,22 +2660,50 @@ function loadCatalog(catalogName, styles = null) {
     // Store the current catalog name globally
     window.currentCatalogName = catalogName;
     activeCatalog = catalogName;
+    // Cache last-used styles so multi-panel can restore catalog state across panes
+    try {
+        if (!window.__catalogStylesByName) window.__catalogStylesByName = {};
+        if (styles && typeof styles === 'object') {
+            const stylesToStore = JSON.parse(JSON.stringify(styles));
+            // Also include RA/Dec column overrides if available in catalogOverridesByCatalog
+            try {
+                const apiName = (catalogName || '').toString().split('/').pop().split('\\').pop();
+                const overrides = (window.catalogOverridesByCatalog && (
+                    window.catalogOverridesByCatalog[catalogName] ||
+                    window.catalogOverridesByCatalog[apiName]
+                )) || null;
+                if (overrides) {
+                    if (overrides.ra_col && !stylesToStore.raColumn) stylesToStore.raColumn = overrides.ra_col;
+                    if (overrides.dec_col && !stylesToStore.decColumn) stylesToStore.decColumn = overrides.dec_col;
+                    if (overrides.size_col && !stylesToStore.sizeColumn) stylesToStore.sizeColumn = overrides.size_col;
+                }
+            } catch (_) {}
+            window.__catalogStylesByName[catalogName] = stylesToStore;
+            // Also mirror into top window so other panes can reuse the same catalog styles
+            try {
+                const topWin = (window.top && window.top !== window) ? window.top : null;
+                if (topWin) {
+                    if (!topWin.__catalogStylesByName) topWin.__catalogStylesByName = {};
+                    const apiKey = (catalogName || '').toString().split('/').pop().split('\\').pop();
+                    const normKey = (catalogName && String(catalogName).startsWith('catalogs/')) ? String(catalogName) : `catalogs/${apiKey}`;
+                    topWin.__catalogStylesByName[catalogName] = stylesToStore;
+                    if (apiKey) topWin.__catalogStylesByName[apiKey] = stylesToStore;
+                    if (normKey) topWin.__catalogStylesByName[normKey] = stylesToStore;
+                }
+            } catch (_) {}
+        }
+    } catch (_) {}
     try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
     
     // Show loading indicator
     showNotification(true, 'Loading catalog...');
     
-    // Clear any existing catalog overlay
-    if (typeof canvasClearCatalogOverlay === 'function') {
-        canvasClearCatalogOverlay();
-    } else if (typeof clearCatalogOverlay === 'function') {
-        clearCatalogOverlay();
-    }
+    // NOTE: We no longer clear existing overlays here. Neloura supports multiple catalogs at once.
     
     // Clear any existing flag data
     window.catalogDataWithFlags = null;
     
-    console.log(`[loadCatalog] Fetching data from: /catalog-with-flags/${encodeURIComponent(catalogName)}`);
+    console.log(`[loadCatalog] Fetching data from: /catalog-with-flags/${encodeURIComponent(catalogNameForApi)}`);
 
     // Prepare optional RA/DEC/size overrides from UI styles if present
     const urlParams = new URLSearchParams();
@@ -2011,7 +2736,8 @@ function loadCatalog(catalogName, styles = null) {
     if (styles && styles.sizeColumn) extraHeadersBin['X-Size-Col'] = styles.sizeColumn;
     
     // Fetch catalog data from server
-    apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}${querySuffix}` , {
+    // IMPORTANT: /catalog-with-flags expects the API name (basename), not the internal "catalogs/<file>" key.
+    apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogNameForApi)}${querySuffix}` , {
         method: 'GET',
         headers: extraHeaders
     })
@@ -2044,43 +2770,16 @@ function loadCatalog(catalogName, styles = null) {
             throw new Error('No catalog data found or invalid format.');
         }
 
-        // Store the complete catalog data
+        // Store the complete catalog data and prepare styled overlay entries
         window.catalogDataWithFlags = catalogData;
-// In the loadCatalog function, replace this part:
-window.catalogDataForOverlay = catalogData.map((obj, index) => {
-    // Create the styled object with proper defaults
-    const styledObj = {
-        ...obj,
-        index: index,
-        passesFilter: true
-    };
-    
-    // Apply styles if provided, otherwise use defaults
-    if (styles) {
-        styledObj.color = styles.borderColor || '#FF0000';
-        styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
-        styledObj.border_width = styles.borderWidth || 2;
-        styledObj.opacity = styles.opacity || 0.8;
-        styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
-        styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
-        
-    
-    } else {
-        // Default styles
-        styledObj.color = '#FF0000';
-        styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
-        styledObj.border_width = 2;
-        styledObj.opacity = 0.8;
-        styledObj.useTransparentFill = true;
-        styledObj.radius_pixels = obj.radius_pixels || 5;
-    }
-    
-    return styledObj;
-});
+        _ensureCatalogOverlayStore();
+        const key = _catalogKey(catalogName);
+        window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData, styles, key);
+        rebuildCombinedCatalogOverlay();
 
-console.log('[loadCatalog] Prepared overlay data with styles. Sample object:', window.catalogDataForOverlay[0]);
+        console.log('[loadCatalog] Prepared overlay data with styles. Sample object:', window.catalogOverlaysByCatalog[key]?.[0]);
         
-        console.log('[loadCatalog] Prepared overlay data with', window.catalogDataForOverlay.length, 'objects');
+        console.log('[loadCatalog] Prepared overlay data with', window.catalogOverlaysByCatalog[key]?.length, 'objects (catalog), total overlay:', (window.catalogDataForOverlay || []).length);
         
         // Wait for viewer to be ready and add overlay
         function safeAddOverlay() {
@@ -2124,6 +2823,43 @@ console.log('[loadCatalog] Prepared overlay data with styles. Sample object:', w
     });
 }
 
+try {
+    window.getActiveCatalogState = function() {
+        const name = window.currentCatalogName || window.activeCatalog || null;
+        let styles = null;
+        try {
+            styles = (name && window.__catalogStylesByName && window.__catalogStylesByName[name]) ? window.__catalogStylesByName[name] : null;
+            // Also try API name (basename) if full name didn't match
+            if (!styles && name && window.__catalogStylesByName) {
+                const apiName = (name || '').toString().split('/').pop().split('\\').pop();
+                if (apiName !== name && window.__catalogStylesByName[apiName]) {
+                    styles = window.__catalogStylesByName[apiName];
+                }
+            }
+        } catch (_) {}
+        
+        // Also include RA/Dec column overrides if available
+        try {
+            if (name && window.catalogOverridesByCatalog) {
+                const apiName = (name || '').toString().split('/').pop().split('\\').pop();
+                const overrides = window.catalogOverridesByCatalog[name] || window.catalogOverridesByCatalog[apiName] || null;
+                if (overrides) {
+                    // Merge overrides into styles
+                    if (!styles) styles = {};
+                    if (overrides.ra_col && !styles.raColumn) styles.raColumn = overrides.ra_col;
+                    if (overrides.dec_col && !styles.decColumn) styles.decColumn = overrides.dec_col;
+                    if (overrides.size_col && !styles.sizeColumn) styles.sizeColumn = overrides.size_col;
+                }
+            }
+        } catch (e) {
+            console.warn('[getActiveCatalogState] Error merging overrides:', e);
+        }
+        
+        console.log('[getActiveCatalogState] Returning:', { name, styles: styles ? Object.keys(styles) : null, hasRaColumn: !!(styles && styles.raColumn), hasDecColumn: !!(styles && styles.decColumn) });
+        return { name, styles };
+    };
+} catch (_) {}
+
 // Binary catalog loader with fast parsing
 function loadCatalogBinary(catalogName, styles = null) {
     console.log(`[DEBUG] loadCatalogBinary called with:`, { catalogName, styles });
@@ -2133,6 +2869,44 @@ function loadCatalogBinary(catalogName, styles = null) {
         console.error('[loadCatalogBinary] No catalog name provided, exiting.');
         showNotification('Please select a catalog first', 3000);
         return;
+    }
+
+    const effectiveStyles = resolveCatalogStyle(catalogName, styles);
+    if (!styles && effectiveStyles) {
+        styles = effectiveStyles;
+    }
+    // If we resolved styles from another pane, mirror them locally so subsequent reloads keep them.
+    try {
+        if (!window.__catalogStylesByName) window.__catalogStylesByName = {};
+        if (styles && typeof styles === 'object') {
+            const apiKey = (catalogName || '').toString().split('/').pop().split('\\').pop();
+            const normKey = (catalogName && String(catalogName).startsWith('catalogs/')) ? String(catalogName) : `catalogs/${apiKey}`;
+            window.__catalogStylesByName[catalogName] = JSON.parse(JSON.stringify(styles));
+            if (apiKey) window.__catalogStylesByName[apiKey] = window.__catalogStylesByName[catalogName];
+            if (normKey) window.__catalogStylesByName[normKey] = window.__catalogStylesByName[catalogName];
+            // Mirror to top as well
+            try {
+                const topWin = (window.top && window.top !== window) ? window.top : null;
+                if (topWin) {
+                    if (!topWin.__catalogStylesByName) topWin.__catalogStylesByName = {};
+                    topWin.__catalogStylesByName[catalogName] = window.__catalogStylesByName[catalogName];
+                    if (apiKey) topWin.__catalogStylesByName[apiKey] = window.__catalogStylesByName[catalogName];
+                    if (normKey) topWin.__catalogStylesByName[normKey] = window.__catalogStylesByName[catalogName];
+                }
+            } catch (_) {}
+        }
+    } catch (_) {}
+    if (styles) {
+        try {
+            console.log('[loadCatalogBinary] styles summary', {
+                colorCodeColumn: styles.colorCodeColumn,
+                colorMapName: styles.colorMapName,
+                borderColor: styles.borderColor,
+                bg: styles.backgroundColor
+            });
+        } catch (_) {}
+    } else {
+        try { console.log('[loadCatalogBinary] No styles available (falling back to defaults)'); } catch (_) {}
     }
     
     // Initialize catalogData if needed
@@ -2148,12 +2922,7 @@ function loadCatalogBinary(catalogName, styles = null) {
     // Show loading indicator
     showNotification(true, 'Loading catalog...');
     
-    // Clear any existing catalog overlay
-    if (typeof canvasClearCatalogOverlay === 'function') {
-        canvasClearCatalogOverlay();
-    } else if (typeof clearCatalogOverlay === 'function') {
-        clearCatalogOverlay();
-    }
+    // NOTE: We no longer clear existing overlays here. Neloura supports multiple catalogs at once.
     
     // Clear any existing flag data
     window.catalogDataWithFlags = null;
@@ -2171,9 +2940,11 @@ function loadCatalogBinary(catalogName, styles = null) {
     const raColBin = (styles && styles.raColumn) || (persistedBin && persistedBin.ra_col);
     const decColBin = (styles && styles.decColumn) || (persistedBin && persistedBin.dec_col);
     const sizeColBin = (styles && styles.sizeColumn) || (persistedBin && persistedBin.size_col);
+    const colorColBin = (styles && styles.colorCodeColumn) || (persistedBin && persistedBin.color_col);
     if (raColBin) urlParams.set('ra_col', raColBin);
     if (decColBin) urlParams.set('dec_col', decColBin);
     if (sizeColBin) urlParams.set('size_col', sizeColBin);
+    if (colorColBin) urlParams.set('color_col', colorColBin);
 
     const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
     // Build final URL explicitly (guarantee ra_col/dec_col in URL if present)
@@ -2189,6 +2960,7 @@ function loadCatalogBinary(catalogName, styles = null) {
     if (raColBin) extraHeadersBin['X-RA-Col'] = raColBin;
     if (decColBin) extraHeadersBin['X-DEC-Col'] = decColBin;
     if (sizeColBin) extraHeadersBin['X-Size-Col'] = sizeColBin;
+    if (colorColBin) extraHeadersBin['X-Color-Col'] = colorColBin;
     console.log('[loadCatalogBinary] Headers to send:', extraHeadersBin);
     apiFetch(finalUrl, {
         method: 'GET',
@@ -2253,42 +3025,15 @@ function loadCatalogBinary(catalogName, styles = null) {
             throw new Error('No catalog data found or invalid format.');
         }
         
-        // Store the complete catalog data
+        // Store the complete catalog data and build styled overlay entries
         window.catalogDataWithFlags = catalogData.records;
+        _ensureCatalogOverlayStore();
+        const key = _catalogKey(catalogName);
+        window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData.records, styles, key);
+        rebuildCombinedCatalogOverlay();
         
-        // Prepare overlay data with styles
-        window.catalogDataForOverlay = catalogData.records.map((obj, index) => {
-            // Create the styled object with proper defaults
-            const styledObj = {
-                ...obj,
-                index: index,
-                passesFilter: true
-            };
-            
-            // Apply styles if provided, otherwise use defaults
-            if (styles) {
-                styledObj.color = styles.borderColor || '#FF0000';
-                styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
-                    styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
-                styledObj.border_width = styles.borderWidth || 2;
-                styledObj.opacity = styles.opacity || 0.8;
-                styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
-                styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
-            } else {
-                // Default styles
-                styledObj.color = '#FF0000';
-                styledObj.fillColor = 'rgba(255, 0, 0, 0.3)';
-                styledObj.border_width = 2;
-                styledObj.opacity = 0.8;
-                styledObj.useTransparentFill = true;
-                styledObj.radius_pixels = obj.radius_pixels || 5;
-            }
-            
-            return styledObj;
-        });
-        
-        console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:', 
-                    window.catalogDataForOverlay[0]);
+        console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:',
+                    window.catalogOverlaysByCatalog[key]?.[0]);
         
         // Store metadata
         window.catalogMetadata = catalogData.header;
@@ -2532,7 +3277,10 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
         
         // Process and display as before
         window.catalogDataWithFlags = catalogData.records;
-        window.catalogDataForOverlay = prepareCatalogOverlayData(catalogData.records, styles);
+        _ensureCatalogOverlayStore();
+        const key = _catalogKey(catalogName);
+        window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData.records, styles, key);
+        rebuildCombinedCatalogOverlay();
         window.catalogMetadata = catalogData.header;
         
         // Add overlay when viewer is ready
@@ -2550,7 +3298,7 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
 }
 
 // Helper function to prepare overlay data with styles
-function prepareCatalogOverlayData(records, styles) {
+function prepareCatalogOverlayData(records, styles, catalogKey = null) {
     // Derive arcsec/pixel from current WCS if available
     let arcsecPerPixel = null;
     try {
@@ -2566,21 +3314,78 @@ function prepareCatalogOverlayData(records, styles) {
             if (avgDeg > 0) arcsecPerPixel = 3600 * avgDeg;
         }
     } catch (_) {}
+    const colorCoder = (styles && styles.colorCodeColumn)
+        ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName)
+        : null;
+    if (colorCoder) {
+        try {
+            console.log('[Overlay] Applying color coding', {
+                column: styles.colorCodeColumn,
+                colorMap: styles.colorMapName
+            });
+        } catch (_) {}
+    } else if (styles && styles.colorCodeColumn) {
+        try {
+            console.warn('[Overlay] color coding requested but palette could not be built', {
+                column: styles.colorCodeColumn,
+                map: styles.colorMapName
+            });
+            if (records.length > 0) {
+                console.warn('[Overlay] first record keys', Object.keys(records[0] || {}).slice(0, 20));
+                console.warn('[Overlay] first record sample value', {
+                    value: getRecordValue(records[0], styles.colorCodeColumn)
+                });
+            }
+        } catch (_) {}
+    }
+    const styleOpacity = styles && typeof styles.opacity === 'number' ? styles.opacity : 0.8;
+    const fallbackRs = getEffectiveRegionStylesForOverlay();
+    const resolvedShape = normalizeShape((styles && styles.shape) || fallbackRs.shape);
     return records.map((obj, index) => {
         const styledObj = {
             ...obj,
             index: index,
-            passesFilter: true
+            passesFilter: true,
+            __catalogName: catalogKey || null
         };
         
         if (styles) {
-            styledObj.color = styles.borderColor || '#FF0000';
-            styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
-                styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
-            styledObj.border_width = styles.borderWidth || 2;
-            styledObj.opacity = styles.opacity || 0.8;
-            styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
+            let colorApplied = false;
+            if (colorCoder) {
+                const valueForColor = getRecordValue(obj, styles.colorCodeColumn);
+                const colorHex = colorCoder(valueForColor);
+                if (colorHex) {
+                    styledObj.color = colorHex;
+                    styledObj.fillColor = hexToRgba(colorHex, Math.max(0.15, Math.min(0.9, styleOpacity * 0.6)));
+                    styledObj.border_width = styles.borderWidth || 2;
+                    styledObj.opacity = styleOpacity;
+                    styledObj.useTransparentFill = false;
+                    styledObj.colorCodeColumn = styles.colorCodeColumn;
+                    styledObj.colorCodeValue = valueForColor;
+                    styledObj.colorMapName = styles.colorMapName || null;
+                    colorApplied = true;
+                    if (index < 3) {
+                        try {
+                            console.log('[Overlay] sample color', {
+                                index,
+                                value: obj[styles.colorCodeColumn],
+                                color: styledObj.color
+                            });
+                        } catch (_) {}
+                    }
+                }
+            }
+            if (!colorApplied) {
+                styledObj.color = styles.borderColor || '#FF0000';
+                styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
+                    styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
+                styledObj.border_width = styles.borderWidth || 2;
+                styledObj.opacity = styleOpacity;
+                styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
+            }
             styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+            // IMPORTANT: carry shape into each overlay object so canvas renderers don't fall back to circles
+            styledObj.shape = resolvedShape;
             // If a size column (arcsec) was chosen and WCS is known, convert to pixels per-object
             if (styles.sizeColumn && obj.hasOwnProperty(styles.sizeColumn)) {
                 const sizeArcsec = parseFloat(obj[styles.sizeColumn]);
@@ -2596,6 +3401,7 @@ function prepareCatalogOverlayData(records, styles) {
             styledObj.opacity = 0.8;
             styledObj.useTransparentFill = true;
             styledObj.radius_pixels = obj.radius_pixels || 5;
+            styledObj.shape = normalizeShape(getEffectiveRegionStylesForOverlay()?.shape);
             // No styles provided, still convert size column if present
             const defaultSizeCol = (window?.catalogMetadata?.sizeColumnName) || null;
             const sizeCol = defaultSizeCol && obj.hasOwnProperty(defaultSizeCol) ? defaultSizeCol : null;
@@ -2642,12 +3448,34 @@ async function waitForViewerAndAddOverlay() {
 
 window.loadCatalog = loadCatalogBinary;
 
-// Updated showStyleCustomizerPopup function - fix the populateDropdowns call
 function showStyleCustomizerPopup(catalogName) {
-    // Prevent multiple popups
+    // Always render the style popup in the top-level document (above multi-panel panes)
+    let hostDocument = null;
+    let hostWindow = null;
+    try {
+        const root = window.top || window;
+        if (root.document && root.document.body) {
+            hostDocument = root.document;
+            hostWindow = root;
+        }
+    } catch (_) {}
+    if (!hostDocument) {
+        hostDocument = window.document;
+        hostWindow = window;
+    }
+    const document = hostDocument;
+    // Prevent multiple popups (close existing with animation if available)
     const existingPopup = document.getElementById('region-style-popup');
     if (existingPopup) {
-        existingPopup.parentNode.removeChild(existingPopup);
+        try {
+            if (typeof existingPopup.__nelouraClose === 'function') {
+                existingPopup.__nelouraClose();
+            } else if (existingPopup.parentNode) {
+                existingPopup.parentNode.removeChild(existingPopup);
+            }
+        } catch (_) {
+            try { if (existingPopup.parentNode) existingPopup.parentNode.removeChild(existingPopup); } catch (_) {}
+        }
     }
 
     // Default styles
@@ -2656,6 +3484,7 @@ function showStyleCustomizerPopup(catalogName) {
         backgroundColor: 'transparent',
         borderWidth: 2,
         opacity: 0.8,
+        shape: (window.regionStyles && window.regionStyles.shape) ? window.regionStyles.shape : 'circle',
     };
 
     // Extract the API-compatible catalog name (remove catalogs/ prefix if present)
@@ -2672,10 +3501,72 @@ function showStyleCustomizerPopup(catalogName) {
     // Create popup container
     const popup = document.createElement('div');
     popup.id = 'region-style-popup';
+    // Simple open/close animation (fade + slight slide/scale)
+    const baseTransform = 'translate(-50%, -50%)';
+    const animateIn = () => {
+        try {
+            popup.style.willChange = 'opacity, transform';
+            popup.style.transition = 'opacity 170ms ease, transform 170ms ease';
+            popup.style.opacity = '0';
+            popup.style.transform = `${baseTransform} translateY(12px) scale(0.98)`;
+            // next frame -> animate in
+            requestAnimationFrame(() => {
+                popup.style.opacity = '1';
+                popup.style.transform = `${baseTransform} translateY(0px) scale(1)`;
+            });
+        } catch (_) {}
+    };
+    const animateOut = () => {
+        try {
+            if (popup.__nelouraClosing) return;
+            popup.__nelouraClosing = true;
+            // detach ESC listener
+            try {
+                if (popup.__nelouraEscHandler) {
+                    document.removeEventListener('keydown', popup.__nelouraEscHandler, true);
+                }
+            } catch (_) {}
+            popup.style.willChange = 'opacity, transform';
+            popup.style.transition = 'opacity 160ms ease, transform 160ms ease';
+            popup.style.opacity = '0';
+            // If it's still centered, animate transform; if user dragged it (transform='none'), just fade
+            if (String(popup.style.transform || '').includes('translate(-50%, -50%)')) {
+                popup.style.transform = `${baseTransform} translateY(12px) scale(0.98)`;
+            }
+            const cleanup = () => {
+                try { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); } catch (_) {}
+            };
+            const t = setTimeout(cleanup, 220);
+            popup.addEventListener('transitionend', (ev) => {
+                if (ev && ev.target !== popup) return;
+                clearTimeout(t);
+                cleanup();
+            }, { once: true });
+        } catch (_) {
+            try { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); } catch (_) {}
+        }
+    };
+    // Expose close hook so callers can close existing popups smoothly
+    try { popup.__nelouraClose = animateOut; } catch (_) {}
+    // Close on Escape
+    try {
+        popup.__nelouraEscHandler = (e) => {
+            try {
+                if (!e) return;
+                const key = e.key || e.code || '';
+                if (key === 'Escape' || key === 'Esc') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    animateOut();
+                }
+            } catch (_) {}
+        };
+        document.addEventListener('keydown', popup.__nelouraEscHandler, true);
+    } catch (_) {}
     Object.assign(popup.style, {
-        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        position: 'fixed', top: '50%', left: '50%', transform: baseTransform,
         backgroundColor: '#333', border: '1px solid #555', borderRadius: '5px',
-        padding: '15px', zIndex: '1500', width: '700px',
+        padding: '15px', zIndex: '3600', width: '700px',
         boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)', boxSizing: 'border-box'
     });
     
@@ -2691,7 +3582,7 @@ function showStyleCustomizerPopup(catalogName) {
         }
         .custom-dropdown-list {
             position: absolute; background-color: #3c3c3c; border: 1px solid #555;
-            border-top: none; z-index: 1600; max-height: 150px; overflow-y: auto;
+            border-top: none; z-index: 3601; max-height: 150px; overflow-y: auto;
             width: 100%; box-sizing: border-box; left: 0;
         }
         .custom-dropdown-list .dropdown-item {
@@ -2713,12 +3604,33 @@ function showStyleCustomizerPopup(catalogName) {
 
     const catalogNameDisplay = document.createElement('div');
     catalogNameDisplay.textContent = `Catalog: ${catalogNameForApi}`; // Show the API name to user
-    Object.assign(catalogNameDisplay.style, { color: '#4CAF50', fontSize: '14px', marginBottom: '10px' });
+    Object.assign(catalogNameDisplay.style, { color: '#4CAF50', fontSize: '14px', marginBottom: '4px' });
+
+    // Also show the currently selected FITS file, similar to the scaling controls popup
+    const fitsLabel = document.createElement('div');
+    // Prefer the active pane's image (multi-panel), otherwise fall back to top-level image
+    let fitsContext = hostWindow;
+    try {
+        if (hostWindow && typeof hostWindow.getActivePaneWindow === 'function') {
+            const paneWin = hostWindow.getActivePaneWindow();
+            if (paneWin && (paneWin.fitsData || paneWin.currentFitsFile)) {
+                fitsContext = paneWin;
+            }
+        }
+    } catch (_) {}
+    const currentFitsName =
+        (fitsContext && fitsContext.fitsData && (fitsContext.fitsData.filename || fitsContext.fitsData.filepath || fitsContext.fitsData.filePath)) ||
+        (fitsContext && fitsContext.currentFitsFile) ||
+        (hostWindow && hostWindow.fitsData && (hostWindow.fitsData.filename || hostWindow.fitsData.filepath || hostWindow.fitsData.filePath)) ||
+        (hostWindow && hostWindow.currentFitsFile) ||
+        'Current image';
+    fitsLabel.textContent = `Image: ${currentFitsName}`;
+    Object.assign(fitsLabel.style, { color: '#9CA3AF', fontSize: '13px', marginBottom: '10px' });
     
     const closeButton = document.createElement('button');
     closeButton.textContent = '×';
     Object.assign(closeButton.style, { position: 'absolute', top: '10px', right: '10px', backgroundColor: 'transparent', border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer', padding: '0', width: '24px', height: '24px', lineHeight: '24px', textAlign: 'center', borderRadius: '12px' });
-    closeButton.addEventListener('click', () => { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); });
+    closeButton.addEventListener('click', () => { try { animateOut(); } catch (_) { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); } });
 
     const columnsContainer = document.createElement('div');
     Object.assign(columnsContainer.style, { display: 'flex', flexDirection: 'row', gap: '20px', marginBottom: '15px' });
@@ -2808,12 +3720,14 @@ function showStyleCustomizerPopup(catalogName) {
                 hiddenSelect.value = opt.value;
                 updateVisibleDisplay(opt.value);
                 dropdownList.style.display = 'none';
+                hiddenSelect.dispatchEvent(new Event('change'));
             });
             dropdownList.appendChild(item);
         });
         if (options.length > 0) {
             hiddenSelect.value = options[0].value;
             updateVisibleDisplay(options[0].value);
+            setTimeout(() => hiddenSelect.dispatchEvent(new Event('change')), 0);
         }
         container.appendChild(labelElement);
         container.appendChild(visibleDisplay);
@@ -2826,6 +3740,8 @@ function showStyleCustomizerPopup(catalogName) {
     const raDropdown = createSearchableDropdown('RA Column:');
     const decDropdown = createSearchableDropdown('Dec Column:');
     const sizeDropdown = createSearchableDropdown('Size Column (arcsec):');
+    const colorCodeDropdown = createSearchableDropdown('Color Code Column:');
+    colorCodeDropdown.searchInput.value = 'No color coding';
     // Display selected size value (arcsec) and pixel equivalent
     let lastSizeMedianArcsec = null;
     const medianCache = Object.create(null); // key: `${catalog}|${column}` -> median arcsec
@@ -3033,9 +3949,55 @@ function showStyleCustomizerPopup(catalogName) {
     coordsFieldSet.appendChild(sizeDropdown.container);
     coordsFieldSet.appendChild(sizeInfo);
     coordsFieldSet.appendChild(radiusGroup);
+    coordsFieldSet.appendChild(colorCodeDropdown.container);
     leftColumn.appendChild(coordsFieldSet);
 
     const styleFieldSet = createFieldSet('Region Style');
+    // Shape selector (Circle / Hexagon)
+    const shapeGroup = document.createElement('div');
+    const shapeLabel = document.createElement('label');
+    shapeLabel.textContent = 'Shape:';
+    Object.assign(shapeLabel.style, { display: 'block', marginBottom: '6px', color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '13px' });
+
+    const shapeButtons = document.createElement('div');
+    Object.assign(shapeButtons.style, { display: 'flex', gap: '10px' });
+
+    const mkShapeBtn = (shape) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = shape === 'hexagon' ? 'Hexagon' : 'Circle';
+        Object.assign(btn.style, {
+            width: '44px',
+            height: '36px',
+            borderRadius: '10px',
+            border: '1px solid rgba(255,255,255,0.18)',
+            background: 'rgba(255,255,255,0.06)',
+            color: '#fff',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+        });
+        btn.innerHTML = (shape === 'hexagon')
+            ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                 <polygon points="12,2 20,7 20,17 12,22 4,17 4,7"
+                          stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"></polygon>
+               </svg>`
+            : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                 <circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="2"></circle>
+               </svg>`;
+        btn.dataset.shape = shape;
+        return btn;
+    };
+
+    const circleBtn = mkShapeBtn('circle');
+    const hexBtn = mkShapeBtn('hexagon');
+    shapeButtons.appendChild(circleBtn);
+    shapeButtons.appendChild(hexBtn);
+    shapeGroup.appendChild(shapeLabel);
+    shapeGroup.appendChild(shapeButtons);
+    styleFieldSet.appendChild(shapeGroup);
+
     const manualColorContainer = document.createElement('div');
     const borderColorInput = document.createElement('input');
     borderColorInput.type = 'color';
@@ -3071,6 +4033,13 @@ function showStyleCustomizerPopup(catalogName) {
     bgColorGroup.appendChild(bgColorContainer);
     manualColorContainer.appendChild(bgColorGroup);
     styleFieldSet.appendChild(manualColorContainer);
+    const colorMapDropdown = createStyledDropdown('Color Map (for color-coded regions):', REGION_COLOR_MAPS);
+    colorMapDropdown.container.style.display = 'none';
+    try {
+        colorMapDropdown.hiddenSelect.value = regionStyles.colorMapName || REGION_COLOR_MAPS[0].value;
+        setTimeout(() => colorMapDropdown.hiddenSelect.dispatchEvent(new Event('change')), 0);
+    } catch (_) {}
+    styleFieldSet.appendChild(colorMapDropdown.container);
     const borderWidthContainer = document.createElement('div');
     Object.assign(borderWidthContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
     const borderWidthSlider = document.createElement('input');
@@ -3117,15 +4086,16 @@ function showStyleCustomizerPopup(catalogName) {
     rightColumn.appendChild(styleFieldSet);
     const previewFieldSet = createFieldSet('Preview');
     const previewContainer = document.createElement('div');
-    Object.assign(previewContainer.style, { height: '80px', backgroundColor: '#2e2e2e', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #555', overflow: 'hidden' });
+    Object.assign(previewContainer.style, { height: '96px', backgroundColor: '#2e2e2e', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #555', overflow: 'hidden' });
     const previewMarker = document.createElement('div');
-    Object.assign(previewMarker.style, { width: '50px', height: '50px', border: `${regionStyles.borderWidth}px solid ${regionStyles.borderColor}`, borderRadius: '50%', backgroundColor: regionStyles.backgroundColor, opacity: regionStyles.opacity, transition: 'all 0.2s ease' });
+    // SVG-based preview (avoids CSS hexagon aspect ratio issues + ensures border width updates reliably)
+    Object.assign(previewMarker.style, { width: '72px', height: '72px', opacity: regionStyles.opacity, transition: 'opacity 0.15s ease' });
     previewContainer.appendChild(previewMarker);
     previewFieldSet.appendChild(previewContainer);
     rightColumn.appendChild(previewFieldSet);
 
     function populateDropdowns(catalogNameParam) {
-        const dropdowns = [raDropdown, decDropdown, sizeDropdown];
+        const dropdowns = [raDropdown, decDropdown, sizeDropdown, colorCodeDropdown];
         dropdowns.forEach(dd => {
             dd.dropdownList.innerHTML = '<div class="dropdown-item">Loading...</div>';
             dd.hiddenSelect.innerHTML = '';
@@ -3165,10 +4135,11 @@ function showStyleCustomizerPopup(catalogName) {
                     dropdown.dropdownList.appendChild(item);
                 };
 
-                addOption(sizeDropdown, '', 'No size column');
+            addOption(sizeDropdown, '', 'No size column');
+            addOption(colorCodeDropdown, '', 'No color coding');
 
                 allColumns.forEach(colName => {
-                    dropdowns.forEach(dd => addOption(dd, colName, colName));
+                [raDropdown, decDropdown, sizeDropdown, colorCodeDropdown].forEach(dd => addOption(dd, colName, colName));
                 });
                 
                 const findDefaultColumn = (columns, keywords) => {
@@ -3190,20 +4161,24 @@ function showStyleCustomizerPopup(catalogName) {
                 const decKeywords = ['dec', 'declination'];
                 const sizeKeywords = ['radius', 'size', 'rad', 'fwhm', 'bmaj', 'maj'];
 
-                if (allColumns.length > 0) {
-                    const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
-                    raDropdown.searchInput.value = defaultRa;
-                    raDropdown.hiddenSelect.value = defaultRa;
-                    
-                    const defaultDec = findDefaultColumn(allColumns, decKeywords) || (allColumns.length > 1 ? allColumns[1] : allColumns[0]);
-                    decDropdown.searchInput.value = defaultDec;
-                    decDropdown.hiddenSelect.value = defaultDec;
+            if (allColumns.length > 0) {
+                const defaultRa = findDefaultColumn(allColumns, raKeywords) || allColumns[0];
+                raDropdown.searchInput.value = defaultRa;
+                raDropdown.hiddenSelect.value = defaultRa;
+                
+                const defaultDec = findDefaultColumn(allColumns, decKeywords) || (allColumns.length > 1 ? allColumns[1] : allColumns[0]);
+                decDropdown.searchInput.value = defaultDec;
+                decDropdown.hiddenSelect.value = defaultDec;
 
-                    const defaultSize = findDefaultColumn(allColumns, sizeKeywords);
-                    sizeDropdown.searchInput.value = defaultSize || 'No size column';
-                    sizeDropdown.hiddenSelect.value = defaultSize || '';
-                    sizeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
-                }
+                const defaultSize = findDefaultColumn(allColumns, sizeKeywords);
+                sizeDropdown.searchInput.value = defaultSize || 'No size column';
+                sizeDropdown.hiddenSelect.value = defaultSize || '';
+                sizeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
+            }
+
+            colorCodeDropdown.searchInput.value = 'No color coding';
+            colorCodeDropdown.hiddenSelect.value = '';
+            colorCodeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
             })
             .catch(error => {
                 console.error('Error populating dropdowns:', error);
@@ -3218,22 +4193,100 @@ function showStyleCustomizerPopup(catalogName) {
 
     sizeDropdown.hiddenSelect.addEventListener('change', () => {
         const hasSizeColumn = sizeDropdown.hiddenSelect.value !== '';
-        // Always allow manual entry. If size column is chosen, we still keep input enabled
-        // so users can override.
         radiusInput.disabled = false;
         radiusInput.style.opacity = '1';
         if (hasSizeColumn && radiusInput.value) {
-            // Optional: clear to avoid mixing values; comment out if you prefer retaining
             // radiusInput.value = '';
         }
+        refreshPixelScaleReadout();
     });
+    colorCodeDropdown.hiddenSelect.addEventListener('change', () => {
+        updateColorModeUI();
+    });
+    colorMapDropdown.hiddenSelect.addEventListener('change', updatePreview);
+    updateColorModeUI();
     
-    function updatePreview() {
-        previewMarker.style.borderColor = borderColorInput.value;
-        previewMarker.style.backgroundColor = transparentCheckbox.checked ? 'transparent' : bgColorInput.value;
-        previewMarker.style.borderWidth = borderWidthSlider.value + 'px';
-        previewMarker.style.opacity = opacitySlider.value;
+    function updateColorModeUI() {
+        const hasColorCode = !!colorCodeDropdown.hiddenSelect.value;
+        manualColorContainer.style.display = hasColorCode ? 'none' : '';
+        [borderColorInput, bgColorInput].forEach((input) => {
+            if (!input) return;
+            input.disabled = hasColorCode;
+            input.style.opacity = hasColorCode ? '0.6' : '1';
+        });
+        transparentCheckbox.disabled = hasColorCode;
+        colorMapDropdown.container.style.display = hasColorCode ? '' : 'none';
+        updatePreview();
     }
+
+    function updatePreview() {
+        const usingColorCode = !!colorCodeDropdown.hiddenSelect.value;
+        const shape = regionStyles.shape === 'hexagon' ? 'hexagon' : 'circle';
+        const borderWidth = Math.max(1, Number(borderWidthSlider.value) || 2);
+        const opacityVal = Math.max(0, Math.min(1, Number(opacitySlider.value) || 0.8));
+
+        // Resolve fill + stroke colors
+        let strokeColor = borderColorInput.value || '#ffffff';
+        let fillValue = transparentCheckbox.checked ? 'transparent' : (bgColorInput.value || 'transparent');
+        let gradientStops = null;
+        if (usingColorCode) {
+            const mapDef = getColorMapDefinition(colorMapDropdown.hiddenSelect.value);
+            strokeColor = '#ffffff';
+            gradientStops = (mapDef && Array.isArray(mapDef.colors)) ? mapDef.colors : null;
+            fillValue = gradientStops ? 'url(#previewGradient)' : '#777';
+        }
+
+        previewMarker.style.opacity = String(opacityVal);
+
+        // SVG render (regular pointy-top hexagon / circle)
+        const pad = Math.min(18, 6 + borderWidth); // keeps stroke inside viewBox
+        const r = 50 - pad;
+        const xOff = r * Math.sqrt(3) / 2;
+        const yOff = r / 2;
+        const points = [
+            [50, 50 - r],
+            [50 + xOff, 50 - yOff],
+            [50 + xOff, 50 + yOff],
+            [50, 50 + r],
+            [50 - xOff, 50 + yOff],
+            [50 - xOff, 50 - yOff],
+        ].map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' ');
+
+        const defs = gradientStops
+            ? `<defs>
+                 <linearGradient id="previewGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                   ${gradientStops.map((c, i) => {
+                       const pct = gradientStops.length === 1 ? 0 : (i / (gradientStops.length - 1)) * 100;
+                       return `<stop offset="${pct.toFixed(2)}%" stop-color="${c}"></stop>`;
+                   }).join('')}
+                 </linearGradient>
+               </defs>`
+            : '';
+
+        const shapeEl = (shape === 'hexagon')
+            ? `<polygon points="${points}" fill="${fillValue}" stroke="${strokeColor}" stroke-width="${borderWidth}" stroke-linejoin="round"></polygon>`
+            : `<circle cx="50" cy="50" r="${r}" fill="${fillValue}" stroke="${strokeColor}" stroke-width="${borderWidth}"></circle>`;
+
+        previewMarker.innerHTML = `<svg viewBox="0 0 100 100" width="100%" height="100%" aria-hidden="true" style="display:block;">
+            ${defs}
+            ${shapeEl}
+        </svg>`;
+    }
+    
+
+    const updateShapeButtons = () => {
+        const current = regionStyles.shape === 'hexagon' ? 'hexagon' : 'circle';
+        [circleBtn, hexBtn].forEach((btn) => {
+            const active = btn.dataset.shape === current;
+            btn.style.background = active ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.06)';
+            btn.style.borderColor = active ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.18)';
+        });
+    };
+    circleBtn.addEventListener('click', () => { regionStyles.shape = 'circle'; updateShapeButtons(); updatePreview(); });
+    hexBtn.addEventListener('click', () => { regionStyles.shape = 'hexagon'; updateShapeButtons(); updatePreview(); });
+    // Default selection: circle
+    if (!regionStyles.shape) regionStyles.shape = 'circle';
+    updateShapeButtons();
     [borderColorInput, bgColorInput, transparentCheckbox, borderWidthSlider, opacitySlider].forEach(el => el.addEventListener('input', updatePreview));
 
     const actionsContainer = document.createElement('div');
@@ -3250,7 +4303,17 @@ function showStyleCustomizerPopup(catalogName) {
                 delete window.catalogBinaryCache[key];
             }
         } catch (_) {}
-        showCatalogViewer(catalogNameForApi);
+        // Open the catalog viewer in the TOP document so it doesn't appear behind the region style popup.
+        try {
+            const w = hostWindow || window.top || window;
+            if (w && typeof w.showCatalogViewer === 'function') {
+                w.showCatalogViewer(catalogNameForApi);
+            } else if (typeof showCatalogViewer === 'function') {
+                showCatalogViewer(catalogNameForApi);
+            }
+        } catch (_) {
+            try { if (typeof showCatalogViewer === 'function') showCatalogViewer(catalogNameForApi); } catch (_) {}
+        }
     };
 
     const applyButton = document.createElement('button');
@@ -3277,9 +4340,20 @@ function showStyleCustomizerPopup(catalogName) {
                 return asp;
             } catch (_) { return null; }
         })();
-        // Prefer size column median (arcsec) for radius when available; otherwise use manual radius input
+        // Prefer size column median (arcsec) for radius when available; otherwise require manual radius input.
         const sizeColMedianArcsec = (typeof lastSizeMedianArcsec === 'number' && isFinite(lastSizeMedianArcsec)) ? lastSizeMedianArcsec : null;
-        const radiusArcsec = sizeColMedianArcsec ?? (radiusInput.value ? parseFloat(radiusInput.value) : 5);
+        const radiusRaw = (radiusInput && typeof radiusInput.value === 'string') ? radiusInput.value.trim() : '';
+        if (sizeColMedianArcsec == null && !radiusRaw) {
+            showNotification('Region Style: set a Radius (arcsec) or choose a valid Size Column first.', 3500, 'error');
+            return;
+        }
+        const radiusArcsec = (sizeColMedianArcsec != null)
+            ? sizeColMedianArcsec
+            : parseFloat(radiusRaw);
+        if (!isFinite(radiusArcsec) || !(radiusArcsec > 0)) {
+            showNotification('Region Style: Radius must be a positive number (arcsec).', 3500, 'error');
+            return;
+        }
         const radiusPixels = (arcsecPerPixel && arcsecPerPixel > 0 && isFinite(radiusArcsec)) ? (radiusArcsec / arcsecPerPixel) : radiusArcsec;
         const newStyles = {
             raColumn: raDropdown.hiddenSelect.value,
@@ -3293,8 +4367,13 @@ function showStyleCustomizerPopup(catalogName) {
             borderColor: borderColorInput.value,
             backgroundColor: transparentCheckbox.checked ? 'transparent' : bgColorInput.value,
             borderWidth: parseInt(borderWidthSlider.value, 10),
-            opacity: parseFloat(opacitySlider.value)
+            opacity: parseFloat(opacitySlider.value),
+            shape: (regionStyles.shape === 'hexagon') ? 'hexagon' : 'circle'
         };
+        newStyles.colorCodeColumn = colorCodeDropdown.hiddenSelect.value || null;
+        if (newStyles.colorCodeColumn) {
+            newStyles.colorMapName = colorMapDropdown.hiddenSelect.value || REGION_COLOR_MAPS[0].value;
+        }
         
         console.log('[Apply Styles] Detailed style values:');
         console.log('  - borderColor (from color picker):', borderColorInput.value);
@@ -3313,10 +4392,8 @@ function showStyleCustomizerPopup(catalogName) {
     
         console.log(`[Apply Styles] About to call loadCatalog with '${catalogNameForApi}' and styles:`, newStyles);
         
-        // Close popup first
-        if (popup && popup.parentNode) {
-            popup.parentNode.removeChild(popup);
-        }
+        // Close popup (animated)
+        try { animateOut(); } catch (_) { try { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); } catch (_) {} }
         
         // Check if loadCatalog function exists and call it with BOTH parameters
         if (typeof loadCatalog === 'function') {
@@ -3337,6 +4414,7 @@ function showStyleCustomizerPopup(catalogName) {
 
     popup.appendChild(title);
     popup.appendChild(catalogNameDisplay);
+    popup.appendChild(fitsLabel);
     popup.appendChild(closeButton);
     columnsContainer.appendChild(leftColumn);
     columnsContainer.appendChild(rightColumn);
@@ -3344,6 +4422,7 @@ function showStyleCustomizerPopup(catalogName) {
     popup.appendChild(actionsContainer);
     document.body.appendChild(popup);
     makeDraggable(popup, title);
+    animateIn();
 }
 
 
@@ -3365,7 +4444,14 @@ function createCatalogDotWithStyles(obj, dotIndex, styles) {
     // Apply styles
     dot.style.width = `${catalogStyle.radius || FIXED_RADIUS}px`;
     dot.style.height = `${catalogStyle.radius || FIXED_RADIUS}px`;
-    dot.style.borderRadius = '50%';
+    const shape = (catalogStyle.shape || window.regionStyles?.shape || 'circle');
+    if (shape === 'hexagon') {
+        dot.style.borderRadius = '0';
+        dot.style.clipPath = 'polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%)';
+    } else {
+        dot.style.borderRadius = '50%';
+        dot.style.clipPath = '';
+    }
     dot.style.backgroundColor = catalogStyle.backgroundColor || 'transparent';
     dot.style.border = `${catalogStyle.borderWidth || 2}px solid ${catalogStyle.borderColor || '#ff0000'}`;
     dot.style.opacity = catalogStyle.opacity || 0.8;

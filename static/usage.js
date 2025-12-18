@@ -48,6 +48,11 @@ function animateValue(element, start, end, duration, decimals = 0, prefix = '', 
 }
 
 function initializeUsageMonitor() {
+    // Only create once in the top-level window, never inside iframes
+    try {
+        if (window.self !== window.top) return;
+        if (document.getElementById('usage-icon-container')) return;
+    } catch(_) {}
     createUsageIcon();
     connectToUsageWebSocket();
 }
@@ -118,27 +123,37 @@ function updateUsageIconDisplay(stats) {
     paths.forEach(path => {
         path.style.stroke = iconPathColor;
     });
-    // Ensure the container background is neutral/transparent if icon color is dynamic
-    iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'; // Or 'transparent' or a fixed dark color
+    // Keep iOS-glass background while icon color changes
+    iconContainer.style.background = 'rgba(18, 18, 20, 0.58)';
+    iconContainer.style.border = '1px solid rgba(255, 255, 255, 0.16)';
+    iconContainer.style.boxShadow = '0 18px 50px rgba(0,0,0,0.35)';
+    iconContainer.style.backdropFilter = 'saturate(180%) blur(18px)';
+    iconContainer.style.webkitBackdropFilter = 'saturate(180%) blur(18px)';
 }
 
 function createUsageIcon() {
+    // Guard: only one instance in top-level
+    if (document.getElementById('usage-icon-container')) return;
     const iconContainer = document.createElement('div');
     iconContainer.id = 'usage-icon-container';
     iconContainer.style.position = 'fixed';
-    iconContainer.style.bottom = '10px';
-    iconContainer.style.left = '10px';
-    iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'; // Light, slightly transparent background
+    iconContainer.style.bottom = '12px';
+    iconContainer.style.left = '12px';
+    // iOS-style glass
+    iconContainer.style.background = 'rgba(18, 18, 20, 0.58)';
+    iconContainer.style.border = '1px solid rgba(255, 255, 255, 0.16)';
+    iconContainer.style.backdropFilter = 'saturate(180%) blur(18px)';
+    iconContainer.style.webkitBackdropFilter = 'saturate(180%) blur(18px)';
     iconContainer.style.borderRadius = '50%';
     iconContainer.style.cursor = 'pointer';
-    iconContainer.style.zIndex = '3001';
+    iconContainer.style.zIndex = '3500';
     iconContainer.style.display = 'flex';
     iconContainer.style.alignItems = 'center';
     iconContainer.style.justifyContent = 'center';
     iconContainer.style.width = '44px';
     iconContainer.style.height = '44px';
     iconContainer.title = 'Show Resource Usage';
-    iconContainer.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+    iconContainer.style.boxShadow = '0 18px 50px rgba(0,0,0,0.35)';
 
     const svgIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svgIcon.setAttribute("width", "24");
@@ -200,9 +215,11 @@ function createUsagePopup() {
     popup.style.bottom = '60px'; 
     popup.style.left = '10px';
     popup.style.width = '300px'; // Increased width
-    popup.style.backgroundColor = '#2c2c2c';
+    popup.style.background = 'rgba(255, 255, 255, 0.1)'; // iOS-style translucent white
     popup.style.color = '#f0f0f0';
-    popup.style.border = '1px solid #444';
+    popup.style.border = '1px solid rgba(255, 255, 255, 0.18)'; // Lighter border
+    popup.style.backdropFilter = 'blur(26px) saturate(180%)'; // iOS blur effect
+    popup.style.webkitBackdropFilter = 'blur(26px) saturate(180%)'; // Safari compatibility
     popup.style.boxShadow = '0 5px 15px rgba(0,0,0,0.3)';
     popup.style.zIndex = '30000';
     popup.style.padding = '15px'; // Increased padding

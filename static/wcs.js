@@ -178,6 +178,7 @@ function buildLinearWcsTransform() {
     };
   
     if (hasParsed) {
+        const parsed = window.parsedWCS;
         const imgSize = getImageSizeFromViewer(window.tiledViewer || window.viewer);
         const H = imgSize.height;
       
@@ -203,17 +204,33 @@ function buildLinearWcsTransform() {
         ];
       
         // Score mapping by img->world->img round-trip at corners+center
+        const P = OpenSeadragon.Point;
+        const getBaseTiledImage = (viewerInstance) => {
+          try {
+            if (viewerInstance && viewerInstance.world && typeof viewerInstance.world.getItemCount === 'function') {
+              const count = viewerInstance.world.getItemCount();
+              if (count > 0) {
+                const base = viewerInstance.world.getItemAt(0);
+                if (base && typeof base.viewerElementToImageCoordinates === 'function') {
+                  return base;
+                }
+              }
+            }
+          } catch (_) {}
+          return null;
+        };
+
         const scoreMap = (map) => {
           const v = window.tiledViewer || window.viewer;
-          const P = OpenSeadragon.Point;
+          const baseItem = getBaseTiledImage(v);
+          if (!baseItem) {
+            console.warn('[WCS] Base tiled image not ready for scoreMap; skipping.');
+            return Number.POSITIVE_INFINITY;
+          }
+
           const toImg = (px, py) => {
-            if (v && v.viewport && v.viewport.viewerElementToImageCoordinates) {
-              const pt = v.viewport.viewerElementToImageCoordinates(new P(px, py));
-              return { x: pt.x, y: pt.y };
-            }
-            const vp = v.viewport.pointFromPixel(new P(px, py));
-            const ip = v.viewport.viewportToImageCoordinates(vp);
-            return { x: ip.x, y: ip.y };
+            const pt = baseItem.viewerElementToImageCoordinates(new P(px, py));
+            return { x: pt.x, y: pt.y };
           };
           const rect = (v && v.container) ? v.container.getBoundingClientRect() : { width: 1000, height: 600 };
           const W = rect.width, HH = rect.height;
@@ -222,9 +239,9 @@ function buildLinearWcsTransform() {
           let err = 0;
           for (const s of samples) {
             const yF = map.toFitsY(s.y);
-            const w = window.parsedWCS.pixelsToWorld(s.x, yF);
+            const w = parsed.pixelsToWorld(s.x, yF);
             if (!w || !isFinite(w.ra) || !isFinite(w.dec)) return Number.POSITIVE_INFINITY;
-            const p = window.parsedWCS.worldToPixels(w.ra, w.dec);
+            const p = parsed.worldToPixels(w.ra, w.dec);
             if (!p || !isFinite(p.x) || !isFinite(p.y)) return Number.POSITIVE_INFINITY;
             const yBack = map.fromFitsY(p.y);
             err += Math.hypot((p.x - s.x), (yBack - s.y));
@@ -241,12 +258,12 @@ function buildLinearWcsTransform() {
       
         const parsedPixelToWorld = (xTL, yTL) => {
           const yF = best.toFitsY(yTL);
-          const w = window.parsedWCS.pixelsToWorld(xTL, yF);
+          const w = parsed.pixelsToWorld(xTL, yF);
           if (!w || !isFinite(w.ra) || !isFinite(w.dec)) return { ra: NaN, dec: NaN };
           return { ra: w.ra, dec: w.dec };
         };
         const parsedWorldToPixel = (raDeg, decDeg) => {
-          const p = window.parsedWCS.worldToPixels(raDeg, decDeg);
+          const p = parsed.worldToPixels(raDeg, decDeg);
           if (!p || !isFinite(p.x) || !isFinite(p.y)) return { x: NaN, y: NaN };
           return { x: p.x, y: best.fromFitsY(p.y) };
         };
@@ -394,28 +411,45 @@ function buildLinearWcsTransform() {
         const ctx = overlay.getContext('2d');
       
         const P = OpenSeadragon.Point;
-        const toImg = (px, py) => {
-          if (viewer.viewport.viewerElementToImageCoordinates) {
-            const pt = viewer.viewport.viewerElementToImageCoordinates(new P(px, py));
-            return { x: pt.x, y: pt.y };
+        const warnMissingBase = () => {
+          if (!viewer.__wcsBaseWarned) {
+            console.warn('[WCS Axes] Base tiled image not ready; skipping transform to avoid multi-image warnings.');
+            viewer.__wcsBaseWarned = true;
           }
-          const vp = viewer.viewport.pointFromPixel(new P(px, py));
-          const ip = viewer.viewport.viewportToImageCoordinates(vp);
-          return { x: ip.x, y: ip.y };
+        };
+        const getPrimaryTiledImage = () => {
+          try {
+            if (viewer.world && typeof viewer.world.getItemCount === 'function') {
+              const count = viewer.world.getItemCount();
+              if (count > 0) {
+                const base = viewer.world.getItemAt(0);
+                if (base && typeof base.viewerElementToImageCoordinates === 'function') {
+                  viewer.__wcsBaseWarned = false;
+                  return base;
+                }
+              }
+            }
+          } catch (_) {}
+          warnMissingBase();
+          return null;
+        };
+        const toImg = (px, py) => {
+          const baseItem = getPrimaryTiledImage();
+          if (!baseItem) return null;
+          const pt = baseItem.viewerElementToImageCoordinates(new P(px, py));
+          return { x: pt.x, y: pt.y };
         };
         const imgToScreen = (x, y) => {
-          if (viewer.viewport.imageToViewerElementCoordinates) {
-            const p = viewer.viewport.imageToViewerElementCoordinates(new P(x, y));
-            return { x: p.x, y: p.y };
-          }
-          const vp = viewer.viewport.imageToViewportCoordinates(new P(x, y));
-          const px = viewer.viewport.pixelFromPoint(vp, true);
-          return { x: px.x, y: px.y };
+          const baseItem = getPrimaryTiledImage();
+          if (!baseItem) return null;
+          const p = baseItem.imageToViewerElementCoordinates(new P(x, y));
+          return { x: p.x, y: p.y };
         };
         const getImgSize = () => {
           try {
-            if (viewer.world && viewer.world.getItemCount() > 0) {
-              const sz = viewer.world.getItemAt(0).getContentSize();
+            const baseItem = getPrimaryTiledImage();
+            if (baseItem) {
+              const sz = baseItem.getContentSize();
               return { width: sz.x, height: sz.y };
             }
           } catch(_) {}
@@ -524,6 +558,7 @@ function buildLinearWcsTransform() {
           if (W < 2 || H < 2) return;
 
           const tl = toImg(0, 0), br = toImg(W, H);
+          if (!tl || !br) return;
           let xL = tl.x, yT = tl.y, xR = br.x, yB = br.y;
           if (![xL, yT, xR, yB].every(isFinite)) return;
 
@@ -564,7 +599,7 @@ function buildLinearWcsTransform() {
             const xi = interpXForRA(topS, ra);
             if (!isFinite(xi)) continue;
             const sc = imgToScreen(xi, yTc);
-            if (sc.x < -20 || sc.x > W + 20) continue;
+            if (!sc || sc.x < -20 || sc.x > W + 20) continue;
       
             ctx.beginPath(); ctx.moveTo(sc.x, 0); ctx.lineTo(sc.x, 8);
             try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
@@ -591,7 +626,7 @@ function buildLinearWcsTransform() {
             const yi = interpYForDec(leftS, dec);
             if (!isFinite(yi)) continue;
             const sc = imgToScreen(xLc, yi);
-            if (sc.y < -20 || sc.y > H + 20) continue;
+            if (!sc || sc.y < -20 || sc.y > H + 20) continue;
       
             ctx.beginPath(); ctx.moveTo(0, sc.y); ctx.lineTo(8, sc.y);
             try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }

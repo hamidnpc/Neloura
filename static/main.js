@@ -11,9 +11,479 @@ let isUpdatingHistogram = false;
 let histogramUpdateRequested = false;
 let histogramUpdateQueue = [];
 let histogramUpdateTimer = null;
+
+
 let currentColorMap = 'grayscale'; // Default color map
 let currentScaling = 'linear'; // Default scaling function
+let currentColorMapInverted = false; // Default orientation for color maps
+let segmentOverlayState = null;
+let segmentOverlayMetadata = null;
+if (typeof window !== 'undefined') {
+    window.segmentOverlayState = segmentOverlayState;
+}
+
+function setSegmentOverlayState(state) {
+    segmentOverlayState = state;
+    if (typeof window !== 'undefined') {
+        window.segmentOverlayState = state;
+    }
+    return segmentOverlayState;
+}
+function ensureGlobalOverlayPortal() {
+    try {
+        const rootDoc = (() => {
+            try { return window.top?.document || document; } catch (_) { return document; }
+        })();
+        if (!rootDoc) return null;
+        let portal = rootDoc.getElementById('global-overlay-portal');
+        if (!portal) {
+            portal = rootDoc.createElement('div');
+            portal.id = 'global-overlay-portal';
+            Object.assign(portal.style, {
+                position: 'fixed',
+                inset: '0',
+                zIndex: '2147480000',
+                pointerEvents: 'none'
+            });
+            rootDoc.body.appendChild(portal);
+        }
+        return portal;
+    } catch (err) {
+        console.warn('[segments] Failed to ensure global overlay portal', err);
+        return null;
+    }
+}
+
+let cachedSegmentsList = null;
+let segmentsPanelCloseHandler = null;
+const segmentOverlayPreferences = window.segmentOverlayPreferences || (window.segmentOverlayPreferences = { colorMap: 'labels' });
+let segmentOverlayControlsCollapsed = !!window.segmentOverlayControlsCollapsed;
 const GLOBAL_DATA_PRECISION = 3; // Number of decimal places for displaying float data values
+const DEFAULT_SEGMENT_OVERLAY_OPACITY = 0.6;
+
+if (typeof window !== 'undefined') {
+    window.currentColorMapInverted = typeof window.currentColorMapInverted === 'boolean'
+        ? window.currentColorMapInverted
+        : false;
+    currentColorMapInverted = window.currentColorMapInverted;
+}
+
+const COLORCET_PALETTES = {};
+let colorcetLoadPromise = null;
+let colorcetColorMapOptions = [];
+const FALLBACK_SEGMENT_COLOR_MAPS = [
+    { value: 'labels', label: 'Distinct Labels', gradient: 'linear-gradient(90deg, #ef4444, #f59e0b, #22c55e, #0ea5e9, #a855f7)' },
+    { value: 'grayscale', label: 'Grayscale', gradient: 'linear-gradient(to right, #000, #fff)' },
+    { value: 'viridis', label: 'Viridis', gradient: 'linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)' },
+    { value: 'plasma', label: 'Plasma', gradient: 'linear-gradient(to right, #0d0887, #5302a3, #8b0aa5, #b83289, #db5c68, #f48849, #febc2a)' },
+    { value: 'inferno', label: 'Inferno', gradient: 'linear-gradient(to right, #000004, #320a5a, #781c6d, #bb3754, #ec6824, #fbb41a)' },
+    { value: 'rdbu', label: 'RdBu', gradient: 'linear-gradient(to right, #b2182b, #f7f7f7, #2166ac)' },
+    { value: 'spectral', label: 'Spectral', gradient: 'linear-gradient(to right, #9e0142, #f46d43, #fee08b, #e6f598, #66c2a5, #5e4fa2)' },
+    { value: 'cividis', label: 'Cividis', gradient: 'linear-gradient(to right, #00204c, #213d6b, #555b6c, #7b7a77, #a59c74, #d9d57a)' },
+    { value: 'hot', label: 'Hot', gradient: 'linear-gradient(to right, #000, #f00, #ff0, #fff)' },
+    { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' },
+    { value: 'rainbow', label: 'Rainbow', gradient: 'linear-gradient(to right, #6e40aa, #be3caf, #fe4b83, #ff7847, #e2b72f, #aff05b)' },
+    { value: 'jet', label: 'Jet', gradient: 'linear-gradient(to right, #00008f, #0020ff, #00ffff, #51ff77, #fdff00, #ff0000, #800000)' },
+    { value: 'blue', label: 'Blue', gradient: 'linear-gradient(to right, #000000, #0000ff)' },
+    { value: 'red', label: 'Red', gradient: 'linear-gradient(to right, #000000, #ff0000)' },
+    { value: 'green', label: 'Green', gradient: 'linear-gradient(to right, #000000, #00ff00)' },
+    { value: 'orange', label: 'Orange', gradient: 'linear-gradient(to right, #000000, #ffa500)' },
+    { value: 'yellow', label: 'Yellow', gradient: 'linear-gradient(to right, #000000, #ffff00)' },
+    { value: 'cyan', label: 'Cyan', gradient: 'linear-gradient(to right, #000000, #00ffff)' },
+    { value: 'magenta', label: 'Magenta', gradient: 'linear-gradient(to right, #000000, #ff00ff)' }
+];
+function buildSegmentColorMapOptions() {
+    const seen = new Set();
+    const combined = [];
+    const addList = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach(entry => {
+            if (!entry || typeof entry.value === 'undefined') return;
+            const key = String(entry.value);
+            if (seen.has(key)) return;
+            seen.add(key);
+            combined.push({
+                value: key,
+                label: entry.label || key,
+                gradient: entry.gradient || null
+            });
+        });
+    };
+    addList(FALLBACK_SEGMENT_COLOR_MAPS);
+    addList(window.__baseColorMapOptions);
+    addList(window.__colorcetColorMapOptions);
+    return combined;
+}
+
+function applySegmentOverlayColorMap(colorMap) {
+    if (!colorMap) return;
+    const normalized = String(colorMap);
+    if (segmentOverlayPreferences.colorMap === normalized && (!segmentOverlayState || segmentOverlayState.colorMap === normalized)) {
+        return;
+    }
+    segmentOverlayPreferences.colorMap = normalized;
+    window.segmentOverlayPreferences = segmentOverlayPreferences;
+    if (segmentOverlayState && segmentOverlayState.sourceSegmentName) {
+        loadSegmentOverlay(segmentOverlayState.sourceSegmentName, { colorMap: normalized, silent: true });
+    } else {
+        syncSegmentOverlayControls();
+    }
+}
+
+function clampPaletteIndex(val) {
+    if (!Number.isFinite(val)) return 0;
+    if (val <= 0) return 0;
+    if (val >= 255) return 255;
+    return val & 255;
+}
+
+function buildGradientFromPalette(palette) {
+    if (!Array.isArray(palette) || palette.length === 0) {
+        return 'linear-gradient(to right, #000, #fff)';
+    }
+    const samples = Math.min(6, palette.length);
+    const step = (palette.length - 1) / Math.max(1, samples - 1);
+    const stops = [];
+    for (let i = 0; i < samples; i++) {
+        const idx = Math.round(i * step);
+        const color = palette[idx] || palette[palette.length - 1];
+        const pct = (samples === 1) ? 0 : (i / (samples - 1)) * 100;
+        stops.push(`rgb(${color[0]},${color[1]},${color[2]}) ${pct}%`);
+    }
+    return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
+function ensureColorcetFunctionsRegistered() {
+    if (typeof COLOR_MAPS === 'undefined') {
+        setTimeout(ensureColorcetFunctionsRegistered, 50);
+        return;
+    }
+    Object.keys(COLORCET_PALETTES).forEach((name) => {
+        if (COLOR_MAPS[name]) return;
+        COLOR_MAPS[name] = (val) => {
+            const pal = COLORCET_PALETTES[name];
+            if (!pal || !pal.length) return COLOR_MAPS.grayscale(val);
+            const idx = clampPaletteIndex(val);
+            const color = pal[idx] || pal[pal.length - 1];
+            return [color[0], color[1], color[2]];
+        };
+    });
+}
+
+function createSearchableDropdown(labelText, selectId, optionsArray, globalVarName, defaultSelectedValue, hasSwatches = false) {
+    const container = document.createElement('div');
+    container.style.marginBottom = '10px';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    Object.assign(label.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '14px', alignSelf: 'flex-start', marginBottom: '5px' });
+
+    const customSelectContainer = document.createElement('div');
+    Object.assign(customSelectContainer.style, { width: '100%', position: 'relative' });
+
+    const selectedOptionDisplay = document.createElement('div');
+    Object.assign(selectedOptionDisplay.style, {
+        display: 'flex', alignItems: 'center', padding: '8px 10px', backgroundColor: '#444',
+        color: '#fff', border: '1px solid #555', borderRadius: '3px', cursor: 'pointer',
+        fontFamily: 'Arial, sans-serif', fontSize: '14px', justifyContent: 'space-between'
+    });
+
+    const selectedSwatch = document.createElement('div');
+    if (hasSwatches) {
+        Object.assign(selectedSwatch.style, { width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: 'linear-gradient(to right, #000, #fff)' });
+    }
+    const selectedText = document.createElement('span');
+    selectedText.style.flex = '1';
+    const dropdownArrow = document.createElement('span');
+    dropdownArrow.textContent = '▼';
+    dropdownArrow.style.marginLeft = '10px';
+    dropdownArrow.style.fontSize = '10px';
+
+    if (hasSwatches) selectedOptionDisplay.appendChild(selectedSwatch);
+    selectedOptionDisplay.appendChild(selectedText);
+    selectedOptionDisplay.appendChild(dropdownArrow);
+
+    const optionsOuterContainer = document.createElement('div');
+    Object.assign(optionsOuterContainer.style, {
+        position: 'absolute', top: '100%', left: '0', width: '100%', backgroundColor: '#3a3a3a',
+        border: '1px solid #555', borderRadius: '0 0 3px 3px', zIndex: '20', display: 'none', borderTop: 'none',
+        maxHeight: hasSwatches ? '340px' : '280px'
+    });
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = `Search ${labelText.toLowerCase().replace(':', '')}...`;
+    Object.assign(searchInput.style, {
+        width: 'calc(100% - 0px)', padding: '8px 10px', margin: '0', border: 'none',
+        borderBottom: '1px solid #555', borderRadius: '0', backgroundColor: '#3a3a3a',
+        color: '#fff', boxSizing: 'border-box'
+    });
+
+    const optionsListContainer = document.createElement('div');
+    Object.assign(optionsListContainer.style, { maxHeight: hasSwatches ? '320px' : '260px', overflowY: 'auto' });
+
+    searchInput.addEventListener('input', () => {
+        const filter = searchInput.value.toLowerCase();
+        const options = optionsListContainer.querySelectorAll('.custom-dropdown-option');
+        options.forEach(option => {
+            const text = option.dataset.label.toLowerCase();
+            option.style.display = text.includes(filter) ? (hasSwatches ? 'flex' : 'block') : 'none';
+        });
+    });
+
+    optionsOuterContainer.appendChild(searchInput);
+    optionsOuterContainer.appendChild(optionsListContainer);
+
+    const hiddenSelect = document.createElement('select');
+    hiddenSelect.id = selectId;
+    hiddenSelect.style.display = 'none';
+
+    let currentSelectionValue = window[globalVarName] || defaultSelectedValue;
+    const initialSelection = optionsArray.find(opt => opt.value === currentSelectionValue) || optionsArray.find(opt => opt.value === defaultSelectedValue);
+    if (initialSelection) {
+        selectedText.textContent = initialSelection.label;
+        if (hasSwatches && initialSelection.gradient) selectedSwatch.style.background = initialSelection.gradient;
+    }
+
+    optionsArray.forEach(opt => {
+        const optionEl = document.createElement('option');
+        optionEl.value = opt.value;
+        optionEl.textContent = opt.label;
+        if (opt.value === currentSelectionValue) optionEl.selected = true;
+        hiddenSelect.appendChild(optionEl);
+
+        const visualOption = document.createElement('div');
+        visualOption.classList.add('custom-dropdown-option');
+        visualOption.dataset.value = opt.value;
+        visualOption.dataset.label = opt.label;
+        Object.assign(visualOption.style, {
+            padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid #505050',
+            display: hasSwatches ? 'flex' : 'block', alignItems: hasSwatches ? 'center' : 'normal', color: '#fff'
+        });
+        if (opt.value === currentSelectionValue) visualOption.style.backgroundColor = '#555';
+
+        if (hasSwatches) {
+            const swatch = document.createElement('div');
+            Object.assign(swatch.style, { minWidth: '60px', width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: opt.gradient || '#ccc' });
+            visualOption.appendChild(swatch);
+        }
+        const textSpan = document.createElement('span');
+        textSpan.textContent = opt.label;
+        visualOption.appendChild(textSpan);
+
+        visualOption.addEventListener('mouseover', () => visualOption.style.backgroundColor = '#555');
+        visualOption.addEventListener('mouseout', () => {
+            if (visualOption.dataset.value !== currentSelectionValue) visualOption.style.backgroundColor = 'transparent';
+        });
+        visualOption.addEventListener('click', () => {
+            hiddenSelect.value = opt.value;
+            selectedText.textContent = opt.label;
+            if (hasSwatches && opt.gradient) selectedSwatch.style.background = opt.gradient;
+            currentSelectionValue = opt.value;
+            window[globalVarName] = opt.value;
+
+            optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(vOpt => {
+                vOpt.style.backgroundColor = (vOpt.dataset.value === currentSelectionValue) ? '#555' : 'transparent';
+            });
+            optionsOuterContainer.style.display = 'none';
+            hiddenSelect.dispatchEvent(new Event('change'));
+        });
+
+        optionsListContainer.appendChild(visualOption);
+    });
+    if (optionsListContainer.lastChild && optionsListContainer.lastChild.style) {
+        optionsListContainer.lastChild.style.borderBottom = 'none';
+    }
+
+    selectedOptionDisplay.addEventListener('click', () => {
+        const isOpen = optionsOuterContainer.style.display === 'block';
+        if (!isOpen) {
+            optionsOuterContainer.style.display = 'block';
+            searchInput.value = '';
+            optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(opt => opt.style.display = hasSwatches ? 'flex' : 'block');
+            searchInput.focus();
+
+            optionsOuterContainer.style.top = '100%';
+            optionsOuterContainer.style.bottom = 'auto';
+            optionsOuterContainer.style.maxHeight = hasSwatches ? '340px' : '280px';
+
+            const parentRect = customSelectContainer.getBoundingClientRect();
+            const dropdownRect = optionsOuterContainer.getBoundingClientRect();
+            if (dropdownRect.bottom > window.innerHeight) {
+                if (parentRect.top - dropdownRect.height > 0) {
+                    optionsOuterContainer.style.top = 'auto';
+                    optionsOuterContainer.style.bottom = '100%';
+                } else {
+                    const availableHeight = window.innerHeight - parentRect.bottom - 10;
+                    optionsOuterContainer.style.maxHeight = `${Math.max(50, availableHeight)}px`;
+                }
+            }
+        } else {
+            optionsOuterContainer.style.display = 'none';
+        }
+    });
+
+    customSelectContainer.appendChild(selectedOptionDisplay);
+    customSelectContainer.appendChild(optionsOuterContainer);
+    customSelectContainer.appendChild(hiddenSelect);
+
+    hiddenSelect.addEventListener('change', () => {
+        window[globalVarName] = hiddenSelect.value;
+        const selOpt = optionsArray.find(o => o.value === hiddenSelect.value);
+        if (selOpt) {
+            selectedText.textContent = selOpt.label;
+            if (hasSwatches && selOpt.gradient) selectedSwatch.style.background = selOpt.gradient;
+        }
+
+        const ensureMinMax = () => {
+            const minInput = document.getElementById('min-range-input');
+            const maxInput = document.getElementById('max-range-input');
+            const needsPrefill = !minInput || !maxInput || minInput.value === '' || maxInput.value === '' ||
+                                 isNaN(parseFloat(minInput.value)) || isNaN(parseFloat(maxInput.value));
+            if (needsPrefill) {
+                const fallback = { min: (window.fitsData?.min_value ?? 0), max: (window.fitsData?.max_value ?? 1) };
+                const defaults = (typeof resolveDefaultRange === 'function') ? resolveDefaultRange() : fallback;
+                if (typeof setRangeInputs === 'function') setRangeInputs(defaults.min, defaults.max);
+            }
+        };
+
+        if (selectId === 'color-map-select') {
+            ensureMinMax();
+            if (typeof applyColorMap === 'function') {
+                applyColorMap(hiddenSelect.value);
+            } else if (typeof applyDynamicRange === 'function') {
+                applyDynamicRange();
+            }
+        } else if (selectId === 'scaling-select') {
+            ensureMinMax();
+            if (typeof applyDynamicRange === 'function') applyDynamicRange();
+        }
+    });
+
+    container.appendChild(label);
+    container.appendChild(customSelectContainer);
+    return container;
+}
+
+if (typeof window !== 'undefined') {
+    window.createSearchableDropdown = window.createSearchableDropdown || createSearchableDropdown;
+}
+
+function getColorMapOptions() {
+    const baseOptions = [
+        { value: 'grayscale', label: 'Grayscale', gradient: 'linear-gradient(to right, #000, #fff)' },
+        { value: 'viridis', label: 'Viridis', gradient: 'linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)' },
+        { value: 'plasma', label: 'Plasma', gradient: 'linear-gradient(to right, #0d0887, #5302a3, #8b0aa5, #b83289, #db5c68, #f48849, #febc2a)' },
+        { value: 'inferno', label: 'Inferno', gradient: 'linear-gradient(to right, #000004, #320a5a, #781c6d, #bb3754, #ec6824, #fbb41a)' },
+        { value: 'rdbu', label: 'RdBu', gradient: 'linear-gradient(to right, #b2182b, #f7f7f7, #2166ac)' },
+        { value: 'spectral', label: 'Spectral', gradient: 'linear-gradient(to right, #9e0142, #f46d43, #fee08b, #e6f598, #66c2a5, #5e4fa2)' },
+        { value: 'cividis', label: 'Cividis', gradient: 'linear-gradient(to right, #00204c, #213d6b, #555b6c, #7b7a77, #a59c74, #d9d57a)' },
+        { value: 'hot', label: 'Hot', gradient: 'linear-gradient(to right, #000, #f00, #ff0, #fff)' },
+        { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' },
+        { value: 'rainbow', label: 'Rainbow', gradient: 'linear-gradient(to right, #6e40aa, #be3caf, #fe4b83, #ff7847, #e2b72f, #aff05b)' },
+        { value: 'jet', label: 'Jet', gradient: 'linear-gradient(to right, #00008f, #0020ff, #00ffff, #51ff77, #fdff00, #ff0000, #800000)' },
+        { value: 'blue', label: 'Blue', gradient: 'linear-gradient(to right, #000000, #0000ff)' },
+        { value: 'red', label: 'Red', gradient: 'linear-gradient(to right, #000000, #ff0000)' },
+        { value: 'green', label: 'Green', gradient: 'linear-gradient(to right, #000000, #00ff00)' },
+        { value: 'orange', label: 'Orange', gradient: 'linear-gradient(to right, #000000, #ffa500)' },
+        { value: 'yellow', label: 'Yellow', gradient: 'linear-gradient(to right, #000000, #ffff00)' },
+        { value: 'cyan', label: 'Cyan', gradient: 'linear-gradient(to right, #000000, #00ffff)' },
+        { value: 'magenta', label: 'Magenta', gradient: 'linear-gradient(to right, #000000, #ff00ff)' }
+    ];
+    const extra = Array.isArray(window.__colorcetColorMapOptions) ? window.__colorcetColorMapOptions : [];
+    return baseOptions.concat(extra);
+}
+
+function getSegmentColorMapOptions() {
+    return buildSegmentColorMapOptions();
+}
+
+async function loadColorcetPalettes() {
+    if (colorcetLoadPromise) return colorcetLoadPromise;
+    colorcetLoadPromise = (async () => {
+        try {
+            const resp = await fetch('/static/colorcet_palettes.json', { cache: 'force-cache' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            const names = Object.keys(data || {});
+            names.forEach((name) => {
+                const palette = data[name];
+                if (!Array.isArray(palette) || palette.length === 0) return;
+                COLORCET_PALETTES[name] = palette;
+            });
+            ensureColorcetFunctionsRegistered();
+            const sorted = names.sort((a, b) => a.localeCompare(b));
+            colorcetColorMapOptions = sorted.map((name) => ({
+                value: name,
+                label: `CET · ${name}`,
+                gradient: buildGradientFromPalette(COLORCET_PALETTES[name])
+            }));
+            window.__colorcetColorMapOptions = colorcetColorMapOptions;
+        } catch (err) {
+            console.error('Failed to load Colorcet palettes', err);
+            colorcetColorMapOptions = [];
+            window.__colorcetColorMapOptions = [];
+        }
+    })();
+    return colorcetLoadPromise;
+}
+
+function enablePopupDrag(popup, dragHandle, hostDoc) {
+    if (!popup || !dragHandle) return;
+    const doc = hostDoc || popup.ownerDocument || document;
+    let pointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+    const resetTransform = () => {
+        if (popup.style.transform && popup.style.transform !== 'none') {
+            const rect = popup.getBoundingClientRect();
+            popup.style.left = `${rect.left}px`;
+            popup.style.top = `${rect.top}px`;
+            popup.style.transform = 'none';
+        }
+    };
+    const onPointerMove = (e) => {
+        if (pointerId === null || e.pointerId !== pointerId) return;
+        e.preventDefault();
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        popup.style.left = `${originLeft + dx}px`;
+        popup.style.top = `${originTop + dy}px`;
+    };
+    const endDrag = (e) => {
+        if (pointerId === null || e.pointerId !== pointerId) return;
+        pointerId = null;
+        try { dragHandle.releasePointerCapture(e.pointerId); } catch(_) {}
+        doc.removeEventListener('pointermove', onPointerMove, true);
+        doc.removeEventListener('pointerup', endDrag, true);
+        doc.removeEventListener('pointercancel', endDrag, true);
+        dragHandle.style.cursor = 'grab';
+    };
+    const startDrag = (e) => {
+        if (pointerId !== null) return;
+        if (typeof e.button === 'number' && e.button !== 0) return;
+        pointerId = e.pointerId;
+        resetTransform();
+        const rect = popup.getBoundingClientRect();
+        originLeft = rect.left;
+        originTop = rect.top;
+        startX = e.clientX;
+        startY = e.clientY;
+        dragHandle.style.cursor = 'grabbing';
+        try { dragHandle.setPointerCapture(e.pointerId); } catch(_) {}
+        doc.addEventListener('pointermove', onPointerMove, true);
+        doc.addEventListener('pointerup', endDrag, true);
+        doc.addEventListener('pointercancel', endDrag, true);
+        e.preventDefault();
+    };
+    dragHandle.addEventListener('pointerdown', startDrag);
+    dragHandle.style.touchAction = 'none';
+    dragHandle.style.cursor = 'grab';
+}
 
 // NEW: State for interactive histogram
 let histogramScaleInfo = { padding: {}, histWidth: 0, dataMin: 0, dataRange: 1 };
@@ -28,6 +498,32 @@ let debouncedApplyDynamicRange = null; // To be initialized later
 // ... (other global variables like isUpdatingHistogram, currentColorMap, etc.)
 let debouncedRequestHistogramUpdate = null; // For debouncing histogram updates
 let histogramOverviewPixelData = null; // <-- ADD THIS LINE: For caching overview pixels
+
+function getHistogramDocument() {
+    try {
+        const root = window.top || window;
+        if (root.__histogramHostDoc && root.__histogramHostDoc.body) {
+            return root.__histogramHostDoc;
+        }
+        return root.document || document;
+    } catch (_) {
+        return document;
+    }
+}
+
+function getHistogramWindow() {
+    try {
+        const root = window.top || window;
+        if (root.__histogramHostWin) return root.__histogramHostWin;
+        return root;
+    } catch (_) {
+        return window;
+    }
+}
+
+function getCurrentPaneId() {
+    return window.__paneSyncId || window.__paneId || 'base-pane';
+}
 
 // NEW: State for line animation (if you have this section)
 // ...
@@ -67,8 +563,1758 @@ function loadCatalogs() {
     });
 }
 
+function getActiveViewerInstance() {
+    const tryGetViewer = (ctx) => (ctx && (ctx.__ACTIVE_PANE_VIEWER || ctx.tiledViewer || ctx.viewer)) || null;
+    const seen = new Set();
+    let ctx = typeof window !== 'undefined' ? window : null;
+    while (ctx && !seen.has(ctx)) {
+        seen.add(ctx);
+        const viewerCandidate = tryGetViewer(ctx);
+        if (viewerCandidate) return viewerCandidate;
+        if (ctx.parent && ctx.parent !== ctx) {
+            try {
+                ctx = ctx.parent;
+                continue;
+            } catch (_) {
+                break;
+            }
+        }
+        break;
+    }
+    const globalViewer = tryGetViewer(typeof globalThis !== 'undefined' ? globalThis : null);
+    if (globalViewer) return globalViewer;
+    const openerViewer = tryGetViewer(typeof window !== 'undefined' ? window.opener : null);
+    if (openerViewer) return openerViewer;
+    return null;
+}
+
+function getCurrentSessionId() {
+    try {
+        const sp = new URLSearchParams(window.location.search);
+        return (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || sessionStorage.getItem('sid');
+    } catch (err) {
+        try { return sessionStorage.getItem('sid'); } catch (_) { return null; }
+    }
+}
+
+function clearSegmentOverlay(reason = 'reset') {
+    if (segmentOverlayState && segmentOverlayState.tiledImage) {
+        const activeViewer = getActiveViewerInstance();
+        if (activeViewer && activeViewer.world) {
+            try {
+                activeViewer.world.removeItem(segmentOverlayState.tiledImage);
+            } catch (err) {
+                console.warn('[segments] Failed to remove overlay:', err);
+            }
+        }
+    }
+    setSegmentOverlayState(null);
+    segmentOverlayMetadata = null;
+    window.segmentOverlayMetadata = null;
+    updateSegmentsPanelOverlayInfo();
+    removeSegmentOverlayControls(true);
+}
+
+function removeSegmentOverlay(trigger = 'user') {
+    if (!segmentOverlayState) return;
+    clearSegmentOverlay(trigger);
+    showNotification('Segment overlay removed', 1500, 'info');
+}
+
+function updateSegmentOverlayOpacity(value) {
+    if (!segmentOverlayState || !segmentOverlayState.tiledImage) return;
+    const clamped = Math.max(0, Math.min(1, Number(value)));
+    segmentOverlayState.tiledImage.setOpacity(clamped);
+    segmentOverlayState.opacity = clamped;
+    updateSegmentsPanelOverlayInfo();
+    syncSegmentOverlayControls();
+}
+
+async function fetchSegmentsList(forceRefresh = false) {
+    if (!forceRefresh && Array.isArray(cachedSegmentsList)) {
+        return cachedSegmentsList;
+    }
+    const response = await apiFetch('/segments/list/');
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    cachedSegmentsList = Array.isArray(data.segments) ? data.segments : [];
+    return cachedSegmentsList;
+}
+
+function closeSegmentsPanel() {
+    const panel = document.getElementById('segments-panel');
+    if (panel) {
+        panel.remove();
+    }
+    if (segmentsPanelCloseHandler) {
+        document.removeEventListener('mousedown', segmentsPanelCloseHandler, true);
+        segmentsPanelCloseHandler = null;
+    }
+}
+
+function createSegmentsPanelElement() {
+    const panel = document.createElement('div');
+    panel.id = 'segments-panel';
+    panel.style.position = 'absolute';
+    panel.style.zIndex = '60010';
+    panel.style.background = '#1f2937';
+    panel.style.border = '1px solid #374151';
+    panel.style.borderRadius = '8px';
+    panel.style.padding = '14px';
+    panel.style.width = '320px';
+    panel.style.color = '#f3f4f6';
+    panel.style.fontFamily = 'Arial, sans-serif';
+    panel.style.boxShadow = '0 8px 16px rgba(0,0,0,0.4)';
+
+    const toolbar = document.querySelector('.toolbar');
+    if (toolbar) {
+        const rect = toolbar.getBoundingClientRect();
+        panel.style.left = `${rect.left + 10}px`;
+        panel.style.top = `${rect.bottom + 8}px`;
+    } else {
+        panel.style.left = '20px';
+        panel.style.top = '60px';
+    }
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    header.style.marginBottom = '8px';
+    const title = document.createElement('strong');
+    title.textContent = 'Segments';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '×';
+    closeBtn.style.background = 'transparent';
+    closeBtn.style.color = '#f3f4f6';
+    closeBtn.style.border = 'none';
+    closeBtn.style.fontSize = '18px';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.addEventListener('click', () => closeSegmentsPanel());
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    const hint = document.createElement('div');
+    hint.textContent = 'Place segmentation FITS files under files/segments/';
+    hint.style.fontSize = '11px';
+    hint.style.opacity = '0.8';
+    hint.style.marginBottom = '10px';
+    panel.appendChild(hint);
+
+    const status = document.createElement('div');
+    status.dataset.role = 'segments-status';
+    status.style.fontSize = '12px';
+    status.style.marginBottom = '10px';
+    panel.appendChild(status);
+
+    const opacityRow = document.createElement('div');
+    opacityRow.style.display = 'flex';
+    opacityRow.style.alignItems = 'center';
+    opacityRow.style.gap = '8px';
+    opacityRow.style.marginBottom = '10px';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '1';
+    slider.step = '0.05';
+    slider.dataset.role = 'segments-opacity-slider';
+    slider.addEventListener('input', (e) => updateSegmentOverlayOpacity(parseFloat(e.target.value)));
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Remove overlay';
+    removeBtn.dataset.role = 'segments-remove-button';
+    removeBtn.style.flex = '0 0 auto';
+    removeBtn.addEventListener('click', () => removeSegmentOverlay('panel'));
+    opacityRow.appendChild(slider);
+    opacityRow.appendChild(removeBtn);
+    panel.appendChild(opacityRow);
+
+    const actionsRow = document.createElement('div');
+    actionsRow.style.display = 'flex';
+    actionsRow.style.justifyContent = 'space-between';
+    actionsRow.style.alignItems = 'center';
+    actionsRow.style.marginBottom = '10px';
+    const refreshBtn = document.createElement('button');
+    refreshBtn.textContent = 'Refresh list';
+    refreshBtn.addEventListener('click', () => refreshSegmentsPanelList(true));
+    actionsRow.appendChild(refreshBtn);
+    panel.appendChild(actionsRow);
+
+    const list = document.createElement('div');
+    list.dataset.role = 'segments-list';
+    list.style.maxHeight = '260px';
+    list.style.overflowY = 'auto';
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '6px';
+    list.textContent = 'Loading segments...';
+    panel.appendChild(list);
+
+    panel.addEventListener('mousedown', (e) => e.stopPropagation());
+    document.body.appendChild(panel);
+
+    segmentsPanelCloseHandler = (evt) => {
+        const target = evt.target;
+        if (!panel.contains(target)) {
+            closeSegmentsPanel();
+        }
+    };
+    document.addEventListener('mousedown', segmentsPanelCloseHandler, true);
+    return panel;
+}
+
+function updateSegmentsPanelOverlayInfo() {
+    const panel = document.getElementById('segments-panel');
+    if (!panel) return;
+    const status = panel.querySelector('[data-role="segments-status"]');
+    const slider = panel.querySelector('[data-role="segments-opacity-slider"]');
+    const removeBtn = panel.querySelector('[data-role="segments-remove-button"]');
+    if (status) {
+        if (segmentOverlayState && segmentOverlayState.name) {
+            const opacityText = segmentOverlayState.opacity !== undefined ? segmentOverlayState.opacity.toFixed(2) : DEFAULT_SEGMENT_OVERLAY_OPACITY.toFixed(2);
+            const colorMapName = segmentOverlayState.colorMap || segmentOverlayPreferences.colorMap || 'labels';
+            status.textContent = `Active: ${segmentOverlayState.name} (opacity ${opacityText}, map ${colorMapName})`;
+        } else {
+            status.textContent = 'No segment overlay active';
+        }
+    }
+    if (slider) {
+        slider.disabled = !(segmentOverlayState && segmentOverlayState.tiledImage);
+        slider.value = segmentOverlayState ? (segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY) : DEFAULT_SEGMENT_OVERLAY_OPACITY;
+        slider.style.background = `linear-gradient(90deg, #22d3ee ${slider.value * 100}%, rgba(99,102,241,0.3) ${slider.value * 100}%)`;
+    }
+    if (removeBtn) {
+        removeBtn.disabled = !(segmentOverlayState && segmentOverlayState.tiledImage);
+    }
+    syncSegmentOverlayControls();
+}
+
+function renderSegmentsList(panel, segments) {
+    const list = panel.querySelector('[data-role="segments-list"]');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!segments || segments.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = 'No segment FITS files found in files/segments/';
+        empty.style.opacity = '0.8';
+        empty.style.fontSize = '12px';
+        list.appendChild(empty);
+        return;
+    }
+    segments.forEach(segment => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.flexDirection = 'column';
+        row.style.padding = '8px';
+        row.style.border = '1px solid #374151';
+        row.style.borderRadius = '6px';
+        row.style.background = '#111827';
+
+        const nameLine = document.createElement('div');
+        nameLine.style.display = 'flex';
+        nameLine.style.justifyContent = 'space-between';
+        nameLine.style.alignItems = 'center';
+        nameLine.style.gap = '8px';
+
+        const name = document.createElement('span');
+        name.textContent = segment.name;
+        name.style.fontSize = '13px';
+        name.style.fontWeight = '600';
+        name.style.flex = '1';
+
+        const loadBtn = document.createElement('button');
+        loadBtn.textContent = 'Overlay';
+        loadBtn.style.flex = '0 0 auto';
+        loadBtn.addEventListener('click', () => loadSegmentOverlay(segment.name));
+
+        nameLine.appendChild(name);
+        nameLine.appendChild(loadBtn);
+
+        const meta = document.createElement('div');
+        meta.style.fontSize = '11px';
+        meta.style.opacity = '0.8';
+        const sizeText = typeof formatMemorySize === 'function' ? formatMemorySize(segment.size || 0) : `${Math.round((segment.size || 0)/1024)} KB`;
+        const modified = segment.modified ? new Date(segment.modified * 1000).toLocaleString() : 'unknown';
+        meta.textContent = `Size: ${sizeText} · Updated: ${modified}`;
+
+        row.appendChild(nameLine);
+        row.appendChild(meta);
+        list.appendChild(row);
+    });
+}
+
+async function refreshSegmentsPanelList(forceRefresh = false) {
+    const panel = document.getElementById('segments-panel');
+    if (!panel) return;
+    const list = panel.querySelector('[data-role="segments-list"]');
+    if (list) {
+        list.textContent = 'Loading segments...';
+    }
+    try {
+        const segments = await fetchSegmentsList(forceRefresh);
+        renderSegmentsList(panel, segments);
+    } catch (err) {
+        console.error('[segments] Failed to fetch list', err);
+        if (list) {
+            list.textContent = `Failed to load segments: ${err.message}`;
+        }
+    }
+}
+
+function openSegmentsPanel() {
+    const panel = createSegmentsPanelElement();
+    updateSegmentsPanelOverlayInfo();
+    refreshSegmentsPanelList(false);
+}
+
+function toggleSegmentsPanel(forceState = null) {
+    const panel = document.getElementById('segments-panel');
+    if (panel && (forceState === null || forceState === false)) {
+        closeSegmentsPanel();
+        return;
+    }
+    closeSegmentsPanel();
+    openSegmentsPanel();
+}
+
+function removeSegmentOverlayControls(force = false) {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('segment-overlay-controls');
+    if (panel) {
+        const paneId = window.__paneSyncId || 'root';
+        const ownerId = panel.dataset.ownerId || hostDoc.defaultView?.__segmentPanelOwnerId || null;
+        if (force || !ownerId || ownerId === paneId) {
+            try {
+                if (typeof panel.__segmentsCleanup === 'function') {
+                    panel.__segmentsCleanup();
+                }
+            } catch (_) {}
+            panel.remove();
+            try {
+                if (hostDoc.defaultView) {
+                    hostDoc.defaultView.__segmentPanelOwnerId = null;
+                }
+            } catch (_) {}
+        } else {
+            return;
+        }
+    }
+    segmentOverlayControlsCollapsed = false;
+    window.segmentOverlayControlsCollapsed = segmentOverlayControlsCollapsed;
+}
+
+function syncSegmentOverlayControls() {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('segment-overlay-controls');
+    if (!panel) return;
+    const slider = panel.querySelector('input[data-role="segment-opacity-slider"]');
+    const valueLabel = panel.querySelector('span[data-role="segment-opacity-value"]');
+    const value = segmentOverlayState ? (segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY) : DEFAULT_SEGMENT_OVERLAY_OPACITY;
+    if (slider) {
+        slider.disabled = !(segmentOverlayState && segmentOverlayState.tiledImage);
+        slider.value = value;
+        slider.style.background = `linear-gradient(90deg, #22d3ee ${value * 100}%, rgba(99,102,241,0.3) ${value * 100}%)`;
+    }
+    if (valueLabel) valueLabel.textContent = value.toFixed(2);
+    const select = panel.querySelector('select[data-role="segment-color-map"]');
+    if (select) {
+        const colorMapValue = segmentOverlayPreferences.colorMap || 'labels';
+        select.value = colorMapValue;
+        const preview = panel.querySelector('.segment-colorbar-preview');
+        const option = getSegmentColorMapOptions().find(opt => String(opt.value) === String(colorMapValue));
+        if (preview) {
+            const gradient = option && option.gradient ? option.gradient : 'linear-gradient(90deg, #e5e7eb, #111827)';
+            preview.style.background = gradient;
+        }
+    }
+}
+
+function renderSegmentOverlayControls(info) {
+    if (info) {
+        segmentOverlayMetadata = { ...info };
+        window.segmentOverlayMetadata = segmentOverlayMetadata;
+    } else if (segmentOverlayMetadata) {
+        info = { ...segmentOverlayMetadata };
+    }
+    const isPaneContext = !!(window.parent && window.parent !== window);
+    const canControlPanel = !isPaneContext || !!window.__wcsIsActivePane;
+    if (!canControlPanel) return;
+    removeSegmentOverlayControls(true);
+    if (!segmentOverlayState || !segmentOverlayState.tiledImage) return;
+    const hostDoc = getTopLevelDocument();
+    if (!hostDoc || !hostDoc.body) return;
+    if (!info) {
+        info = {
+            color_map: segmentOverlayState.colorMap || segmentOverlayPreferences.colorMap || 'labels',
+            segment_name: segmentOverlayState.name
+        };
+    }
+    const colorMapOptions = getSegmentColorMapOptions();
+    const selectedColorMap = info?.color_map || segmentOverlayPreferences.colorMap || 'labels';
+    const createEl = (tag) => hostDoc.createElement(tag);
+
+    const panel = createEl('div');
+    panel.id = 'segment-overlay-controls';
+    Object.assign(panel.style, {
+        background: 'rgba(17,24,39,0.95)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: '12px',
+        padding: '12px 20px',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.45)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: '10px',
+        zIndex: '60020',
+        color: '#f9fafb',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        minWidth: '260px',
+        pointerEvents: 'auto'
+    });
+
+    const headerRow = createEl('div');
+    Object.assign(headerRow.style, {
+        display: 'flex',
+        width: '100%',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '10px'
+    });
+    const titleLabel = createEl('span');
+    const overlayName = info?.segment_name || segmentOverlayState.name || 'Segment';
+    titleLabel.textContent = `Segments · ${overlayName}`;
+    titleLabel.style.fontSize = '13px';
+    titleLabel.style.fontWeight = '600';
+    titleLabel.style.whiteSpace = 'nowrap';
+    titleLabel.style.overflow = 'hidden';
+    titleLabel.style.textOverflow = 'ellipsis';
+    const collapseBtn = createEl('button');
+    collapseBtn.type = 'button';
+    collapseBtn.textContent = '×';
+    Object.assign(collapseBtn.style, {
+        border: 'none',
+        background: 'rgba(255,255,255,0.08)',
+        color: '#f9fafb',
+        width: '24px',
+        height: '24px',
+        borderRadius: '50%',
+        cursor: 'pointer',
+        fontSize: '14px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'background 150ms ease'
+    });
+    collapseBtn.addEventListener('mouseenter', () => collapseBtn.style.background = 'rgba(255,255,255,0.18)');
+    collapseBtn.addEventListener('mouseleave', () => collapseBtn.style.background = 'rgba(255,255,255,0.08)');
+    collapseBtn.setAttribute('aria-label', 'Collapse segments controls');
+    headerRow.append(titleLabel, collapseBtn);
+    panel.appendChild(headerRow);
+
+    const expandedContent = createEl('div');
+    Object.assign(expandedContent.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        width: '100%',
+        gap: '10px',
+        transition: 'opacity 200ms ease, max-height 220ms ease',
+        overflow: 'visible',
+        maxHeight: '600px'
+    });
+    panel.appendChild(expandedContent);
+
+    const setCollapsedState = (collapsed) => {
+        segmentOverlayControlsCollapsed = collapsed;
+        window.segmentOverlayControlsCollapsed = collapsed;
+        panel.dataset.state = collapsed ? 'collapsed' : 'expanded';
+        if (collapsed) {
+            expandedContent.style.opacity = '0';
+            expandedContent.style.maxHeight = '0px';
+            expandedContent.style.pointerEvents = 'none';
+            expandedContent.style.overflow = 'hidden';
+            panel.style.padding = '6px 12px';
+            panel.style.minWidth = 'auto';
+            collapseBtn.textContent = '➕';
+            collapseBtn.setAttribute('aria-label', 'Show segments controls');
+        } else {
+            expandedContent.style.opacity = '1';
+            expandedContent.style.maxHeight = '600px';
+            expandedContent.style.pointerEvents = 'auto';
+            expandedContent.style.overflow = 'visible';
+            panel.style.padding = '12px 20px';
+            panel.style.minWidth = '260px';
+            collapseBtn.textContent = '×';
+            collapseBtn.setAttribute('aria-label', 'Collapse segments controls');
+        }
+        // Use requestAnimationFrame to ensure DOM has updated before recalculating positions
+        requestAnimationFrame(() => {
+            positionSegmentControlsPanel(panel);
+        });
+    };
+
+    collapseBtn.addEventListener('click', () => {
+        setCollapsedState(!segmentOverlayControlsCollapsed);
+    });
+
+    const sliderRow = createEl('div');
+    sliderRow.style.display = 'flex';
+    sliderRow.style.alignItems = 'center';
+    sliderRow.style.gap = '10px';
+
+    const slider = createEl('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '1';
+    slider.step = '0.05';
+    slider.dataset.role = 'segment-opacity-slider';
+    slider.value = segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY;
+    Object.assign(slider.style, {
+        width: '220px',
+        appearance: 'none',
+        height: '4px',
+        borderRadius: '999px',
+        background: `linear-gradient(90deg, #22d3ee ${(segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY) * 100}%, rgba(99,102,241,0.3) ${(segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY) * 100}%)`
+    });
+    slider.addEventListener('input', (e) => {
+        e.target.style.background = `linear-gradient(90deg, #22d3ee ${e.target.value * 100}%, rgba(99,102,241,0.3) ${e.target.value * 100}%)`;
+        const value = parseFloat(e.target.value);
+        updateSegmentOverlayOpacity(value);
+        const label = panel.querySelector('span[data-role="segment-opacity-value"]');
+        if (label) label.textContent = value.toFixed(2);
+    });
+    sliderRow.appendChild(slider);
+
+    const sliderValue = createEl('span');
+    sliderValue.dataset.role = 'segment-opacity-value';
+    sliderValue.style.fontSize = '12px';
+    sliderValue.style.width = '40px';
+    sliderValue.style.textAlign = 'right';
+    sliderValue.textContent = (segmentOverlayState.opacity ?? DEFAULT_SEGMENT_OVERLAY_OPACITY).toFixed(2);
+    sliderRow.appendChild(sliderValue);
+    expandedContent.appendChild(sliderRow);
+
+    const paletteContainer = createEl('div');
+    paletteContainer.style.width = '100%';
+    let selectEl = null;
+    if (typeof createSearchableDropdown === 'function') {
+        const dropdown = createSearchableDropdown(
+            'Color Map:',
+            'segment-color-map-select',
+            colorMapOptions,
+            'segmentOverlayColorMapSelection',
+            selectedColorMap,
+            true
+        );
+        selectEl = dropdown.querySelector('select');
+        paletteContainer.appendChild(dropdown);
+    } else {
+        const label = createEl('label');
+        label.textContent = 'Color Map:';
+        Object.assign(label.style, { fontSize: '12px', color: '#d1d5db', marginBottom: '4px', display: 'block' });
+        const select = createEl('select');
+        Object.assign(select.style, {
+            width: '100%',
+            padding: '8px',
+            background: '#1f2937',
+            color: '#f3f4f6',
+            borderRadius: '6px',
+            border: '1px solid rgba(255,255,255,0.12)'
+        });
+        colorMapOptions.forEach(option => {
+            const opt = createEl('option');
+            opt.value = option.value;
+            opt.textContent = option.label;
+            select.appendChild(opt);
+        });
+        select.value = selectedColorMap;
+        paletteContainer.appendChild(label);
+        paletteContainer.appendChild(select);
+        selectEl = select;
+    }
+    if (selectEl) {
+        selectEl.dataset.role = 'segment-color-map';
+    }
+    expandedContent.appendChild(paletteContainer);
+
+    if (selectEl) {
+        selectEl.value = selectedColorMap;
+        selectEl.addEventListener('change', (e) => {
+            const newValue = e.target.value;
+            applySegmentOverlayColorMap(newValue);
+        });
+    }
+
+    const actionRow = createEl('div');
+    actionRow.style.display = 'flex';
+    actionRow.style.gap = '10px';
+    const removeBtn = createEl('button');
+    removeBtn.textContent = 'Remove';
+    removeBtn.style.all = 'unset';
+    removeBtn.style.cursor = 'pointer';
+    removeBtn.style.fontSize = '12px';
+    removeBtn.style.padding = '4px 10px';
+    removeBtn.style.borderRadius = '999px';
+    removeBtn.style.background = 'rgba(239,68,68,0.18)';
+    removeBtn.style.color = '#fca5a5';
+    removeBtn.addEventListener('click', () => removeSegmentOverlay('controls'));
+    actionRow.appendChild(removeBtn);
+    expandedContent.appendChild(actionRow);
+
+    hostDoc.body.appendChild(panel);
+    const paneId = window.__paneSyncId || 'root';
+    panel.dataset.ownerId = paneId;
+    try {
+        if (hostDoc.defaultView) {
+            hostDoc.defaultView.__segmentPanelOwnerId = paneId;
+        }
+    } catch (_) {}
+    const reposition = () => positionSegmentControlsPanel(panel);
+    reposition();
+    const resizeTargets = [];
+    if (typeof window !== 'undefined') resizeTargets.push(window);
+    try {
+        const topWin = window.top;
+        if (topWin && topWin !== window && !resizeTargets.includes(topWin)) resizeTargets.push(topWin);
+    } catch (_) {}
+    resizeTargets.forEach((target) => {
+        try { target.addEventListener('resize', reposition); } catch (_) {}
+    });
+    panel.__segmentsCleanup = () => {
+        resizeTargets.forEach((target) => {
+            try { target.removeEventListener('resize', reposition); } catch (_) {}
+        });
+    };
+
+    setCollapsedState(!!segmentOverlayControlsCollapsed);
+    syncSegmentOverlayControls();
+}
+
+// ---------------- Catalog Overlay Controls (bottom-center, per active pane) ----------------
+let catalogOverlayControlsCollapsed = false;
+
+function removeCatalogOverlayControls(force = false) {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('catalog-overlay-controls');
+    if (!panel) return;
+    const paneId = window.__paneSyncId || 'root';
+    const ownerId = panel.dataset.ownerId || hostDoc.defaultView?.__catalogPanelOwnerId || null;
+    if (!force && ownerId && ownerId !== paneId) {
+        return;
+    }
+    try {
+        if (typeof panel.__catalogCleanup === 'function') {
+            panel.__catalogCleanup();
+        }
+    } catch (_) {}
+    panel.remove();
+    try {
+        if (hostDoc.defaultView) {
+            hostDoc.defaultView.__catalogPanelOwnerId = null;
+        }
+    } catch (_) {}
+    catalogOverlayControlsCollapsed = false;
+    try { window.catalogOverlayControlsCollapsed = catalogOverlayControlsCollapsed; } catch (_) {}
+}
+
+function syncCatalogOverlayControls() {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('catalog-overlay-controls');
+    if (!panel) return;
+    const slider = panel.querySelector('input[data-role="catalog-opacity-slider"]');
+    const valueLabel = panel.querySelector('span[data-role="catalog-opacity-value"]');
+    let value = 0.8;
+    try {
+        if (window.regionStyles && typeof window.regionStyles.opacity === 'number') {
+            value = window.regionStyles.opacity;
+        }
+    } catch (_) {}
+    if (slider) {
+        slider.value = value;
+        slider.disabled = false;
+        slider.style.background = `linear-gradient(90deg, #22d3ee ${value * 100}%, rgba(99,102,241,0.3) ${value * 100}%)`;
+    }
+    if (valueLabel) {
+        valueLabel.textContent = value.toFixed(2);
+    }
+}
+
+function positionCatalogControlsPanel(panel) {
+    if (!panel) return;
+    const hostDoc = getTopLevelDocument();
+    const topWin = (() => { try { return window.top || window; } catch (_) { return window; } })();
+    const viewportHeight = (topWin && topWin.innerHeight) || hostDoc.documentElement?.clientHeight || window.innerHeight || 0;
+    const anchor = getActivePaneBounds();
+    panel.style.position = 'fixed';
+    panel.style.transform = 'translateX(-50%)';
+    
+    // Check if segment controls exist and get their height and collapsed state
+    const segmentPanel = hostDoc.getElementById('segment-overlay-controls');
+    let segmentPanelHeight = 0;
+    let segmentPanelBottom = 0;
+    let segmentIsCollapsed = false;
+    if (segmentPanel) {
+        const segmentRect = segmentPanel.getBoundingClientRect();
+        segmentPanelHeight = segmentRect.height;
+        segmentPanelBottom = viewportHeight - segmentRect.bottom;
+        segmentIsCollapsed = segmentPanel.dataset.state === 'collapsed';
+    }
+    
+    // Check if catalog panel is collapsed
+    const catalogIsCollapsed = panel.dataset.state === 'collapsed';
+    
+    // Use smaller gap when either panel is collapsed
+    const panelGap = (catalogIsCollapsed || segmentIsCollapsed) ? 6 : 12;
+    
+    if (!anchor) {
+        panel.style.left = '50%';
+        // Position above segment panel if it exists, otherwise use default offset
+        if (segmentPanel) {
+            panel.style.bottom = `${24 + segmentPanelHeight + panelGap}px`;
+        } else {
+            panel.style.bottom = '72px';
+        }
+        return;
+    }
+    const centerX = anchor.left + (anchor.width / 2);
+    const baseOffset = Math.max(16, viewportHeight - anchor.bottom + 24);
+    
+    // Position catalog panel above segment panel with gap
+    if (segmentPanel) {
+        panel.style.left = `${centerX}px`;
+        panel.style.bottom = `${baseOffset + segmentPanelHeight + panelGap}px`;
+    } else {
+        panel.style.left = `${centerX}px`;
+        panel.style.bottom = `${baseOffset + 48}px`;
+    }
+}
+
+function repositionCatalogOverlayControls() {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('catalog-overlay-controls');
+    if (panel) {
+        positionCatalogControlsPanel(panel);
+        // Also reposition segment panel in case catalog panel height changed
+        const segmentPanel = hostDoc.getElementById('segment-overlay-controls');
+        if (segmentPanel) {
+            positionSegmentControlsPanel(segmentPanel);
+        }
+    }
+}
+
+function renderCatalogOverlayControls() {
+    const isPaneContext = !!(window.parent && window.parent !== window);
+    const canControlPanel = !isPaneContext || !!window.__wcsIsActivePane;
+    if (!canControlPanel) return;
+
+    // Check if we're in multi-panel mode to determine default collapsed state
+    let isMultiPanelMode = false;
+    let shouldStartCollapsed = false;
+    try {
+        const topWin = (window.top && window.top !== window) ? window.top : window;
+        const wrap = topWin.document.getElementById('multi-panel-container');
+        const grid = topWin.document.getElementById('multi-panel-grid');
+        isMultiPanelMode = wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 2;
+        // In multi-panel mode, always start collapsed
+        shouldStartCollapsed = isMultiPanelMode;
+    } catch (_) {}
+
+    removeCatalogOverlayControls(true);
+    
+    // If in multi-panel mode, force collapsed state
+    if (shouldStartCollapsed) {
+        catalogOverlayControlsCollapsed = true;
+        try { window.catalogOverlayControlsCollapsed = true; } catch (_) {}
+    }
+
+    const hasOverlay = window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay) && window.catalogDataForOverlay.length > 0;
+    const loadedCats = (typeof window.getLoadedCatalogOverlays === 'function') ? window.getLoadedCatalogOverlays() : [];
+    const hasAnyCatalog = Array.isArray(loadedCats) ? loadedCats.length > 0 : !!window.currentCatalogName;
+    if (!hasOverlay || !hasAnyCatalog) return;
+
+    const hostDoc = getTopLevelDocument();
+    if (!hostDoc || !hostDoc.body) return;
+    const createEl = (tag) => hostDoc.createElement(tag);
+
+    const panel = createEl('div');
+    panel.id = 'catalog-overlay-controls';
+    Object.assign(panel.style, {
+        background: 'rgba(17,24,39,0.95)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: '12px',
+        padding: '12px 20px',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.45)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: '10px',
+        // Keep above the image viewer, but below top-level popups (Plotter/Region Style/Catalog Viewer).
+        zIndex: '3500',
+        color: '#f9fafb',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        minWidth: '260px',
+        pointerEvents: 'auto'
+    });
+
+    // Header (similar to segment controls)
+    const headerRow = createEl('div');
+    Object.assign(headerRow.style, {
+        display: 'flex',
+        width: '100%',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '10px'
+    });
+    const titleLabel = createEl('span');
+    const activeName = window.currentCatalogName || window.activeCatalog || '';
+    const activeShort = activeName ? (String(activeName).split(/[/\\]/).pop() || activeName) : '';
+    const nLoaded = Array.isArray(loadedCats) ? loadedCats.length : 0;
+    titleLabel.textContent = nLoaded > 1 ? `Catalogs · ${nLoaded} loaded` : `Catalogs · ${activeShort}`;
+    titleLabel.style.fontSize = '13px';
+    titleLabel.style.fontWeight = '600';
+    titleLabel.style.whiteSpace = 'nowrap';
+    titleLabel.style.overflow = 'hidden';
+    titleLabel.style.textOverflow = 'ellipsis';
+    const collapseBtn = createEl('button');
+    collapseBtn.type = 'button';
+    collapseBtn.textContent = '×';
+    Object.assign(collapseBtn.style, {
+        border: 'none',
+        background: 'rgba(255,255,255,0.08)',
+        color: '#f9fafb',
+        width: '24px',
+        height: '24px',
+        borderRadius: '50%',
+        cursor: 'pointer',
+        fontSize: '14px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'background 150ms ease'
+    });
+    collapseBtn.addEventListener('mouseenter', () => collapseBtn.style.background = 'rgba(255,255,255,0.18)');
+    collapseBtn.addEventListener('mouseleave', () => collapseBtn.style.background = 'rgba(255,255,255,0.08)');
+    collapseBtn.setAttribute('aria-label', 'Collapse catalog controls');
+    headerRow.append(titleLabel, collapseBtn);
+    panel.appendChild(headerRow);
+
+    const expandedContent = createEl('div');
+    Object.assign(expandedContent.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        width: '100%',
+        gap: '10px',
+        transition: 'opacity 200ms ease, max-height 220ms ease',
+        overflow: 'visible',
+        maxHeight: '600px'
+    });
+    panel.appendChild(expandedContent);
+
+    // Loaded catalogs list (visibility + active selection)
+    const list = createEl('div');
+    Object.assign(list.style, {
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        padding: '6px 10px',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: '10px'
+    });
+
+    const listTitle = createEl('div');
+    listTitle.textContent = 'Loaded catalogs';
+    Object.assign(listTitle.style, { fontSize: '12px', color: '#cbd5e1', fontWeight: '600' });
+    list.appendChild(listTitle);
+
+    const rows = createEl('div');
+    Object.assign(rows.style, { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' });
+
+    const cats = Array.isArray(loadedCats) ? loadedCats : [];
+    cats.slice(0, 8).forEach((c) => {
+        const key = c.key || '';
+        const short = String(key).split(/[/\\]/).pop() || key;
+        const row = createEl('div');
+        Object.assign(row.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px'
+        });
+
+        const left = createEl('div');
+        Object.assign(left.style, { display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0', flex: '1' });
+
+        const radio = createEl('input');
+        radio.type = 'radio';
+        radio.name = 'catalog-active-select';
+        radio.checked = !!activeName && String(activeName) === String(key);
+        radio.addEventListener('change', () => {
+            try {
+                if (typeof window.setActiveCatalogForControls === 'function') {
+                    window.setActiveCatalogForControls(key);
+                    syncCatalogOverlayControls();
+                }
+            } catch (_) {}
+        });
+
+        const checkbox = createEl('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = c.visible !== false;
+        checkbox.title = 'Show/hide this catalog overlay';
+        checkbox.addEventListener('change', () => {
+            try {
+                if (typeof window.setCatalogOverlayVisible === 'function') {
+                    window.setCatalogOverlayVisible(key, checkbox.checked);
+                }
+            } catch (_) {}
+        });
+
+        const label = createEl('button');
+        label.type = 'button';
+        label.textContent = short;
+        Object.assign(label.style, {
+            border: 'none',
+            background: 'transparent',
+            color: '#e5e7eb',
+            fontSize: '12px',
+            cursor: 'pointer',
+            textAlign: 'left',
+            padding: '0',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            flex: '1',
+            minWidth: '0'
+        });
+        label.addEventListener('click', () => {
+            try {
+                if (typeof window.setActiveCatalogForControls === 'function') {
+                    window.setActiveCatalogForControls(key);
+                    syncCatalogOverlayControls();
+                    // re-render panel to update radio states/title
+                    renderCatalogOverlayControls();
+                }
+            } catch (_) {}
+        });
+
+        const meta = createEl('span');
+        meta.textContent = (typeof c.count === 'number') ? `${c.count}` : '';
+        Object.assign(meta.style, { fontSize: '11px', color: '#94a3b8', flex: '0 0 auto' });
+
+        left.append(radio, checkbox, label);
+        row.append(left, meta);
+        rows.appendChild(row);
+    });
+
+    if (cats.length > 8) {
+        const more = createEl('div');
+        more.textContent = `+${cats.length - 8} more`;
+        Object.assign(more.style, { fontSize: '11px', color: '#94a3b8', paddingLeft: '4px' });
+        rows.appendChild(more);
+    }
+
+    list.appendChild(rows);
+    expandedContent.appendChild(list);
+
+    const setCollapsedState = (collapsed) => {
+        catalogOverlayControlsCollapsed = collapsed;
+        try { window.catalogOverlayControlsCollapsed = collapsed; } catch (_) {}
+        panel.dataset.state = collapsed ? 'collapsed' : 'expanded';
+        if (collapsed) {
+            expandedContent.style.opacity = '0';
+            expandedContent.style.maxHeight = '0px';
+            expandedContent.style.pointerEvents = 'none';
+            expandedContent.style.overflow = 'hidden';
+            panel.style.padding = '6px 12px';
+            panel.style.minWidth = 'auto';
+            collapseBtn.textContent = '➕';
+            collapseBtn.setAttribute('aria-label', 'Show catalog controls');
+        } else {
+            expandedContent.style.opacity = '1';
+            expandedContent.style.maxHeight = '600px';
+            expandedContent.style.pointerEvents = 'auto';
+            expandedContent.style.overflow = 'visible';
+            panel.style.padding = '12px 20px';
+            panel.style.minWidth = '260px';
+            collapseBtn.textContent = '×';
+            collapseBtn.setAttribute('aria-label', 'Collapse catalog controls');
+        }
+        // Use requestAnimationFrame to ensure DOM has updated before recalculating positions
+        requestAnimationFrame(() => {
+            positionCatalogControlsPanel(panel);
+        });
+    };
+
+    collapseBtn.addEventListener('click', () => {
+        setCollapsedState(!catalogOverlayControlsCollapsed);
+    });
+
+    // Opacity slider row
+    const sliderRow = createEl('div');
+    sliderRow.style.display = 'flex';
+    sliderRow.style.alignItems = 'center';
+    sliderRow.style.gap = '10px';
+
+    const slider = createEl('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '1';
+    slider.step = '0.05';
+    slider.dataset.role = 'catalog-opacity-slider';
+    let initialOpacity = 0.8;
+    try {
+        if (window.regionStyles && typeof window.regionStyles.opacity === 'number') {
+            initialOpacity = window.regionStyles.opacity;
+        }
+    } catch (_) {}
+    slider.value = initialOpacity;
+    Object.assign(slider.style, {
+        width: '220px',
+        appearance: 'none',
+        height: '4px',
+        borderRadius: '999px',
+        background: `linear-gradient(90deg, #22d3ee ${initialOpacity * 100}%, rgba(99,102,241,0.3) ${initialOpacity * 100}%)`
+    });
+    slider.addEventListener('input', (e) => {
+        const numeric = parseFloat(e.target.value);
+        const pct = numeric * 100;
+        e.target.style.background = `linear-gradient(90deg, #22d3ee ${pct}%, rgba(99,102,241,0.3) ${pct}%)`;
+        const label = panel.querySelector('span[data-role="catalog-opacity-value"]');
+        if (label) label.textContent = numeric.toFixed(2);
+        try {
+            if (typeof window.setCatalogOverlayOpacity === 'function') {
+                window.setCatalogOverlayOpacity(numeric);
+            }
+        } catch (_) {}
+    });
+    sliderRow.appendChild(slider);
+
+    const sliderValue = createEl('span');
+    sliderValue.dataset.role = 'catalog-opacity-value';
+    sliderValue.style.fontSize = '12px';
+    sliderValue.style.width = '40px';
+    sliderValue.style.textAlign = 'right';
+    sliderValue.textContent = initialOpacity.toFixed(2);
+    sliderRow.appendChild(sliderValue);
+    expandedContent.appendChild(sliderRow);
+
+    // Color selection row
+    const colorRow = createEl('div');
+    colorRow.style.display = 'flex';
+    colorRow.style.alignItems = 'center';
+    colorRow.style.gap = '8px';
+
+    const colorLabel = createEl('span');
+    colorLabel.textContent = 'Color:';
+    Object.assign(colorLabel.style, {
+        fontSize: '12px',
+        color: '#d1d5db'
+    });
+
+    // Populate color options from catalog quick styles (if available)
+    let colorOptions = [];
+    try {
+        if (typeof window.getCatalogQuickStyleOptions === 'function') {
+            colorOptions = window.getCatalogQuickStyleOptions();
+        }
+    } catch (_) {}
+    if (!Array.isArray(colorOptions) || !colorOptions.length) {
+        colorOptions = [
+            { id: 'amber', label: 'Amber' },
+            { id: 'emerald', label: 'Emerald' },
+            { id: 'sky', label: 'Sky' },
+            { id: 'violet', label: 'Violet' }
+        ];
+    }
+
+    const swatchContainer = createEl('div');
+    swatchContainer.style.display = 'flex';
+    swatchContainer.style.alignItems = 'center';
+    swatchContainer.style.gap = '6px';
+
+    const ownerWin = window;
+    let activeStyleId = null;
+    try {
+        const rs = ownerWin.regionStyles;
+        if (rs && rs.borderColor) {
+            const match = colorOptions.find(opt => {
+                const c = (opt.style && opt.style.borderColor) || opt.style?.color;
+                if (!c) return false;
+                return String(c).toLowerCase() === String(rs.borderColor).toLowerCase();
+            });
+            if (match) activeStyleId = match.id;
+        }
+    } catch (_) {}
+
+    const updateSwatchSelection = (selectedId) => {
+        Array.from(swatchContainer.children).forEach((child) => {
+            if (!child.dataset) return;
+            const isSelected = child.dataset.styleId === selectedId;
+            child.style.boxShadow = isSelected
+                ? '0 0 0 2px #e5e7eb, 0 0 0 4px rgba(37,99,235,0.7)'
+                : '0 0 0 1px rgba(15,23,42,0.9)';
+            child.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
+        });
+    };
+
+    colorOptions.slice(0, 9).forEach((opt) => {
+        const style = opt.style || {};
+        const swatch = createEl('button');
+        swatch.type = 'button';
+        swatch.dataset.styleId = opt.id;
+        Object.assign(swatch.style, {
+            width: '18px',
+            height: '18px',
+            borderRadius: '999px',
+            padding: '0',
+            border: 'none',
+            cursor: 'pointer',
+            backgroundColor: style.backgroundColor && style.backgroundColor !== 'transparent'
+                ? style.backgroundColor
+                : (style.borderColor || '#ffffff'),
+            boxShadow: '0 0 0 1px rgba(15,23,42,0.9)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'transform 120ms ease, box-shadow 120ms ease',
+        });
+        if (style.backgroundColor === 'transparent' && style.borderColor) {
+            // Inner dot to hint at fill when only a stroke color is defined
+            const inner = createEl('div');
+            Object.assign(inner.style, {
+                width: '11px',
+                height: '11px',
+                borderRadius: '999px',
+                backgroundColor: style.borderColor
+            });
+            swatch.appendChild(inner);
+        }
+        swatch.title = opt.label || opt.id;
+        swatch.addEventListener('mouseenter', () => {
+            if (swatch.style.transform !== 'scale(1.05)') {
+                swatch.style.transform = 'scale(1.08)';
+            }
+        });
+        swatch.addEventListener('mouseleave', () => {
+            const isSelected = swatch.dataset.styleId === activeStyleId;
+            swatch.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
+        });
+        swatch.addEventListener('click', () => {
+            try {
+                const name = ownerWin.currentCatalogName || catalogName;
+                if (ownerWin && typeof ownerWin.applyCatalogQuickStyle === 'function') {
+                    ownerWin.applyCatalogQuickStyle(name, opt.id);
+                    activeStyleId = opt.id;
+                    updateSwatchSelection(activeStyleId);
+                }
+            } catch (_) {}
+        });
+        swatchContainer.appendChild(swatch);
+    });
+
+    // Default selection if none matched
+    if (!activeStyleId && colorOptions.length) {
+        activeStyleId = colorOptions[0].id;
+    }
+    updateSwatchSelection(activeStyleId);
+
+    colorRow.appendChild(colorLabel);
+    colorRow.appendChild(swatchContainer);
+    expandedContent.appendChild(colorRow);
+
+    const clearBtn = createEl('button');
+    clearBtn.type = 'button';
+    clearBtn.textContent = 'Clear';
+    Object.assign(clearBtn.style, {
+        border: 'none',
+        background: 'rgba(239,68,68,0.18)',
+        color: '#fecaca',
+        padding: '4px 12px',
+        borderRadius: '999px',
+        cursor: 'pointer',
+        fontSize: '12px'
+    });
+
+    clearBtn.addEventListener('click', () => {
+        try {
+            if (ownerWin && typeof ownerWin.clearCatalog === 'function') {
+                ownerWin.clearCatalog();
+            }
+        } catch (_) {}
+    });
+
+    const actionRow = createEl('div');
+    actionRow.style.display = 'flex';
+    actionRow.style.justifyContent = 'flex-end';
+    actionRow.style.gap = '10px';
+    actionRow.appendChild(clearBtn);
+    expandedContent.appendChild(actionRow);
+
+    hostDoc.body.appendChild(panel);
+    const paneId = window.__paneSyncId || 'root';
+    panel.dataset.ownerId = paneId;
+    try {
+        if (hostDoc.defaultView) {
+            hostDoc.defaultView.__catalogPanelOwnerId = paneId;
+        }
+    } catch (_) {}
+
+    const reposition = () => positionCatalogControlsPanel(panel);
+    reposition();
+    const resizeTargets = [];
+    if (typeof window !== 'undefined') resizeTargets.push(window);
+    try {
+        const topWin = window.top;
+        if (topWin && topWin !== window && !resizeTargets.includes(topWin)) resizeTargets.push(topWin);
+    } catch (_) {}
+    panel.__catalogCleanup = () => {
+        resizeTargets.forEach((target) => {
+            try { target.removeEventListener('resize', reposition); } catch (_) {}
+        });
+    };
+    resizeTargets.forEach((target) => {
+        try { target.addEventListener('resize', reposition); } catch (_) {}
+    });
+
+    setCollapsedState(!!catalogOverlayControlsCollapsed);
+    syncCatalogOverlayControls();
+}
+
+function formatSegmentAlignmentSummary(info) {
+    const summary = info?.reprojection_summary || {};
+    const rows = [];
+    const baseReasons = Array.isArray(info?.reprojection_reasons)
+        ? info.reprojection_reasons
+        : (info?.reprojection_reason ? [info.reprojection_reason] : []);
+    const summaryReasons = Array.isArray(summary.reasons) ? summary.reasons : [];
+    const reasonLines = baseReasons.length ? baseReasons : summaryReasons;
+    reasonLines.forEach((text) => {
+        rows.push({
+            label: '',
+            value: text
+        });
+    });
+    if (summary.base_shape && summary.segment_shape) {
+        rows.push({
+            label: 'Image size (px)',
+            value: `Input ${summary.base_shape.join(' × ')}, Segment ${summary.segment_shape.join(' × ')}`
+        });
+    }
+    if (summary.base_scale_arcsec && summary.segment_scale_arcsec) {
+        const formatScale = (arr) => arr.map((v) => Number(v).toFixed(3)).join(' / ');
+        rows.push({
+            label: 'Pixel scale (arcsec)',
+            value: `Input ${formatScale(summary.base_scale_arcsec)} — Segment ${formatScale(summary.segment_scale_arcsec)}`
+        });
+    }
+    if (typeof summary.center_offset_arcsec === 'number') {
+        rows.push({
+            label: 'Pointing offset',
+            value: `${summary.center_offset_arcsec.toFixed(2)} arcsec`
+        });
+    }
+    return rows;
+}
+
+function getTopLevelDocument() {
+    try {
+        if (window.top && window.top.document) {
+            return window.top.document;
+        }
+    } catch (err) {
+        /* ignore cross-origin */
+    }
+    return document;
+}
+
+function getCurrentFitsDisplayName() {
+    try {
+        const raw = window?.fitsData?.filename || window?.currentFitsFile || '';
+        if (!raw) return '';
+        const parts = String(raw).split(/[/\\]/);
+        const name = parts[parts.length - 1];
+        return name && name.trim() ? name.trim() : String(raw);
+    } catch (err) {
+        return '';
+    }
+}
+
+function getActivePaneBounds() {
+    try {
+        const topWin = window.top;
+        if (!topWin || topWin === window) return null;
+        const holder = topWin.__activePaneHolder;
+        if (holder && typeof holder.getBoundingClientRect === 'function') {
+            return holder.getBoundingClientRect();
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    return null;
+}
+
+function positionSegmentControlsPanel(panel) {
+    if (!panel) return;
+    const hostDoc = getTopLevelDocument();
+    const topWin = (() => { try { return window.top || window; } catch (_) { return window; } })();
+    const viewportHeight = (topWin && topWin.innerHeight) || hostDoc.documentElement?.clientHeight || window.innerHeight || 0;
+    const anchor = getActivePaneBounds();
+    panel.style.position = 'fixed';
+    panel.style.transform = 'translateX(-50%)';
+    
+    // Segment panel is always bottom-most (catalog panel goes above it)
+    if (!anchor) {
+        panel.style.left = '50%';
+        panel.style.bottom = '24px';
+        return;
+    }
+    const centerX = anchor.left + (anchor.width / 2);
+    const bottomOffset = Math.max(16, viewportHeight - anchor.bottom + 24);
+    panel.style.left = `${centerX}px`;
+    panel.style.bottom = `${bottomOffset}px`;
+    
+    // After positioning segment panel, reposition catalog panel if it exists
+    // (so catalog panel can recalculate its position relative to segment panel)
+    const catalogPanel = hostDoc.getElementById('catalog-overlay-controls');
+    if (catalogPanel) {
+        positionCatalogControlsPanel(catalogPanel);
+    }
+}
+
+function repositionSegmentOverlayControls() {
+    const hostDoc = getTopLevelDocument();
+    const panel = hostDoc.getElementById('segment-overlay-controls');
+    if (panel) {
+        positionSegmentControlsPanel(panel);
+        // positionSegmentControlsPanel already repositions catalog panel if it exists
+    }
+}
+
+function createSegmentModal(contentBuilder) {
+    const hostDoc = getTopLevelDocument();
+    const parentBody = hostDoc.body || document.body;
+    const backdrop = hostDoc.createElement('div');
+    Object.assign(backdrop.style, {
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(1px)',
+        zIndex: 60050,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        pointerEvents: 'auto'
+    });
+    const modal = hostDoc.createElement('div');
+    Object.assign(modal.style, {
+        width: 'min(520px, 92vw)',
+        background: '#333',
+        border: '1px solid #555',
+        borderRadius: '14px',
+        padding: '26px',
+        color: '#f5f5f5',
+        boxShadow: '0 18px 45px rgba(0,0,0,0.45)',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '18px'
+    });
+    const cleanup = () => {
+        backdrop.remove();
+    };
+    contentBuilder(modal, cleanup, hostDoc);
+    backdrop.appendChild(modal);
+    parentBody.appendChild(backdrop);
+    return cleanup;
+}
+
+function showSegmentProgressOverlay(message) {
+    const existing = document.getElementById('segment-progress-overlay');
+    if (existing) existing.remove();
+    const container = document.createElement('div');
+    container.id = 'segment-progress-overlay';
+    Object.assign(container.style, {
+        position: 'fixed',
+        left: '50%',
+        bottom: '28px',
+        transform: 'translateX(-50%)',
+        background: '#333',
+        border: '1px solid #555',
+        borderRadius: '999px',
+        padding: '9px 18px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        color: '#f5f5f5',
+        zIndex: 60040,
+        boxShadow: '0 10px 25px rgba(0,0,0,0.45)',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
+    });
+    const label = document.createElement('div');
+    label.textContent = message || 'Processing segment...';
+    label.style.fontSize = '12px';
+    label.style.fontWeight = '600';
+    const bar = document.createElement('div');
+    Object.assign(bar.style, {
+        width: '140px',
+        height: '6px',
+        borderRadius: '999px',
+        background: 'rgba(255,255,255,0.15)',
+        overflow: 'hidden'
+    });
+    const fill = document.createElement('div');
+    Object.assign(fill.style, {
+        width: '40%',
+        height: '100%',
+        background: 'linear-gradient(90deg,#f5f5f5,#b5b5b5)',
+        borderRadius: '999px',
+        animation: 'segment-progress-sheen 1.2s ease-in-out infinite'
+    });
+    bar.appendChild(fill);
+    const style = document.createElement('style');
+    style.textContent = `
+    @keyframes segment-progress-sheen {
+        0% { transform: translateX(-100%); }
+        50% { transform: translateX(20%); }
+        100% { transform: translateX(120%); }
+    }`;
+    document.head.appendChild(style);
+    container.append(label, bar);
+    document.body.appendChild(container);
+    return () => {
+        container.remove();
+        style.remove();
+    };
+}
+
+function promptSegmentReprojection(info, segmentName) {
+    const summaryRows = formatSegmentAlignmentSummary(info);
+    return new Promise((resolve) => {
+        let resolved = false;
+        const cleanup = createSegmentModal((modal, closeModal, hostDoc) => {
+            const docRef = hostDoc || document;
+            const baseDisplayName = getCurrentFitsDisplayName();
+            const baseLabel = baseDisplayName ? `“${baseDisplayName}” (input FITS view)` : 'the current FITS view';
+            const title = docRef.createElement('div');
+            title.textContent = 'Segment Alignment Mismatch';
+            Object.assign(title.style, { fontSize: '17px', fontWeight: '600', color: '#fdfdfd' });
+            const description = docRef.createElement('div');
+            description.textContent = `“${segmentName}” does not line up with ${baseLabel}.`;
+            Object.assign(description.style, { fontSize: '13px', opacity: 0.85, color: '#e5e5e5' });
+            const reproNote = docRef.createElement('div');
+            reproNote.textContent = 'We only regrid the segment header to the input image—no convolution or smoothing is applied.';
+            Object.assign(reproNote.style, {
+                fontSize: '11px',
+                color: '#cfcfcf',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '8px',
+                padding: '8px 10px'
+            });
+            const detailsBox = docRef.createElement('div');
+            Object.assign(detailsBox.style, {
+                background: '#2a2a2a',
+                border: '1px solid #4b4b4b',
+                borderRadius: '12px',
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                fontSize: '12px',
+                color: '#f0f0f0',
+                maxHeight: '220px',
+                overflowY: 'auto'
+            });
+            if (summaryRows.length) {
+                summaryRows.forEach((row) => {
+                    const rowEl = docRef.createElement('div');
+                    rowEl.style.display = 'flex';
+                    rowEl.style.flexDirection = 'column';
+                    const label = docRef.createElement('span');
+                    label.textContent = row.label;
+                    label.style.fontSize = '10px';
+                    label.style.letterSpacing = '0.05em';
+                    label.style.textTransform = 'uppercase';
+                    label.style.opacity = 0.65;
+                    const value = docRef.createElement('span');
+                    value.textContent = row.value;
+                    value.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+                    value.style.fontSize = '12px';
+                    value.style.color = '#fdfdfd';
+                    rowEl.append(label, value);
+                    detailsBox.appendChild(rowEl);
+                });
+            } else {
+                detailsBox.textContent = 'Differences detected between the base image and this segmentation map.';
+            }
+            const actions = docRef.createElement('div');
+            Object.assign(actions.style, {
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '12px'
+            });
+            const cancelBtn = docRef.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = 'Cancel';
+            Object.assign(cancelBtn.style, {
+                padding: '10px 18px',
+                borderRadius: '999px',
+                border: '1px solid #555',
+                background: 'transparent',
+                color: '#f8f8f8',
+                cursor: 'pointer'
+            });
+            const confirmBtn = docRef.createElement('button');
+            confirmBtn.type = 'button';
+            confirmBtn.textContent = 'Reproject & Load';
+            Object.assign(confirmBtn.style, {
+                padding: '10px 20px',
+                borderRadius: '999px',
+                border: 'none',
+                background: 'linear-gradient(135deg,#38bdf8,#818cf8)',
+                color: '#0f172a',
+                fontWeight: '600',
+                cursor: 'pointer',
+                boxShadow: '0 10px 25px rgba(56,189,248,0.35)'
+            });
+            cancelBtn.addEventListener('click', () => {
+                if (resolved) return;
+                resolved = true;
+                closeModal();
+                escTarget.removeEventListener('keydown', escHandler);
+                resolve(false);
+            });
+            confirmBtn.addEventListener('click', () => {
+                if (resolved) return;
+                resolved = true;
+                closeModal();
+                escTarget.removeEventListener('keydown', escHandler);
+                resolve(true);
+            });
+            actions.append(cancelBtn, confirmBtn);
+            modal.append(title, description, reproNote, detailsBox, actions);
+        });
+        const escTarget = getTopLevelDocument();
+        const escHandler = (event) => {
+            if (event.key === 'Escape') {
+                if (!resolved) {
+                    resolved = true;
+                    cleanup();
+                    resolve(false);
+                }
+                escTarget.removeEventListener('keydown', escHandler);
+            }
+        };
+        escTarget.addEventListener('keydown', escHandler);
+    });
+}
+
+async function loadSegmentOverlay(segmentName, options = {}) {
+    if (!segmentName) return;
+    const requestedColorMap = options.colorMap || segmentOverlayPreferences.colorMap || 'labels';
+    const silent = !!options.silent;
+    const forceReproject = !!options.forceReproject;
+    segmentOverlayPreferences.colorMap = requestedColorMap;
+    window.segmentOverlayPreferences = segmentOverlayPreferences;
+    const segmentPath = segmentName;
+    let dismissProgress = null;
+    if (!silent) {
+        if (forceReproject) {
+            dismissProgress = showSegmentProgressOverlay(`Reprojecting “${segmentPath}” to align with the current image...`);
+        } else {
+            showNotification(true, `Loading segment "${segmentPath}"...`);
+        }
+    }
+    try {
+        const response = await apiFetch('/segments/open/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                segment_name: segmentPath,
+                color_map: requestedColorMap,
+                force_reproject: forceReproject
+            })
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const info = await response.json();
+        if (dismissProgress) dismissProgress();
+        else if (!silent) showNotification(false);
+        if (info && info.needs_reprojection && !forceReproject) {
+            const proceed = await promptSegmentReprojection(info, segmentName);
+            if (!proceed) {
+                showNotification('Segment overlay canceled', 2500, 'info');
+                return;
+            }
+            return loadSegmentOverlay(segmentName, {
+                ...options,
+                forceReproject: true,
+                silent: false
+            });
+        }
+        if (info && info.needs_reprojection && forceReproject) {
+            const reason = (Array.isArray(info.reprojection_reasons) && info.reprojection_reasons[0])
+                || info.reprojection_reason
+                || 'Segment still requires reprojection.';
+            showNotification(reason, 4000, 'error');
+            return;
+        }
+        attachSegmentOverlay(info);
+    } catch (err) {
+        if (dismissProgress) dismissProgress();
+        else if (!silent) showNotification(false);
+        console.error('[segments] Failed to load overlay', err);
+        showNotification(`Failed to load segment: ${err.message}`, 3500, 'error');
+    }
+}
+
+function attachSegmentOverlay(info) {
+    const activeViewer = getActiveViewerInstance();
+    if (!activeViewer || !activeViewer.addTiledImage) {
+        showNotification('Viewer not ready. Open an image first.', 3000, 'warning');
+        return;
+    }
+    clearSegmentOverlay('replace');
+    const versionToken = Date.now();
+    const tileSource = {
+        width: info.width,
+        height: info.height,
+        tileSize: info.tileSize,
+        maxLevel: info.maxLevel,
+        minLevel: 0,
+        getTileUrl(level, x, y) {
+            const sid = getCurrentSessionId();
+            const sidParam = sid ? `sid=${encodeURIComponent(sid)}&` : '';
+            const mapParam = segmentOverlayPreferences.colorMap ? `cm=${encodeURIComponent(segmentOverlayPreferences.colorMap)}&` : '';
+            return `/segments-tile/${encodeURIComponent(info.segment_id)}/${level}/${x}/${y}?${sidParam}${mapParam}v=${versionToken}`;
+        }
+    };
+
+    if (window.currentTileInfo) {
+        if (window.currentTileInfo.width !== info.width || window.currentTileInfo.height !== info.height) {
+            console.warn('[segments] Segment dimensions differ from base image', {
+                segment: { width: info.width, height: info.height },
+                image: window.currentTileInfo
+            });
+        }
+    }
+
+    const overlayInfo = { ...info };
+    activeViewer.addTiledImage({
+        tileSource,
+        opacity: DEFAULT_SEGMENT_OVERLAY_OPACITY,
+        success: (event) => {
+            const resolvedColorMap = info.color_map || segmentOverlayPreferences.colorMap || 'labels';
+            segmentOverlayPreferences.colorMap = resolvedColorMap;
+            window.segmentOverlayPreferences = segmentOverlayPreferences;
+            const overlayName = info.segment_name || segmentOverlayState?.name || 'Segment';
+            overlayInfo.color_map = resolvedColorMap;
+            overlayInfo.segment_name = overlayName;
+            overlayInfo.reprojected = !!info.reprojected;
+            setSegmentOverlayState({
+                id: info.segment_id,
+                name: overlayName,
+                tiledImage: event.item,
+                opacity: DEFAULT_SEGMENT_OVERLAY_OPACITY,
+                width: info.width,
+                height: info.height,
+                version: versionToken,
+                colorMap: resolvedColorMap,
+                sourceSegmentName: info.segment_name || info.segmentName || info.name || overlayName
+            });
+            segmentOverlayMetadata = { ...overlayInfo };
+            window.segmentOverlayMetadata = segmentOverlayMetadata;
+            updateSegmentsPanelOverlayInfo();
+            renderSegmentOverlayControls(overlayInfo);
+            const successMessage = info?.reprojected ? 'Segment reprojected and loaded' : 'Segment overlay loaded';
+            showNotification(successMessage, 1500, 'success');
+        },
+        error: (evt) => {
+            console.error('[segments] addTiledImage error', evt);
+            showNotification('Failed to render segment overlay', 3500, 'error');
+        }
+    });
+}
+
+window.toggleSegmentsPanel = toggleSegmentsPanel;
+window.clearSegmentOverlay = clearSegmentOverlay;
+window.loadSegmentOverlay = loadSegmentOverlay;
+function resolveActivePaneWindow() {
+    try {
+        const host = window.top || window;
+        if (host && typeof host.getActivePaneWindow === 'function') {
+            const pane = host.getActivePaneWindow();
+            if (pane) return pane;
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    return window;
+}
+
+function openSegmentsFileBrowser() {
+    const hostWin = (() => {
+        try { return window.top || window; } catch (_) { return window; }
+    })();
+    const resolveLoaderContext = () => {
+        const paneCtx = resolveActivePaneWindow();
+        if (paneCtx && typeof paneCtx.loadSegmentOverlay === 'function') {
+            return paneCtx;
+        }
+        if (typeof window.loadSegmentOverlay === 'function') {
+            return window;
+        }
+        return null;
+    };
+    let opener = null;
+    if (hostWin && typeof hostWin.showFileBrowser === 'function') {
+        opener = hostWin.showFileBrowser.bind(hostWin);
+    } else if (typeof showFileBrowser === 'function') {
+        opener = showFileBrowser;
+    } else if (typeof window.showFileBrowser === 'function') {
+        opener = window.showFileBrowser;
+    }
+    if (!opener) {
+        showNotification('File browser not available', 3000, 'error');
+        return;
+    }
+    ensureGlobalOverlayPortal();
+    opener((selectedPath) => {
+        if (!selectedPath) {
+            return;
+        }
+        const loaderCtx = resolveLoaderContext();
+        const loader = loaderCtx && typeof loaderCtx.loadSegmentOverlay === 'function'
+            ? loaderCtx.loadSegmentOverlay.bind(loaderCtx)
+            : null;
+        if (!loader) {
+            showNotification('Viewer not ready. Open an image first.', 3500, 'error');
+            return;
+        }
+        loader(selectedPath);
+    });
+}
+
+window.openSegmentsFileBrowser = openSegmentsFileBrowser;
+
 async function ensureSession() {
     try {
+        // Prefer pane-specific SID from URL or pre-set global
+        let forced = null;
+        try {
+            if (typeof window !== 'undefined') {
+                forced = (window.__forcedSid) || (new URLSearchParams(window.location.search).get('sid')) || (new URLSearchParams(window.location.search).get('pane_sid'));
+            }
+        } catch(_) {}
+        if (forced) {
+            return forced;
+        }
         let sid = sessionStorage.getItem('sid');
         if (!sid) {
             const r = await fetch('/session/start');
@@ -83,14 +2329,36 @@ async function ensureSession() {
 
 
 
+// Prefer pane SID very early for all modules loaded in this frame
+try {
+    (function seedForcedSid() {
+        const sp = new URLSearchParams(window.location.search);
+        const forced = (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || null;
+        if (forced) {
+            window.__forcedSid = forced;
+        }
+    })();
+} catch(_) {}
+
 async function apiFetch(url, options = {}) {
     const sid = await ensureSession();
     const headers = options.headers ? { ...options.headers } : {};
     if (sid) headers['X-Session-ID'] = sid;
-    return fetch(url, { ...options, headers });
+    try {
+        const u = new URL(url, window.location.origin);
+        if (sid && !u.searchParams.get('sid')) u.searchParams.set('sid', sid);
+        return fetch(u.toString(), { ...options, headers });
+    } catch(_) {
+        return fetch(url, { ...options, headers });
+    }
 }
 
-document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", async function () {
+    try {
+        await loadColorcetPalettes();
+    } catch (err) {
+        console.warn('Continuing without Colorcet palettes:', err);
+    }
     // Warm up session
     ensureSession().catch(() => {});
     // Create a main container for the app's primary content
@@ -98,9 +2366,8 @@ document.addEventListener("DOMContentLoaded", function () {
     mainContainer.id = 'main-container';
     document.body.appendChild(mainContainer);
 
-    // Create a circular progress indicator
+    // Create a circular progress indicator (kept for future use but no auto popup)
     createProgressIndicator();
-    showNotification(true, "Loading FITS image...");
     
     // Load FITS data directly
     loadFitsData();
@@ -266,6 +2533,18 @@ const notificationRateLimit = {
 };
 
 function showNotification(message, duration = 1000, type = 'info') {
+    // In multi-panel / diagonal split modes, panes are iframes. A notification created inside an iframe
+    // cannot appear above sibling iframes regardless of z-index. Route notifications to the TOP window
+    // so they always render above the grid.
+    try {
+        const topWin = window.top;
+        const sp = new URLSearchParams(window.location.search || '');
+        const inPane = (window.self !== window.top) || sp.has('pane_sid') || sp.get('mp') === '1';
+        if (inPane && topWin && topWin !== window && typeof topWin.showNotification === 'function') {
+            return topWin.showNotification(message, duration, type);
+        }
+    } catch (_) {}
+
     if(duration>1500){
         duration = 1500;
     }
@@ -957,9 +3236,28 @@ function processBinaryData(arrayBuffer, filepath) {
                         filename: filepath
                     };
 
+                    // Check if we're in multi-panel mode - if so, don't clear catalogs as they should persist across panels
+                    let isMultiPanelMode = false;
+                    try {
+                        const topWin = (window.top && window.top !== window) ? window.top : window;
+                        const wrap = topWin.document.getElementById('multi-panel-container');
+                        const grid = topWin.document.getElementById('multi-panel-grid');
+                        isMultiPanelMode = wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 2;
+                    } catch (_) {}
+
                     if (typeof clearAllCatalogs === 'function') {
-                        console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
-                        clearAllCatalogs();
+                        let isPaneContext = false;
+                        try {
+                            const sp = new URLSearchParams(window.location.search || '');
+                            isPaneContext = sp.has('pane_sid') || sp.get('mp') === '1';
+                        } catch (_) {}
+                        const shouldPreserveCatalogs = isMultiPanelMode || isPaneContext || !!window.__preserveCatalogs;
+                        if (shouldPreserveCatalogs) {
+                            console.log("Multi-panel mode detected - preserving catalogs across panels.");
+                        } else {
+                            console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+                            clearAllCatalogs();
+                        }
                     }
 
                     // console.timeEnd('parseBinaryData');
@@ -1076,6 +3374,7 @@ function processImageInMainThread() {
     // CHANGE: Use global COLOR_MAPS and SCALING_FUNCTIONS
     const colorMapFunc = COLOR_MAPS[currentColorMap] || COLOR_MAPS.grayscale;
     const scalingFunc = SCALING_FUNCTIONS[currentScaling] || SCALING_FUNCTIONS.linear;
+    const invertColormap = !!(window.currentColorMapInverted ?? currentColorMapInverted);
     
     console.time('processPixels');
     for (let y = 0; y < fitsData.height; y++) {
@@ -1104,7 +3403,8 @@ function processImageInMainThread() {
             const scaledVal = Math.round(normalizedVal * 255);
             
             // Apply color map
-            const [r, g, b] = colorMapFunc(scaledVal);
+            const colorIndex = invertColormap ? 255 - scaledVal : scaledVal;
+            const [r, g, b] = colorMapFunc(colorIndex);
             
             // Set RGBA values
             data[idx] = r;     // R
@@ -1441,7 +3741,8 @@ function processImageInWorker() {
         worker.postMessage({
             fitsData: window.fitsData,
             colorMap: window.currentColorMap || 'grayscale',
-            scaling: window.currentScaling || 'linear'
+            scaling: window.currentScaling || 'linear',
+            invertColormap: !!(window.currentColorMapInverted ?? currentColorMapInverted)
         });
         
         // Handle the worker's response
@@ -1553,6 +3854,7 @@ function processLargeImageInMainThread(viewportSettings) {
         const scalingFunc = (window.SCALING_FUNCTIONS && window.SCALING_FUNCTIONS[window.currentScaling]) || 
                            (window.SCALING_FUNCTIONS && window.SCALING_FUNCTIONS.linear) || 
                            ((val, min, max) => (val - min) / (max - min)); // Default linear
+        const invertColormap = !!(window.currentColorMapInverted ?? currentColorMapInverted);
         
         // Process the image in smaller chunks
         const chunkSize = 50; // Use an even smaller chunk size for extremely large images
@@ -1601,7 +3903,7 @@ function processLargeImageInMainThread(viewportSettings) {
                     // Apply color map with error handling
                     let r = scaledVal, g = scaledVal, b = scaledVal;
                     try {
-                        const rgb = colorMapFunc(scaledVal);
+                        const rgb = colorMapFunc(invertColormap ? 255 - scaledVal : scaledVal);
                         r = rgb[0];
                         g = rgb[1];
                         b = rgb[2];
@@ -1893,8 +4195,9 @@ function createDynamicRangeControl() {
 }
 
 function ensureHistogramOverlayReady() {
-    const bg = document.getElementById('histogram-bg-canvas');
-    const lines = document.getElementById('histogram-lines-canvas');
+    const doc = getHistogramDocument();
+    const bg = doc.getElementById('histogram-bg-canvas');
+    const lines = doc.getElementById('histogram-lines-canvas');
     if (!bg || !lines) return false;
 
     // Match size to background canvas
@@ -1914,10 +4217,43 @@ function ensureHistogramOverlayReady() {
 }
 // PASTE THE FOLLOWING CODE INTO static/main.js, REPLACING THE EXISTING showDynamicRangePopup function
 
-function showDynamicRangePopup() {
+function showDynamicRangePopup(options = {}) {
+    const opts = options || {};
     console.log("showDynamicRangePopup called.");
     const isTiledViewActive = !!(window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen());
     console.log(`isTiledViewActive: ${isTiledViewActive}`);
+
+    // In multi-panel layouts, the top window toolbar may call this function,
+    // but the actual image metadata lives inside the active iframe pane.
+    // If we're the top window and multi-panel is visible, delegate to the active pane
+    // (or a best-effort pane that has metadata) so histogram works in 2x2/diagonal/etc.
+    try {
+        const isTop = (window.top === window);
+        if (isTop) {
+            const wrap = document.getElementById('multi-panel-container');
+            const grid = document.getElementById('multi-panel-grid');
+            const multiActive = !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 1);
+            if (multiActive) {
+                const activePaneWin = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                const hasMeta = (w) => !!(w && w.fitsData && typeof w.fitsData.min_value !== 'undefined' && typeof w.fitsData.max_value !== 'undefined');
+                let target = (activePaneWin && activePaneWin !== window && typeof activePaneWin.showDynamicRangePopup === 'function') ? activePaneWin : null;
+                if (!hasMeta(target)) {
+                    // Fallback: first pane with metadata
+                    const frames = Array.from(grid.querySelectorAll('iframe'));
+                    for (const f of frames) {
+                        const w = f && f.contentWindow;
+                        if (w && w !== window && typeof w.showDynamicRangePopup === 'function' && hasMeta(w)) {
+                            target = w;
+                            break;
+                        }
+                    }
+                }
+                if (target && target !== window && typeof target.showDynamicRangePopup === 'function') {
+                    return target.showDynamicRangePopup(opts);
+                }
+            }
+        }
+    } catch (_) {}
 
     if (!window.fitsData || typeof window.fitsData.min_value === 'undefined' || typeof window.fitsData.max_value === 'undefined') {
         showNotification('Image metadata not loaded. Please load an image first.', 3000, 'warning');
@@ -1930,15 +4266,63 @@ function showDynamicRangePopup() {
     }
     console.log("All checks passed in showDynamicRangePopup, proceeding to show popup.");
 
+    let hostDocument = null;
+    let hostWindow = null;
+    try {
+        const root = window.top || window;
+        if (root.document && root.document.body) {
+            hostDocument = root.document;
+            hostWindow = root;
+        }
+    } catch(_) {}
+    if (!hostDocument) {
+        hostDocument = window.document;
+        hostWindow = window;
+    }
+    try {
+        const root = window.top || window;
+        root.__histogramHostDoc = hostDocument;
+        root.__histogramHostWin = hostWindow;
+    } catch(_) {
+        window.__histogramHostDoc = hostDocument;
+        window.__histogramHostWin = hostWindow;
+    }
+    const popupDoc = hostDocument;
+    const document = hostDocument;
+
+    const currentPaneId = getCurrentPaneId();
     let popup = document.getElementById('dynamic-range-popup');
     const titleElementId = 'dynamic-range-popup-title'; // For drag handling
+    let preservedPosition = null;
+
+    if (popup) {
+        if (popup.dataset.ownerPaneId !== currentPaneId || opts.forceRebind || opts.forceRebuild) {
+            preservedPosition = {
+                top: popup.style.top,
+                left: popup.style.left,
+                transform: popup.style.transform
+            };
+            try { popup.remove(); } catch (_) {}
+            popup = null;
+        }
+    }
 
     if (popup) {
         popup.style.display = 'block';
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        popup.dataset.ownerPaneId = currentPaneId;
+        const doc = getHistogramDocument();
+        const minInput = doc.getElementById('min-range-input');
+        const maxInput = doc.getElementById('max-range-input');
         if (minInput && maxInput && window.fitsData) {
             setRangeInputs(window.fitsData.min_value, window.fitsData.max_value);
+        }
+        const invertToggle = doc.getElementById('invert-colormap-toggle');
+        if (invertToggle) {
+            invertToggle.checked = !!window.currentColorMapInverted;
+        }
+        const fileNameLabel = popup.querySelector('.scaling-popup-filename');
+        if (fileNameLabel) {
+            fileNameLabel.textContent = window.fitsData?.filename || window.currentFitsFile || 'Current image';
         }
         requestHistogramUpdate();
         attachHistogramInteractionWhenReady();
@@ -1955,22 +4339,40 @@ function showDynamicRangePopup() {
     popup.style.border = '1px solid #555';
     popup.style.borderRadius = '5px';
     popup.style.padding = '15px';
-    popup.style.zIndex = '1000';
+    popup.style.zIndex = '60000';
     popup.style.width = '500px'; // Keep reasonable width
     popup.style.boxSizing = 'border-box';
     popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
+    popup.dataset.ownerPaneId = currentPaneId;
+    if (preservedPosition) {
+        if (preservedPosition.transform) popup.style.transform = preservedPosition.transform;
+        if (preservedPosition.top) popup.style.top = preservedPosition.top;
+        if (preservedPosition.left) popup.style.left = preservedPosition.left;
+    }
 
-    const title = document.createElement('h3');
+    const title = document.createElement('div');
     title.id = titleElementId;
-    title.textContent = 'Scaling Controls';
-    title.style.margin = '0 0 15px 0';
-    title.style.color = '#fff';
-    title.style.fontFamily = 'Arial, sans-serif';
-    title.style.fontSize = '18px';
-    title.style.fontWeight = 'bold';
-    title.style.borderBottom = '1px solid #555';
-    title.style.paddingBottom = '10px';
-    title.style.cursor = 'grab'; // Indicate title is draggable
+    Object.assign(title.style, {
+        margin: '0 0 15px 0',
+        color: '#fff',
+        fontFamily: 'Arial, sans-serif',
+        borderBottom: '1px solid #555',
+        paddingBottom: '10px',
+        cursor: 'grab',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px'
+    });
+    const titleText = document.createElement('div');
+    Object.assign(titleText.style, { fontSize: '18px', fontWeight: 'bold' });
+    titleText.textContent = 'Scaling Controls';
+    const fileNameLabel = document.createElement('div');
+    fileNameLabel.className = 'scaling-popup-filename';
+    Object.assign(fileNameLabel.style, { fontSize: '13px', opacity: 0.8 });
+    const fileName = (window.fitsData?.filename || window.currentFitsFile || 'Current image');
+    fileNameLabel.textContent = fileName;
+    title.appendChild(titleText);
+    title.appendChild(fileNameLabel);
 
     const closeButton = document.createElement('button');
     closeButton.textContent = '×';
@@ -2000,65 +4402,7 @@ function showDynamicRangePopup() {
         popup.style.display = 'none';
     });
 
-    // Draggable functionality for the entire popup
-    let offsetX, offsetY;
-    const dragMouseDown = (e) => {
-        if (e.button !== 0) return; // Only drag with left mouse button
-
-        let target = e.target;
-        let allowDrag = false;
-
-        // Allow dragging if mousedown is on the popup background or its title
-        if (target === popup || target === title) {
-            allowDrag = true;
-        }
-
-        // Prevent dragging if clicking on specific interactive child elements
-        const nonDragTags = ['INPUT', 'BUTTON', 'SELECT', 'CANVAS'];
-        if (nonDragTags.includes(target.tagName) || 
-            target.closest('.custom-dropdown-option') || 
-            target === closeButton || // Explicitly prevent drag on close button
-            (target.style && target.style.cursor === 'pointer') // General check for pointer cursor elements
-           ) {
-            allowDrag = false;
-        }
-        
-        if (!allowDrag) return;
-
-        e.preventDefault(); // Prevent text selection and other default behaviors
-
-        // If popup is centered with transform, convert to pixel values
-        if (popup.style.transform.includes('translate')) {
-            const rect = popup.getBoundingClientRect();
-            popup.style.top = `${rect.top}px`;
-            popup.style.left = `${rect.left}px`;
-            popup.style.transform = 'none';
-        }
-
-        offsetX = e.clientX - popup.offsetLeft;
-        offsetY = e.clientY - popup.offsetTop;
-        title.style.cursor = 'grabbing'; // Change cursor on title during drag
-        popup.style.cursor = 'grabbing'; // Change cursor on popup during drag
-
-
-        document.addEventListener('mousemove', elementDrag);
-        document.addEventListener('mouseup', closeDragElement);
-    };
-
-    const elementDrag = (e) => {
-        e.preventDefault();
-        popup.style.top = (e.clientY - offsetY) + 'px';
-        popup.style.left = (e.clientX - offsetX) + 'px';
-    };
-
-    const closeDragElement = () => {
-        document.removeEventListener('mouseup', closeDragElement);
-        document.removeEventListener('mousemove', elementDrag);
-        title.style.cursor = 'grab'; // Restore cursor
-        popup.style.cursor = 'default'; // Restore cursor
-    };
-
-    popup.addEventListener('mousedown', dragMouseDown);
+    enablePopupDrag(popup, title, popupDoc);
 
 
     const canvasContainer = document.createElement('div');
@@ -2152,229 +4496,60 @@ function showDynamicRangePopup() {
     inputContainer.appendChild(maxLabel); inputContainer.appendChild(maxInput);
     attachRangeInputAutoApply(minInput, maxInput);
 
-    // Helper function to create searchable dropdown
-    function createSearchableDropdown(labelText, selectId, optionsArray, globalVarName, defaultSelectedValue, hasSwatches = false) {
+    // Helper function to create searchable dropdown is defined globally (createSearchableDropdown)
+
+    function createInvertColorMapToggle() {
         const container = document.createElement('div');
-        container.style.marginBottom = '10px';
+        container.style.marginTop = '6px';
         container.style.display = 'flex';
         container.style.flexDirection = 'column';
-    
+
         const label = document.createElement('label');
-        label.textContent = labelText;
-        Object.assign(label.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '14px', alignSelf: 'flex-start', marginBottom: '5px' });
-    
-        const customSelectContainer = document.createElement('div');
-        Object.assign(customSelectContainer.style, { width: '100%', position: 'relative' });
-    
-        const selectedOptionDisplay = document.createElement('div');
-        Object.assign(selectedOptionDisplay.style, {
-            display: 'flex', alignItems: 'center', padding: '8px 10px', backgroundColor: '#444',
-            color: '#fff', border: '1px solid #555', borderRadius: '3px', cursor: 'pointer',
-            fontFamily: 'Arial, sans-serif', fontSize: '14px', justifyContent: 'space-between'
-        });
-    
-        const selectedSwatch = document.createElement('div');
-        if (hasSwatches) {
-            Object.assign(selectedSwatch.style, { width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: 'linear-gradient(to right, #000, #fff)' });
-        }
-        const selectedText = document.createElement('span');
-        selectedText.style.flex = '1';
-        const dropdownArrow = document.createElement('span');
-        dropdownArrow.textContent = '▼';
-        dropdownArrow.style.marginLeft = '10px';
-        dropdownArrow.style.fontSize = '10px';
-    
-        if (hasSwatches) selectedOptionDisplay.appendChild(selectedSwatch);
-        selectedOptionDisplay.appendChild(selectedText);
-        selectedOptionDisplay.appendChild(dropdownArrow);
-    
-        const optionsOuterContainer = document.createElement('div');
-        Object.assign(optionsOuterContainer.style, {
-            position: 'absolute', top: '100%', left: '0', width: '100%', backgroundColor: '#3a3a3a',
-            border: '1px solid #555', borderRadius: '0 0 3px 3px', zIndex: '20', display: 'none', borderTop: 'none'
-        });
-    
-        const searchInput = document.createElement('input');
-        searchInput.type = 'text';
-        searchInput.placeholder = `Search ${labelText.toLowerCase().replace(':', '')}...`;
-        Object.assign(searchInput.style, {
-            width: 'calc(100% - 0px)', padding: '8px 10px', margin: '0', border: 'none',
-            borderBottom: '1px solid #555', borderRadius: '0', backgroundColor: '#3a3a3a',
-            color: '#fff', boxSizing: 'border-box'
-        });
-    
-        const optionsListContainer = document.createElement('div');
-        Object.assign(optionsListContainer.style, { maxHeight: '150px', overflowY: 'auto' });
-    
-        searchInput.addEventListener('input', () => {
-            const filter = searchInput.value.toLowerCase();
-            const options = optionsListContainer.querySelectorAll('.custom-dropdown-option');
-            options.forEach(option => {
-                const text = option.dataset.label.toLowerCase();
-                option.style.display = text.includes(filter) ? (hasSwatches ? 'flex' : 'block') : 'none';
-            });
-        });
-    
-        optionsOuterContainer.appendChild(searchInput);
-        optionsOuterContainer.appendChild(optionsListContainer);
-    
-        const hiddenSelect = document.createElement('select');
-        hiddenSelect.id = selectId;
-        hiddenSelect.style.display = 'none';
-    
-        let currentSelectionValue = window[globalVarName] || defaultSelectedValue;
-        const initialSelection = optionsArray.find(opt => opt.value === currentSelectionValue) || optionsArray.find(opt => opt.value === defaultSelectedValue);
-        if (initialSelection) {
-            selectedText.textContent = initialSelection.label;
-            if (hasSwatches && initialSelection.gradient) selectedSwatch.style.background = initialSelection.gradient;
-        }
-    
-        optionsArray.forEach(opt => {
-            const optionEl = document.createElement('option');
-            optionEl.value = opt.value;
-            optionEl.textContent = opt.label;
-            if (opt.value === currentSelectionValue) optionEl.selected = true;
-            hiddenSelect.appendChild(optionEl);
-    
-            const visualOption = document.createElement('div');
-            visualOption.classList.add('custom-dropdown-option');
-            visualOption.dataset.value = opt.value;
-            visualOption.dataset.label = opt.label;
-            Object.assign(visualOption.style, {
-                padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid #505050',
-                display: hasSwatches ? 'flex' : 'block', alignItems: hasSwatches ? 'center' : 'normal', color: '#fff'
-            });
-            if (opt.value === currentSelectionValue) visualOption.style.backgroundColor = '#555';
-    
-            if (hasSwatches) {
-                const swatch = document.createElement('div');
-                Object.assign(swatch.style, { minWidth: '60px', width: '60px', height: '15px', marginRight: '10px', borderRadius: '2px', background: opt.gradient || '#ccc' });
-                visualOption.appendChild(swatch);
-            }
-            const textSpan = document.createElement('span');
-            textSpan.textContent = opt.label;
-            visualOption.appendChild(textSpan);
-    
-            visualOption.addEventListener('mouseover', () => visualOption.style.backgroundColor = '#555');
-            visualOption.addEventListener('mouseout', () => {
-                if (visualOption.dataset.value !== currentSelectionValue) visualOption.style.backgroundColor = 'transparent';
-            });
-            visualOption.addEventListener('click', () => {
-                hiddenSelect.value = opt.value;
-                selectedText.textContent = opt.label;
-                if (hasSwatches && opt.gradient) selectedSwatch.style.background = opt.gradient;
-                currentSelectionValue = opt.value;
-                window[globalVarName] = opt.value;
-    
-                optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(vOpt => {
-                    vOpt.style.backgroundColor = (vOpt.dataset.value === currentSelectionValue) ? '#555' : 'transparent';
-                });
-                optionsOuterContainer.style.display = 'none';
-                const event = new Event('change');
-                hiddenSelect.dispatchEvent(event);
-                console.log(`${labelText} changed to: ${window[globalVarName]}`);
-            });
-    
-            optionsListContainer.appendChild(visualOption);
-        });
-        if (optionsListContainer.lastChild && optionsListContainer.lastChild.style) {
-            optionsListContainer.lastChild.style.borderBottom = 'none';
-        }
-    
-        selectedOptionDisplay.addEventListener('click', () => {
-            const isOpen = optionsOuterContainer.style.display === 'block';
-            if (!isOpen) {
-                optionsOuterContainer.style.display = 'block';
-                searchInput.value = '';
-                optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(opt => opt.style.display = hasSwatches ? 'flex' : 'block');
-                searchInput.focus();
-    
-                optionsOuterContainer.style.top = '100%';
-                optionsOuterContainer.style.bottom = 'auto';
-                optionsOuterContainer.style.maxHeight = hasSwatches ? '240px' : '180px';
-    
-                const parentRect = customSelectContainer.getBoundingClientRect();
-                const dropdownRect = optionsOuterContainer.getBoundingClientRect();
-                if (dropdownRect.bottom > window.innerHeight) {
-                    if (parentRect.top - dropdownRect.height > 0) {
-                        optionsOuterContainer.style.top = 'auto';
-                        optionsOuterContainer.style.bottom = '100%';
-                    } else {
-                        const availableHeight = window.innerHeight - parentRect.bottom - 10;
-                        optionsOuterContainer.style.maxHeight = `${Math.max(50, availableHeight)}px`;
-                    }
-                }
-            } else {
-                optionsOuterContainer.style.display = 'none';
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
+        label.style.cursor = 'pointer';
+        label.style.color = '#aaa';
+        label.style.fontSize = '14px';
+        label.htmlFor = 'invert-colormap-toggle';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = 'invert-colormap-toggle';
+        checkbox.style.marginRight = '8px';
+        checkbox.checked = !!window.currentColorMapInverted;
+
+        const labelText = document.createElement('span');
+        labelText.textContent = 'Invert color map';
+
+        label.appendChild(checkbox);
+        label.appendChild(labelText);
+
+        const helper = document.createElement('div');
+        helper.textContent = 'Flip the gradient direction';
+        helper.style.fontSize = '11px';
+        helper.style.color = '#777';
+        helper.style.marginLeft = '26px';
+
+        checkbox.addEventListener('change', () => {
+            const checked = checkbox.checked;
+            window.currentColorMapInverted = checked;
+            currentColorMapInverted = checked;
+            if (typeof applyColorMap === 'function' && window.currentColorMap) {
+                applyColorMap(window.currentColorMap);
+            } else if (typeof applyDynamicRange === 'function') {
+                applyDynamicRange();
+            } else if (typeof refreshImage === 'function') {
+                refreshImage();
             }
         });
-    
-        customSelectContainer.appendChild(selectedOptionDisplay);
-        customSelectContainer.appendChild(optionsOuterContainer);
-        customSelectContainer.appendChild(hiddenSelect);
-    
-        hiddenSelect.addEventListener('change', () => {
-            // Keep global in sync and label/swatches updated
-            window[globalVarName] = hiddenSelect.value;
-            const selOpt = optionsArray.find(o => o.value === hiddenSelect.value);
-            if (selOpt) {
-                selectedText.textContent = selOpt.label;
-                if (hasSwatches && selOpt.gradient) selectedSwatch.style.background = selOpt.gradient;
-            }
-    
-            // Auto-apply behavior
-            const ensureMinMax = () => {
-                const minInput = document.getElementById('min-range-input');
-                const maxInput = document.getElementById('max-range-input');
-                const needsPrefill = !minInput || !maxInput || minInput.value === '' || maxInput.value === '' ||
-                                     isNaN(parseFloat(minInput.value)) || isNaN(parseFloat(maxInput.value));
-                if (needsPrefill) {
-                    const fallback = { min: (window.fitsData?.min_value ?? 0), max: (window.fitsData?.max_value ?? 1) };
-                    const { min, max } = (typeof resolveDefaultRange === 'function') ? resolveDefaultRange() : fallback;
-                    if (typeof setRangeInputs === 'function') setRangeInputs(min, max);
-                    if (window.fitsData) { window.fitsData.min_value = min; window.fitsData.max_value = max; }
-                }
-            };
-    
-            if (selectId === 'color-map-select') {
-                ensureMinMax();
-                if (typeof applyColorMap === 'function') {
-                    applyColorMap(hiddenSelect.value); // Will call applyDynamicRange internally
-                } else if (typeof applyDynamicRange === 'function') {
-                    applyDynamicRange();
-                }
-            } else if (selectId === 'scaling-select') {
-                ensureMinMax();
-                if (typeof applyDynamicRange === 'function') applyDynamicRange();
-            }
-        });
-    
+
         container.appendChild(label);
-        container.appendChild(customSelectContainer);
+        // container.appendChild(helper);
         return container;
     }
 
     // Define colormaps and scaling functions
-    const colorMaps = [
-        { value: 'grayscale', label: 'Grayscale', gradient: 'linear-gradient(to right, #000, #fff)' },
-        { value: 'viridis', label: 'Viridis', gradient: 'linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)' },
-        { value: 'plasma', label: 'Plasma', gradient: 'linear-gradient(to right, #0d0887, #5302a3, #8b0aa5, #b83289, #db5c68, #f48849, #febc2a)' },
-        { value: 'inferno', label: 'Inferno', gradient: 'linear-gradient(to right, #000004, #320a5a, #781c6d, #bb3754, #ec6824, #fbb41a)' },
-        { value: 'rdbu',    label: 'RdBu',    gradient: 'linear-gradient(to right, #b2182b, #f7f7f7, #2166ac)' },
-        { value: 'spectral',label: 'Spectral',gradient: 'linear-gradient(to right, #9e0142, #f46d43, #fee08b, #e6f598, #66c2a5, #5e4fa2)' },
-        { value: 'cividis', label: 'Cividis', gradient: 'linear-gradient(to right, #00204c, #213d6b, #555b6c, #7b7a77, #a59c74, #d9d57a)' },
-        { value: 'hot', label: 'Hot', gradient: 'linear-gradient(to right, #000, #f00, #ff0, #fff)' },
-        { value: 'cool', label: 'Cool', gradient: 'linear-gradient(to right, #00f, #0ff, #0f0)' }, // Corrected cool gradient
-        { value: 'rainbow', label: 'Rainbow', gradient: 'linear-gradient(to right, #6e40aa, #be3caf, #fe4b83, #ff7847, #e2b72f, #aff05b)' },
-        { value: 'jet', label: 'Jet', gradient: 'linear-gradient(to right, #00008f, #0020ff, #00ffff, #51ff77, #fdff00, #ff0000, #800000)' },
-        { value: 'blue',    label: 'Blue',    gradient: 'linear-gradient(to right, #000000, #0000ff)' },
-        { value: 'red',     label: 'Red',     gradient: 'linear-gradient(to right, #000000, #ff0000)' },
-        { value: 'green',   label: 'Green',   gradient: 'linear-gradient(to right, #000000, #00ff00)' },
-        { value: 'orange',  label: 'Orange',  gradient: 'linear-gradient(to right, #000000, #ffa500)' },
-        { value: 'yellow',  label: 'Yellow',  gradient: 'linear-gradient(to right, #000000, #ffff00)' },
-        { value: 'cyan',    label: 'Cyan',    gradient: 'linear-gradient(to right, #000000, #00ffff)' },
-        { value: 'magenta', label: 'Magenta', gradient: 'linear-gradient(to right, #000000, #ff00ff)' },
-    ];
+    const colorMaps = getColorMapOptions();
     const scalingFunctions = [
         { value: 'linear', label: 'Linear' }, { value: 'logarithmic', label: 'Logarithmic' },
         { value: 'sqrt', label: 'Square Root' }, { value: 'power', label: 'Power (10^x)' }, // Corrected Power label
@@ -2382,6 +4557,10 @@ function showDynamicRangePopup() {
     ];
 
     const colorMapDropdown = createSearchableDropdown('Color Map:', 'color-map-select', colorMaps, 'currentColorMap', 'grayscale', true);
+    if (typeof window !== 'undefined') {
+        window.__baseColorMapOptions = colorMaps.map(opt => ({ ...opt }));
+    }
+    const invertToggleControl = createInvertColorMapToggle();
     const scalingDropdown = createSearchableDropdown('Scaling:', 'scaling-select', scalingFunctions, 'currentScaling', 'linear', false);
     
     // Close dropdowns when clicking outside
@@ -2407,6 +4586,7 @@ function showDynamicRangePopup() {
     const leftColumn = document.createElement('div');
     leftColumn.style.flex = '1';
     leftColumn.appendChild(colorMapDropdown);
+    leftColumn.appendChild(invertToggleControl);
 
     const rightColumn = document.createElement('div');
     rightColumn.style.flex = '1';
@@ -2445,7 +4625,7 @@ function showDynamicRangePopup() {
     popup.appendChild(inputContainer);
     popup.appendChild(controlsContainer); // Add new container for dropdowns
     popup.appendChild(buttonsContainer);
-    document.body.appendChild(popup);
+    popupDoc.body.appendChild(popup);
 
     addHistogramInteraction(linesCanvas, minInput, maxInput);
     requestHistogramUpdate(); // Initial histogram draw
@@ -2512,10 +4692,12 @@ function attachRangeInputAutoApply(minInput, maxInput) {
 // END OF REPLACEMENT CODE
 // Function to apply the new dynamic range
 function applyDynamicRange() {
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
-    const colorMapSelect = document.getElementById('color-map-select');
-    const scalingSelect = document.getElementById('scaling-select');
+    const doc = getHistogramDocument();
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
+    const colorMapSelect = doc.getElementById('color-map-select');
+    const scalingSelect = doc.getElementById('scaling-select');
+    const invertToggle = doc.getElementById('invert-colormap-toggle');
     
     if (!minInput || !maxInput) {
         console.error('Min/max input fields not found');
@@ -2556,6 +4738,11 @@ function applyDynamicRange() {
     if (scalingSelect) {
         window.currentScaling = scalingSelect.value;
     }
+    
+    if (invertToggle) {
+        window.currentColorMapInverted = invertToggle.checked;
+        currentColorMapInverted = invertToggle.checked;
+    }
 
     const isTiledViewActive = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
 
@@ -2572,6 +4759,7 @@ function applyDynamicRange() {
                 max_value: maxValue,
                 color_map: window.currentColorMap,
                 scaling_function: window.currentScaling,
+                invert_colormap: !!window.currentColorMapInverted,
                 file_id: window.currentLoadedFitsFileId 
             })
         })
@@ -2603,7 +4791,14 @@ function applyDynamicRange() {
                         tileSize: currentTileInfo.tileSize,
                         maxLevel: currentTileInfo.maxLevel,
                         getTileUrl: function(level, x, y) {
-                            const sid = sessionStorage.getItem('sid');
+                            const sid = (function(){
+                                try {
+                                    return (window.__forcedSid) ||
+                                           (new URLSearchParams(window.location.search).get('sid')) ||
+                                           (new URLSearchParams(window.location.search).get('pane_sid')) ||
+                                           sessionStorage.getItem('sid');
+                                } catch(_) { return sessionStorage.getItem('sid'); }
+                            })();
                             const sidParam = sid ? `sid=${encodeURIComponent(sid)}&` : '';
                             return `/fits-tile/${level}/${x}/${y}?${sidParam}v=${currentDynamicRangeVersion}`;
                         },
@@ -2626,6 +4821,13 @@ function applyDynamicRange() {
                             window.tiledViewer.drawer.setImageSmoothingEnabled(false);
                         }
                         console.log("Viewport restored and image smoothing re-applied.");
+                        if (segmentOverlayState && segmentOverlayState.sourceSegmentName) {
+                            loadSegmentOverlay(segmentOverlayState.sourceSegmentName, {
+                                colorMap: segmentOverlayState.colorMap || segmentOverlayPreferences.colorMap,
+                                silent: true,
+                                reuseCache: true
+                            });
+                        }
                     });
 
                     showNotification('Dynamic range applied.', 1000, 'success');
@@ -2707,8 +4909,9 @@ function resetDynamicRange() {
         : { min: 0, max: 1 };
 
     // Update inputs
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
+    const doc = getHistogramDocument();
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
     if (typeof setRangeInputs === 'function') {
         setRangeInputs(min, max);
     } else {
@@ -2725,8 +4928,8 @@ function resetDynamicRange() {
     }
 
     // Ensure color map and scaling exist before apply
-    const colorSel = document.getElementById('color-map-select');
-    const scalingSel = document.getElementById('scaling-select');
+    const colorSel = doc.getElementById('color-map-select');
+    const scalingSel = doc.getElementById('scaling-select');
     window.currentColorMap = window.currentColorMap || (colorSel && colorSel.value) || 'grayscale';
     window.currentScaling  = window.currentScaling  || (scalingSel && scalingSel.value) || 'linear';
 
@@ -2752,10 +4955,15 @@ function applyColorMap(colorMapName) {
     // Persist selection for both old/new code paths
     window.currentColorMap = colorMapName;
     try { currentColorMap = colorMapName; } catch (_) {}
+    if (typeof window.currentColorMapInverted === 'undefined') {
+        window.currentColorMapInverted = false;
+    }
+    try { currentColorMapInverted = !!window.currentColorMapInverted; } catch (_) {}
 
     // Ensure Min/Max exist so applyDynamicRange can post correct payload
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
+    const doc = getHistogramDocument();
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
     const needsPrefill =
         !minInput || !maxInput ||
         minInput.value === '' || maxInput.value === '' ||
@@ -2829,6 +5037,11 @@ async function initializeOpenSeadragonViewer(dataUrl, isLargeImage) {
             type: 'image',
             url: dataUrl
         },
+        // Keep UI consistent with the tiled FITS viewer (avoid +/−/home flashing then disappearing)
+        showZoomControl: false,
+        showHomeControl: false,
+        showFullPageControl: false,
+        showRotationControl: false,
         animationTime: 0.5,
         blendTime: 0.1,
         constrainDuringPan: true,
@@ -2964,7 +5177,8 @@ function refreshImage() {
  * Update the histogram display with the current data
  */
 function updateHistogram() {
-    const canvas = document.getElementById('histogram-canvas');
+    const doc = getHistogramDocument();
+    const canvas = doc.getElementById('histogram-canvas');
     if (!canvas) {
         console.log('Histogram canvas not found, skipping update');
         return;
@@ -2975,8 +5189,8 @@ function updateHistogram() {
     
     if (inTiledMode) {
         console.log('Using server-side histogram for tiled data');
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        const minInput = doc.getElementById('min-range-input');
+        const maxInput = doc.getElementById('max-range-input');
         const uiMin = minInput ? parseFloat(minInput.value) : null;
         const uiMax = maxInput ? parseFloat(maxInput.value) : null;
         const haveUi = isFinite(uiMin) && isFinite(uiMax) && uiMin < uiMax;
@@ -3175,8 +5389,9 @@ function updateHistogram() {
         }
         
         // Draw min/max lines
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        const docForLines = getHistogramDocument();
+        const minInput = docForLines.getElementById('min-range-input');
+        const maxInput = docForLines.getElementById('max-range-input');
         
         if (minInput && maxInput) {
             const minVal = parseFloat(minInput.value);
@@ -3383,7 +5598,8 @@ function drawEmptyHistogram(canvas, message) {
  */
 
 function drawServerHistogram(histData) {
-    const canvas = document.getElementById('histogram-bg-canvas');
+    const doc = getHistogramDocument();
+    const canvas = doc.getElementById('histogram-bg-canvas');
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
@@ -3505,8 +5721,8 @@ function drawServerHistogram(histData) {
 
     // Ensure overlay and initial lines
     const haveOverlay = typeof ensureHistogramOverlayReady === 'function' ? ensureHistogramOverlayReady() : false;
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
 
     let lineMin = (minInput && isFinite(parseFloat(minInput.value))) ? parseFloat(minInput.value) : minValue;
     let lineMax = (maxInput && isFinite(parseFloat(maxInput.value))) ? parseFloat(maxInput.value) : (minValue + range);
@@ -3520,16 +5736,17 @@ function drawServerHistogram(histData) {
     }
 
     // Signal readiness so drag handlers can attach
-    document.dispatchEvent(new CustomEvent('histogram:ready'));
+    getHistogramDocument().dispatchEvent(new CustomEvent('histogram:ready'));
 }
 
 
 function attachHistogramInteractionWhenReady() {
     const tryAttach = () => {
         // Re-query fresh each time to avoid stale nulls
-        const linesCanvas = document.getElementById('histogram-lines-canvas');
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        const doc = getHistogramDocument();
+        const linesCanvas = doc.getElementById('histogram-lines-canvas');
+        const minInput = doc.getElementById('min-range-input');
+        const maxInput = doc.getElementById('max-range-input');
 
         if (!linesCanvas || !minInput || !maxInput) {
             return false;
@@ -3553,10 +5770,10 @@ function attachHistogramInteractionWhenReady() {
 
     const onReady = () => {
         if (tryAttach()) {
-            document.removeEventListener('histogram:ready', onReady);
+            getHistogramDocument().removeEventListener('histogram:ready', onReady);
         }
     };
-    document.addEventListener('histogram:ready', onReady);
+    getHistogramDocument().addEventListener('histogram:ready', onReady);
 }
 // REPLACE your existing applyLocalFilter function in main.js with this fixed version
 
@@ -4045,6 +6262,14 @@ function createWelcomeScreen() {
     // Clear any content
     container.innerHTML = '';
     
+    // Detect if we're inside a pane (iframe) — show a minimal welcome in panes
+    let inPane = false;
+    try {
+        inPane = (window.self !== window.top) || new URLSearchParams(window.location.search).has('pane_sid');
+    } catch(_) {
+        inPane = true;
+    }
+    
     // Add styles for the animation
     const style = document.createElement('style');
     style.textContent = `
@@ -4056,6 +6281,60 @@ function createWelcomeScreen() {
         .welcome-logo {
             animation: fadeIn 1s ease-out;
             max-width: 150px;
+        }
+
+        .welcome-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        .welcome-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            text-decoration: none;
+            color: #fff;
+            font-weight: 650;
+            font-size: 14px;
+            line-height: 1;
+            border: 1px solid rgba(255,255,255,0.14);
+            box-shadow: 0 14px 34px rgba(0,0,0,0.35);
+            transform: translateZ(0);
+            transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+        }
+
+        .welcome-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 18px 44px rgba(0,0,0,0.45);
+            filter: brightness(1.06);
+        }
+
+        .welcome-btn:active {
+            transform: translateY(0px);
+            filter: brightness(0.98);
+        }
+
+        .welcome-btn__icon {
+            width: 18px;
+            height: 18px;
+            display: inline-block;
+            flex: 0 0 auto;
+        }
+
+        .welcome-btn--github {
+            background: linear-gradient(135deg, #24292f, #0f172a);
+        }
+
+        /* Features button uses an inline SVG with fill="url(#cosmicGradient)" */
+        .welcome-btn--features {
+            background: none;
+            padding: 0;
+            border: none;
         }
     `;
     document.head.appendChild(style);
@@ -4072,34 +6351,61 @@ function createWelcomeScreen() {
     welcomeDiv.style.fontFamily = 'Arial, sans-serif';
     welcomeDiv.style.maxWidth = '80%';
     
-    welcomeDiv.innerHTML = `
-    <img src="static/logo/logo.png" alt="Neloura Logo" class="welcome-logo">
-    <h2 style="margin-top: 0px;">Welcome to Neloura</h2>
-    <p>Please select a FITS file to open using the folder icon 📁 in the top toolbar.</p>
-<a href="https://neloura.com/static/app.zip" target="_blank" rel="noopener noreferrer" aria-label="Download Neloura for macOS" style="display:inline-block; margin-top: 12px; text-decoration: none;">
-  <svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48">
-    <defs>
-      <linearGradient id="cosmicGradient" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stop-color="#4A3B5C"/>
-        <stop offset="50%" stop-color="#8B5C9B"/>
-        <stop offset="100%" stop-color="#A875B8"/>
-      </linearGradient>
-    </defs>
-    <rect width="240" height="48" rx="6" fill="url(#cosmicGradient)" stroke="none"/>
-    <path fill="white" transform="translate(16,14) scale(0.5)" d="M16.365 12.265c-.019-2.241 1.186-4.281 3.003-5.412-1.093-1.572-2.904-2.78-4.835-2.942-2.056-.204-4.06 1.216-5.112 1.216-1.07 0-2.724-1.19-4.48-1.158-2.304.037-4.449 1.337-5.63 3.388-2.41 4.172-.613 10.341 1.73 13.725 1.145 1.64 2.493 3.471 4.27 3.403 1.732-.07 2.381-1.108 4.47-1.108 2.07 0 2.676 1.108 4.487 1.07 1.863-.03 3.038-1.64 4.17-3.29.73-1.063 1.03-1.597 1.614-2.796-4.247-1.606-4.925-7.637-1.717-10.096zM13.8 2.3c.96-1.163 1.6-2.79 1.43-4.3-1.39.057-3.07.923-4.06 2.07-.89 1.028-1.65 2.69-1.44 4.27 1.53.12 3.1-.77 4.07-2.04z"/>
-    <text x="120" y="22" text-anchor="middle" font-size="16" fill="white">Download for MacOS</text>
-    <text x="120" y="36" text-anchor="middle" font-size="11" fill="white" opacity="0.8">(ARM version)</text>
-  </svg>
-</a>
-    `;
+    if (inPane) {
+        // Minimal message for panes
+        welcomeDiv.innerHTML = `
+        <p>Please select a FITS file to open using the folder icon 📁 in the top toolbar.</p>
+        `;
+    } else {
+        // Full welcome for top-level app
+        welcomeDiv.innerHTML = `
+        <img src="static/logo/logo.png" alt="Neloura Logo" class="welcome-logo">
+        <h2 style="margin-top: 0px;">Welcome to Neloura</h2>
+        <p>Please select a FITS file to open using the folder icon 📁 in the top toolbar.</p>
+        <div class="welcome-actions">
+          <a class="welcome-btn welcome-btn--github"
+             href="https://github.com/hamidnpc/Neloura/"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="View Neloura on GitHub">
+            <svg class="welcome-btn__icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+            </svg>
+            <span>Neloura on GitHub</span>
+          </a>
+
+          <a class="welcome-btn welcome-btn--features"
+             href="https://neloura.com/features.html"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="Explore Features"
+             style="text-decoration:none;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="260" height="48" viewBox="0 0 260 48" aria-hidden="true" focusable="false">
+              <defs>
+                <linearGradient id="cosmicGradient" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stop-color="#4A3B5C"/>
+                  <stop offset="50%" stop-color="#8B5C9B"/>
+                  <stop offset="100%" stop-color="#A875B8"/>
+                </linearGradient>
+              </defs>
+              <rect width="260" height="48" rx="12" fill="url(#cosmicGradient)" stroke="rgba(255,255,255,0.18)"/>
+              <path fill="white" opacity="0.92" transform="translate(18,14) scale(0.75)"
+                d="M12 2l1.6 5.2L19 9l-5.4 1.8L12 16l-1.6-5.2L5 9l5.4-1.8L12 2zm7 8l.9 2.9L23 14l-3.1 1.1L19 18l-.9-2.9L15 14l3.1-1.1L19 10zM5 14l.9 2.9L9 18l-3.1 1.1L5 22l-.9-2.9L1 18l3.1-1.1L5 14z"/>
+              <text x="148" y="29" text-anchor="middle" font-size="15" fill="white" font-weight="700">Explore Neloura Features</text>
+            </svg>
+          </a>
+        </div>
+        `;
+    }
     
     // Add animated arrow pointing to the file browser button
-    const pointerDiv = document.createElement('div');
-    pointerDiv.className = 'welcome-pointer';
-    pointerDiv.innerHTML = '&#10229;'; // Left arrow
+    let pointerDiv = null;
+    if (!inPane) {
+        pointerDiv = document.createElement('div');
+        pointerDiv.className = 'welcome-pointer';
+        pointerDiv.innerHTML = '&#10229;'; // Left arrow
+    }
     
     container.appendChild(welcomeDiv);
-    container.appendChild(pointerDiv);
+    if (pointerDiv) container.appendChild(pointerDiv);
 }
 
 function loadFitsFromUrl() {
@@ -4198,9 +6504,38 @@ async function initializeTiledViewer() {
         if (!window.fitsData) window.fitsData = {};
 
 
+        // Check if we're in multi-panel mode - if so, don't clear catalogs as they should persist across panels
+        let isMultiPanelMode = false;
+        try {
+            const topWin = (window.top && window.top !== window) ? window.top : window;
+            const wrap = topWin.document.getElementById('multi-panel-container');
+            const grid = topWin.document.getElementById('multi-panel-grid');
+            isMultiPanelMode = wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 2;
+        } catch (_) {}
+        
+        // Also check for preserveCatalogs flag (set when transitioning to multi-panel)
+        // Treat iframe panes as "multi-panel context" even before the parent can seed window flags.
+        // This prevents the left pane from clearing catalogs during single→multi transitions.
+        let isPaneContext = false;
+        try {
+            const sp = new URLSearchParams(window.location.search || '');
+            isPaneContext = sp.has('pane_sid') || sp.get('mp') === '1';
+        } catch (_) {}
+        const shouldPreserveCatalogs = isMultiPanelMode || isPaneContext || !!window.__preserveCatalogs;
+
         if (typeof clearAllCatalogs === 'function') {
-            console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
-            clearAllCatalogs();
+            if (shouldPreserveCatalogs) {
+                console.log("Multi-panel mode detected - preserving catalogs across panels.");
+            } else {
+                console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+                clearAllCatalogs();
+            }
+        }
+        if (typeof clearSegmentOverlay === 'function') {
+            // Only clear segments if not in multi-panel mode (segments should also persist)
+            if (!isMultiPanelMode) {
+                clearSegmentOverlay('new-image');
+            }
         }
 
         // Store BUNIT if available
@@ -4210,45 +6545,115 @@ async function initializeTiledViewer() {
         window.fitsData.data_min = tileInfo.data_min;
         window.fitsData.data_max = tileInfo.data_max;
 
+        // Check for pending restoreState with display settings (from multi-panel addPanel)
+        // Apply them BEFORE setting defaults so tiles load with correct min/max
+        let pendingDisplaySettings = null;
+        try {
+            if (window.__pendingRestoreState && window.__pendingRestoreState.display) {
+                pendingDisplaySettings = window.__pendingRestoreState.display;
+                // Apply display settings immediately to window.fitsData before defaults
+                if (Number.isFinite(pendingDisplaySettings.min)) {
+                    window.fitsData.min_value = pendingDisplaySettings.min;
+                }
+                if (Number.isFinite(pendingDisplaySettings.max)) {
+                    window.fitsData.max_value = pendingDisplaySettings.max;
+                }
+                if (pendingDisplaySettings.colorMap) {
+                    window.currentColorMap = pendingDisplaySettings.colorMap;
+                }
+                if (pendingDisplaySettings.scaling) {
+                    window.currentScaling = pendingDisplaySettings.scaling;
+                }
+                window.currentColorMapInverted = !!pendingDisplaySettings.invert;
+                
+                // Also apply to backend immediately via API (before tiles load)
+                // Update version immediately so tiles use correct min/max
+                if (typeof currentDynamicRangeVersion !== 'undefined') {
+                    currentDynamicRangeVersion = Date.now();
+                } else {
+                    window.currentDynamicRangeVersion = Date.now();
+                }
+                
+                if (typeof apiFetch === 'function' && Number.isFinite(pendingDisplaySettings.min) && Number.isFinite(pendingDisplaySettings.max)) {
+                    const fileId = window.currentLoadedFitsFileId || window.currentLoadedFitsFileID || (tileInfo && (tileInfo.file_id || tileInfo.fileId)) || null;
+                    // Fire and forget - don't wait, just apply it
+                    apiFetch('/update-dynamic-range/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            min_value: pendingDisplaySettings.min,
+                            max_value: pendingDisplaySettings.max,
+                            color_map: pendingDisplaySettings.colorMap || window.currentColorMap || 'grayscale',
+                            scaling_function: pendingDisplaySettings.scaling || window.currentScaling || 'linear',
+                            invert_colormap: !!pendingDisplaySettings.invert,
+                            file_id: fileId || undefined
+                        })
+                    }).catch(() => { });
+                }
+            }
+        } catch (_) {}
+        
         // Store initial display min/max from server (priority)
-        if (typeof tileInfo.initial_display_min !== 'undefined' && typeof tileInfo.initial_display_max !== 'undefined') {
-            window.fitsData.initial_min_value = tileInfo.initial_display_min;
-            window.fitsData.initial_max_value = tileInfo.initial_display_max;
-            window.fitsData.min_value = tileInfo.initial_display_min;
-            window.fitsData.max_value = tileInfo.initial_display_max;
-        } else if (typeof window.fitsData.data_min !== 'undefined' && typeof window.fitsData.data_max !== 'undefined') {
-            console.warn("initial_display_min/max not in tileInfo. Using data_min/max for initial and current dynamic range.");
-            window.fitsData.min_value = window.fitsData.data_min;
-            window.fitsData.max_value = window.fitsData.data_max;
-            window.fitsData.initial_min_value = window.fitsData.data_min; 
-            window.fitsData.initial_max_value = window.fitsData.data_max;
+        // But only if we don't have pending restoreState (which already set the values)
+        if (!pendingDisplaySettings) {
+            if (typeof tileInfo.initial_display_min !== 'undefined' && typeof tileInfo.initial_display_max !== 'undefined') {
+                window.fitsData.initial_min_value = tileInfo.initial_display_min;
+                window.fitsData.initial_max_value = tileInfo.initial_display_max;
+                window.fitsData.min_value = tileInfo.initial_display_min;
+                window.fitsData.max_value = tileInfo.initial_display_max;
+            } else if (typeof window.fitsData.data_min !== 'undefined' && typeof window.fitsData.data_max !== 'undefined') {
+                console.warn("initial_display_min/max not in tileInfo. Using data_min/max for initial and current dynamic range.");
+                window.fitsData.min_value = window.fitsData.data_min;
+                window.fitsData.max_value = window.fitsData.data_max;
+                window.fitsData.initial_min_value = window.fitsData.data_min; 
+                window.fitsData.initial_max_value = window.fitsData.data_max;
+            } else {
+                console.error("Critical: Cannot determine initial dynamic range. Neither initial_display_min/max nor data_min/max were provided in tileInfo.");
+                window.fitsData.min_value = 0;
+                window.fitsData.max_value = 1;
+                window.fitsData.initial_min_value = 0;
+                window.fitsData.initial_max_value = 1;
+            }
         } else {
-            console.error("Critical: Cannot determine initial dynamic range. Neither initial_display_min/max nor data_min/max were provided in tileInfo.");
-            window.fitsData.min_value = 0;
-            window.fitsData.max_value = 1;
-            window.fitsData.initial_min_value = 0;
-            window.fitsData.initial_max_value = 1;
+            // We have pending settings, but still store initial values for reference
+            if (typeof tileInfo.initial_display_min !== 'undefined' && typeof tileInfo.initial_display_max !== 'undefined') {
+                window.fitsData.initial_min_value = tileInfo.initial_display_min;
+                window.fitsData.initial_max_value = tileInfo.initial_display_max;
+            } else if (typeof window.fitsData.data_min !== 'undefined' && typeof window.fitsData.data_max !== 'undefined') {
+                window.fitsData.initial_min_value = window.fitsData.data_min;
+                window.fitsData.initial_max_value = window.fitsData.data_max;
+            }
         }
 
         // Update UI input fields for min/max
-        const minInputEl = document.getElementById('min-range-input');
-        const maxInputEl = document.getElementById('max-range-input');
+        const doc = getHistogramDocument();
+        const minInputEl = doc.getElementById('min-range-input');
+        const maxInputEl = doc.getElementById('max-range-input');
         if (minInputEl && maxInputEl) {
             minInputEl.value = window.fitsData.min_value.toFixed(GLOBAL_DATA_PRECISION || 2);
             maxInputEl.value = window.fitsData.max_value.toFixed(GLOBAL_DATA_PRECISION || 2);
         }
 
         // Set global current colormap and scaling from server or defaults, and update UI
-        window.currentColorMap = tileInfo.color_map || 'grayscale';
-        window.currentScaling = tileInfo.scaling_function || 'linear';
+        // But use pending display settings if available (already set above)
+        if (!pendingDisplaySettings) {
+            window.currentColorMap = tileInfo.color_map || 'grayscale';
+            window.currentScaling = tileInfo.scaling_function || 'linear';
+            window.currentColorMapInverted = !!tileInfo.invert_colormap;
+        }
+        currentColorMapInverted = window.currentColorMapInverted;
 
-        const colorMapSelect = document.getElementById('color-map-select');
+        const colorMapSelect = doc.getElementById('color-map-select');
         if (colorMapSelect) {
             colorMapSelect.value = window.currentColorMap;
         }
-        const scalingSelect = document.getElementById('scaling-select');
+        const scalingSelect = doc.getElementById('scaling-select');
         if (scalingSelect) {
             scalingSelect.value = window.currentScaling;
+        }
+        const invertToggle = doc.getElementById('invert-colormap-toggle');
+        if (invertToggle) {
+            invertToggle.checked = !!window.currentColorMapInverted;
         }
 
         hideImmediatePlaceholder();
@@ -4273,7 +6678,14 @@ async function initializeTiledViewer() {
             maxLevel: tileInfo.maxLevel,
             minLevel: tileInfo.minLevel === undefined ? 0 : tileInfo.minLevel,
             getTileUrl: function(level, x, y) {
-                const sid = sessionStorage.getItem('sid');
+                const sid = (function(){
+                    try {
+                        return (window.__forcedSid) ||
+                               (new URLSearchParams(window.location.search).get('sid')) ||
+                               (new URLSearchParams(window.location.search).get('pane_sid')) ||
+                               sessionStorage.getItem('sid');
+                    } catch(_) { return sessionStorage.getItem('sid'); }
+                })();
                 const sidParam = sid ? `sid=${encodeURIComponent(sid)}&` : '';
                 return `/fits-tile/${level}/${x}/${y}?${sidParam}v=${currentDynamicRangeVersion}`;
             }
@@ -4309,7 +6721,11 @@ async function initializeTiledViewer() {
             loadTilesWithAjax: true,
             ajaxWithCredentials: true,
             ajaxHeaders: (function(){
-                try { const sid = sessionStorage.getItem('sid'); return sid ? { 'X-Session-ID': sid } : {}; } catch(_){ return {}; }
+                try {
+                    const sp = new URLSearchParams(window.location.search);
+                    const sid = (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || sessionStorage.getItem('sid');
+                    return sid ? { 'X-Session-ID': sid } : {};
+                } catch(_){ return {}; }
             })()
         };
 
@@ -4686,17 +7102,49 @@ function handleFastLoadingResponse(data, filepath) {
         return;
     }
 
-    // Set the global filepath variable. THIS IS THE FIX.
+    // If user switched to a different FITS file, hard-reset cube slider state first
+    // so we never show stale channel counts / previews from the previous cube.
+    try {
+        const prevFile = window.currentFitsFile;
+        if (prevFile && prevFile !== filepath) {
+            // Clear regions + zoom insets when switching to a NEW FITS file
+            try { if (typeof window.clearAllRegions === 'function') window.clearAllRegions(); } catch (_) {}
+            try { if (typeof window.removeAllZoomInsets === 'function') window.removeAllZoomInsets(); } catch (_) {}
+            try { removeCubeSliceSlider(); } catch (_) {}
+            try { window.currentCubeSliceIndex = 0; } catch (_) {}
+            try { window.currentLoadedFitsFileId = null; } catch (_) {}
+        }
+    } catch (_) {}
+
+    // Set the global filepath variable.
     window.currentFitsFile = filepath;
 
     // Store basic FITS information globally. THIS IS THE 2ND FIX.
     // The data is now nested inside the tile_info object from the server.
     const tileInfo = data.tile_info;
-    // Preserve previously fetched WCS (and flip_y) if the fast path didn't include it
+    // Track active generator id for dynamic-range updates (important for cube slices)
+    try {
+        window.currentLoadedFitsFileId =
+            (data && (data.file_id || data.fileId)) ||
+            (tileInfo && (tileInfo.file_id || tileInfo.fileId)) ||
+            window.currentLoadedFitsFileId || null;
+    } catch (_) {}
+    // Preserve previously fetched WCS (and flip_y) ONLY when we're still on the same file+HDU.
+    // In multi-panel mode, different panes can load different files; reusing WCS from a previous file
+    // causes overlays/peak-finder coords to be computed against the wrong header (appears as "previous map").
     const prevFits = window.fitsData || {};
-    const preservedWcs = (tileInfo && tileInfo.wcs) ? tileInfo.wcs : (prevFits.wcs || null);
-    const preservedFlipY = (tileInfo && typeof tileInfo.flip_y === 'boolean') ? tileInfo.flip_y
-                           : (typeof prevFits.flip_y === 'boolean' ? prevFits.flip_y : null);
+    const currentHduIdx = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+    const prevKey = `${String(prevFits.filename || '')}:${String(prevFits.hduIndex ?? '')}`;
+    const nextKey = `${String(filepath || '')}:${String(currentHduIdx)}`;
+    const isSameFileAndHdu = prevKey && nextKey && prevKey === nextKey;
+
+    const preservedWcs = (tileInfo && tileInfo.wcs)
+        ? tileInfo.wcs
+        : (isSameFileAndHdu ? (prevFits.wcs || null) : null);
+
+    const preservedFlipY = (tileInfo && typeof tileInfo.flip_y === 'boolean')
+        ? tileInfo.flip_y
+        : (isSameFileAndHdu && typeof prevFits.flip_y === 'boolean' ? prevFits.flip_y : null);
     window.fitsData = {
         width: tileInfo.width,
         height: tileInfo.height,
@@ -4705,17 +7153,62 @@ function handleFastLoadingResponse(data, filepath) {
         overview: tileInfo.overview, // This might be an object or a base64 string
         wcs: preservedWcs,
         filename: filepath,
+        hduIndex: currentHduIdx,
         ...(preservedFlipY != null ? { flip_y: preservedFlipY } : {})
     };
+
+    // If we changed file/HDU and the fast path didn't supply WCS, ensure we don't keep a stale parsedWCS.
+    try {
+        if (!isSameFileAndHdu && window.parsedWCS) {
+            delete window.parsedWCS;
+        }
+    } catch (_) {}
+
+    // If this is a cube, ensure the bottom-center channel slider is present (2D mode).
+    // Some load paths bypass selectHdu(), so we also hook here.
+    try {
+        const hduIdx = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+        setupCubeSliceSlider(filepath, hduIdx).catch(() => {});
+    } catch (_) {}
 
     // Hide any previous notifications
     showNotification(false);
 
     console.log("Handling fast loading mode response:", data);
 
+    // Check if we're in multi-panel mode - if so, don't clear catalogs as they should persist across panels
+    let isMultiPanelMode = false;
+    try {
+        // Check from top window if we're in an iframe, otherwise check current window
+        const topWin = (window.top && window.top !== window) ? window.top : window;
+        const wrap = topWin.document.getElementById('multi-panel-container');
+        const grid = topWin.document.getElementById('multi-panel-grid');
+        isMultiPanelMode = wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 2;
+    } catch (_) {}
+
+    // Also check for preserveCatalogs flag (set when transitioning to multi-panel)
+    // Treat iframe panes as "multi-panel context" even before the parent can seed window flags.
+    // This prevents the left pane from clearing catalogs during single→multi transitions.
+    let isPaneContext = false;
+    try {
+        const sp = new URLSearchParams(window.location.search || '');
+        isPaneContext = sp.has('pane_sid') || sp.get('mp') === '1';
+    } catch (_) {}
+    const shouldPreserveCatalogs = isMultiPanelMode || isPaneContext || !!window.__preserveCatalogs;
+    
     if (typeof clearAllCatalogs === 'function') {
-        console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
-        clearAllCatalogs();
+        if (shouldPreserveCatalogs) {
+            console.log("Multi-panel mode detected - preserving catalogs across panels.");
+        } else {
+            console.log("New FITS file opened (fast loader), clearing all existing catalogs.");
+            clearAllCatalogs();
+        }
+    }
+    if (typeof clearSegmentOverlay === 'function') {
+        // Only clear segments if not in multi-panel mode (segments should also persist)
+        if (!shouldPreserveCatalogs) {
+            clearSegmentOverlay('new-image');
+        }
     }
 
     // Initialize the tiled viewer with the received tile info
@@ -4802,17 +7295,45 @@ function formatRangeValue(v) {
 }
 
 function setRangeInputs(minVal, maxVal) {
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
+    const doc = getHistogramDocument();
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
     if (minInput) minInput.value = formatRangeValue(minVal);
     if (maxInput) maxInput.value = formatRangeValue(maxVal);
+}
+
+function getHduPopupDocument() {
+    try {
+        if (window.top && window.top !== window && window.top.document) {
+            return window.top.document;
+        }
+    } catch(_) {}
+    return document;
+}
+
+function removeExistingHduPopup(doc) {
+    const targetDoc = doc || getHduPopupDocument();
+    const existing = targetDoc.getElementById('hdu-selector-popup');
+    if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+    }
 }
 
 
   // Function to create HDU selection popup
 function createHduSelectorPopup(hduList, filepath) {
+    const popupDoc = (typeof getHduPopupDocument === 'function') ? getHduPopupDocument() : document;
+    const createEl = (tag) => popupDoc.createElement(tag);
+    const removePopup = () => {
+        if (typeof removeExistingHduPopup === 'function') removeExistingHduPopup(popupDoc);
+        else {
+            const existing = popupDoc.getElementById('hdu-selector-popup');
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        }
+    };
+    removePopup();
     // Create container for the popup
-    const popup = document.createElement('div');
+    const popup = createEl('div');
     popup.id = 'hdu-selector-popup';
     popup.style.position = 'fixed';
     popup.style.top = '50%';
@@ -4822,14 +7343,14 @@ function createHduSelectorPopup(hduList, filepath) {
     popup.style.border = '1px solid #555';
     popup.style.borderRadius = '5px';
     popup.style.padding = '15px';
-    popup.style.zIndex = '2000';
+    popup.style.zIndex = '65000';
     popup.style.width = '500px';
     popup.style.maxHeight = '80vh';
     popup.style.overflowY = 'auto';
     popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
     
     // Create title
-    const title = document.createElement('h3');
+    const title = createEl('h3');
     title.textContent = 'Select HDU to Display';
     title.style.margin = '0 0 15px 0';
     title.style.color = '#fff';
@@ -4840,14 +7361,14 @@ function createHduSelectorPopup(hduList, filepath) {
     title.style.paddingBottom = '10px';
     
     // Create description
-    const description = document.createElement('p');
+    const description = createEl('p');
     description.textContent = 'This FITS file contains multiple data units (HDUs). Please select which one to open:';
     description.style.color = '#ddd';
     description.style.marginBottom = '15px';
     description.style.fontFamily = 'Arial, sans-serif';
     
     // Create selection container
-    const selectionContainer = document.createElement('div');
+    const selectionContainer = createEl('div');
     selectionContainer.style.display = 'flex';
     selectionContainer.style.flexDirection = 'column';
     selectionContainer.style.gap = '10px';
@@ -4855,7 +7376,7 @@ function createHduSelectorPopup(hduList, filepath) {
     
     // Add each HDU as an option
     hduList.forEach((hdu, index) => {
-        const option = document.createElement('div');
+        const option = createEl('div');
         option.className = 'hdu-option';
         option.style.padding = '10px';
         option.style.backgroundColor = '#444';
@@ -4872,14 +7393,14 @@ function createHduSelectorPopup(hduList, filepath) {
         });
         
         // Create header for the option
-        const header = document.createElement('div');
+        const header = createEl('div');
         header.style.display = 'flex';
         header.style.justifyContent = 'space-between';
         header.style.alignItems = 'center';
         header.style.marginBottom = '5px';
         
         // Title for the option
-        const optionTitle = document.createElement('div');
+        const optionTitle = createEl('div');
         optionTitle.style.fontWeight = 'bold';
         optionTitle.style.color = '#fff';
         optionTitle.textContent = `HDU ${index}: ${hdu.type}`;
@@ -4889,7 +7410,7 @@ function createHduSelectorPopup(hduList, filepath) {
         
         // Add recommended badge if this is likely the best HDU
         if (hdu.isRecommended) {
-            const badge = document.createElement('span');
+            const badge = createEl('span');
             badge.textContent = 'Recommended';
             badge.style.backgroundColor = '#4CAF50';
             badge.style.color = 'white';
@@ -4903,7 +7424,7 @@ function createHduSelectorPopup(hduList, filepath) {
         header.appendChild(optionTitle);
         
         // Details container
-        const details = document.createElement('div');
+        const details = createEl('div');
         details.style.fontSize = '13px';
         details.style.color = '#ccc';
         details.style.marginTop = '5px';
@@ -4931,19 +7452,19 @@ function createHduSelectorPopup(hduList, filepath) {
         // Add click handler to select this HDU
         option.addEventListener('click', function() {
             selectHdu(index, filepath);
-            document.body.removeChild(popup);
+            removePopup();
         });
         
         selectionContainer.appendChild(option);
     });
     
     // Create button container
-    const buttonContainer = document.createElement('div');
+    const buttonContainer = createEl('div');
     buttonContainer.style.display = 'flex';
     buttonContainer.style.justifyContent = 'space-between';
     
     // Cancel button
-    const cancelButton = document.createElement('button');
+    const cancelButton = createEl('button');
     cancelButton.textContent = 'Cancel';
     cancelButton.style.flex = '1';
     cancelButton.style.marginRight = '10px';
@@ -4963,11 +7484,11 @@ function createHduSelectorPopup(hduList, filepath) {
         cancelButton.style.backgroundColor = '#f44336';
     });
     cancelButton.addEventListener('click', () => {
-        document.body.removeChild(popup);
+        removePopup();
     });
     
     // Auto-select primary HDU button
-    const autoSelectButton = document.createElement('button');
+    const autoSelectButton = createEl('button');
     autoSelectButton.textContent = 'Use Recommended HDU';
     autoSelectButton.style.flex = '1';
     autoSelectButton.style.padding = '8px 0';
@@ -4994,7 +7515,7 @@ function createHduSelectorPopup(hduList, filepath) {
             // If no recommended HDU, use the first one
             selectHdu(0, filepath);
         }
-        document.body.removeChild(popup);
+        removePopup();
     });
     
     // Add buttons to container
@@ -5035,15 +7556,30 @@ async function selectHdu(hduIndex, filepath) {
 
     // Track the currently selected HDU globally for other modules (e.g., coords overlay)
     window.currentHduIndex = hduIndex;
+
+    // Selecting an HDU changes the displayed image; clear existing regions + zoom insets
+    // so old overlays don't stick to the new image/HDU.
+    try { if (typeof window.clearAllRegions === 'function') window.clearAllRegions(); } catch (_) {}
+    try { if (typeof window.removeAllZoomInsets === 'function') window.removeAllZoomInsets(); } catch (_) {}
+    // If file changed, reset cube slice UI/state (prevents stale channel count)
+    try {
+        const prevFile = window.currentFitsFile;
+        if (prevFile && prevFile !== filepath) {
+            try { removeCubeSliceSlider(); } catch (_) {}
+            try { window.currentCubeSliceIndex = 0; } catch (_) {}
+            try { window.currentLoadedFitsFileId = null; } catch (_) {}
+        }
+    } catch (_) {}
     window.currentFitsFile = filepath;
     if (typeof window.refreshWcsForOverlay === 'function') {
         // Ensure overlay fetches header for the exact HDU we're opening
         window.refreshWcsForOverlay({ filepath, hduIndex });
     }
 
-    const hduPopup = document.getElementById('hdu-selector-popup');
-    if (hduPopup) {
-        hduPopup.style.display = 'none';
+    const popupDoc = (typeof getHduPopupDocument === 'function') ? getHduPopupDocument() : document;
+    const hduPopup = popupDoc.getElementById('hdu-selector-popup');
+    if (hduPopup && hduPopup.parentNode) {
+        hduPopup.parentNode.removeChild(hduPopup);
     }
     
     // The key change is here: We call /load-file which now returns the tileInfo.
@@ -5060,15 +7596,974 @@ async function selectHdu(hduIndex, filepath) {
         
         // Pass the tileInfo to the handler that initializes the viewer
         await handleFastLoadingResponse(tileInfo, filepath);
+
+        // If this HDU is a cube, show a bottom-center slice slider (2D mode)
+        try { setupCubeSliceSlider(filepath, hduIndex); } catch (_) {}
         
     } catch (error) {
         console.error('Error loading FITS file for selected HDU:', error);
         showNotification(`Error loading HDU ${hduIndex}: ${error.message}`, "error");
     }
 }
+
+// ---------- Cube slice slider (2D mode) ----------
+let __cubeSliceSliderEl = null;
+let __cubeSliceSliderDebounce = null;
+let __cubeAxis3Cache = {};
+let __cubeSliceStyleInjected = false;
+let __cubeFillPct = null;
+let __cubeHoverTip = null;
+let __cubeHoverTipActive = false;
+let __cubeHoverTipCurrentObjectUrl = null;
+let __cubeSliceLoading = false;
+let __cubePreviewAbort = null;
+let __cubePreviewReqSeq = 0;
+let __cubePreviewLastIdx = null;
+let __cubePreviewTimer = null;
+let __cubeSliderContextKey = null;
+let __cubePreviewContextKey = null;
+let __cubeSetupReqSeq = 0;
+
+function removeCubeSliceSlider() {
+    // Reset preview state so switching cubes can't show stale preview thumbnails
+    try { if (__cubePreviewTimer) clearTimeout(__cubePreviewTimer); } catch (_) {}
+    __cubePreviewTimer = null;
+    __cubePreviewLastIdx = null;
+    try { if (__cubePreviewAbort) __cubePreviewAbort.abort(); } catch (_) {}
+    __cubePreviewAbort = null;
+    __cubePreviewReqSeq++;
+    __cubeHoverTipActive = false;
+    try {
+        if (__cubeHoverTip) __cubeHoverTip.classList.remove('show');
+        const img = __cubeHoverTip && __cubeHoverTip.querySelector ? __cubeHoverTip.querySelector('#cube-tip-img') : null;
+        const loading = __cubeHoverTip && __cubeHoverTip.querySelector ? __cubeHoverTip.querySelector('#cube-tip-loading') : null;
+        if (loading) loading.style.display = 'none';
+        if (img) { img.style.display = 'none'; img.style.backgroundImage = ''; }
+    } catch (_) {}
+    try {
+        if (__cubeHoverTipCurrentObjectUrl) {
+            URL.revokeObjectURL(__cubeHoverTipCurrentObjectUrl);
+            __cubeHoverTipCurrentObjectUrl = null;
+        }
+    } catch (_) {}
+    __cubeSliderContextKey = null;
+
+    // In multi-panel mode the slider may live in the TOP document. If this window doesn't
+    // currently "own" the reference, still remove the shared element by id.
+    try {
+        if (__cubeSliceSliderEl && __cubeSliceSliderEl.parentNode) {
+            __cubeSliceSliderEl.parentNode.removeChild(__cubeSliceSliderEl);
+        } else {
+            const topDoc = (window.top && window.top.document) ? window.top.document : null;
+            const el = topDoc ? topDoc.getElementById('cube-slice-slider') : null;
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+        }
+    } catch (_) {}
+    __cubeSliceSliderEl = null;
+}
+
+function reopenTiledViewerForCubeSlice() {
+    try {
+        const isTiledViewActive = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
+        if (!isTiledViewActive || !currentTileInfo) return;
+
+        const currentZoom = window.tiledViewer.viewport.getZoom();
+        const currentPan = window.tiledViewer.viewport.getCenter();
+        currentDynamicRangeVersion = Date.now(); // reuse the cache-busting mechanism
+
+        const newTileSourceOptions = {
+            width: currentTileInfo.width,
+            height: currentTileInfo.height,
+            tileSize: currentTileInfo.tileSize,
+            maxLevel: currentTileInfo.maxLevel,
+            getTileUrl: function(level, x, y) {
+                const sid = (function(){
+                    try {
+                        return (window.__forcedSid) ||
+                               (new URLSearchParams(window.location.search).get('sid')) ||
+                               (new URLSearchParams(window.location.search).get('pane_sid')) ||
+                               sessionStorage.getItem('sid');
+                    } catch(_) { return sessionStorage.getItem('sid'); }
+                })();
+                const sidParam = sid ? `sid=${encodeURIComponent(sid)}&` : '';
+                return `/fits-tile/${level}/${x}/${y}?${sidParam}v=${currentDynamicRangeVersion}`;
+            },
+            getLevelScale: function(level) {
+                return 1 / (1 << (this.maxLevel - level));
+            }
+        };
+
+        window.tiledViewer.open(newTileSourceOptions);
+        window.tiledViewer.addOnceHandler('open', function() {
+            try {
+                window.tiledViewer.viewport.zoomTo(currentZoom, null, true);
+                window.tiledViewer.viewport.panTo(currentPan, true);
+                if (window.tiledViewer.drawer) window.tiledViewer.drawer.setImageSmoothingEnabled(false);
+            } catch (_) {}
+        });
+    } catch (err) {
+        console.warn('[cube-slice] Failed to reopen tiled viewer', err);
+    }
+}
+
+async function setupCubeSliceSlider(filepath, hduIndex) {
+    // Guard against async race when switching files quickly:
+    // only the latest call is allowed to update/create the slider.
+    const setupSeq = ++__cubeSetupReqSeq;
+    const expectedFile = filepath;
+
+    // Determine if the selected HDU is a cube by reading HDU info (dimensions length >= 3)
+    let hduList = null;
+    try {
+        const r = await getFitsHduInfo(filepath);
+        hduList = r;
+    } catch (_) {
+        hduList = null;
+    }
+    // If user switched files while we were awaiting, stop here.
+    try {
+        if (setupSeq !== __cubeSetupReqSeq) return;
+        if (window.currentFitsFile && window.currentFitsFile !== expectedFile) return;
+    } catch (_) {}
+
+    const entry = Array.isArray(hduList) ? hduList.find(h => Number(h.index) === Number(hduIndex)) : null;
+    const dims = entry && entry.dimensions ? entry.dimensions : null;
+    const isCube = Array.isArray(dims) && dims.length >= 3;
+
+    if (!isCube) {
+        // Only remove if we're still on the same file; otherwise don't touch newer UI.
+        try {
+            if (setupSeq === __cubeSetupReqSeq && (!window.currentFitsFile || window.currentFitsFile === expectedFile)) {
+                removeCubeSliceSlider();
+            }
+        } catch (_) {}
+        return;
+    }
+
+    // In multi-panel mode, make the shared slider follow the ACTIVE pane.
+    // toolbar.js emits `pane:activated` in the top window; we re-run setup in the active pane
+    // so the slider range/value/handlers always target the selected cube panel.
+    try {
+        const isTop = (window.self === window.top);
+        if (isTop && !window.__cubeSliderPaneActivatedListenerInstalled) {
+            window.__cubeSliderPaneActivatedListenerInstalled = true;
+            window.addEventListener('pane:activated', () => {
+                try {
+                    const paneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null;
+                    if (!paneWin) return;
+                    const fp = paneWin.currentFitsFile || null;
+                    const hdu = (typeof paneWin.currentHduIndex === 'number') ? paneWin.currentHduIndex : null;
+                    if (!fp || hdu == null) {
+                        // If the active pane doesn't have a cube context, hide the shared slider.
+                        try { removeCubeSliceSlider(); } catch (_) {}
+                        return;
+                    }
+                    if (typeof paneWin.setupCubeSliceSlider === 'function') {
+                        paneWin.setupCubeSliceSlider(fp, hdu).catch(() => {});
+                    }
+                } catch (_) {}
+            });
+        }
+    } catch (_) {}
+
+    // If user opened a different cube/HDU, clear any in-flight preview fetch so we never show the old cube preview.
+    try {
+        const nextKey = `${filepath}::${hduIndex}`;
+        if (__cubeSliderContextKey && __cubeSliderContextKey !== nextKey) {
+            try { if (__cubePreviewTimer) clearTimeout(__cubePreviewTimer); } catch (_) {}
+            __cubePreviewTimer = null;
+            __cubePreviewLastIdx = null;
+            try { if (__cubePreviewAbort) __cubePreviewAbort.abort(); } catch (_) {}
+            __cubePreviewAbort = null;
+            __cubePreviewReqSeq++;
+            try {
+                const img = __cubeHoverTip && __cubeHoverTip.querySelector ? __cubeHoverTip.querySelector('#cube-tip-img') : null;
+                const loading = __cubeHoverTip && __cubeHoverTip.querySelector ? __cubeHoverTip.querySelector('#cube-tip-loading') : null;
+                if (loading) loading.style.display = 'none';
+                if (img) { img.style.display = 'none'; img.style.backgroundImage = ''; }
+            } catch (_) {}
+            try {
+                if (__cubeHoverTipCurrentObjectUrl) {
+                    URL.revokeObjectURL(__cubeHoverTipCurrentObjectUrl);
+                    __cubeHoverTipCurrentObjectUrl = null;
+                }
+            } catch (_) {}
+        }
+        __cubeSliderContextKey = nextKey;
+        __cubePreviewContextKey = nextKey;
+    } catch (_) {}
+
+    const sliceCount = Math.max(1, Number(dims[0]) || 1); // astropy shape is typically (z,y,x)
+    // In multi-panel mode, center the cube slider in the TOP window (not inside a left/right pane).
+    // This keeps the control visually centered on the overall app, regardless of which pane is active.
+    const doc = (() => {
+        try {
+            const topWin = window.top;
+            const sp = new URLSearchParams(window.location.search || '');
+            const inPane = (window.self !== window.top) || sp.has('pane_sid') || sp.get('mp') === '1';
+            if (!inPane) return document;
+            const wrap = topWin && topWin.document ? topWin.document.getElementById('multi-panel-container') : null;
+            if (wrap && wrap.style.display !== 'none') {
+                return topWin.document;
+            }
+        } catch (_) {}
+        return document;
+    })();
+
+    // If another pane already created the shared slider in the TOP doc, reuse it instead of
+    // creating a duplicate element (important when multiple cubes are loaded side-by-side).
+    try {
+        if (!__cubeSliceSliderEl) {
+            const existing = doc.getElementById('cube-slice-slider');
+            if (existing) __cubeSliceSliderEl = existing;
+        }
+        if (!__cubeSliceStyleInjected) {
+            const existingStyle = doc.getElementById('cube-slice-slider-style');
+            if (existingStyle) __cubeSliceStyleInjected = true;
+        }
+    } catch (_) {}
+
+    // If there's only a single slice, don't show the cube slider at all.
+    if (sliceCount <= 1) {
+        try {
+            if (setupSeq === __cubeSetupReqSeq && (!window.currentFitsFile || window.currentFitsFile === expectedFile)) {
+                removeCubeSliceSlider();
+            }
+        } catch (_) {}
+        return;
+    }
+
+    if (!__cubeSliceSliderEl) {
+        // Re-check before creating DOM
+        try {
+            if (setupSeq !== __cubeSetupReqSeq) return;
+            if (window.currentFitsFile && window.currentFitsFile !== expectedFile) return;
+        } catch (_) {}
+        const wrap = doc.createElement('div');
+        wrap.id = 'cube-slice-slider';
+        wrap.className = 'cube-slice-slider';
+        Object.assign(wrap.style, {
+            position: 'fixed',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            bottom: '18px',
+            zIndex: '60000',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '10px 12px',
+            borderRadius: '12px',
+            background: 'rgba(17,24,39,0.85)',
+            border: '1px solid rgba(255,255,255,0.14)',
+            color: '#fff',
+            fontFamily: 'Raleway, sans-serif',
+            backdropFilter: 'blur(8px)'
+        });
+        // Inject slider styling once (nice animations, track fill, label transitions)
+        try {
+            if (!__cubeSliceStyleInjected) {
+                __cubeSliceStyleInjected = true;
+                const st = doc.createElement('style');
+                st.id = 'cube-slice-slider-style';
+                st.textContent = `
+                #cube-slice-slider {
+                  transition: transform 180ms ease, box-shadow 220ms ease, background 220ms ease;
+                  box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+                }
+                #cube-slice-slider.cube-slice-enter {
+                  transform: translateX(-50%) translateY(14px);
+                  opacity: 0;
+                }
+                #cube-slice-slider.cube-slice-enter.cube-slice-enter-active {
+                  transform: translateX(-50%) translateY(0px);
+                  opacity: 1;
+                  transition: transform 380ms cubic-bezier(0.2, 0.9, 0.2, 1), opacity 280ms ease;
+                }
+                #cube-slice-slider.cube-slice-bump {
+                  transform: translateX(-50%) scale(1.01);
+                  box-shadow: 0 14px 36px rgba(0,0,0,0.45);
+                }
+                #cube-slice-slider.cube-slice-commit {
+                  box-shadow: 0 18px 42px rgba(0,0,0,0.52);
+                }
+                #cube-slice-slider.cube-slice-commit::before{
+                  content: "";
+                  position: absolute;
+                  inset: -2px;
+                  border-radius: 14px;
+                  border: 1px solid rgba(34,197,94,0.35);
+                  opacity: 0;
+                  animation: cubePulse 420ms ease-out;
+                  pointer-events: none;
+                }
+                @keyframes cubePulse {
+                  0% { opacity: 0; transform: scale(0.995); }
+                  35% { opacity: 0.9; transform: scale(1.0); }
+                  100% { opacity: 0; transform: scale(1.01); }
+                }
+                #cube-slice-slider #cube-slice-label {
+                  transition: opacity 140ms ease, transform 140ms ease;
+                  opacity: 0.92;
+                }
+                #cube-slice-slider.cube-slice-bump #cube-slice-label {
+                  opacity: 1;
+                  transform: translateY(-1px);
+                }
+                #cube-slice-slider input[type="range"]{
+                  -webkit-appearance: none;
+                  appearance: none;
+                  height: 10px;
+                  border-radius: 999px;
+                  outline: none;
+                  background: linear-gradient(90deg, rgba(34,197,94,0.95) 0%, rgba(34,197,94,0.95) var(--pct, 0%), rgba(255,255,255,0.16) var(--pct, 0%), rgba(255,255,255,0.16) 100%);
+                  transition: background 140ms ease;
+                }
+                #cube-slice-slider input[type="range"]::-webkit-slider-thumb{
+                  -webkit-appearance: none;
+                  appearance: none;
+                  width: 18px;
+                  height: 18px;
+                  border-radius: 50%;
+                  background: rgba(255,255,255,0.95);
+                  border: 2px solid rgba(34,197,94,0.9);
+                  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+                  transition: transform 120ms ease, box-shadow 120ms ease;
+                }
+                #cube-slice-slider input[type="range"]::-webkit-slider-thumb:hover{
+                  transform: scale(1.08);
+                  box-shadow: 0 8px 20px rgba(0,0,0,0.45);
+                }
+                #cube-slice-slider input[type="range"]::-webkit-slider-thumb:active{
+                  transform: scale(1.14);
+                }
+                #cube-slice-slider input[type="range"]::-moz-range-thumb{
+                  width: 18px;
+                  height: 18px;
+                  border-radius: 50%;
+                  background: rgba(255,255,255,0.95);
+                  border: 2px solid rgba(34,197,94,0.9);
+                  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+                  transition: transform 120ms ease, box-shadow 120ms ease;
+                }
+                #cube-slice-slider input[type="range"]::-moz-range-track{
+                  height: 10px;
+                  border-radius: 999px;
+                  background: rgba(255,255,255,0.16);
+                }
+                #cube-slice-hover-tip{
+                  position: fixed;
+                  z-index: 65010;
+                  padding: 6px 8px;
+                  border-radius: 10px;
+                  background: rgba(17,24,39,0.92);
+                  border: 1px solid rgba(255,255,255,0.14);
+                  color: #fff;
+                  font-family: Raleway, sans-serif;
+                  font-size: 12px;
+                  pointer-events: none;
+                  opacity: 0;
+                  transform: translate(-50%, -100%) scale(0.98);
+                  transition: opacity 120ms ease, transform 120ms ease;
+                  white-space: nowrap;
+                  box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+                }
+                #cube-slice-hover-tip.show{
+                  opacity: 1;
+                  transform: translate(-50%, -110%) scale(1);
+                }
+                #cube-slice-hover-tip .cube-tip-row{
+                  display: flex;
+                  gap: 8px;
+                  align-items: center;
+                }
+                #cube-slice-hover-tip .cube-tip-thumb{
+                  width: 64px;
+                  height: 64px;
+                  border-radius: 10px;
+                  background: rgba(0,0,0,0.35);
+                  border: 1px solid rgba(255,255,255,0.12);
+                  overflow: hidden;
+                  flex: 0 0 auto;
+                  position: relative;
+                }
+                #cube-slice-hover-tip .cube-tip-thumb .thumb-img{
+                  position: absolute;
+                  inset: 0;
+                  background-position: center;
+                  background-size: cover;
+                  background-repeat: no-repeat;
+                  display: none;
+                }
+                #cube-slice-hover-tip .cube-tip-thumb .thumb-loading{
+                  position: absolute;
+                  inset: 0;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  color: rgba(209,213,219,0.95);
+                  background: rgba(0,0,0,0.18);
+                }
+                #cube-slice-hover-tip .cube-tip-thumb .thumb-loading .spinner{
+                  width: 20px;
+                  height: 20px;
+                  border-radius: 50%;
+                  border: 2px solid rgba(255,255,255,0.22);
+                  border-top-color: rgba(34,197,94,0.95);
+                  animation: cubeSpin 700ms linear infinite;
+                }
+                #cube-slice-hover-tip .cube-tip-thumb .thumb-loading .fallback{
+                  font-size: 11px;
+                  color: rgba(209,213,219,0.95);
+                }
+                @keyframes cubeSpin {
+                  0% { transform: rotate(0deg); }
+                  100% { transform: rotate(360deg); }
+                }
+                #cube-slice-hover-tip .cube-tip-text{
+                  display: flex;
+                  flex-direction: column;
+                  gap: 2px;
+                }
+                #cube-slice-hover-tip .cube-tip-text .line1{
+                  font-weight: 700;
+                  letter-spacing: 0.2px;
+                }
+                #cube-slice-hover-tip .cube-tip-text .line2{
+                  color: rgba(209,213,219,0.92);
+                  font-size: 11px;
+                }
+                `;
+                (doc.head || doc.documentElement).appendChild(st);
+            }
+        } catch (_) {}
+        wrap.innerHTML = `
+          <div style="font-weight:700;font-size:12px;">Channel</div>
+          <button id="cube-slice-prev" title="Previous" style="width:30px;height:28px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff;cursor:pointer;">‹</button>
+          <input id="cube-slice-range" type="range" min="0" value="0" step="1" style="width: min(520px, 55vw);">
+          <button id="cube-slice-next" title="Next" style="width:30px;height:28px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff;cursor:pointer;">›</button>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:#d1d5db;">
+            Step
+            <input id="cube-slice-stepch" type="number" min="1" value="1" style="width:64px;background:#111827;color:#fff;border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:4px 6px;">
+          </label>
+          <label id="cube-slice-stepunit-wrap" style="display:none;gap:6px;align-items:center;font-size:12px;color:#d1d5db;">
+            Step(<span id="cube-slice-unit"></span>)
+            <input id="cube-slice-stepunit" type="number" step="any" style="width:92px;background:#111827;color:#fff;border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:4px 6px;">
+          </label>
+          <div id="cube-slice-label" style="font-size:12px; color:#d1d5db; min-width:80px; text-align:right;"></div>
+        `;
+        doc.body.appendChild(wrap);
+        __cubeSliceSliderEl = wrap;
+        // Slide-in animation
+        try {
+            __cubeSliceSliderEl.classList.add('cube-slice-enter');
+            requestAnimationFrame(() => {
+                try { __cubeSliceSliderEl.classList.add('cube-slice-enter-active'); } catch(_) {}
+            });
+            setTimeout(() => {
+                try { __cubeSliceSliderEl.classList.remove('cube-slice-enter'); __cubeSliceSliderEl.classList.remove('cube-slice-enter-active'); } catch(_) {}
+            }, 520);
+        } catch (_) {}
+    }
+
+    const range = __cubeSliceSliderEl.querySelector('#cube-slice-range');
+    const label = __cubeSliceSliderEl.querySelector('#cube-slice-label');
+    const btnPrev = __cubeSliceSliderEl.querySelector('#cube-slice-prev');
+    const btnNext = __cubeSliceSliderEl.querySelector('#cube-slice-next');
+    const stepCh = __cubeSliceSliderEl.querySelector('#cube-slice-stepch');
+    const stepUnitWrap = __cubeSliceSliderEl.querySelector('#cube-slice-stepunit-wrap');
+    const stepUnit = __cubeSliceSliderEl.querySelector('#cube-slice-stepunit');
+    const unitSpan = __cubeSliceSliderEl.querySelector('#cube-slice-unit');
+
+    // Load axis-3 metadata from header once (for physical units)
+    const cacheKey = `${filepath}::${hduIndex}`;
+    if (!__cubeAxis3Cache.hasOwnProperty(cacheKey)) {
+        __cubeAxis3Cache[cacheKey] = null;
+        try {
+            const resp = await apiFetch(`/fits-header/${encodeURIComponent(filepath)}?hdu_index=${encodeURIComponent(hduIndex)}`);
+            if (resp && resp.ok) {
+                const j = await resp.json();
+                const hdr = {};
+                (j.header || []).forEach(it => { if (it && it.key) hdr[it.key] = it.value; });
+                const parseNum = (v) => {
+                    if (v == null) return null;
+                    const s = String(v).replace(/^['"]|['"]$/g, '');
+                    const n = Number(s);
+                    return Number.isFinite(n) ? n : null;
+                };
+                __cubeAxis3Cache[cacheKey] = {
+                    ctype3: (hdr['CTYPE3'] ? String(hdr['CTYPE3']).replace(/^['"]|['"]$/g, '') : null),
+                    cunit3: (hdr['CUNIT3'] ? String(hdr['CUNIT3']).replace(/^['"]|['"]$/g, '') : null),
+                    crval3: parseNum(hdr['CRVAL3']),
+                    cdelt3: parseNum(hdr['CDELT3']),
+                    crpix3: parseNum(hdr['CRPIX3']),
+                };
+            }
+        } catch (_) {}
+    }
+    const axis3 = __cubeAxis3Cache[cacheKey];
+    const canUnits = axis3 && axis3.cdelt3 != null && axis3.crval3 != null && axis3.crpix3 != null;
+    if (canUnits) {
+        const u = axis3.cunit3 || '';
+        if (unitSpan) unitSpan.textContent = u;
+        if (stepUnitWrap) stepUnitWrap.style.display = 'flex';
+    } else {
+        if (stepUnitWrap) stepUnitWrap.style.display = 'none';
+    }
+
+    const formatAxis3 = (idx) => {
+        if (!canUnits) return '';
+        const i = Number(idx);
+        const world = axis3.crval3 + ((i + 1) - axis3.crpix3) * axis3.cdelt3;
+        const unit = axis3.cunit3 ? ` ${axis3.cunit3}` : '';
+        const name = axis3.ctype3 ? `${axis3.ctype3}: ` : '';
+        const v = (Math.abs(world) >= 1e4 || (Math.abs(world) > 0 && Math.abs(world) < 1e-3)) ? world.toExponential(3) : world.toPrecision(6);
+        return `${name}${v}${unit}`;
+    };
+
+    // Hover tooltip that follows the slider thumb
+    try {
+        if (!__cubeHoverTip) {
+            __cubeHoverTip = doc.createElement('div');
+            __cubeHoverTip.id = 'cube-slice-hover-tip';
+            __cubeHoverTip.innerHTML = `
+              <div class="cube-tip-row">
+                <div class="cube-tip-thumb">
+                  <div id="cube-tip-img" class="thumb-img"></div>
+                  <div id="cube-tip-loading" class="thumb-loading" style="display:none;"><div class="spinner"></div></div>
+                </div>
+                <div class="cube-tip-text">
+                  <div id="cube-tip-line1" class="line1"></div>
+                  <div id="cube-tip-line2" class="line2"></div>
+                </div>
+              </div>
+            `;
+            doc.body.appendChild(__cubeHoverTip);
+        }
+    } catch (_) {}
+
+    const fetchPreviewBlobUrlNoCache = async (sliceIdx, ctxKey) => {
+        if (sliceIdx == null) return null;
+        try {
+            // Don't even start if context already changed
+            if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) return null;
+            // Force no-cache behavior
+            const v = Date.now();
+            // Cancel previous preview fetch (latest hover wins)
+            try { if (__cubePreviewAbort) __cubePreviewAbort.abort(); } catch (_) {}
+            __cubePreviewAbort = new AbortController();
+            const r = await apiFetch(
+                `/cube/overview/?filepath=${encodeURIComponent(filepath)}&hdu=${encodeURIComponent(hduIndex)}&slice_index=${encodeURIComponent(sliceIdx)}&v=${v}`,
+                { cache: 'no-store', signal: __cubePreviewAbort.signal }
+            );
+            if (!r || !r.ok) return null;
+            const ct = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
+            if (!ct.toLowerCase().includes('image/')) {
+                // Server might have returned JSON/text (e.g. error); treat as no preview.
+                return null;
+            }
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            // If context changed while fetching, drop + revoke immediately (prevents previous-cube preview)
+            if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) {
+                try { URL.revokeObjectURL(url); } catch (_) {}
+                return null;
+            }
+            return url;
+        } catch (_) {
+            return null;
+        }
+    };
+
+    const updateHoverTip = (clientX, fromValue) => {
+        if (!__cubeHoverTip) return;
+        try {
+            const rect = range.getBoundingClientRect();
+            const v = (typeof fromValue !== 'undefined' && fromValue !== null) ? Number(fromValue) : Number(range.value);
+            const pct = (sliceCount <= 1) ? 0 : (v / (sliceCount - 1));
+            // Thumb center x (more stable than raw mouse x)
+            const x = rect.left + pct * rect.width;
+            // Pin tooltip above the slider
+            const y = rect.top - 6;
+            const axisTxt = canUnits ? formatAxis3(v) : '';
+            const l1 = __cubeHoverTip.querySelector('#cube-tip-line1');
+            const l2 = __cubeHoverTip.querySelector('#cube-tip-line2');
+            if (l1) l1.textContent = `ch ${v} / ${sliceCount - 1}`;
+            if (l2) l2.textContent = axisTxt || '';
+            __cubeHoverTip.style.left = `${Math.round(x)}px`;
+            __cubeHoverTip.style.top = `${Math.round(y)}px`;
+        } catch (_) {}
+    };
+
+    const showHoverTip = () => {
+        if (!__cubeHoverTip) return;
+        try { __cubeHoverTip.classList.add('show'); } catch (_) {}
+        __cubeHoverTipActive = true;
+        try { updateHoverTip(null, range.value); } catch (_) {}
+        // Fetch thumbnail for the active slice generator id (NO caching); show loading state
+        (async () => {
+            try {
+                const img = __cubeHoverTip.querySelector('#cube-tip-img');
+                const loading = __cubeHoverTip.querySelector('#cube-tip-loading');
+                if (loading) {
+                    loading.style.display = 'flex';
+                    loading.innerHTML = '<div class="spinner"></div>';
+                }
+                if (img) {
+                    img.style.display = 'none';
+                    img.style.backgroundImage = '';
+                }
+                const idx = Number(range.value) || 0;
+                __cubePreviewLastIdx = idx;
+                const reqId = ++__cubePreviewReqSeq;
+                const ctxKey = __cubeSliderContextKey;
+                const url = await fetchPreviewBlobUrlNoCache(idx, ctxKey);
+                if (reqId !== __cubePreviewReqSeq) return; // stale
+                if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) return; // context changed
+                if (img && url) {
+                    // Revoke previous URL only after the new one is decoded & applied (avoid blanks)
+                    const prev = __cubeHoverTipCurrentObjectUrl;
+                    __cubeHoverTipCurrentObjectUrl = url;
+                    const tmp = new Image();
+                    tmp.onload = () => {
+                        try { prev && URL.revokeObjectURL(prev); } catch(_) {}
+                        try { img.style.backgroundImage = `url("${url}")`; img.style.display = 'block'; } catch(_) {}
+                    };
+                    tmp.onerror = () => { try { prev && URL.revokeObjectURL(prev); } catch(_) {} };
+                    tmp.src = url;
+                } else {
+                    // No preview available
+                    if (loading) loading.innerHTML = '<div class="fallback">No preview</div>';
+                }
+                if (loading) {
+                    // Hide loading if we have a preview, otherwise keep fallback text visible briefly
+                    if (url) loading.style.display = 'none';
+                }
+            } catch (_) {}
+        })();
+    };
+    const hideHoverTip = () => {
+        if (!__cubeHoverTip) return;
+        try { __cubeHoverTip.classList.remove('show'); } catch (_) {}
+        __cubeHoverTipActive = false;
+        // Release object URL on hide (no caching)
+        try {
+            if (__cubeHoverTipCurrentObjectUrl) {
+                URL.revokeObjectURL(__cubeHoverTipCurrentObjectUrl);
+                __cubeHoverTipCurrentObjectUrl = null;
+            }
+        } catch (_) {}
+    };
+
+    const previewSlice = async (sliceIdx) => {
+        if (!__cubeHoverTip) return;
+        try {
+            const img = __cubeHoverTip.querySelector('#cube-tip-img');
+            const loading = __cubeHoverTip.querySelector('#cube-tip-loading');
+            if (loading) {
+                loading.style.display = 'flex';
+                loading.innerHTML = '<div class="spinner"></div>';
+            }
+            if (img) {
+                img.style.display = 'none';
+                img.style.backgroundImage = '';
+            }
+            __cubePreviewLastIdx = sliceIdx;
+            const reqId = ++__cubePreviewReqSeq;
+            const ctxKey = __cubeSliderContextKey;
+            const url = await fetchPreviewBlobUrlNoCache(sliceIdx, ctxKey);
+            if (reqId !== __cubePreviewReqSeq) return; // stale
+            if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) return; // context changed
+            if (img && url) {
+                const prev = __cubeHoverTipCurrentObjectUrl;
+                __cubeHoverTipCurrentObjectUrl = url;
+                const tmp = new Image();
+                tmp.onload = () => {
+                    try { prev && URL.revokeObjectURL(prev); } catch(_) {}
+                    try { img.style.backgroundImage = `url("${url}")`; img.style.display = 'block'; } catch(_) {}
+                };
+                tmp.onerror = () => { try { prev && URL.revokeObjectURL(prev); } catch(_) {} };
+                tmp.src = url;
+            } else {
+                if (loading) loading.innerHTML = '<div class="fallback">No preview</div>';
+            }
+            if (loading) {
+                if (url) loading.style.display = 'none';
+            }
+        } catch (_) {}
+    };
+
+    const schedulePreview = (sliceIdx, delayMs = 90) => {
+        if (!__cubeHoverTipActive) return;
+        try {
+            if (__cubePreviewTimer) clearTimeout(__cubePreviewTimer);
+            __cubePreviewTimer = setTimeout(() => {
+                try {
+                    if (__cubePreviewLastIdx === sliceIdx) return;
+                    previewSlice(sliceIdx);
+                } catch (_) {}
+            }, delayMs);
+        } catch (_) {}
+    };
+    range.max = String(sliceCount - 1);
+    range.value = String(window.currentCubeSliceIndex || 0);
+    label.textContent = `${range.value} / ${sliceCount - 1}${canUnits ? ' · ' + formatAxis3(range.value) : ''}`;
+    // Update track fill
+    try {
+        const pct = (sliceCount <= 1) ? 0 : (Number(range.value) / (sliceCount - 1)) * 100;
+        range.style.setProperty('--pct', `${pct.toFixed(2)}%`);
+        __cubeFillPct = pct;
+    } catch (_) {}
+
+    const applySlice = async (val) => {
+        try {
+            const sliceIdx = Number(val) || 0;
+            label.textContent = `${sliceIdx} / ${sliceCount - 1}${canUnits ? ' · ' + formatAxis3(sliceIdx) : ''}`;
+            showNotification(true, `Loading channel ${sliceIdx}…`);
+            __cubeSliceLoading = true;
+            try {
+                if (__cubeHoverTipActive && __cubeHoverTip) {
+                    const loading = __cubeHoverTip.querySelector('#cube-tip-loading');
+                    if (loading) loading.style.display = 'flex';
+                }
+            } catch (_) {}
+            const resp = await apiFetch(`/cube/set-slice/?filepath=${encodeURIComponent(filepath)}&hdu=${encodeURIComponent(hduIndex)}&slice_index=${encodeURIComponent(sliceIdx)}`);
+            if (!resp.ok) {
+                const j = await resp.json().catch(() => ({}));
+                throw new Error(j.detail || j.error || `HTTP ${resp.status}`);
+            }
+            const j = await resp.json();
+            window.currentCubeSliceIndex = j.slice_index;
+            try { window.currentLoadedFitsFileId = j.file_id || window.currentLoadedFitsFileId; } catch (_) {}
+            if (window.fitsData && typeof j.flip_y === 'boolean') {
+                window.fitsData.flip_y = j.flip_y;
+            }
+            // Update tile info for this slice (analyze_wcs_orientation can rotate/transpose, changing dims/maxLevel).
+            try {
+                if (j && j.tile_info && typeof j.tile_info === 'object') {
+                    currentTileInfo = j.tile_info;
+                    try { window.currentTileInfo = currentTileInfo; } catch (_) {}
+                    if (!window.fitsData) window.fitsData = {};
+                    if (typeof j.tile_info.width === 'number') window.fitsData.width = j.tile_info.width;
+                    if (typeof j.tile_info.height === 'number') window.fitsData.height = j.tile_info.height;
+                }
+            } catch (_) {}
+            // If backend included header, refresh WCS cache immediately (avoids stale transforms).
+            try {
+                if (j && j.wcs_header && window.fitsData) {
+                    window.fitsData.wcs = j.wcs_header;
+                    try { if (window.parsedWCS) delete window.parsedWCS; } catch (_) {}
+                }
+            } catch (_) {}
+            // Bust OSD tile cache and reload tiles for new session slice
+            reopenTiledViewerForCubeSlice();
+            showNotification(false);
+            __cubeSliceLoading = false;
+            // Success pulse
+            try {
+                __cubeSliceSliderEl.classList.remove('cube-slice-commit');
+                // reflow
+                void __cubeSliceSliderEl.offsetWidth;
+                __cubeSliceSliderEl.classList.add('cube-slice-commit');
+                setTimeout(() => { try { __cubeSliceSliderEl.classList.remove('cube-slice-commit'); } catch(_){} }, 520);
+            } catch (_) {}
+
+            // Refresh thumbnail for the newly active slice (no caching)
+            try {
+                if (__cubeHoverTipActive && __cubeHoverTip) {
+                    const img = __cubeHoverTip.querySelector('#cube-tip-img');
+                    const loading = __cubeHoverTip.querySelector('#cube-tip-loading');
+                    if (loading) loading.style.display = 'flex';
+                    if (img) { img.style.display = 'none'; img.style.backgroundImage = ''; }
+                    const ctxKey = __cubeSliderContextKey;
+                    const reqId = ++__cubePreviewReqSeq;
+                    const url = await fetchPreviewBlobUrlNoCache(sliceIdx, ctxKey);
+                    if (reqId !== __cubePreviewReqSeq) return;
+                    if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) return;
+                    if (img && url) {
+                        const prev = __cubeHoverTipCurrentObjectUrl;
+                        __cubeHoverTipCurrentObjectUrl = url;
+                        const tmp = new Image();
+                        tmp.onload = () => {
+                            try { prev && URL.revokeObjectURL(prev); } catch(_) {}
+                            try { img.style.backgroundImage = `url("${url}")`; img.style.display = 'block'; } catch(_) {}
+                        };
+                        tmp.onerror = () => { try { prev && URL.revokeObjectURL(prev); } catch(_) {} };
+                        tmp.src = url;
+                    }
+                    if (loading) loading.style.display = 'none';
+                }
+            } catch (_) {}
+        } catch (err) {
+            console.error('[cube-slice] failed', err);
+            showNotification(false);
+            __cubeSliceLoading = false;
+            showNotification(`Failed to load channel: ${err.message || err}`, 3000, 'error');
+        }
+    };
+
+    const animateFillTo = (targetPct) => {
+        try {
+            const startPct = (typeof __cubeFillPct === 'number') ? __cubeFillPct : targetPct;
+            const endPct = targetPct;
+            const t0 = performance.now();
+            const dur = 140;
+            const ease = (t) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+            const tick = (now) => {
+                const u = Math.min(1, (now - t0) / dur);
+                const v = startPct + (endPct - startPct) * ease(u);
+                range.style.setProperty('--pct', `${v.toFixed(2)}%`);
+                __cubeFillPct = v;
+                if (u < 1) requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+        } catch (_) {}
+    };
+
+    range.oninput = (e) => {
+        const v = e && e.target ? e.target.value : range.value;
+        label.textContent = `${v} / ${sliceCount - 1}${canUnits ? ' · ' + formatAxis3(v) : ''}`;
+        // Animate fill + subtle bump
+        try {
+            const pct = (sliceCount <= 1) ? 0 : (Number(v) / (sliceCount - 1)) * 100;
+            animateFillTo(pct);
+            __cubeSliceSliderEl.classList.add('cube-slice-bump');
+            setTimeout(() => { try { __cubeSliceSliderEl.classList.remove('cube-slice-bump'); } catch(_){} }, 170);
+        } catch (_) {}
+        // debounce heavy requests
+        if (__cubeSliceSliderDebounce) clearTimeout(__cubeSliceSliderDebounce);
+        __cubeSliceSliderDebounce = setTimeout(() => applySlice(v), 180);
+    };
+
+    // Tooltip hover handlers (install once)
+    try {
+        if (!range.__cubeTipBound) {
+            range.__cubeTipBound = true;
+            range.addEventListener('mouseenter', () => showHoverTip());
+            range.addEventListener('mouseleave', () => hideHoverTip());
+            range.addEventListener('focus', () => showHoverTip());
+            range.addEventListener('blur', () => hideHoverTip());
+            range.addEventListener('mousemove', (ev) => {
+                // Map mouse position to value for better feedback when hovering
+                try {
+                    const rect = range.getBoundingClientRect();
+                    const t = (ev.clientX - rect.left) / Math.max(1, rect.width);
+                    const v = Math.round(t * (sliceCount - 1));
+                    const idx = Math.max(0, Math.min(sliceCount - 1, v));
+                    updateHoverTip(ev.clientX, idx);
+                    schedulePreview(idx, 110);
+                } catch (_) {
+                    updateHoverTip(ev.clientX, range.value);
+                }
+            });
+            // Click to force-refresh thumbnail for the current value (no caching)
+            range.addEventListener('click', async () => {
+                try {
+                    if (!__cubeHoverTip) return;
+                    const img = __cubeHoverTip.querySelector('#cube-tip-img');
+                    const loading = __cubeHoverTip.querySelector('#cube-tip-loading');
+                    if (loading) loading.style.display = 'flex';
+                    if (img) { img.style.display = 'none'; img.style.backgroundImage = ''; }
+                    const idx = Number(range.value) || 0;
+                    const ctxKey = __cubeSliderContextKey;
+                    const reqId = ++__cubePreviewReqSeq;
+                    const url = await fetchPreviewBlobUrlNoCache(idx, ctxKey);
+                    if (reqId !== __cubePreviewReqSeq) return;
+                    if (ctxKey && __cubeSliderContextKey && ctxKey !== __cubeSliderContextKey) return;
+                    if (img && url) {
+                        const prev = __cubeHoverTipCurrentObjectUrl;
+                        __cubeHoverTipCurrentObjectUrl = url;
+                        const tmp = new Image();
+                        tmp.onload = () => {
+                            try { prev && URL.revokeObjectURL(prev); } catch(_) {}
+                            try { img.style.backgroundImage = `url("${url}")`; img.style.display = 'block'; } catch(_) {}
+                        };
+                        tmp.onerror = () => { try { prev && URL.revokeObjectURL(prev); } catch(_) {} };
+                        tmp.src = url;
+                    }
+                    if (loading) loading.style.display = 'none';
+                } catch (_) {}
+            });
+        }
+    } catch (_) {}
+
+    const applyStepCh = (n) => {
+        const step = Math.max(1, Math.floor(Number(n) || 1));
+        range.step = String(step);
+        if (stepCh) stepCh.value = String(step);
+        if (canUnits && stepUnit) {
+            const unitStep = Math.abs(axis3.cdelt3) * step;
+            stepUnit.value = String(unitStep);
+        }
+    };
+
+    // Initialize step UI
+    applyStepCh(stepCh && stepCh.value ? stepCh.value : (range.step || 1));
+
+    // IMPORTANT: make slice 0 go through the same codepath as other slices to keep orientation consistent
+    // (ensures analyze_wcs_orientation is applied and sets slice-specific file_id).
+    try {
+        const current = Math.floor(Number(range.value) || 0);
+        if (typeof window.currentLoadedFitsFileId === 'undefined' || !window.currentLoadedFitsFileId) {
+            // Fire-and-forget; tile reload will happen but keeps everything consistent.
+            setTimeout(() => { applySlice(current); }, 0);
+        }
+    } catch (_) {}
+
+    if (stepCh) {
+        stepCh.onchange = () => applyStepCh(stepCh.value);
+    }
+    if (canUnits && stepUnit) {
+        stepUnit.onchange = () => {
+            const desired = Number(stepUnit.value);
+            if (!Number.isFinite(desired) || desired <= 0) return;
+            const step = Math.max(1, Math.round(desired / Math.abs(axis3.cdelt3)));
+            applyStepCh(step);
+        };
+    }
+
+    const nudge = (dir) => {
+        const step = Math.max(1, Math.floor(Number(range.step) || 1));
+        const cur = Math.floor(Number(range.value) || 0);
+        const next = Math.max(0, Math.min(sliceCount - 1, cur + dir * step));
+        range.value = String(next);
+        label.textContent = `${next} / ${sliceCount - 1}${canUnits ? ' · ' + formatAxis3(next) : ''}`;
+        if (__cubeSliceSliderDebounce) clearTimeout(__cubeSliceSliderDebounce);
+        __cubeSliceSliderDebounce = setTimeout(() => applySlice(next), 60);
+    };
+    if (btnPrev) btnPrev.onclick = () => nudge(-1);
+    if (btnNext) btnNext.onclick = () => nudge(1);
+
+    // Hovering on step / prev / next updates the preview (without changing slice)
+    try {
+        const computeNextPrev = (dir) => {
+            const step = Math.max(1, Math.floor(Number(range.step) || 1));
+            const cur = Math.floor(Number(range.value) || 0);
+            return Math.max(0, Math.min(sliceCount - 1, cur + dir * step));
+        };
+        const bindPreviewHover = (el, getIdx) => {
+            if (!el || el.__cubePreviewBound) return;
+            el.__cubePreviewBound = true;
+            el.addEventListener('mouseenter', () => {
+                try { showHoverTip(); } catch(_) {}
+                try {
+                    const idx = getIdx();
+                    updateHoverTip(null, idx);
+                    // immediate on hover for buttons/step
+                    previewSlice(idx);
+                } catch (_) {}
+            });
+        };
+        bindPreviewHover(btnPrev, () => computeNextPrev(-1));
+        bindPreviewHover(btnNext, () => computeNextPrev(1));
+        bindPreviewHover(stepCh, () => computeNextPrev(1)); // preview "next step" when hovering step
+        bindPreviewHover(stepUnit, () => computeNextPrev(1));
+    } catch (_) {}
+}
 // Function to analyze the FITS file and get HDU information
 function getFitsHduInfo(filepath) {
-    return apiFetch(`/fits-hdu-info/${encodeURIComponent(filepath)}`)
+    // Never cache HDU list: cube depth differs per file and stale values break the channel slider.
+    const v = Date.now();
+    return apiFetch(`/fits-hdu-info/${encodeURIComponent(filepath)}?v=${v}`, { cache: 'no-store' })
         .then(response => {
             if (!response.ok) {
                 throw new Error(`Failed to get HDU info: ${response.statusText}`);
@@ -6225,8 +9720,19 @@ function loadCatalogWithFlags(catalogName) {
         }
     }
     
+    function removeCoordinatesDisplay() {
+        try {
+            const coords = document.getElementById('osd-coordinates');
+            if (coords && coords.parentNode) coords.parentNode.removeChild(coords);
+        } catch (_) {}
+    }
+
     // Initialize the coordinates display
     async function initCoordinates() {
+        if (!window.fitsData) {
+            removeCoordinatesDisplay();
+            return;
+        }
         console.log("Starting coordinates display initialization");
         
         // Wait for the OpenSeadragon container to be available
@@ -6359,7 +9865,7 @@ function loadCatalogWithFlags(catalogName) {
                  updateValueWithAnimation('coord-ra', '-');
                  updateValueWithAnimation('coord-dec', '-');
                  updateValueWithAnimation('coord-value', '-');
-                 document.getElementById('coord-unit').textContent = '';
+                 { const u = document.getElementById('coord-unit'); if (u) u.textContent = ''; }
                  return;
              }
 
@@ -6410,16 +9916,16 @@ function loadCatalogWithFlags(catalogName) {
                      updateValueWithAnimation('coord-value', value.toExponential(4));
                      const bunit = getBunit(); // Keep using helper for BUNIT
                      // console.log(`mousemove: Bunit: ${bunit}`); // Optional log
-                     document.getElementById('coord-unit').textContent = bunit || '';
+                     { const u = document.getElementById('coord-unit'); if (u) u.textContent = bunit || ''; }
                  } else {
                       // console.log("mousemove: Pixel value is not a valid number"); // Optional log
                       updateValueWithAnimation('coord-value', '-');
-                      document.getElementById('coord-unit').textContent = '';
+                      { const u = document.getElementById('coord-unit'); if (u) u.textContent = ''; }
                  }
              } catch (e) {
                   console.error("Error getting pixel value:", e); // Log error
                  updateValueWithAnimation('coord-value', 'Err'); // Indicate error
-                 document.getElementById('coord-unit').textContent = '';
+                 { const u = document.getElementById('coord-unit'); if (u) u.textContent = ''; }
              }
         });
         
@@ -6441,7 +9947,7 @@ function loadCatalogWithFlags(catalogName) {
                     updateValueWithAnimation('coord-ra', '-');
                     updateValueWithAnimation('coord-dec', '-');
                     updateValueWithAnimation('coord-value', '-');
-                    document.getElementById('coord-unit').textContent = '';
+                    { const u = document.getElementById('coord-unit'); if (u) u.textContent = ''; }
                 }
             }, 300); // Corresponds to CSS transition time
         });
@@ -6507,6 +10013,8 @@ function loadCatalogWithFlags(catalogName) {
         }, 300000);
     }
     
+    // Expose remover globally
+    window.removeCoordinatesDisplay = removeCoordinatesDisplay;
     // Start watching for initialization
     watchForInitialization();
     
@@ -6691,9 +10199,10 @@ console.log(`Applied changes to canvases: ${canvasCount}, viewer update: ${viewe
 
 function attachHistogramInteractionWhenReady() {
     const tryAttach = () => {
-        const linesCanvas = document.getElementById('histogram-lines-canvas');
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        const doc = getHistogramDocument();
+        const linesCanvas = doc.getElementById('histogram-lines-canvas');
+        const minInput = doc.getElementById('min-range-input');
+        const maxInput = doc.getElementById('max-range-input');
         if (!linesCanvas || !minInput || !maxInput) return false;
 
         if (typeof ensureHistogramOverlayReady === 'function') ensureHistogramOverlayReady();
@@ -6716,10 +10225,10 @@ function attachHistogramInteractionWhenReady() {
 
     const onReady = () => {
         if (tryAttach()) {
-            document.removeEventListener('histogram:ready', onReady);
+            getHistogramDocument().removeEventListener('histogram:ready', onReady);
         }
     };
-    document.addEventListener('histogram:ready', onReady);
+    getHistogramDocument().addEventListener('histogram:ready', onReady);
 }
 
 function addHistogramInteraction(canvas, minInput, maxInput) {
@@ -6856,7 +10365,8 @@ function addHistogramInteraction(canvas, minInput, maxInput) {
 
 
 async function updateHistogramBackground() { // Renamed and made async
-    const canvas = document.getElementById('histogram-bg-canvas'); // Use BG canvas ID
+    const doc = getHistogramDocument();
+    const canvas = doc.getElementById('histogram-bg-canvas'); // Use BG canvas ID
     if (!canvas) {
         console.log('Histogram background canvas not found, skipping update');
         return;
@@ -6868,8 +10378,8 @@ async function updateHistogramBackground() { // Renamed and made async
         const dataSource = await getHistogramPixelDataSource();
         if (dataSource.source === 'server_needed') {
             console.log('Client-side data unavailable or not ideal, fetching histogram from server.', dataSource.message);
-            const minEl = document.getElementById('min-range-input');
-            const maxEl = document.getElementById('max-range-input');
+            const minEl = doc.getElementById('min-range-input');
+            const maxEl = doc.getElementById('max-range-input');
             const uiMin = minEl ? parseFloat(minEl.value) : null;
             const uiMax = maxEl ? parseFloat(maxEl.value) : null;
             const haveUi = isFinite(uiMin) && isFinite(uiMax) && uiMin < uiMax;
@@ -6893,8 +10403,8 @@ async function updateHistogramBackground() { // Renamed and made async
         const canvasFullHeight = canvas.height;
 
         const numBins = 100;
-        const uiMinStr = document.getElementById('min-range-input')?.value;
-        const uiMaxStr = document.getElementById('max-range-input')?.value;
+        const uiMinStr = doc.getElementById('min-range-input')?.value;
+        const uiMaxStr = doc.getElementById('max-range-input')?.value;
         const uiMin = uiMinStr != null ? parseFloat(uiMinStr) : null;
         const uiMax = uiMaxStr != null ? parseFloat(uiMaxStr) : null;
         const haveUi = isFinite(uiMin) && isFinite(uiMax) && uiMin < uiMax;
@@ -6956,8 +10466,8 @@ async function updateHistogramBackground() { // Renamed and made async
         };
 
         const haveOverlay = typeof ensureHistogramOverlayReady === 'function' && ensureHistogramOverlayReady();
-        const minInput = document.getElementById('min-range-input');
-        const maxInput = document.getElementById('max-range-input');
+        const minInput = doc.getElementById('min-range-input');
+        const maxInput = doc.getElementById('max-range-input');
 
         let lineMin = (minInput && isFinite(parseFloat(minInput.value))) ? parseFloat(minInput.value) : histUIMin;
         let lineMax = (maxInput && isFinite(parseFloat(maxInput.value))) ? parseFloat(maxInput.value) : (histUIMin + histDisplayRange);
@@ -6968,7 +10478,7 @@ async function updateHistogramBackground() { // Renamed and made async
             drawHistogramLines(lineMin, lineMax, false);
         }
 
-        document.dispatchEvent(new CustomEvent('histogram:ready'));
+        doc.dispatchEvent(new CustomEvent('histogram:ready'));
     } catch (error) {
         console.error('Error updating histogram background:', error);
         if (canvas) {
@@ -6981,7 +10491,8 @@ async function updateHistogramBackground() { // Renamed and made async
 
 
 function drawHistogramLines(targetMinVal, targetMaxVal, animate = false) {
-    const canvas = document.getElementById('histogram-lines-canvas');
+    const doc = getHistogramDocument();
+    const canvas = doc.getElementById('histogram-lines-canvas');
     if (!canvas) return;
 
     // Make sure the overlay canvas matches the background and is on top
@@ -7057,8 +10568,9 @@ function requestHistogramUpdate() {
     updateHistogramBackground();
     
     // Draw lines based on current input values (no animation needed here as it follows background)
-    const minInput = document.getElementById('min-range-input');
-    const maxInput = document.getElementById('max-range-input');
+    const doc = getHistogramDocument();
+    const minInput = doc.getElementById('min-range-input');
+    const maxInput = doc.getElementById('max-range-input');
     if (minInput && maxInput) {
         const currentMin = parseFloat(minInput.value);
         const currentMax = parseFloat(maxInput.value);
@@ -7077,9 +10589,23 @@ function requestHistogramUpdate() {
     }
 }
 
+function refreshHistogramOnPaneActivate() {
+    try {
+        const doc = getHistogramDocument();
+        const popup = doc.getElementById('dynamic-range-popup');
+        if (!popup || popup.style.display === 'none') return;
+        if (typeof showDynamicRangePopup === 'function') {
+            showDynamicRangePopup({ forceRebind: true });
+        } else {
+            requestHistogramUpdate();
+        }
+    } catch (_) {}
+}
+
 function fetchServerHistogram(minVal = null, maxVal = null, bins = 1024) {
     // Canvas is optional for data fetch; only used if present for drawing
-    const canvas = document.getElementById('histogram-bg-canvas');
+    const doc = getHistogramDocument();
+    const canvas = doc.getElementById('histogram-bg-canvas');
     let ctx = null;
     if (canvas) {
         ctx = canvas.getContext('2d');
@@ -7111,8 +10637,8 @@ function fetchServerHistogram(minVal = null, maxVal = null, bins = 1024) {
                 drawServerHistogram(data);
 
                 // If min/max inputs exist, draw lines too
-                const minInput = document.getElementById('min-range-input');
-                const maxInput = document.getElementById('max-range-input');
+                const minInput = doc.getElementById('min-range-input');
+                const maxInput = doc.getElementById('max-range-input');
                 if (minInput && maxInput) {
                     const currentMin = parseFloat(minInput.value);
                     const currentMax = parseFloat(maxInput.value);
@@ -7576,6 +11102,859 @@ function isRgbPopupOpen() {
 // static/main.js
 
 // ... at the very end of the file
+
+function getImageHeightForTransforms() {
+    try {
+        const height = window?.fitsData?.height;
+        if (typeof height === 'number' && isFinite(height)) return height;
+        const header = window?.fitsData?.wcs;
+        if (header) {
+            const get = (k) => (k in header ? header[k]
+                : (k.toUpperCase() in header ? header[k.toUpperCase()]
+                : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+            const axis2 = Number(get('NAXIS2'));
+            if (isFinite(axis2)) return axis2;
+        }
+    } catch (_) {}
+    return null;
+}
+
+// For WCS lock only: determine whether we need to flip Y when mapping between display pixels and WCS pixels.
+// We intentionally DO NOT use determinant<0 here because many headers have CDELT1<0 (RA increases left),
+// which flips handedness but does not mean the Y axis should be inverted (ALMA moment maps are common).
+function getFlipYForWcsLock() {
+    // Prefer the backend's analyze_wcs_orientation() decision (cached on fitsData.flip_y),
+    // because WCS-lock mapping must match the actual displayed orientation.
+    try {
+        const fy = window?.fitsData?.flip_y;
+        if (typeof fy === 'boolean') return fy;
+    } catch (_) {}
+    // Fallback: heuristic from header (legacy)
+    try {
+        const header = window?.fitsData?.wcs;
+        if (!header) return false;
+        const get = (k) => (k in header ? header[k]
+            : (k.toUpperCase() in header ? header[k.toUpperCase()]
+            : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+        let cd22;
+        if (get('CD2_2') !== undefined) {
+            cd22 = Number(get('CD2_2'));
+        } else if (get('PC2_2') !== undefined) {
+            const pc22 = Number(get('PC2_2'));
+            const cdelt2 = Number(get('CDELT2'));
+            cd22 = pc22 * cdelt2;
+        } else if (get('CDELT2') !== undefined) {
+            cd22 = Number(get('CDELT2'));
+        }
+        if (Number.isFinite(cd22)) {
+            return cd22 < 0;
+        }
+    } catch (_) {}
+    return false;
+}
+
+function convertDisplayPixelToWcsInputForWcsLock(x, y) {
+    const height = getImageHeightForTransforms();
+    const flipY = getFlipYForWcsLock();
+    const px = typeof x === 'number' ? x : Number(x);
+    const py = typeof y === 'number' ? y : Number(y);
+    if (!flipY || height == null || !isFinite(py)) return { x: px, y: py };
+    return { x: px, y: height - 1 - py };
+}
+
+function convertWcsPixelToDisplayOutputForWcsLock(x, y) {
+    const height = getImageHeightForTransforms();
+    const flipY = getFlipYForWcsLock();
+    const px = typeof x === 'number' ? x : Number(x);
+    const py = typeof y === 'number' ? y : Number(y);
+    if (!flipY || height == null || !isFinite(py)) return { x: px, y: py };
+    return { x: px, y: height - 1 - py };
+}
+
+function convertDisplayPixelToWcsInput(x, y) {
+    const height = getImageHeightForTransforms();
+    const flipY = !!window?.fitsData?.flip_y;
+    const px = typeof x === 'number' ? x : Number(x);
+    const py = typeof y === 'number' ? y : Number(y);
+    if (!flipY || height == null || !isFinite(py)) {
+        return { x: px, y: py };
+    }
+    return { x: px, y: height - 1 - py };
+}
+
+function convertWcsPixelToDisplayOutput(x, y) {
+    const height = getImageHeightForTransforms();
+    const flipY = !!window?.fitsData?.flip_y;
+    const px = typeof x === 'number' ? x : Number(x);
+    const py = typeof y === 'number' ? y : Number(y);
+    if (!flipY || height == null || !isFinite(py)) {
+        return { x: px, y: py };
+    }
+    return { x: px, y: height - 1 - py };
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWorldToPixelBatch(points) {
+    if (!Array.isArray(points) || points.length === 0) return null;
+    try {
+        // Always bind conversion to the current pane's file/HDU so multi-panel sync can't drift
+        // due to stale session context.
+        const rawPath = window.currentFitsFile || window?.fitsData?.filename || null;
+        const filepath = (typeof rawPath === 'string') ? rawPath : null;
+        const hdu = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : null;
+        const response = await apiFetch('/world-to-pixel/?origin=top', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                points,
+                filepath: filepath || undefined,
+                hdu: (typeof hdu === 'number') ? hdu : undefined,
+                origin: 'top'
+            })
+        });
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (err) {
+        console.warn('[wcs] world-to-pixel request failed', err);
+        return null;
+    }
+}
+
+async function convertWorldQuadViaBackend(worldQuad) {
+    if (!Array.isArray(worldQuad) || worldQuad.length === 0) return [];
+    const payloadPoints = [];
+    worldQuad.forEach((world, idx) => {
+        if (!world || !isFinite(world.ra) || !isFinite(world.dec)) return;
+        payloadPoints.push({ ra: world.ra, dec: world.dec, index: idx });
+    });
+    if (!payloadPoints.length) return [];
+    const data = await fetchWorldToPixelBatch(payloadPoints);
+    if (!data || !Array.isArray(data.pixels)) return [];
+    const points = [];
+    data.pixels.forEach(entry => {
+        if (!entry || !entry.valid || !isFinite(entry.x) || !isFinite(entry.y)) return;
+        const disp = convertWcsPixelToDisplayOutputForWcsLock(entry.x, entry.y);
+        if (!isFinite(disp.x) || !isFinite(disp.y)) return;
+        points.push({ x: disp.x, y: disp.y });
+    });
+    return points;
+}
+
+function convertWorldQuadViaFallback(worldQuad) {
+    if (!Array.isArray(worldQuad) || worldQuad.length === 0) return [];
+    const pts = [];
+    worldQuad.forEach(world => {
+        if (!world || !isFinite(world.ra) || !isFinite(world.dec)) return;
+        try {
+            const parsed = getOrCreateParsedWcsForSync();
+            if (parsed && parsed.hasWCS && typeof parsed.worldToPixels === 'function') {
+                const raw = parsed.worldToPixels(world.ra, world.dec);
+                if (raw && isFinite(raw.x) && isFinite(raw.y)) {
+                    const disp = convertWcsPixelToDisplayOutputForWcsLock(raw.x, raw.y);
+                    if (disp && isFinite(disp.x) && isFinite(disp.y)) { pts.push(disp); return; }
+                }
+            }
+        } catch (_) {}
+        try {
+            const header = window?.fitsData?.wcs;
+            if (header) {
+                const raw2 = worldToPixelFromHeaderForWcsLock(header, world.ra, world.dec);
+                if (raw2 && isFinite(raw2.x) && isFinite(raw2.y)) {
+                    const disp2 = convertWcsPixelToDisplayOutputForWcsLock(raw2.x, raw2.y);
+                    if (disp2 && isFinite(disp2.x) && isFinite(disp2.y)) pts.push(disp2);
+                }
+            }
+        } catch (_) {}
+    });
+    return pts;
+}
+
+function pixelsToWorldFromHeader(header, x, y) {
+    try {
+        if (!header) return null;
+        const get = (k) => (k in header ? header[k]
+            : (k.toUpperCase() in header ? header[k.toUpperCase()]
+            : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+        const ctype1 = String(get('CTYPE1') || '');
+        const ctype2 = String(get('CTYPE2') || '');
+        if (!ctype1 || !ctype2) return null;
+        const D2R = Math.PI / 180.0;
+        const R2D = 180.0 / Math.PI;
+        const crval1 = Number(get('CRVAL1'));
+        const crval2 = Number(get('CRVAL2'));
+        const crpix1 = Number(get('CRPIX1'));
+        const crpix2 = Number(get('CRPIX2'));
+        let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
+        let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
+        if (cd11 === undefined || cd22 === undefined) {
+            const cdelt1 = Number(get('CDELT1') ?? 1);
+            const cdelt2 = Number(get('CDELT2') ?? 1);
+            cd11 = Number(cd11 ?? cdelt1);
+            cd12 = Number(cd12 ?? 0);
+            cd21 = Number(cd21 ?? 0);
+            cd22 = Number(cd22 ?? cdelt2);
+        } else {
+            cd11 = Number(cd11); cd12 = Number(cd12 || 0);
+            cd21 = Number(cd21 || 0); cd22 = Number(cd22);
+        }
+        if (![crval1, crval2, crpix1, crpix2, cd11, cd12, cd21, cd22].every(v => Number.isFinite(v))) return null;
+        const xprime = x - crpix1 + 1;
+        const yprime = y - crpix2 + 1;
+        const xi_deg  = (cd11 * xprime + cd12 * yprime);
+        const eta_deg = (cd21 * xprime + cd22 * yprime);
+        const ra0 = crval1 * D2R;
+        const dec0 = crval2 * D2R;
+        if (ctype1.includes('TAN') && ctype2.includes('TAN')) {
+            const xi  = xi_deg  * D2R;
+            const eta = eta_deg * D2R;
+            const H = Math.hypot(xi, eta);
+            const delta = Math.atan(H);
+            const sin_delta = Math.sin(delta);
+            const cos_delta = Math.cos(delta);
+            const cos_dec0 = Math.cos(dec0);
+            const sin_dec0 = Math.sin(dec0);
+            const dec = Math.asin(cos_delta * sin_dec0 + (eta * sin_delta * cos_dec0) / (H || 1e-16));
+            const ra  = ra0 + Math.atan2(xi * sin_delta, H * cos_dec0 * cos_delta - eta * sin_dec0 * sin_delta);
+            return { ra: (ra * R2D + 540) % 360 - 180, dec: dec * R2D };
+        }
+        if (ctype1.includes('SIN') && ctype2.includes('SIN')) {
+            const l = -(xi_deg)  * D2R;
+            const m =  (eta_deg) * D2R;
+            const rho2 = l*l + m*m;
+            if (rho2 > 1.0) return null;
+            const n = Math.sqrt(Math.max(0, 1 - rho2));
+            const cos_dec0 = Math.cos(dec0);
+            const sin_dec0 = Math.sin(dec0);
+            const dec = Math.asin(m * cos_dec0 + n * sin_dec0);
+            const y_num = l;
+            const x_den = n * cos_dec0 - m * sin_dec0;
+            const ra  = ra0 + Math.atan2(y_num, x_den);
+            return { ra: (ra * R2D + 540) % 360 - 180, dec: dec * R2D };
+        }
+        // Fallback linear approximation
+        const ra = crval1 + xi_deg;
+        const dec = crval2 + eta_deg;
+        return { ra, dec };
+    } catch(_) {
+        return null;
+    }
+}
+
+function worldToPixelFromHeader(header, raDeg, decDeg) {
+    try {
+        if (!header) return null;
+        const get = (k) => (k in header ? header[k]
+            : (k.toUpperCase() in header ? header[k.toUpperCase()]
+            : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+        const ctype1 = String(get('CTYPE1') || '');
+        const ctype2 = String(get('CTYPE2') || '');
+        const crval1 = Number(get('CRVAL1'));
+        const crval2 = Number(get('CRVAL2'));
+        const crpix1 = Number(get('CRPIX1'));
+        const crpix2 = Number(get('CRPIX2'));
+        let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
+        let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
+        if (cd11 === undefined || cd22 === undefined) {
+            const cdelt1 = Number(get('CDELT1') ?? 1);
+            const cdelt2 = Number(get('CDELT2') ?? 1);
+            cd11 = Number(cd11 ?? cdelt1);
+            cd12 = Number(cd12 ?? 0);
+            cd21 = Number(cd21 ?? 0);
+            cd22 = Number(cd22 ?? cdelt2);
+        } else {
+            cd11 = Number(cd11); cd12 = Number(cd12 || 0);
+            cd21 = Number(cd21 || 0); cd22 = Number(cd22);
+        }
+        if (![crval1, crval2, crpix1, crpix2, cd11, cd12, cd21, cd22].every(v => Number.isFinite(v))) return null;
+        const det = cd11 * cd22 - cd12 * cd21;
+        if (Math.abs(det) < 1e-18) return null;
+        const D2R = Math.PI / 180.0;
+        const R2D = 180.0 / Math.PI;
+        const raRad = raDeg * D2R;
+        const decRad = decDeg * D2R;
+        const ra0 = crval1 * D2R;
+        const dec0 = crval2 * D2R;
+        let xi_deg = null, eta_deg = null;
+        if (ctype1.includes('TAN') && ctype2.includes('TAN')) {
+            const cos_dec = Math.cos(decRad);
+            const cos_dec0 = Math.cos(dec0);
+            const sin_dec = Math.sin(decRad);
+            const sin_dec0 = Math.sin(dec0);
+            const delta_ra = raRad - ra0;
+            const A = cos_dec * Math.cos(delta_ra);
+            const denominator = sin_dec * sin_dec0 + A * cos_dec0;
+            if (Math.abs(denominator) < 1e-15) return null;
+            const X = cos_dec * Math.sin(delta_ra);
+            const Y = sin_dec * cos_dec0 - cos_dec * sin_dec0 * Math.cos(delta_ra);
+            const xi = X / denominator;
+            const eta = Y / denominator;
+            xi_deg = xi * R2D;
+            eta_deg = eta * R2D;
+        } else if (ctype1.includes('SIN') && ctype2.includes('SIN')) {
+            const delta_ra = raRad - ra0;
+            const l = Math.cos(decRad) * Math.sin(delta_ra);
+            const m = Math.sin(decRad) * Math.cos(dec0) - Math.cos(decRad) * Math.sin(dec0) * Math.cos(delta_ra);
+            xi_deg = -(l * R2D);
+            eta_deg = (m * R2D);
+        } else {
+            let raDiff = raDeg - crval1;
+            if (isFinite(raDiff)) raDiff = ((raDiff + 540) % 360) - 180;
+            const decDiff = decDeg - crval2;
+            const dxLin = ( cd22 * raDiff - cd12 * decDiff) / det;
+            const dyLin = (-cd21 * raDiff + cd11 * decDiff) / det;
+            return { x: crpix1 + dxLin - 1, y: crpix2 + dyLin - 1 };
+        }
+        const dx = ( cd22 * xi_deg - cd12 * eta_deg) / det;
+        const dy = (-cd21 * xi_deg + cd11 * eta_deg) / det;
+        return { x: crpix1 + dx - 1, y: crpix2 + dy - 1 };
+    } catch(_) {
+        return null;
+    }
+}
+
+// --- WCS lock helpers (limited scope) ---
+// Our WCS-lock sync must be robust for RA---SIN / DEC--SIN (ALMA moment maps).
+// The generic SIN helper above historically applied an extra sign flip on the xi/l term.
+// That can mirror the X direction when CDELT1 is negative (common in ALMA), causing the
+// sync to "focus on the right when you are on the left".
+function pixelsToWorldFromHeaderForWcsLock(header, x, y) {
+    try {
+        if (!header) return null;
+        const get = (k) => (k in header ? header[k]
+            : (k.toUpperCase() in header ? header[k.toUpperCase()]
+            : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+        const ctype1 = String(get('CTYPE1') || '');
+        const ctype2 = String(get('CTYPE2') || '');
+        if (!(ctype1.includes('SIN') && ctype2.includes('SIN'))) {
+            return pixelsToWorldFromHeader(header, x, y);
+        }
+        const D2R = Math.PI / 180.0;
+        const R2D = 180.0 / Math.PI;
+        const crval1 = Number(get('CRVAL1'));
+        const crval2 = Number(get('CRVAL2'));
+        const crpix1 = Number(get('CRPIX1'));
+        const crpix2 = Number(get('CRPIX2'));
+        let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
+        let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
+        if (cd11 === undefined || cd22 === undefined) {
+            const cdelt1 = Number(get('CDELT1') ?? 1);
+            const cdelt2 = Number(get('CDELT2') ?? 1);
+            cd11 = Number(cd11 ?? cdelt1);
+            cd12 = Number(cd12 ?? 0);
+            cd21 = Number(cd21 ?? 0);
+            cd22 = Number(cd22 ?? cdelt2);
+        } else {
+            cd11 = Number(cd11); cd12 = Number(cd12 || 0);
+            cd21 = Number(cd21 || 0); cd22 = Number(cd22);
+        }
+        if (![crval1, crval2, crpix1, crpix2, cd11, cd12, cd21, cd22].every(v => Number.isFinite(v))) return null;
+        const xprime = x - crpix1 + 1;
+        const yprime = y - crpix2 + 1;
+        const xi_deg  = (cd11 * xprime + cd12 * yprime);
+        const eta_deg = (cd21 * xprime + cd22 * yprime);
+        const ra0 = crval1 * D2R;
+        const dec0 = crval2 * D2R;
+        // Correct SIN (orthographic): l = xi, m = eta (CD/CDELT already encode axis directions).
+        const l = (xi_deg) * D2R;
+        const m = (eta_deg) * D2R;
+        const rho2 = l*l + m*m;
+        if (rho2 > 1.0) return null;
+        const n = Math.sqrt(Math.max(0, 1 - rho2));
+        const cos_dec0 = Math.cos(dec0);
+        const sin_dec0 = Math.sin(dec0);
+        const dec = Math.asin(m * cos_dec0 + n * sin_dec0);
+        const y_num = l;
+        const x_den = n * cos_dec0 - m * sin_dec0;
+        const ra  = ra0 + Math.atan2(y_num, x_den);
+        return { ra: (ra * R2D + 540) % 360 - 180, dec: dec * R2D };
+    } catch (_) {
+        return null;
+    }
+}
+
+function worldToPixelFromHeaderForWcsLock(header, raDeg, decDeg) {
+    try {
+        if (!header) return null;
+        const get = (k) => (k in header ? header[k]
+            : (k.toUpperCase() in header ? header[k.toUpperCase()]
+            : (k.toLowerCase() in header ? header[k.toLowerCase()] : undefined)));
+        const ctype1 = String(get('CTYPE1') || '');
+        const ctype2 = String(get('CTYPE2') || '');
+        if (!(ctype1.includes('SIN') && ctype2.includes('SIN'))) {
+            return worldToPixelFromHeader(header, raDeg, decDeg);
+        }
+        const crval1 = Number(get('CRVAL1'));
+        const crval2 = Number(get('CRVAL2'));
+        const crpix1 = Number(get('CRPIX1'));
+        const crpix2 = Number(get('CRPIX2'));
+        let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
+        let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
+        if (cd11 === undefined || cd22 === undefined) {
+            const cdelt1 = Number(get('CDELT1') ?? 1);
+            const cdelt2 = Number(get('CDELT2') ?? 1);
+            cd11 = Number(cd11 ?? cdelt1);
+            cd12 = Number(cd12 ?? 0);
+            cd21 = Number(cd21 ?? 0);
+            cd22 = Number(cd22 ?? cdelt2);
+        } else {
+            cd11 = Number(cd11); cd12 = Number(cd12 || 0);
+            cd21 = Number(cd21 || 0); cd22 = Number(cd22);
+        }
+        if (![crval1, crval2, crpix1, crpix2, cd11, cd12, cd21, cd22].every(v => Number.isFinite(v))) return null;
+        const det = cd11 * cd22 - cd12 * cd21;
+        if (Math.abs(det) < 1e-18) return null;
+        const D2R = Math.PI / 180.0;
+        const R2D = 180.0 / Math.PI;
+        const raRad = raDeg * D2R;
+        const decRad = decDeg * D2R;
+        const ra0 = crval1 * D2R;
+        const dec0 = crval2 * D2R;
+        const delta_ra = raRad - ra0;
+        const l = Math.cos(decRad) * Math.sin(delta_ra);
+        const m = Math.sin(decRad) * Math.cos(dec0) - Math.cos(decRad) * Math.sin(dec0) * Math.cos(delta_ra);
+        // Correct: xi = l, eta = m (no extra sign flip; CD/CDELT encodes axis direction).
+        const xi_deg = (l * R2D);
+        const eta_deg = (m * R2D);
+        const dx = ( cd22 * xi_deg - cd12 * eta_deg) / det;
+        const dy = (-cd21 * xi_deg + cd11 * eta_deg) / det;
+        return { x: crpix1 + dx - 1, y: crpix2 + dy - 1 };
+    } catch (_) {
+        return null;
+    }
+}
+
+function pixelToWorldGeneric(x, y) {
+    const mapped = convertDisplayPixelToWcsInput(x, y);
+    const parsed = getOrCreateParsedWcsForSync();
+    if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+        try {
+            const world = parsed.pixelsToWorld(mapped.x, mapped.y);
+            if (world && isFinite(world.ra) && isFinite(world.dec)) return world;
+        } catch(_) {}
+    }
+    try {
+        const header = window?.fitsData?.wcs;
+        if (header) {
+            const fallback = pixelsToWorldFromHeader(header, mapped.x, mapped.y);
+            if (fallback && isFinite(fallback.ra) && isFinite(fallback.dec)) return fallback;
+        }
+    } catch(_) {}
+    return null;
+}
+
+function worldToPixelGeneric(raDeg, decDeg) {
+    const parsed = getOrCreateParsedWcsForSync();
+    if (parsed && parsed.hasWCS && typeof parsed.worldToPixels === 'function') {
+        try {
+            const px = parsed.worldToPixels(raDeg, decDeg);
+            if (px && isFinite(px.x) && isFinite(px.y)) {
+                const disp = convertWcsPixelToDisplayOutput(px.x, px.y);
+                if (disp && isFinite(disp.x) && isFinite(disp.y)) return disp;
+            }
+        } catch(_) {}
+    }
+    try {
+        const header = window?.fitsData?.wcs;
+        if (header) {
+            const fallback = worldToPixelFromHeader(header, raDeg, decDeg);
+            if (fallback && isFinite(fallback.x) && isFinite(fallback.y)) {
+                const disp = convertWcsPixelToDisplayOutput(fallback.x, fallback.y);
+                if (disp && isFinite(disp.x) && isFinite(disp.y)) return disp;
+            }
+        }
+    } catch(_) {}
+    return null;
+}
+
+function bufferedRectFromPoints(points, imgWidth, imgHeight, options) {
+    if (!points || points.length < 2) return null;
+    const opts = options || {};
+    const padFraction = typeof opts.padFraction === 'number' ? opts.padFraction : 0.02;
+    const padPixels = typeof opts.padPixels === 'number' ? opts.padPixels : 6;
+    const minSize = typeof opts.minSize === 'number' ? opts.minSize : 8;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    points.forEach(pt => {
+        if (!pt || !isFinite(pt.x) || !isFinite(pt.y)) return;
+        minX = Math.min(minX, pt.x);
+        minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x);
+        maxY = Math.max(maxY, pt.y);
+    });
+    if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
+    if (typeof imgWidth === 'number') {
+        minX = Math.max(0, Math.min(imgWidth, minX));
+        maxX = Math.max(0, Math.min(imgWidth, maxX));
+    }
+    if (typeof imgHeight === 'number') {
+        minY = Math.max(0, Math.min(imgHeight, minY));
+        maxY = Math.max(0, Math.min(imgHeight, maxY));
+    }
+    const width = Math.max(minSize, maxX - minX);
+    const height = Math.max(minSize, maxY - minY);
+    if (!isFinite(width) || !isFinite(height)) return null;
+    const expandX = width * padFraction + padPixels;
+    const expandY = height * padFraction + padPixels;
+    const finalMinX = Math.max(0, minX - expandX);
+    const finalMinY = Math.max(0, minY - expandY);
+    const finalMaxX = typeof imgWidth === 'number' ? Math.min(imgWidth, maxX + expandX) : maxX + expandX;
+    const finalMaxY = typeof imgHeight === 'number' ? Math.min(imgHeight, maxY + expandY) : maxY + expandY;
+    const finalWidth = Math.max(minSize, finalMaxX - finalMinX);
+    const finalHeight = Math.max(minSize, finalMaxY - finalMinY);
+    return new OpenSeadragon.Rect(finalMinX, finalMinY, finalWidth, finalHeight);
+}
+
+function getOrCreateParsedWcsForSync() {
+    if (window.parsedWCS && window.parsedWCS.hasWCS) return window.parsedWCS;
+    try {
+        const header = window?.fitsData?.wcs;
+        if (header && typeof parseWCS === 'function') {
+            const parsed = parseWCS(header);
+            parsed.__source = header;
+            window.parsedWCS = parsed;
+            return parsed;
+        }
+    } catch (_) {}
+    return null;
+}
+
+window.ensureWcsData = function () {
+    if (window?.fitsData?.wcs) return true;
+    try {
+        if (typeof window.refreshWcsForOverlay === 'function') {
+            window.refreshWcsForOverlay({ filepath: window.currentFitsFile || undefined, hduIndex: window.currentHduIndex });
+        }
+    } catch (_) {}
+    return false;
+};
+
+window.getWcsSyncState = function () {
+    try {
+        const viewer = window.tiledViewer || window.viewer;
+        if (!viewer || !viewer.viewport) return null;
+        if (!window.fitsData) return null;
+        // Best-effort: ensure we have WCS header cached so world-based sync can work.
+        // Without WCS we fall back to pixel/zoom sync, which can drift across differently-oriented panes.
+        try { if (typeof window.ensureWcsData === 'function') window.ensureWcsData(); } catch (_) {}
+        const center = viewer.viewport.getCenter(true);
+        const imagePt = viewer.viewport.viewportToImageCoordinates(center);
+        if (!imagePt || !isFinite(imagePt.x) || !isFinite(imagePt.y)) return null;
+        const candidatePath = window.currentFitsFile;
+        const resolvedPath = (typeof candidatePath === 'string')
+            ? candidatePath
+            : (typeof window.fitsData?.filename === 'string' ? window.fitsData.filename : null);
+        const state = {
+            pixel: { x: imagePt.x, y: imagePt.y },
+            zoom: viewer.viewport.getZoom(),
+            rotation: typeof viewer.viewport.getRotation === 'function' ? viewer.viewport.getRotation() : 0,
+            width: window.fitsData?.width || null,
+            height: window.fitsData?.height || null,
+            filepath: resolvedPath,
+            hasWcs: false,
+            // Include display-orientation hints (derived from analyze_wcs_orientation on backend).
+            flip_y: !!window?.fitsData?.flip_y
+        };
+        const worldQuad = [];
+        const headerForLock = window?.fitsData?.wcs || null;
+        const ctype1Lock = (() => { try { return headerForLock ? String((('CTYPE1' in headerForLock) ? headerForLock.CTYPE1 : (headerForLock.ctype1 || headerForLock.CTYPE1 || ''))) : ''; } catch (_) { return ''; } })();
+        const ctype2Lock = (() => { try { return headerForLock ? String((('CTYPE2' in headerForLock) ? headerForLock.CTYPE2 : (headerForLock.ctype2 || headerForLock.CTYPE2 || ''))) : ''; } catch (_) { return ''; } })();
+        const forceHeaderSin = (String(ctype1Lock).includes('SIN') && String(ctype2Lock).includes('SIN'));
+        try {
+            const bounds = viewer.viewport.getBounds(true);
+            if (bounds) {
+        const samplesX = 8;
+        const samplesY = 6;
+        const corners = [];
+        for (let ix = 0; ix < samplesX; ix++) {
+            for (let iy = 0; iy < samplesY; iy++) {
+                const px = bounds.x + (ix / (samplesX - 1)) * bounds.width;
+                const py = bounds.y + (iy / (samplesY - 1)) * bounds.height;
+                corners.push({ x: px, y: py });
+            }
+        }
+                corners.forEach(pt => {
+                    try {
+                        const imgPt = viewer.viewport.viewportToImageCoordinates(pt.x, pt.y);
+                        if (!imgPt || !isFinite(imgPt.x) || !isFinite(imgPt.y)) return;
+                        const mapped = convertDisplayPixelToWcsInputForWcsLock(imgPt.x, imgPt.y);
+                        let world = null;
+                        if (!forceHeaderSin) {
+                            try {
+                                const parsed = getOrCreateParsedWcsForSync();
+                                if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+                                    world = parsed.pixelsToWorld(mapped.x, mapped.y);
+                                }
+                            } catch (_) {}
+                        }
+                        if (!world) {
+                            try {
+                                const header = window?.fitsData?.wcs;
+                                if (header) world = pixelsToWorldFromHeaderForWcsLock(header, mapped.x, mapped.y);
+                            } catch (_) {}
+                        }
+                        if (world && isFinite(world.ra) && isFinite(world.dec)) worldQuad.push(world);
+                    } catch(_) {}
+                });
+            }
+        } catch(_) {}
+        if (worldQuad.length >= 2) state.worldQuad = worldQuad;
+        const parsed = getOrCreateParsedWcsForSync();
+        let centerWorld = null;
+        if (!forceHeaderSin && parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+            const mapped = convertDisplayPixelToWcsInputForWcsLock(imagePt.x, imagePt.y);
+            const world = parsed.pixelsToWorld(mapped.x, mapped.y);
+            if (world && isFinite(world.ra) && isFinite(world.dec)) {
+                centerWorld = { ra: world.ra, dec: world.dec };
+            }
+        }
+        if (!centerWorld) {
+            try {
+                const mapped = convertDisplayPixelToWcsInputForWcsLock(imagePt.x, imagePt.y);
+                const header = window?.fitsData?.wcs;
+                const fallbackWorld = header ? pixelsToWorldFromHeaderForWcsLock(header, mapped.x, mapped.y) : null;
+                if (fallbackWorld && isFinite(fallbackWorld.ra) && isFinite(fallbackWorld.dec)) centerWorld = fallbackWorld;
+            } catch (_) {}
+        }
+        if (centerWorld) {
+            state.world = centerWorld;
+            state.hasWcs = true;
+        }
+        return state;
+    } catch (_) {
+        return null;
+    }
+};
+
+async function applyWcsStateInternal(state, retries = 6) {
+    if (!state) return false;
+    const viewer = window.tiledViewer || window.viewer;
+    if (!viewer || !viewer.viewport) {
+        if (retries > 0) {
+            await sleep(250);
+            return applyWcsStateInternal(state, retries - 1);
+        }
+        return false;
+    }
+    if (!viewer.world || (viewer.world.getItemCount && viewer.world.getItemCount() === 0)) {
+        if (retries > 0) {
+            await sleep(300);
+            return applyWcsStateInternal(state, retries - 1);
+        }
+        return false;
+    }
+    // If the incoming state expects WCS-based sync but this pane hasn't loaded WCS yet,
+    // try to fetch it before applying. Otherwise we'll fall back to pixel sync and panes won't match.
+    try {
+        if (state.hasWcs && !(window.fitsData && window.fitsData.wcs)) {
+            if (typeof window.ensureWcsData === 'function') window.ensureWcsData();
+            // Give async WCS fetch a brief chance; retry loop will handle further waits.
+            if (retries > 0) {
+                await sleep(220);
+            }
+        }
+    } catch (_) {}
+    let boundsApplied = false;
+    if (state.worldQuad && state.worldQuad.length >= 2) {
+        let quadPx = await convertWorldQuadViaBackend(state.worldQuad);
+        if (!Array.isArray(quadPx) || quadPx.length < 2) {
+            quadPx = convertWorldQuadViaFallback(state.worldQuad);
+        }
+        if (quadPx && quadPx.length >= 2) {
+            const rect = bufferedRectFromPoints(
+                quadPx,
+                window.fitsData?.width,
+                window.fitsData?.height,
+                { padFraction: 0, padPixels: 0, minSize: 4 }
+            );
+            if (rect) {
+                try {
+                    const vpRect = viewer.viewport.imageToViewportRectangle(rect);
+                    viewer.viewport.fitBounds(vpRect, false);
+                    boundsApplied = true;
+                } catch(_) {}
+            }
+        }
+    }
+    let targetPixel = null;
+    const parsed = getOrCreateParsedWcsForSync();
+    if (state.world) {
+        if (parsed && parsed.hasWCS && typeof parsed.worldToPixels === 'function') {
+            try {
+                const px = parsed.worldToPixels(state.world.ra, state.world.dec);
+                if (px && isFinite(px.x) && isFinite(px.y)) {
+                    // Convert WCS pixel -> display pixel using WCS-lock-specific flip decision
+                    targetPixel = convertWcsPixelToDisplayOutputForWcsLock(px.x, px.y);
+                }
+            } catch (_) {}
+        }
+        if (!targetPixel) {
+            let backendPoint = null;
+            try {
+                const pts = await convertWorldQuadViaBackend([state.world]);
+                if (Array.isArray(pts) && pts.length && pts[0] && isFinite(pts[0].x) && isFinite(pts[0].y)) {
+                    backendPoint = pts[0];
+                }
+            } catch (_) {}
+            if (!backendPoint) {
+                // worldToPixelGeneric uses fitsData.flip_y; for WCS lock we want the header-based flip rule.
+                try {
+                    const header = window?.fitsData?.wcs;
+                    const raw = header ? worldToPixelFromHeaderForWcsLock(header, state.world.ra, state.world.dec) : null;
+                    if (raw && isFinite(raw.x) && isFinite(raw.y)) {
+                        const disp = convertWcsPixelToDisplayOutputForWcsLock(raw.x, raw.y);
+                        if (disp && isFinite(disp.x) && isFinite(disp.y)) backendPoint = disp;
+                    }
+                } catch (_) {}
+                if (!backendPoint) {
+                    const fallbackPx = worldToPixelGeneric(state.world.ra, state.world.dec);
+                    if (fallbackPx && isFinite(fallbackPx.x) && isFinite(fallbackPx.y)) {
+                        backendPoint = fallbackPx;
+                    }
+                }
+            }
+            if (backendPoint && isFinite(backendPoint.x) && isFinite(backendPoint.y)) {
+                targetPixel = backendPoint;
+            }
+        }
+    }
+    if (!boundsApplied && !targetPixel && state.pixel && isFinite(state.pixel.x) && isFinite(state.pixel.y)) {
+        const width = window.fitsData?.width;
+        const height = window.fitsData?.height;
+        if (width && height && state.width && state.height) {
+            const rx = width / state.width;
+            const ry = height / state.height;
+            targetPixel = { x: state.pixel.x * rx, y: state.pixel.y * ry };
+        } else {
+            targetPixel = { x: state.pixel.x, y: state.pixel.y };
+        }
+    }
+    if (!boundsApplied && !targetPixel) return false;
+    if (!boundsApplied && targetPixel) {
+        try {
+            // Use TiledImage for accurate coordinate conversion (fixes multi-image warning)
+            const tiledImage = viewer.world.getItemAt(0);
+            const vpPoint = tiledImage ? tiledImage.imageToViewportCoordinates(targetPixel.x, targetPixel.y) : viewer.viewport.imageToViewportCoordinates(targetPixel.x, targetPixel.y);
+            if (!vpPoint) return false;
+            if (typeof viewer.viewport.panTo === 'function') viewer.viewport.panTo(vpPoint);
+            if (state.zoom && isFinite(state.zoom) && typeof viewer.viewport.zoomTo === 'function') {
+                viewer.viewport.zoomTo(state.zoom);
+            }
+        } catch (_) {
+            return false;
+        }
+    }
+    try {
+        if (typeof viewer.viewport.setRotation === 'function' && state.rotation != null && isFinite(state.rotation)) {
+            viewer.viewport.setRotation(state.rotation);
+        }
+    } catch(_) {}
+    return true;
+}
+
+window.__wcsLockApplying = false;
+window.applyWcsSyncState = async function (state) {
+    if (!state) return false;
+    window.__wcsLockApplying = true;
+    try {
+        const result = await applyWcsStateInternal(state, 8);
+        if (result && state.sourceId) {
+            window.__lastWcsSyncSourceId = state.sourceId;
+            window.__lastWcsSyncTime = Date.now();
+        }
+        return result;
+    } finally {
+        window.__wcsLockApplying = false;
+    }
+};
+
+if (window.parent && window.parent !== window) {
+    window.__paneSyncId = window.__paneSyncId || `pane-${Math.random().toString(36).slice(2)}`;
+    window.__wcsLockStateEnabled = !!window.__wcsLockStateEnabled;
+    window.__wcsIsActivePane = !!window.__wcsIsActivePane;
+    window.addEventListener('message', (event) => {
+        try {
+            if (event.source !== window.parent) return;
+        } catch(_) {}
+        const data = event.data;
+        if (!data) return;
+        if (data.type === 'neloura-wcs-lock-state') {
+            window.__wcsLockStateEnabled = !!data.enabled;
+        } else if (data.type === 'neloura-pane-active') {
+            window.__wcsIsActivePane = !!data.active;
+            if (data.active) {
+                try { refreshHistogramOnPaneActivate(); } catch (_) {}
+                try {
+                    if (segmentOverlayState && segmentOverlayState.tiledImage) {
+                        renderSegmentOverlayControls(segmentOverlayMetadata);
+                    } else {
+                        removeSegmentOverlayControls();
+                    }
+                } catch (_) {}
+                try {
+                    // Render catalog overlay controls if available
+                    // In multi-panel mode, renderCatalogOverlayControls() will automatically start them collapsed
+                    if (window.currentCatalogName && window.catalogDataForOverlay && window.catalogDataForOverlay.length) {
+                        renderCatalogOverlayControls();
+                    } else {
+                        removeCatalogOverlayControls();
+                    }
+                } catch (_) {}
+            } else {
+                try { removeSegmentOverlayControls(); } catch (_) {}
+                try { removeCatalogOverlayControls(); } catch (_) {}
+            }
+            try { repositionSegmentOverlayControls(); } catch (_) {}
+            try { repositionCatalogOverlayControls(); } catch (_) {}
+        }
+    });
+}
+
+function installViewportSyncEmitter() {
+    if (!window.parent || window.parent === window) return false;
+    const viewer = window.tiledViewer || window.viewer;
+    if (!viewer || !viewer.viewport || typeof viewer.addHandler !== 'function') return false;
+    if (viewer.__wcsSyncEmitterInstalled) return true;
+    viewer.__wcsSyncEmitterInstalled = true;
+    let lastEmit = 0;
+    const emitState = (force) => {
+        if (!window.__wcsLockStateEnabled) return;
+        if (!window.__wcsIsActivePane) return;
+        if (window.__wcsLockApplying) return;
+        if (window.__lastWcsSyncSourceId === window.__paneSyncId && Date.now() - (window.__lastWcsSyncTime || 0) < 50) return;
+        const now = Date.now();
+        if (!force && now - lastEmit < 60) return;
+        lastEmit = now;
+        const state = window.getWcsSyncState && window.getWcsSyncState();
+        if (!state) return;
+        state.sourceId = window.__paneSyncId || null;
+        try { window.parent.postMessage({ type: 'neloura-sync-viewport', state }, '*'); } catch(_) {}
+    };
+    const throttled = () => emitState(false);
+    const immediate = () => emitState(true);
+    viewer.addHandler('animation', throttled);
+    viewer.addHandler('animation-finish', immediate);
+    viewer.addHandler('pan', immediate);
+    viewer.addHandler('zoom', immediate);
+    viewer.addHandler('rotate', immediate);
+    return true;
+}
+
+function scheduleViewportSyncEmitter() {
+    if (!window.parent || window.parent === window) return;
+    const poll = () => {
+        if (window.__wcsLockStateEnabled) {
+            if (installViewportSyncEmitter()) return;
+        }
+        setTimeout(poll, 800);
+    };
+    poll();
+}
+
+if (window.parent && window.parent !== window) {
+    scheduleViewportSyncEmitter();
+}
 
 function zoomIn() {
     const activeViewer = window.tiledViewer || window.viewer;

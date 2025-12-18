@@ -1,10 +1,16 @@
 // static/credit.js
 
 function initializeCreditButton() {
+    // Only initialize in top-level window; never inside iframes (multi-panel panes)
+    try { if (window.self !== window.top) return; } catch(_) {}
+    // Ensure single instance
+    if (document.getElementById('credit-icon-container')) return;
     createCreditIcon();
 }
 
 function createCreditIcon() {
+    // Only one instance in top-level
+    if (document.getElementById('credit-icon-container')) return;
     const iconContainer = document.createElement('div');
     iconContainer.id = 'credit-icon-container';
     iconContainer.style.position = 'fixed';
@@ -21,17 +27,21 @@ function createCreditIcon() {
         iconContainer.style.left = '64px';
     }
 
-    iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    // iOS-style glass
+    iconContainer.style.background = 'rgba(18, 18, 20, 0.58)';
+    iconContainer.style.border = '1px solid rgba(255, 255, 255, 0.16)';
+    iconContainer.style.backdropFilter = 'saturate(180%) blur(18px)';
+    iconContainer.style.webkitBackdropFilter = 'saturate(180%) blur(18px)';
     iconContainer.style.borderRadius = '50%';
     iconContainer.style.cursor = 'pointer';
-    iconContainer.style.zIndex = '3001';
+    iconContainer.style.zIndex = '3500';
     iconContainer.style.display = 'flex';
     iconContainer.style.alignItems = 'center';
     iconContainer.style.justifyContent = 'center';
     iconContainer.style.width = '44px';
     iconContainer.style.height = '44px';
     iconContainer.title = 'Show Credits';
-    iconContainer.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+    iconContainer.style.boxShadow = '0 18px 50px rgba(0,0,0,0.35)';
 
     const svgIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svgIcon.setAttribute("width", "24");
@@ -96,9 +106,11 @@ function createCreditPopup() {
     popup.style.bottom = '60px';
     popup.style.left = '10px';
     popup.style.width = '420px';
-    popup.style.backgroundColor = '#2c2c2c';
+    popup.style.background = 'rgba(255, 255, 255, 0.1)'; // iOS-style translucent white
     popup.style.color = '#f0f0f0';
-    popup.style.border = '1px solid #444';
+    popup.style.border = '1px solid rgba(255, 255, 255, 0.18)'; // Lighter border
+    popup.style.backdropFilter = 'blur(26px) saturate(180%)'; // iOS blur effect
+    popup.style.webkitBackdropFilter = 'blur(26px) saturate(180%)'; // Safari compatibility
     popup.style.boxShadow = '0 5px 15px rgba(0,0,0,0.3)';
     popup.style.zIndex = '3000';
     popup.style.padding = '15px';
@@ -234,7 +246,7 @@ function createCreditPopup() {
     nelouraCreditContent.id = 'credit-tab-content-0';
     nelouraCreditContent.className = 'credit-tab-content';
     nelouraCreditContent.innerHTML = `<p><strong>Principal Investigator:</strong><br><a href="https://apps.ualberta.ca/directory/person/hhassani" target="_blank" rel="noopener noreferrer">Hamid Hassani</a><br><a href="mailto:hhassani@ualberta.ca">hhassani@ualberta.ca</a></p>
-                                     <p style="display: flex; align-items: center; justify-content: flex-start; gap: 5px;">Made with <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#e25555" viewBox="0 0 16 16" style="vertical-align: middle;"><path fill-rule="evenodd" d="M8 1.314C12.438-3.248 23.534 4.735 8 15-7.534 4.736 3.562-3.248 8 1.314z"/></svg>, Hosted by CANFAR</p>`;
+                                   `;
 
     const codeCreditContent = document.createElement('div');
     codeCreditContent.id = 'credit-tab-content-1';

@@ -5,6 +5,52 @@ let mastPage = 1;
 let totalMastHits = 0;
 let mastLoadingMore = false;
 
+// ---- JSON parsing off main thread (prevents UI freeze on large responses) ----
+let __mastJsonWorker = null;
+let __mastJsonWorkerSeq = 1;
+const __mastJsonWorkerPending = new Map();
+
+function getMastJsonWorker() {
+    if (__mastJsonWorker) return __mastJsonWorker;
+    try {
+        __mastJsonWorker = new Worker('/static/workers/json_parse_worker.js');
+        __mastJsonWorker.onmessage = (e) => {
+            const msg = e && e.data ? e.data : {};
+            const id = msg.id;
+            const pending = __mastJsonWorkerPending.get(id);
+            if (!pending) return;
+            __mastJsonWorkerPending.delete(id);
+            if (msg.ok) pending.resolve(msg.data);
+            else pending.reject(new Error(msg.error || 'Failed to parse JSON'));
+        };
+        __mastJsonWorker.onerror = (e) => {
+            // Fail all pending requests
+            const err = new Error('MAST JSON worker error');
+            __mastJsonWorkerPending.forEach(p => p.reject(err));
+            __mastJsonWorkerPending.clear();
+        };
+    } catch (_) {
+        __mastJsonWorker = null;
+    }
+    return __mastJsonWorker;
+}
+
+async function parseJsonOffThread(text) {
+    // Fallback to main-thread parse if Worker unavailable
+    const w = getMastJsonWorker();
+    if (!w) return JSON.parse(text);
+    const id = __mastJsonWorkerSeq++;
+    return await new Promise((resolve, reject) => {
+        __mastJsonWorkerPending.set(id, { resolve, reject });
+        w.postMessage({ id, text });
+    });
+}
+
+async function responseJsonNonBlocking(resp) {
+    const text = await resp.text();
+    return await parseJsonOffThread(text || '{}');
+}
+
 function initializeMastContent() {
     const mastContent = document.getElementById('mast-content');
     if (!mastContent || mastContent.childElementCount > 0) return;
@@ -310,8 +356,8 @@ async function fetchAndDisplayMastPage() {
             : `${base}&ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}`;
         const obsResp = await apiFetch(searchUrl);
         if (!obsResp.ok) throw new Error(`MAST search HTTP ${obsResp.status}`);
-        
-        const obsJson = await obsResp.json();
+
+        const obsJson = await responseJsonNonBlocking(obsResp);
         const rows = obsJson?.data || [];
         
         if (mastPage === 1) {
@@ -353,7 +399,8 @@ async function fetchAndDisplayMastPage() {
             noResults.textContent = 'No observations found for current filters';
             resultsList.appendChild(noResults);
         } else {
-            rows.forEach(row => renderMastObservation(row));
+            // Render in small chunks so the UI stays responsive even if the backend returns many rows.
+            await renderMastRowsChunked(rows);
         }
 
         // Update UI state
@@ -377,6 +424,19 @@ async function fetchAndDisplayMastPage() {
         mastLoadingMore = false;
         loadMoreBtn.textContent = 'Load More Observations';
         loadMoreBtn.style.backgroundColor = '#00558b';
+    }
+}
+
+async function renderMastRowsChunked(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    const chunkSize = 8;
+    for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        chunk.forEach(row => {
+            try { renderMastObservation(row); } catch (_) {}
+        });
+        // Yield to browser to prevent "freeze"
+        await new Promise(r => requestAnimationFrame(r));
     }
 }
 
@@ -466,8 +526,8 @@ async function renderMastObservation(row) {
         try {
             const prodResp = await apiFetch(`/mast/products?obsid=${encodeURIComponent(obsid)}`);
             if (!prodResp.ok) throw new Error(`HTTP ${prodResp.status}`);
-            
-            const prodJson = await prodResp.json();
+
+            const prodJson = await responseJsonNonBlocking(prodResp);
             const products = prodJson?.data || [];
             
             if (products.length > 0) {

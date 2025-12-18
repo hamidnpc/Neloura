@@ -1,13 +1,11 @@
 fastapi  
-uvicorn  
 python-multipart  
 google-auth  
 google-auth-oauthlib  
 google-auth-httplib2  
 google-api-python-client  
 astropy  
-regions
-astroquery
+regions  
 reproject  
 spectral-cube  
 matplotlib  
@@ -26,3 +24,5 @@ websockets
 wsproto
 uvicorn[standard]
 astrodendro
+astroquery
+scipy

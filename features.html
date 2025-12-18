@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nelourav v2</title>
+  <style>
+    :root{
+      --bg: #06070b;
+      --glass: rgba(255,255,255,0.12);
+      --glass-2: rgba(255,255,255,0.18);
+      --border: rgba(255,255,255,0.22);
+      --shadow: rgba(0,0,0,0.55);
+      --text: rgba(255,255,255,0.92);
+      --text-2: rgba(255,255,255,0.72);
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow-x: hidden;
+    }
+
+    .stage{
+      position: relative;
+      width: 100vw;
+      isolation: isolate;
+    }
+
+    .section{
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    /* Full-bleed background */
+    .bg{
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      transform: scale(1.02);
+      filter: saturate(1.08) contrast(1.05) brightness(0.98);
+      z-index: -3;
+    }
+
+    .bg--ngc4254{ background-image: url("/static/images/ngc4254_1.png"); }
+    .bg--ngc0628{ background-image: url("/static/images/ngc0628_2.png"); }
+
+    /* Soft vignette + depth */
+    .vignette{
+      position: absolute;
+      inset: -20%;
+      background:
+        radial-gradient(60% 55% at 50% 40%, rgba(0,0,0,0.10) 0%, rgba(0,0,0,0.55) 55%, rgba(0,0,0,0.82) 100%),
+        linear-gradient(to bottom, rgba(0,0,0,0.10), rgba(0,0,0,0.40));
+      z-index: -2;
+      pointer-events: none;
+    }
+
+    /* iOS-like “ambient” gradient tint (static) */
+    .ambient{
+      position: absolute;
+      inset: -40%;
+      background:
+        radial-gradient(35% 30% at 25% 30%, rgba(125,211,252,0.20), transparent 60%),
+        radial-gradient(35% 30% at 70% 55%, rgba(167,139,250,0.18), transparent 60%),
+        radial-gradient(35% 30% at 55% 20%, rgba(34,197,94,0.10), transparent 60%);
+      mix-blend-mode: screen;
+      opacity: 0.85;
+      filter: blur(18px);
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    /* Center glass card */
+    .card{
+      position: relative;
+      padding: 22px 26px;
+      border-radius: 22px;
+      background: linear-gradient(180deg, var(--glass-2), var(--glass));
+      border: 1px solid var(--border);
+      box-shadow:
+        0 18px 60px var(--shadow),
+        inset 0 1px 0 rgba(255,255,255,0.18);
+      backdrop-filter: blur(16px) saturate(170%);
+      -webkit-backdrop-filter: blur(16px) saturate(170%);
+      text-align: center;
+      transform-origin: 50% 50%;
+    }
+
+    /* Shimmer highlight sweep */
+    .card::before{
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 24px;
+      background: linear-gradient(120deg,
+        transparent 0%,
+        rgba(255,255,255,0.10) 35%,
+        rgba(255,255,255,0.28) 50%,
+        rgba(255,255,255,0.10) 65%,
+        transparent 100%);
+      transform: none;
+      filter: blur(0.2px);
+      opacity: 0.22;
+      pointer-events: none;
+      mix-blend-mode: screen;
+    }
+
+    .title{
+      margin: 0;
+      font-size: clamp(34px, 5vw, 56px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+      text-shadow: 0 10px 40px rgba(0,0,0,0.55);
+      background: linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0.70));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .subtitle{
+      margin: 10px 0 0 0;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+
+    /* Reduce motion (no animations remain; keep for safety) */
+    @media (prefers-reduced-motion: reduce){
+      .ambient, .card, .card::before { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="section" aria-label="Neloura v2 hero">
+      <div class="bg bg--ngc4254" aria-hidden="true"></div>
+      <div class="vignette" aria-hidden="true"></div>
+      <div class="ambient" aria-hidden="true"></div>
+      <div class="card">
+        <h1 class="title">Neloura v2</h1>
+        <p class="subtitle">is here.</p>
+      </div>
+    </section>
+
+    <section class="section" aria-label="Cutout and zoom inset">
+      <div class="bg bg--ngc0628" aria-hidden="true"></div>
+      <div class="vignette" aria-hidden="true"></div>
+      <div class="ambient" aria-hidden="true"></div>
+      <div class="card">
+        <h1 class="title" style="font-size: clamp(28px, 4vw, 44px);">Unlimited cutout &amp; zoom inset</h1>
+        <p class="subtitle">You can create unlimited cutout and zoom inset</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

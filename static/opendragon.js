@@ -780,29 +780,43 @@ function triggerCatalogOverlayUpdate(sources, options = {}) {
 
 // Add peak finder button to toolbar with fix to prevent auto-opening
 function addPeakFinderButton() {
-    const customButtonContainer = document.getElementById('custom-button-container');
-    if (!customButtonContainer) {
-        console.warn('Custom button container not found');
+    const toolbar = document.querySelector('.toolbar');
+    if (!toolbar) {
+        console.warn('Toolbar not found');
         return;
     }
 
     // Check if the button already exists to prevent duplicates
-    if (document.getElementById('peak-finder-btn')) {
-        return;
-    }
+    if (document.getElementById('peak-finder-button')) return;
 
     const peakFinderButton = document.createElement('button');
-    peakFinderButton.id = 'peak-finder-btn';
+    peakFinderButton.id = 'peak-finder-button';
+    peakFinderButton.type = 'button';
     peakFinderButton.textContent = 'Peak Finder';
-    peakFinderButton.className = 'custom-button';
 
     peakFinderButton.addEventListener('click', () => {
-        // Pass the current FITS file path to the peak finder
-        createPeakFinderModal(window.currentFitsFile); 
+        let path = null;
+        try { if (window.currentFitsFile) path = window.currentFitsFile; } catch (_) {}
+        try {
+            if (typeof createPeakFinderModal === 'function') return createPeakFinderModal(path);
+        } catch (e) {
+            console.error('Peak Finder failed:', e);
+        }
     });
 
-    customButtonContainer.appendChild(peakFinderButton);
+    toolbar.appendChild(peakFinderButton);
 }
 
 // Make the function globally available so it can be called from other scripts
 window.addPeakFinderButton = addPeakFinderButton;
+
+// Ensure the Peak Finder button is visible on initial page load too.
+document.addEventListener('DOMContentLoaded', () => {
+    try { addPeakFinderButton(); } catch (_) {}
+    let tries = 0;
+    const iv = setInterval(() => {
+        tries++;
+        try { addPeakFinderButton(); } catch (_) {}
+        if (document.getElementById('peak-finder-button') || tries >= 20) clearInterval(iv);
+    }, 250);
+});

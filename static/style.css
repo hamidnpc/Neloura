@@ -9,11 +9,12 @@
 .popup-opening{
     z-index: 30000 !important;
 }
-#zoom-in-button,#zoom-out-button,#reset-button{       font-size: 16px;
-    width: 35px !important;
-    height: 40px !important;
+/* #catalog-overlay-controls{transition: all 0.4s ease;} */
+#zoom-in-button, #zoom-out-button, #reset-button, #settings-button, #mouse-mode-button{       font-size: 16px;
+    font-size: 16px;
     border-color: white !important;
-    border-radius: 0px !important;}
+    border-radius: 0px !important;
+    width: 37px;}
 @font-face {
   font-family: 'Raleway';
   font-style: normal;
@@ -219,6 +220,11 @@ html, body { font-family: 'Raleway', sans-serif; }
 #progress-container {
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
+    /* Avoid overlap with the multi-panel floating "+" button (bottom-right). */
+    bottom: 74px !important;
+    right: 18px !important;
+    /* In multi-panel mode, the iframe grid container sits at z-index ~3000; keep this above it. */
+    z-index: 65020 !important;
 }
 
 .notification {
@@ -359,6 +365,49 @@ color: black !important;
 .flag-dropdown-content .flag-item.active {
     background-color: #4CAF50;
 }
+
+.hexagon {
+    position: relative;
+    width: 56px;
+    height: 64px;
+}
+
+#multi-panel-container{
+    transition: all 0.4s  ease;
+    
+}
+.hexagon::before,
+.hexagon::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(
+        50% 0%,
+        100% 25%,
+        100% 75%,
+        50% 100%,
+        0% 75%,
+        0% 25%
+    );
+}
+#mouse-mode-button{
+
+    padding-top: 0px;
+    height: 40px;
+    line-height: 42px;
+}
+/* Border */
+.hexagon::before {
+    background: var(--hex-border-color, red);
+}
+
+/* Fill */
+.hexagon::after {
+    inset: var(--hex-border-width, 2px);
+    background: var(--hex-fill, transparent);
+}
+
+
 #credit-popup-content-area{line-height: 20px;}
         #openseadragon {
             position: absolute;
@@ -377,9 +426,14 @@ color: black !important;
             top: 20px;
             right: 10px;
             left: auto;
-            background: rgba(0, 0, 0, 0.7);
+            /* iOS-style glass */
+            background: rgba(18, 18, 20, 0.58);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+            backdrop-filter: saturate(180%) blur(18px);
+            -webkit-backdrop-filter: saturate(180%) blur(18px);
             padding: 10px;
-            border-radius: 8px;
+            border-radius: 14px;
             text-align: center;
             z-index: 1000;
         }
@@ -391,6 +445,7 @@ color: black !important;
             border: 1px solid white;
             cursor: pointer;
             margin: 5px;
+            height: 41px;
             font-family: 'Raleway', sans-serif;
         }
         .toolbar button:hover {
@@ -405,11 +460,15 @@ color: black !important;
             display: none;
             position: absolute;
             right: 0;
-            background-color: rgba(0, 0, 0, 0.9);
+            /* iOS-style glass dropdown (less transparent, more blur) */
+            background: rgba(18, 18, 20, 0.88);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            box-shadow: 0 18px 50px rgba(0,0,0,0.55);
+            backdrop-filter: saturate(200%) blur(24px);
+            -webkit-backdrop-filter: saturate(200%) blur(24px);
             min-width: 500px !important;
-            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.5);
             z-index: 1001;
-            border-radius: 5px;
+            border-radius: 14px;
             max-height: 300px;
             overflow-y: auto;
             font-family: 'Raleway', sans-serif;
@@ -420,11 +479,12 @@ color: black !important;
             text-decoration: none;
             display: block;
             text-align: left;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.10);
             font-family: 'Raleway', sans-serif;
+            transition: background-color 160ms ease;
         }
         .dropdown-content a:hover {
-            background-color: rgba(255, 255, 255, 0.1);
+            background-color: rgba(255, 255, 255, 0.10);
         }
         .dropdown:hover .dropdown-content { display: block; }
 
@@ -452,7 +512,8 @@ color: black !important;
         .modal {
             display: none; /* Hidden by default */
             position: fixed; /* Stay in place */
-            z-index: 1500; /* Sit on top */
+            /* Must be above multi-panel grid (z-index ~3000) */
+            z-index: 65030; /* Sit on top */
             left: 0;
             top: 0;
             width: 100%; /* Full width */

@@ -1,14 +1,69 @@
+function getPeakFinderActiveContext() {
+    // In multi-panel mode, prefer the active pane window (each pane has its own FITS/HDU state).
+    let paneWin = null;
+    try {
+        if (typeof window.getActivePaneWindow === 'function') {
+            paneWin = window.getActivePaneWindow() || null;
+        }
+    } catch (_) { paneWin = null; }
+    const w = paneWin || window;
+
+    const rawFile = [
+        w.currentFitsFile,
+        w.fitsData && (w.fitsData.filepath || w.fitsData.filePath || w.fitsData.filename),
+        w.activeFile && (w.activeFile.path || w.activeFile.filepath),
+        // fall back to top window if needed
+        window.currentFitsFile,
+        window.fitsData && (window.fitsData.filepath || window.fitsData.filePath || window.fitsData.filename),
+    ].filter(Boolean)[0] || null;
+
+    const hdu =
+        (typeof w.currentHduIndex === 'number') ? w.currentHduIndex
+            : ((typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0);
+
+    return { rawFile, hdu };
+}
+
+function getPaneWindowBySid(paneSid) {
+    try {
+        if (!paneSid) return null;
+        // Only makes sense in top-level doc where the multi-panel grid exists
+        const grid = document.getElementById('multi-panel-grid');
+        if (!grid) return null;
+        const frames = Array.from(grid.querySelectorAll('iframe') || []);
+        for (const frame of frames) {
+            try {
+                const url = new URL(frame.src, window.location.origin);
+                const sid = url.searchParams.get('pane_sid') || url.searchParams.get('sid') || null;
+                if (sid && sid === paneSid) return frame.contentWindow || null;
+            } catch (_) {}
+        }
+    } catch (_) {}
+    return null;
+}
+
+function getPeakFinderTargetContextFromModal(popupEl) {
+    try {
+        const paneSid = popupEl && popupEl.dataset ? (popupEl.dataset.targetPaneSid || '') : '';
+        const w = getPaneWindowBySid(paneSid)
+            || (window.getActivePaneWindow && window.getActivePaneWindow())
+            || null;
+        const rawFile = w ? (w.currentFitsFile || (w.fitsData && (w.fitsData.filename || w.fitsData.filepath)) || null) : null;
+        const hdu = (w && typeof w.currentHduIndex === 'number') ? w.currentHduIndex : 0;
+        return { paneSid: paneSid || null, paneWin: w, rawFile, hdu };
+    } catch (_) {
+        return { paneSid: null, paneWin: null, rawFile: null, hdu: 0 };
+    }
+}
+
 function getActiveFitsPath() {
-    const first = [
-      window.currentFitsFile,
-      window.fitsData && (window.fitsData.filepath || window.fitsData.filePath || window.fitsData.filename),
-      window.activeFile && (window.activeFile.path || window.activeFile.filepath),
-    ].filter(Boolean)[0];
+    const ctx = getPeakFinderActiveContext();
+    const first = ctx && ctx.rawFile ? ctx.rawFile : null;
     if (!first) return null;
-    let p = String(first);
-    if (!p.startsWith('files/')) p = `files/${p}`;
+    let p = String(first).replace(/^\/+/, '');
+    if (!p.startsWith('files/')) p = `files/${p.replace(/^files\//, '')}`;
     return p;
-  }
+}
 
 function runPeakFinder(filepath, customParams = {}) {
     console.log('[DEBUG PeakFinder] Starting job with params:', customParams);
@@ -127,13 +182,30 @@ function processPeakFinderResults(data, customParams) {
 
         if (sources && sources.source_count > 0) {
             for (let i = 0; i < sources.source_count; i++) {
+                const raVal = sources.ra[i];
+                const decVal = sources.dec[i];
+                // IMPORTANT:
+                // Peak-finder backend already returns image pixel coords (x,y) consistent with the displayed
+                // map orientation (it applies analyze_wcs_orientation flip_y when needed).
+                // Do NOT override x/y from RA/Dec here, because some datasets have rotated WCS matrices and
+                // the safest on-screen overlay placement is to trust backend-provided pixel coords.
+                let pxX = sources.x[i];
+                let pxY = sources.y[i];
+                if (!Number.isFinite(pxX) || !Number.isFinite(pxY)) {
+                    try {
+                        if (typeof worldToPixelGeneric === 'function' && Number.isFinite(raVal) && Number.isFinite(decVal)) {
+                            const p = worldToPixelGeneric(raVal, decVal);
+                            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { pxX = p.x; pxY = p.y; }
+                        }
+                    } catch (_) {}
+                }
                 const catalogEntry = {
-                    x: sources.x[i],
-                    y: sources.y[i],
+                    x: pxX,
+                    y: pxY,
                     x_bottom_left: sources.x_bottom_left[i],
                     y_bottom_left: sources.y_bottom_left[i],
-                    ra: sources.ra[i],
-                    dec: sources.dec[i],
+                    ra: raVal,
+                    dec: decVal,
                     radius_pixels: radiusInPixels,
                     // Backward compatibility: set value from flux_ujy if provided
                     value: fluxJyArr ? fluxJyArr[i] : null,
@@ -145,7 +217,8 @@ function processPeakFinderResults(data, customParams) {
                 sourceCatalog.push(catalogEntry);
             }
 
-            transformSourceCoordinates(sourceCatalog);
+            // No additional transform needed when using worldToPixelGeneric above.
+            // (If dispXY wasn't available, x/y remain as backend-provided pixels.)
             
             const catalogName = `Found Sources (${sources.source_count})`;
             const catalogOptions = {
@@ -288,11 +361,96 @@ function inspectCurrentWCS() {
 inspectCurrentWCS();
 
 function createPeakFinderModal(filepath) {
+    // Local helpers: animate open/close and close-on-Escape
+    const ensureAnim = (popup) => {
+        if (!popup) return null;
+        if (popup.__nelouraAnimReady) return popup;
+        try {
+            popup.__nelouraAnimReady = true;
+            popup.__nelouraBaseTransform = 'translate(-50%, -50%)';
+            popup.__nelouraShow = () => {
+                try {
+                    popup.style.display = 'block';
+                    popup.style.willChange = 'opacity, transform';
+                    popup.style.transition = 'opacity 170ms ease, transform 170ms ease';
+                    popup.style.opacity = '0';
+                    // If it was previously dragged (transform='none'), don't force-recenter; just fade.
+                    if (!popup.style.transform || popup.style.transform === 'none') {
+                        popup.style.transform = popup.__nelouraBaseTransform;
+                    }
+                    // animate from slight offset only if still centered
+                    if (String(popup.style.transform || '').includes('translate(-50%, -50%)')) {
+                        popup.style.transform = `${popup.__nelouraBaseTransform} translateY(12px) scale(0.98)`;
+                    }
+                    requestAnimationFrame(() => {
+                        popup.style.opacity = '1';
+                        if (String(popup.style.transform || '').includes('translate(-50%, -50%)')) {
+                            popup.style.transform = `${popup.__nelouraBaseTransform} translateY(0px) scale(1)`;
+                        }
+                    });
+                    // attach ESC
+                    popup.__nelouraEscHandler = (e) => {
+                        try {
+                            if (!e) return;
+                            const key = e.key || e.code || '';
+                            if (key === 'Escape' || key === 'Esc') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                popup.__nelouraHide && popup.__nelouraHide();
+                            }
+                        } catch (_) {}
+                    };
+                    document.addEventListener('keydown', popup.__nelouraEscHandler, true);
+                } catch (_) {}
+            };
+            popup.__nelouraHide = () => {
+                try {
+                    if (popup.__nelouraClosing) return;
+                    popup.__nelouraClosing = true;
+                    try {
+                        if (popup.__nelouraEscHandler) {
+                            document.removeEventListener('keydown', popup.__nelouraEscHandler, true);
+                        }
+                    } catch (_) {}
+                    popup.style.willChange = 'opacity, transform';
+                    popup.style.transition = 'opacity 160ms ease, transform 160ms ease';
+                    popup.style.opacity = '0';
+                    if (String(popup.style.transform || '').includes('translate(-50%, -50%)')) {
+                        popup.style.transform = `${popup.__nelouraBaseTransform} translateY(12px) scale(0.98)`;
+                    }
+                    const cleanup = () => {
+                        popup.style.display = 'none';
+                        popup.__nelouraClosing = false;
+                    };
+                    const t = setTimeout(cleanup, 220);
+                    popup.addEventListener('transitionend', (ev) => {
+                        if (ev && ev.target !== popup) return;
+                        clearTimeout(t);
+                        cleanup();
+                    }, { once: true });
+                } catch (_) {
+                    try { popup.style.display = 'none'; } catch (_) {}
+                    popup.__nelouraClosing = false;
+                }
+            };
+        } catch (_) {}
+        return popup;
+    };
+
     let popup = document.getElementById('peak-finder-modal');
-    // Resolve current file/HDU for display
-    const resolvedFile = getActiveFitsPath() || filepath || (window.currentFitsFile || '');
-    const resolvedHdu = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+    // Resolve current file/HDU for display from the ACTIVE pane (multi-panel) or current window.
+    const activeSid = (() => { try { return (window.getActivePaneSid && window.getActivePaneSid()) || null; } catch (_) { return null; } })();
+    const activeWin = (() => { try { return (window.getActivePaneWindow && window.getActivePaneWindow()) || null; } catch (_) { return null; } })() || window;
+    const resolvedFile = String(
+        (activeWin && (activeWin.currentFitsFile || (activeWin.fitsData && (activeWin.fitsData.filename || activeWin.fitsData.filepath)))) ||
+        (window.currentFitsFile || '') ||
+        ''
+    );
+    const resolvedHdu = (activeWin && typeof activeWin.currentHduIndex === 'number') ? activeWin.currentHduIndex
+        : ((typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0);
     if (popup) {
+        // Keep track of which pane this modal is targeting (for multi-panel correctness)
+        try { if (activeSid) popup.dataset.targetPaneSid = activeSid; } catch (_) {}
         // Update file/HDU info if modal already exists
         const infoEl = popup.querySelector('#peak-finder-file-info');
         if (infoEl) {
@@ -308,20 +466,66 @@ function createPeakFinderModal(filepath) {
                 infoEl.textContent = `File: ${base || '(none)'}   |   HDU: ${resolvedHdu}`;
             }
         }
+        popup = ensureAnim(popup) || popup;
+        // In multi-panel mode, the iframe grid container sits above z-index 3000.
+        // Ensure the peak finder modal is always above it.
+        try { popup.style.zIndex = '65010'; } catch (_) {}
         if (document.readyState === 'complete' && document.visibilityState === 'visible') {
-            popup.style.display = 'block';
+            try { popup.__nelouraShow ? popup.__nelouraShow() : (popup.style.display = 'block'); } catch (_) { popup.style.display = 'block'; }
         }
         return popup;
     }
 
+    // Keep the file/HDU label in sync with active pane changes (multi-panel).
+    try {
+        if (!window.__peakFinderPaneActivatedListenerInstalled) {
+            window.addEventListener('pane:activated', () => {
+                try {
+                    const p = document.getElementById('peak-finder-modal');
+                    if (!p || p.style.display === 'none') return;
+                    // Update target pane SID
+                    try {
+                        const sid = (window.getActivePaneSid && window.getActivePaneSid()) || null;
+                        if (sid) p.dataset.targetPaneSid = sid;
+                    } catch (_) {}
+                    const infoEl = p.querySelector('#peak-finder-file-info');
+                    if (!infoEl) return;
+                    const sidNow = (p.dataset && p.dataset.targetPaneSid) ? p.dataset.targetPaneSid : null;
+                    const paneWin = getPaneWindowBySid(sidNow) || ((window.getActivePaneWindow && window.getActivePaneWindow()) || null) || window;
+                    const filePath = String((paneWin && (paneWin.currentFitsFile || (paneWin.fitsData && (paneWin.fitsData.filename || paneWin.fitsData.filepath)))) || '');
+                    const hduIdx = (paneWin && typeof paneWin.currentHduIndex === 'number') ? paneWin.currentHduIndex : 0;
+                    const base = String(filePath || '').split('/').pop();
+                    const fileSpan = infoEl.querySelector('#peak-finder-file-text');
+                    const hduSpan = infoEl.querySelector('#peak-finder-hdu-text');
+                    if (fileSpan && hduSpan) {
+                        fileSpan.textContent = `File: ${base || '(none)'}`;
+                        fileSpan.title = String(filePath || base || '');
+                        hduSpan.textContent = `HDU: ${hduIdx}`;
+                    } else {
+                        infoEl.textContent = `File: ${base || '(none)'}   |   HDU: ${hduIdx}`;
+                    }
+                } catch (_) {}
+            });
+            window.__peakFinderPaneActivatedListenerInstalled = true;
+        }
+    } catch (_) {}
+
     popup = document.createElement('div');
     popup.id = 'peak-finder-modal';
+    // Capture the pane we're targeting at open-time (so clicking Find Sources always matches the label)
+    try {
+        if (window.getActivePaneSid && typeof window.getActivePaneSid === 'function') {
+            const sid = window.getActivePaneSid();
+            if (sid) popup.dataset.targetPaneSid = sid;
+        }
+    } catch (_) {}
     Object.assign(popup.style, {
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
         backgroundColor: '#333', border: '1px solid #555', borderRadius: '5px',
-        padding: '15px', zIndex: '1500', width: '650px', // Increased width for two columns
+        padding: '15px', zIndex: '65010', width: '650px', // Increased width for two columns
         boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)', boxSizing: 'border-box'
     });
+    ensureAnim(popup);
 
     const title = document.createElement('h3');
     title.textContent = 'Peak Finder Settings';
@@ -341,7 +545,7 @@ function createPeakFinderModal(filepath) {
     });
     closeButton.addEventListener('mouseover', () => { closeButton.style.backgroundColor = '#555'; closeButton.style.color = '#fff'; });
     closeButton.addEventListener('mouseout', () => { closeButton.style.backgroundColor = 'transparent'; closeButton.style.color = '#aaa'; });
-    closeButton.addEventListener('click', () => { popup.style.display = 'none'; });
+    closeButton.addEventListener('click', () => { try { popup.__nelouraHide ? popup.__nelouraHide() : (popup.style.display = 'none'); } catch (_) { popup.style.display = 'none'; } });
 
     // Info bar: show current FITS file and HDU
     const infoBar = document.createElement('div');
@@ -610,7 +814,7 @@ function createPeakFinderModal(filepath) {
     Object.assign(cancelButton.style, { padding: '8px 15px', backgroundColor: '#6c757d', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontFamily: 'Arial, sans-serif', fontSize: '14px' });
     cancelButton.addEventListener('mouseover', () => cancelButton.style.backgroundColor = '#5a6268');
     cancelButton.addEventListener('mouseout', () => cancelButton.style.backgroundColor = '#6c757d');
-    cancelButton.addEventListener('click', () => { popup.style.display = 'none'; });
+    cancelButton.addEventListener('click', () => { try { popup.__nelouraHide ? popup.__nelouraHide() : (popup.style.display = 'none'); } catch (_) { popup.style.display = 'none'; } });
 
     const findSourcesButton = document.createElement('button');
     findSourcesButton.textContent = 'Find Sources';
@@ -618,6 +822,7 @@ function createPeakFinderModal(filepath) {
     findSourcesButton.addEventListener('mouseover', () => findSourcesButton.style.backgroundColor = '#0056b3');
     findSourcesButton.addEventListener('mouseout', () => findSourcesButton.style.backgroundColor = '#007bff');
     findSourcesButton.addEventListener('click', () => {
+        const ctxFromModal = getPeakFinderTargetContextFromModal(popup);
         const params = {
             pix_across_beam: parseFloat(document.getElementById('pix-across-beam').value),
             min_beams: parseFloat(document.getElementById('min-beams').value),
@@ -628,17 +833,22 @@ function createPeakFinderModal(filepath) {
             // Pass through the selected JWST filter using the same field name as ast_test.py (filterName)
             filterName: document.getElementById('jwst-filter').value,
             // Include the currently selected HDU index
-            hdu_index: (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0,
+            hdu_index: (ctxFromModal && typeof ctxFromModal.hdu === 'number') ? ctxFromModal.hdu : ((typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0),
             color: document.getElementById('source-color').value,
             fillColor: document.getElementById('fill-color').value,
             useTransparentFill: document.getElementById('transparent-fill-checkbox').checked,
             border_width: parseInt(document.getElementById('border-width-slider').value),
             opacity: parseFloat(document.getElementById('opacity-slider').value)
         };
-        popup.style.display = 'none';
+        try { popup.__nelouraHide ? popup.__nelouraHide() : (popup.style.display = 'none'); } catch (_) { popup.style.display = 'none'; }
 
-        let fullFilepath = filepath || getActiveFitsPath();
-        console.debug('[PeakFinder] modal filepath param:', filepath, 'resolved via getActiveFitsPath:', fullFilepath);
+        // Resolve the FITS path ONLY from the SAME pane the modal is targeting (prevents mismatches).
+        let fullFilepath = null;
+        try { if (ctxFromModal && ctxFromModal.rawFile) fullFilepath = String(ctxFromModal.rawFile); } catch (_) {}
+        if (!fullFilepath) {
+            try { fullFilepath = String(window.currentFitsFile || ''); } catch (_) { fullFilepath = ''; }
+        }
+        console.debug('[PeakFinder] modal target paneSid:', ctxFromModal && ctxFromModal.paneSid, 'resolvedFile:', fullFilepath);
         if (!fullFilepath) {
           showNotification('Peak Finder: no FITS file detected. Load an image first.', 3000, 'error');
           return;
@@ -649,7 +859,18 @@ function createPeakFinderModal(filepath) {
           fullFilepath = `files/${fullFilepath.replace(/^files\//, '')}`;
         }
         console.debug('[PeakFinder] final fullFilepath posted:', fullFilepath);
-        runPeakFinder(fullFilepath, params);
+        // In multi-panel mode, run the peak finder in the pane window that the modal targeted
+        // so the resulting overlay is added to the correct map/session/WCS.
+        try {
+            const targetWin = (ctxFromModal && ctxFromModal.paneWin) || (window.getActivePaneWindow && window.getActivePaneWindow()) || window;
+            if (targetWin !== window && typeof targetWin.runPeakFinder === 'function') {
+                targetWin.runPeakFinder(fullFilepath, params);
+            } else {
+                runPeakFinder(fullFilepath, params);
+            }
+        } catch (_) {
+            runPeakFinder(fullFilepath, params);
+        }
     });
 
     buttonContainer.appendChild(cancelButton);
@@ -663,6 +884,7 @@ function createPeakFinderModal(filepath) {
 
     makeDraggable(popup, title); // Ensure makeDraggable is defined and works
     document.body.appendChild(popup);
+    try { popup.__nelouraShow && popup.__nelouraShow(); } catch (_) {}
     updatePreview(); // Initial preview
     return popup;
 }
@@ -910,30 +1132,46 @@ function triggerCatalogOverlayUpdate(sources, options = {}) {
 
 // Add peak finder button to toolbar with fix to prevent auto-opening
 function addPeakFinderButton() {
-    const customButtonContainer = document.getElementById('custom-button-container');
-    if (!customButtonContainer) {
-        console.warn('Custom button container not found');
+    const toolbar = document.querySelector('.toolbar');
+    if (!toolbar) {
+        console.warn('Toolbar not found');
         return;
     }
 
     // Check if the button already exists to prevent duplicates
-    if (document.getElementById('peak-finder-btn')) {
-        return;
-    }
+    if (document.getElementById('peak-finder-button')) return;
 
     const peakFinderButton = document.createElement('button');
-    peakFinderButton.id = 'peak-finder-btn';
+    peakFinderButton.id = 'peak-finder-button';
+    peakFinderButton.type = 'button';
     peakFinderButton.textContent = 'Peak Finder';
-    peakFinderButton.className = 'custom-button';
 
     peakFinderButton.addEventListener('click', () => {
-        // Pass the current FITS file path to the peak finder
-        console.log('getActiveFitsPath()', getActiveFitsPath());
-        createPeakFinderModal(getActiveFitsPath());
+        // Allow opening even before a FITS is loaded; modal can handle null path.
+        let path = null;
+        try { if (typeof getActiveFitsPath === 'function') path = getActiveFitsPath(); } catch (_) {}
+        try { if (!path && window.currentFitsFile) path = window.currentFitsFile; } catch (_) {}
+        try {
+            if (typeof createPeakFinderModal === 'function') return createPeakFinderModal(path);
+        } catch (e) {
+            console.error('Peak Finder failed:', e);
+        }
     });
 
-    customButtonContainer.appendChild(peakFinderButton);
+    toolbar.appendChild(peakFinderButton);
 }
 
 // Make the function globally available so it can be called from other scripts
 window.addPeakFinderButton = addPeakFinderButton;
+
+// Ensure the Peak Finder button is visible on initial page load too.
+document.addEventListener('DOMContentLoaded', () => {
+    try { addPeakFinderButton(); } catch (_) {}
+    // Retry a few times in case toolbar is created late
+    let tries = 0;
+    const iv = setInterval(() => {
+        tries++;
+        try { addPeakFinderButton(); } catch (_) {}
+        if (document.getElementById('peak-finder-button') || tries >= 20) clearInterval(iv);
+    }, 250);
+});

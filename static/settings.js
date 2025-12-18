@@ -1,10 +1,20 @@
 (function(){
     'use strict';
 
-    async function ensureSession() {
-        try { if (window.__sid) return window.__sid; } catch(_){}
+    function __paneSid() {
         try {
-            const r = await fetch('/session/start');
+            const sp = new URLSearchParams(window.location.search);
+            return (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || null;
+        } catch(_) { return window.__forcedSid || null; }
+    }
+    async function ensureSession() {
+        try {
+            const forced = __paneSid();
+            if (forced) { window.__sid = forced; return window.__sid; }
+            if (window.__sid) return window.__sid;
+        } catch(_){}
+        try {
+            const r = await fetch('/session/start', { credentials: 'same-origin' });
             const j = await r.json();
             window.__sid = j.session_id;
             return window.__sid;
@@ -19,15 +29,29 @@
 
     async function api(path, opts={}) {
         await ensureSession();
-        const res = await fetch(path, { headers: authHeaders(), credentials: 'same-origin', ...opts });
-        if (!res.ok) {
-            const text = await res.text();
-            let data = null; try { data = JSON.parse(text); } catch(_){}
-            const err = new Error(text || res.statusText || 'Request failed');
-            err.status = res.status; err.data = data; err.url = path;
-            throw err;
+        try {
+            const u = new URL(path, window.location.origin);
+            if (window.__sid && !u.searchParams.get('sid')) u.searchParams.set('sid', window.__sid);
+            const res = await fetch(u.toString(), { headers: authHeaders(), credentials: 'same-origin', ...opts });
+            if (!res.ok) {
+                const text = await res.text();
+                let data = null; try { data = JSON.parse(text); } catch(_){}
+                const err = new Error(text || res.statusText || 'Request failed');
+                err.status = res.status; err.data = data; err.url = path;
+                throw err;
+            }
+            return res.json();
+        } catch(e) {
+            const res = await fetch(path, { headers: authHeaders(), credentials: 'same-origin', ...opts });
+            if (!res.ok) {
+                const text = await res.text();
+                let data = null; try { data = JSON.parse(text); } catch(_){}
+                const err = new Error(text || res.statusText || 'Request failed');
+                err.status = res.status; err.data = data; err.url = path;
+                throw err;
+            }
+            return res.json();
         }
-        return res.json();
     }
 
     function closeExisting() {

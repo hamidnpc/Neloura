@@ -22,17 +22,29 @@ from pathlib import Path
 import struct
 import base64
 import glob
+import hashlib
+import secrets
+import random
+import copy
 from ast_test import AstInjectRequest, inject_sources, get_pixel_scale_from_header, AstPlotRequest, compute_ast_plot
 import re
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from astropy.nddata import Cutout2D
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.colors import PowerNorm, LogNorm
 from astropy.visualization import ImageNormalize
-from regions import CircleSkyRegion
+from regions import (
+    CircleSkyRegion,
+    CirclePixelRegion,
+    EllipsePixelRegion,
+    RectanglePixelRegion,
+    RegularPolygonPixelRegion,
+    PolygonPixelRegion,
+    PixCoord,
+)
 import math
 from reproject import reproject_interp
 from spectral_cube import Projection
@@ -52,17 +64,18 @@ import json
 from fastapi import UploadFile, File
 import re
 import time
-from types import SimpleNamespace  # Add this import
-from datetime import datetime # Add datetime import
+from types import SimpleNamespace 
+from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
-from astropy.time import Time # Added for type handling
-import psutil # Added for system stats
-import asyncio # <--- ADD THIS IMPORT
-import logging # Add logger import
-import warnings # Import the warnings module
+from astropy.time import Time 
+import psutil 
+import asyncio 
+import logging
+import warnings
 from astropy.visualization import simple_norm
 import matplotlib as mpl
+import functools
 from pydantic import BaseModel
 from typing import Optional, List, Literal, Union
 from scipy.ndimage import zoom
@@ -232,13 +245,18 @@ PEAK_FINDER_OUTPUT_DIR=    'files/uploads'
 CATALOG_MAPPINGS_FILE= 'catalog_mappings.json'
 FILES_DIRECTORY= 'files'
 BASE_FITS_PATH = f"{FILES_DIRECTORY}/"
+FILES_ROOT = Path(FILES_DIRECTORY).resolve()
+SEGMENTS_DIRECTORY = (Path(FILES_DIRECTORY) / 'segments').resolve()
+SEGMENTS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+SEGMENT_DEFAULT_COLOR_MAP = 'labels'
+FILES_ROOT = Path(FILES_DIRECTORY).resolve()
 PSF_DIRECTORY = 'psf'
 BASE_PSF_PATH = f"{PSF_DIRECTORY}/"
 IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'true').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'false').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
@@ -1085,6 +1103,56 @@ COLOR_MAPS_PY = {
 
 }
 
+def resolve_color_map_key(name: Optional[str]) -> Optional[str]:
+    """Return canonical COLOR_MAPS_PY key for the provided name (case-insensitive)."""
+    if not name:
+        return None
+    candidate = name.strip()
+    if not candidate:
+        return None
+    if candidate in COLOR_MAPS_PY:
+        return candidate
+    lowered = candidate.lower()
+    for existing in COLOR_MAPS_PY.keys():
+        if existing.lower() == lowered:
+            return existing
+    return None
+
+_COLORCET_DATA_CANDIDATES = [
+    Path(__file__).resolve().parent / 'static' / 'data' / 'colorcet_palettes.json',
+    Path(__file__).resolve().parent / 'static' / 'colorcet_palettes.json',
+]
+COLORCET_DATA_PATH = next((p for p in _COLORCET_DATA_CANDIDATES if p.exists()), _COLORCET_DATA_CANDIDATES[0])
+
+def _build_palette_lookup(palette):
+    def lookup(val):
+        try:
+            idx = int(val)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0:
+            idx = 0
+        elif idx > 255:
+            idx = 255
+        return tuple(palette[idx])
+    return lookup
+
+try:
+    if COLORCET_DATA_PATH.exists():
+        with COLORCET_DATA_PATH.open('r', encoding='utf-8') as fh:
+            _colorcet_data = json.load(fh)
+        for name, palette in (_colorcet_data or {}).items():
+            if not palette or name in COLOR_MAPS_PY:
+                continue
+            tuple_palette = [tuple(map(int, color)) for color in palette if isinstance(color, (list, tuple)) and len(color) == 3]
+            if len(tuple_palette) != len(palette):
+                continue
+            COLOR_MAPS_PY[name] = _build_palette_lookup(tuple_palette)
+    else:
+        logger.warning('Colorcet palettes file not found in any of: %s', ', '.join(str(p) for p in _COLORCET_DATA_CANDIDATES))
+except Exception as exc:
+    logger.warning('Failed to load Colorcet palettes: %s', exc)
+
 
 
 # Simple tile cache
@@ -1271,6 +1339,7 @@ class PerSessionMiddleware(BaseHTTPMiddleware):
 app.add_middleware(PerSessionMiddleware, allow_paths={
     "/", 
     "/favicon.ico", 
+    "/features.html",
     "/session/start",
     "/mast/resolve",
     "/mast/search",
@@ -1287,6 +1356,16 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/me",
     "/settings/profiles",
 })
+
+# Serve simple static HTML pages from repo root (no session required).
+@app.get("/features.html", include_in_schema=False)
+async def features_page():
+    # This file lives in the project root next to main.py
+    target = Path(__file__).resolve().parent / "features.html"
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="features.html not found")
+    # Disable caching so edits show immediately during development.
+    return FileResponse(path=str(target), media_type="text/html", headers={"Cache-Control": "no-store"})
 @app.get("/session/start")
 async def start_session():
     # Create a fresh session and immediately resolve effective settings
@@ -1437,6 +1516,198 @@ async def list_catalogs():
             status_code=500,
             content={"error": f"Failed to list catalogs: {str(e)}"}
         )
+
+
+class SegmentOpenRequest(BaseModel):
+    segment_name: str
+    color_map: Optional[str] = None
+    force_reproject: Optional[bool] = False
+
+
+@app.get("/segments/list/")
+async def list_segments():
+    """List available segmentation FITS overlays under files/segments."""
+    try:
+        segments = []
+        seen = set()
+        if SEGMENTS_DIRECTORY.exists():
+            for pattern in ("*.fits", "*.fit"):
+                for file_path in SEGMENTS_DIRECTORY.rglob(pattern):
+                    if not file_path.is_file():
+                        continue
+                    rel = file_path.relative_to(SEGMENTS_DIRECTORY)
+                    key = str(rel).replace("\\", "/")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    stat = file_path.stat()
+                    segments.append({
+                        "name": key,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime
+                    })
+        segments.sort(key=lambda entry: entry["name"].lower())
+        return JSONResponse(content={"segments": segments})
+    except Exception as exc:
+        logger.error("Failed to list segments: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to list segments: {exc}"}
+        )
+
+
+@app.post("/segments/open/")
+async def open_segment_overlay(request: Request, payload: SegmentOpenRequest):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+    segment_path = _resolve_segment_path(payload.segment_name)
+    base_header, base_shape, base_file_id, _ = _get_base_header_and_shape(session_data)
+    segment_id, generator = await _get_or_create_segment_generator(
+        session_data,
+        payload.segment_name,
+        segment_path,
+        payload.color_map,
+        base_file_id=base_file_id
+    )
+    segment_shape = (int(generator.height), int(generator.width))
+    needs_reprojection = False
+    repro_reasons = []
+    alignment_summary = None
+    if base_header is not None and base_shape is not None:
+        needs_reprojection, repro_reasons, alignment_summary = _compare_segment_alignment(
+            base_header,
+            base_shape,
+            generator.header,
+            segment_shape
+        )
+    elif payload.force_reproject:
+        raise HTTPException(status_code=400, detail="Cannot reproject segment: base FITS header unavailable.")
+
+    reprojected = False
+    if needs_reprojection and payload.force_reproject:
+        if base_header is None or base_shape is None:
+            raise HTTPException(status_code=400, detail="Cannot reproject segment: base FITS header unavailable.")
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                app.state.thread_executor,
+                functools.partial(_reproject_segment_to_base, generator, base_header, base_shape)
+            )
+            segment_shape = (int(generator.height), int(generator.width))
+            reprojected = True
+            needs_reprojection = False
+        except Exception as exc:
+            logger.error("Failed to reproject segment %s: %s", payload.segment_name, exc)
+            raise HTTPException(status_code=500, detail=f"Reprojection failed: {exc}")
+
+    if needs_reprojection and not payload.force_reproject:
+        return {
+            "segment_id": segment_id,
+            "segment_name": payload.segment_name,
+            "needs_reprojection": True,
+            "reprojection_reasons": repro_reasons,
+            "reprojection_summary": alignment_summary
+        }
+
+    info = generator.get_tile_info()
+    info.update({
+        "segment_id": segment_id,
+        "segment_name": payload.segment_name,
+        "needs_reprojection": False,
+        "reprojected": reprojected,
+        "palettePreview": generator.get_palette_preview(),
+        "reprojection_reasons": repro_reasons or []
+    })
+    if alignment_summary:
+        summary_copy = dict(alignment_summary)
+        if reprojected:
+            summary_copy["reprojected"] = True
+        info["reprojection_summary"] = summary_copy
+    return info
+
+
+@app.get("/segments-tile/{segment_id}/{level}/{x}/{y}")
+async def get_segment_tile(request: Request, segment_id: str, level: int, x: int, y: int):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+    generator, _ = _get_segment_generator_by_id(session_data, segment_id)
+    if generator is None:
+        raise HTTPException(status_code=404, detail="Segment overlay not initialized")
+    loop = asyncio.get_running_loop()
+    tile_bytes = await loop.run_in_executor(
+        app.state.thread_executor,
+        functools.partial(generator.get_tile, level, x, y)
+    )
+    if not tile_bytes:
+        raise HTTPException(status_code=404, detail="Tile unavailable")
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
+    return Response(content=tile_bytes, media_type="image/png", headers=headers)
+
+
+@app.get("/probe-segment-pixel/")
+async def probe_segment_pixel(
+    request: Request,
+    segment_id: str = Query(...),
+    x: int = Query(...),
+    y: int = Query(...),
+    origin: str = Query("bottom"),
+):
+    """
+    Probe a single pixel from the currently-loaded segment overlay (integer label map).
+
+    - Uses the in-session SegmentTileGenerator (already memmapped/loaded/flipped as needed)
+    - No caching
+    - Coordinates are in the same convention used by the UI readout:
+      x is 0..width-1, y is 0..height-1 with origin="bottom" meaning y=0 at bottom.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    generator, _ = _get_segment_generator_by_id(session_data, segment_id)
+    if generator is None:
+        raise HTTPException(status_code=404, detail="Segment overlay not initialized")
+
+    try:
+        generator._ensure_image_data_loaded()
+        width = int(getattr(generator, "width", 0) or 0)
+        height = int(getattr(generator, "height", 0) or 0)
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=400, detail="Segment overlay has invalid dimensions")
+
+        x_idx = int(x)
+        y_in = int(y)
+        # Convert UI "bottom" origin into array "top" origin (OpenSeadragon / numpy indexing)
+        y_idx = int(height - 1 - y_in) if origin.lower().startswith("bottom") else int(y_in)
+
+        if not (0 <= x_idx < width and 0 <= y_idx < height):
+            return JSONResponse(
+                content={"value": None, "x": x_idx, "y": y_idx, "origin": origin, "segment_id": segment_id, "detail": "Out of bounds"},
+                status_code=200,
+            )
+
+        data = getattr(generator, "image_data", None)
+        if data is None:
+            raise HTTPException(status_code=500, detail="Segment data not available")
+
+        try:
+            label = int(data[y_idx, x_idx])
+        except Exception:
+            label = None
+
+        return JSONResponse(content={"value": label, "x": x_idx, "y": y_idx, "origin": origin, "segment_id": segment_id}, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"probe-segment-pixel failed: {e}")
 
 @app.post("/ast-plot/")
 async def ast_plot(request: AstPlotRequest):
@@ -1683,7 +1954,11 @@ async def load_catalog_endpoint(request: Request, catalog_name: str):
                     pass
 
             # Pass (possibly wrapped) request so load_catalog_data can use session-scoped state and overrides
-            catalog_data = load_catalog_data(catalog_path, request)
+            loop = asyncio.get_running_loop()
+            catalog_data = await loop.run_in_executor(
+                None,
+                lambda: load_catalog_data(catalog_path, request)
+            )
             if not catalog_data:
                 return JSONResponse(status_code=500, content={"error": "Failed to load catalog data"})
         except Exception as e:
@@ -1719,6 +1994,119 @@ async def load_catalog_endpoint(request: Request, catalog_name: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to load catalog: {str(e)}"})
 
+
+def _sanitize_json_value(value):
+    """
+    Plotter-safe JSON sanitization:
+    - Converts numpy scalars to Python scalars
+    - Converts NaN/Inf floats to None (Starlette JSONResponse uses allow_nan=False)
+    - Recurses through dict/list/tuple
+    """
+    try:
+        # numpy scalar -> python scalar
+        if isinstance(value, np.generic):
+            value = value.item()
+    except Exception:
+        pass
+
+    # floats: replace NaN/Inf with None
+    try:
+        if isinstance(value, float):
+            if not np.isfinite(value):
+                return None
+            return value
+    except Exception:
+        pass
+
+    # basic types
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+
+    # bytes
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+
+    # Path-like
+    try:
+        if isinstance(value, Path):
+            return str(value)
+    except Exception:
+        pass
+
+    # numpy arrays / array-likes
+    try:
+        if isinstance(value, np.ndarray):
+            return [_sanitize_json_value(v) for v in value.tolist()]
+    except Exception:
+        pass
+
+    # mappings
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                kk = str(k)
+            except Exception:
+                kk = "key"
+            out[kk] = _sanitize_json_value(v)
+        return out
+
+    # iterables
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_json_value(v) for v in value]
+
+    # fallback: try string
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
+@app.get("/plotter/load-catalog/{catalog_name:path}")
+async def plotter_load_catalog_endpoint(request: Request, catalog_name: str):
+    """
+    Plotter-only wrapper around load_catalog_data that guarantees JSON-safe output.
+    This avoids breaking other flows that depend on the existing /load-catalog endpoint.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+
+    try:
+        base_dir = Path('.').resolve()
+        p: Optional[Path] = None
+        if Path(catalog_name).is_absolute():
+            p = Path(catalog_name)
+        else:
+            for candidate in [
+                base_dir / catalog_name,
+                base_dir / UPLOADS_DIRECTORY / catalog_name,
+                base_dir / FILES_DIRECTORY / catalog_name,
+                base_dir / CATALOGS_DIRECTORY / catalog_name,
+            ]:
+                try:
+                    if candidate.is_file():
+                        p = candidate
+                        break
+                except Exception:
+                    continue
+        if p is None or not p.is_file():
+            return JSONResponse(status_code=404, content={"error": f"Catalog file not found: {catalog_name}"})
+
+        loop = asyncio.get_running_loop()
+        raw = await loop.run_in_executor(None, lambda: load_catalog_data(str(p), request))
+        if not raw:
+            return JSONResponse(status_code=500, content={"error": "Failed to load catalog data"})
+
+        safe = _sanitize_json_value(raw)
+        return JSONResponse(content=safe)
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to load catalog (plotter): {str(e)}"})
 
 @app.post("/upload-catalog/")
 async def upload_catalog(file: UploadFile = File(...)):
@@ -1905,6 +2293,7 @@ class SimpleTileGenerator:
         self.wcs = None
         self.color_map = 'grayscale'  # Default colormap
         self.scaling_function = 'linear'  # Default scaling function
+        self.invert_colormap = False  # Default orientation for LUT lookups
         self._update_colormap_lut() # Initialize LUT
         self._overview_lock = threading.Lock() # Lock for overview generation
         self._dynamic_range_lock = threading.Lock() # DEFER: Lock for dynamic range calculation
@@ -2159,6 +2548,8 @@ class SimpleTileGenerator:
 
             # Convert to 8-bit and apply LUT
             img_data_8bit = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
+            if getattr(self, "invert_colormap", False):
+                img_data_8bit = 255 - img_data_8bit
             rgb_img_data = self.lut[img_data_8bit]
             
             # Create PNG with minimal compression for speed
@@ -2195,7 +2586,8 @@ class SimpleTileGenerator:
             "initial_display_max": initial_display_max, 
             "bunit": bunit,
             "color_map": self.color_map, # Correct attribute name
-            "scaling_function": self.scaling_function # Correct attribute name
+            "scaling_function": self.scaling_function, # Correct attribute name
+            "invert_colormap": bool(self.invert_colormap)
             # data_min and data_max (overall true data range) are removed for now to fix the error.
             # If needed, these would require explicit calculation and storage in the generator.
         }
@@ -2210,7 +2602,8 @@ class SimpleTileGenerator:
             "maxLevel": self.max_level,
             "bunit": bunit,
             "color_map": self.color_map,
-            "scaling_function": self.scaling_function
+            "scaling_function": self.scaling_function,
+            "invert_colormap": bool(self.invert_colormap)
         }
     def get_tile(self, level, x, y):
         """Generate a tile at the specified level and coordinates."""
@@ -2343,6 +2736,9 @@ class SimpleTileGenerator:
             # Convert to 8-bit image
             img_data_8bit = (normalized_tile_data * 255).astype(np.uint8)
             
+            if getattr(self, "invert_colormap", False):
+                img_data_8bit = 255 - img_data_8bit
+            
             # Apply colormap using the LUT
             rgb_img_data = self.lut[img_data_8bit]
             
@@ -2385,6 +2781,448 @@ class SimpleTileGenerator:
         for i in range(256):
             self.lut[i] = color_map_func(i)
         print(f"Colormap LUT updated for '{self.color_map}'")
+
+
+class SegmentTileGenerator:
+    """Generate colored tiles for segmentation overlays."""
+
+    def __init__(self, fits_file_path: str, hdu_index: int = 0):
+        self.fits_file_path = fits_file_path
+        self.hdu_index = hdu_index
+        self.tile_size = IMAGE_TILE_SIZE_PX
+        self._hdul = fits.open(
+            fits_file_path,
+            memmap=True,
+            lazy_load_hdus=True,
+            do_not_scale_image_data=True
+        )
+        hdu = self._hdul[self.hdu_index]
+        self.header = hdu.header
+        self.width = int(self.header.get('NAXIS1', 0))
+        self.height = int(self.header.get('NAXIS2', 0))
+        if not self.width or not self.height:
+            data = hdu.data
+            if data is not None and getattr(data, "ndim", 0) >= 2:
+                self.height, self.width = data.shape[-2:]
+        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size)))) if (self.width and self.height) else 0
+        self.image_data = None
+        self._image_data_loaded = False
+        self._load_lock = threading.Lock()
+        self._palette = {}
+        self.color_map = SEGMENT_DEFAULT_COLOR_MAP
+        self._label_min = None
+        self._label_max = None
+        flip_y, _, _ = analyze_wcs_orientation(self.header, None)
+        self.flip_required = bool(flip_y)
+        self._flip_applied = False
+        self.set_color_map(SEGMENT_DEFAULT_COLOR_MAP)
+
+    def _ensure_image_data_loaded(self):
+        if self._image_data_loaded:
+            return
+        with self._load_lock:
+            if self._image_data_loaded:
+                return
+            hdu = self._hdul[self.hdu_index]
+            data = hdu.data
+            if data is None:
+                raise HTTPException(status_code=400, detail=f"No image data found in segmentation FITS {self.fits_file_path}.")
+            if getattr(data, "ndim", 0) > 2:
+                data = data[0, ...]
+            data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+            if not np.issubdtype(data.dtype, np.integer):
+                data = np.rint(data).astype(np.int32)
+            else:
+                data = data.astype(np.int32, copy=False)
+            if self.flip_required and not self._flip_applied:
+                try:
+                    data = np.flipud(data)
+                    self._flip_applied = True
+                except Exception as exc:
+                    print(f"[segments] Failed to flip data for {self.fits_file_path}: {exc}")
+            self.image_data = data
+            self.height, self.width = data.shape[-2:]
+            self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+            self._image_data_loaded = True
+            self._label_min = None
+            self._label_max = None
+
+    def _ensure_label_bounds(self):
+        if self._label_min is not None and self._label_max is not None:
+            return
+        self._ensure_image_data_loaded()
+        data = self.image_data
+        if data is None or data.size == 0:
+            self._label_min, self._label_max = 0, 1
+            return
+        min_val = int(np.min(data))
+        max_val = int(np.max(data))
+        if min_val == max_val:
+            max_val = min_val + 1
+        self._label_min = min_val
+        self._label_max = max_val
+
+    def _normalized_label(self, label: int) -> float:
+        self._ensure_label_bounds()
+        min_val = self._label_min or 0
+        max_val = self._label_max or 1
+        span = max(max_val - min_val, 1)
+        return max(0.0, min(1.0, (int(label) - min_val) / span))
+
+    def _color_for_fraction(self, fraction: float):
+        func = COLOR_MAPS_PY.get(self.color_map)
+        if not callable(func):
+            return (255, 255, 255, 180)
+        idx = int(max(0.0, min(1.0, fraction)) * 255)
+        r, g, b = func(idx)
+        return (int(r), int(g), int(b), 180)
+
+    def set_color_map(self, color_map_name: str):
+        requested = (color_map_name or SEGMENT_DEFAULT_COLOR_MAP).strip()
+        name = resolve_color_map_key(requested)
+        if not name:
+            if requested and requested.lower() != SEGMENT_DEFAULT_COLOR_MAP:
+                print(f"[segments] Unknown color map '{color_map_name}', falling back to '{SEGMENT_DEFAULT_COLOR_MAP}'")
+            name = SEGMENT_DEFAULT_COLOR_MAP
+        if getattr(self, "color_map", None) == name:
+            return
+        self.color_map = name
+        self._palette.clear()
+
+    def _color_for_label(self, label: int):
+        if label == 0:
+            return (0, 0, 0, 0)
+        if self.color_map != SEGMENT_DEFAULT_COLOR_MAP:
+            return self._color_for_fraction(self._normalized_label(label))
+        cached = self._palette.get(label)
+        if cached:
+            return cached
+        digest = hashlib.sha1(str(label).encode('utf-8')).digest()
+        r = 60 + digest[0] % 180
+        g = 60 + digest[1] % 180
+        b = 60 + digest[2] % 180
+        color = (r, g, b, 170)
+        self._palette[label] = color
+        return color
+
+    def _rgba_hex(self, rgba):
+        return "#{:02X}{:02X}{:02X}".format(rgba[0], rgba[1], rgba[2])
+
+    def get_palette_preview(self, limit: int = 12):
+        self._ensure_image_data_loaded()
+        preview = []
+        if self.color_map == SEGMENT_DEFAULT_COLOR_MAP:
+            flat = self.image_data.ravel()
+            stride = max(1, flat.size // 200000)
+            sample = flat[::stride]
+            unique_vals = np.unique(sample)
+            for raw_val in unique_vals:
+                label = int(raw_val)
+                if label == 0:
+                    continue
+                color = self._color_for_label(label)
+                preview.append({
+                    "label": label,
+                    "color": self._rgba_hex(color),
+                    "alpha": round(color[3] / 255.0, 2)
+                })
+                if len(preview) >= limit:
+                    break
+        else:
+            steps = min(limit, 12)
+            for idx in range(steps):
+                fraction = idx / max(steps - 1, 1)
+                color = self._color_for_fraction(fraction)
+                preview.append({
+                    "label": round(fraction, 2),
+                    "color": self._rgba_hex(color),
+                    "alpha": round(color[3] / 255.0, 2)
+                })
+        return preview
+
+    def get_tile_info(self):
+        self._ensure_image_data_loaded()
+        return {
+            "width": self.width,
+            "height": self.height,
+            "tileSize": self.tile_size,
+            "maxLevel": self.max_level,
+            "color_map": self.color_map
+        }
+
+    def _extract_region(self, level, x, y):
+        self._ensure_image_data_loaded()
+        scale = 2 ** (self.max_level - level)
+        start_x = x * self.tile_size * scale
+        start_y = y * self.tile_size * scale
+
+        if scale <= 1:
+            src_width = self.tile_size * scale
+            src_height = self.tile_size * scale
+            read_start_x = start_x
+            read_start_y = start_y
+            read_end_x = start_x + src_width
+            read_end_y = start_y + src_height
+            int_start_x = int(np.floor(max(0, read_start_x)))
+            int_start_y = int(np.floor(max(0, read_start_y)))
+            int_end_x = int(np.ceil(min(self.width, read_end_x)))
+            int_end_y = int(np.ceil(min(self.height, read_end_y)))
+
+            if int_start_x >= int_end_x or int_start_y >= int_end_y:
+                return np.zeros((self.tile_size, self.tile_size), dtype=np.int32)
+
+            region = self.image_data[int_start_y:int_end_y, int_start_x:int_end_x]
+            if scale < 1:
+                region = resize(
+                    region,
+                    (self.tile_size, self.tile_size),
+                    order=0,
+                    preserve_range=True,
+                    anti_aliasing=False,
+                    mode='edge'
+                )
+                return np.rint(region).astype(np.int32)
+
+            if region.shape[0] != self.tile_size or region.shape[1] != self.tile_size:
+                padded = np.zeros((self.tile_size, self.tile_size), dtype=region.dtype)
+                padded[:region.shape[0], :region.shape[1]] = region
+                return padded.astype(np.int32)
+            return region.astype(np.int32, copy=False)
+
+        region_start_x = start_x
+        region_start_y = start_y
+        region_end_x = min(region_start_x + self.tile_size * scale, self.width)
+        region_end_y = min(region_start_y + self.tile_size * scale, self.height)
+        stride = max(1, int(scale))
+        y0, y1 = int(region_start_y), int(region_end_y)
+        x0, x1 = int(region_start_x), int(region_end_x)
+        sampled_region = self.image_data[y0:y1:stride, x0:x1:stride]
+        if sampled_region.shape[0] < self.tile_size or sampled_region.shape[1] < self.tile_size:
+            padded = np.zeros((self.tile_size, self.tile_size), dtype=sampled_region.dtype)
+            padded[:sampled_region.shape[0], :sampled_region.shape[1]] = sampled_region
+            return padded.astype(np.int32)
+        return sampled_region.astype(np.int32, copy=False)
+
+    def get_tile(self, level, x, y):
+        try:
+            tile_data = self._extract_region(level, x, y)
+            tile_data = np.nan_to_num(tile_data, nan=0).astype(np.int32, copy=False)
+            flat = tile_data.ravel()
+            unique_vals, inverse = np.unique(flat, return_inverse=True)
+            if unique_vals.size == 0:
+                rgba = np.zeros((self.tile_size, self.tile_size, 4), dtype=np.uint8)
+            else:
+                colors = np.empty((unique_vals.size, 4), dtype=np.uint8)
+                for idx, raw_val in enumerate(unique_vals):
+                    colors[idx] = self._color_for_label(int(raw_val))
+                rgba = colors[inverse].reshape(tile_data.shape[0], tile_data.shape[1], 4)
+            img = Image.fromarray(rgba, 'RGBA')
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG', optimize=True, compress_level=3)
+            return buffer.getvalue()
+        except Exception as exc:
+            print(f"[segments] Error generating tile ({level},{x},{y}) for {self.fits_file_path}: {exc}")
+            return None
+
+    def cleanup(self):
+        if hasattr(self, '_hdul'):
+            try:
+                self._hdul.close()
+            except Exception:
+                pass
+        self.image_data = None
+
+
+ALIGNMENT_SCALE_RTOL = 5e-3
+ALIGNMENT_SCALE_ATOL = 1e-6
+ALIGNMENT_CENTER_TOL_ARCSEC = 1.0
+
+
+def _get_base_header_and_shape(session_data):
+    fits_file = session_data.get("current_fits_file")
+    if not fits_file:
+        return None, None, None, None
+    hdu_index = int(session_data.get("current_hdu_index", 0))
+    file_id = make_file_id(fits_file, hdu_index)
+    session_generators = session_data.get("active_tile_generators") or {}
+    base_gen = session_generators.get(file_id)
+    if base_gen is not None:
+        header = base_gen.header.copy() if hasattr(base_gen.header, "copy") else base_gen.header
+        shape = (int(base_gen.height), int(base_gen.width))
+        base_flip = getattr(base_gen, "flip_required", False)
+        return header, shape, file_id, base_flip
+    try:
+        with fits.open(fits_file, memmap=True, lazy_load_hdus=True) as hdul:
+            hdu = hdul[hdu_index]
+            header = hdu.header.copy()
+            data = hdu.data
+            shape = None
+            if data is not None and getattr(data, "ndim", 0) >= 2:
+                dims = data.shape
+                shape = (int(dims[-2]), int(dims[-1]))
+            flip_y, _, _ = analyze_wcs_orientation(header, None)
+            return header, shape, file_id, bool(flip_y)
+    except Exception as exc:
+        logger.warning("Failed to load base FITS header for alignment check: %s", exc)
+    return None, None, file_id, None
+
+
+def _compare_segment_alignment(base_header, base_shape, segment_header, segment_shape):
+    summary = {
+        "base_shape": list(base_shape) if base_shape else None,
+        "segment_shape": list(segment_shape) if segment_shape else None
+    }
+    needs = False
+    reasons = []
+    if base_shape and segment_shape and tuple(base_shape) != tuple(segment_shape):
+        needs = True
+        reasons.append(f"Pixel dimensions differ (segment: {segment_shape}, base: {base_shape})")
+    try:
+        base_wcs = WCS(base_header).celestial
+        seg_wcs = WCS(segment_header).celestial
+        base_scales = proj_plane_pixel_scales(base_wcs)
+        seg_scales = proj_plane_pixel_scales(seg_wcs)
+        summary["base_scale_arcsec"] = [float(s * 3600.0) for s in base_scales[:2]]
+        summary["segment_scale_arcsec"] = [float(s * 3600.0) for s in seg_scales[:2]]
+        if not np.allclose(base_scales[:2], seg_scales[:2], rtol=ALIGNMENT_SCALE_RTOL, atol=ALIGNMENT_SCALE_ATOL):
+            needs = True
+            reasons.append("Pixel scale differs between base image and segment map")
+        if base_shape and segment_shape:
+            base_center = base_wcs.pixel_to_world(base_shape[1] / 2.0, base_shape[0] / 2.0)
+            seg_center = seg_wcs.pixel_to_world(segment_shape[1] / 2.0, segment_shape[0] / 2.0)
+            if hasattr(base_center, "separation"):
+                offset = float(base_center.separation(seg_center).arcsecond)
+                summary["center_offset_arcsec"] = offset
+                if offset > ALIGNMENT_CENTER_TOL_ARCSEC:
+                    needs = True
+                    reasons.append(f"Pointing differs by {offset:.2f} arcsec")
+    except Exception as exc:
+        summary["comparison_error"] = str(exc)
+        needs = True
+        reasons.append("Unable to compare WCS metadata between images")
+    summary["needs_reprojection"] = needs
+    summary["reasons"] = reasons
+    return needs, reasons, summary
+
+
+def _reproject_segment_to_base(generator: SegmentTileGenerator, target_header, target_shape):
+    generator._ensure_image_data_loaded()
+    source_wcs = WCS(generator.header)
+    target_wcs = WCS(target_header)
+    data = generator.image_data.astype(np.float32, copy=False)
+    if getattr(generator, "_flip_applied", False):
+        data = np.flipud(data)
+    reprojected, _ = reproject_interp(
+        (data, source_wcs),
+        target_wcs,
+        shape_out=target_shape,
+        order=0
+    )
+    reprojected = np.nan_to_num(reprojected, nan=0.0)
+    generator.image_data = np.rint(reprojected).astype(np.int32)
+    generator.height, generator.width = target_shape
+    generator.max_level = max(0, int(np.ceil(np.log2(max(generator.width, generator.height) / generator.tile_size))))
+    generator.header = target_header.copy() if hasattr(target_header, "copy") else copy.deepcopy(target_header)
+    generator._image_data_loaded = True
+    generator._label_min = None
+    generator._label_max = None
+    flip_y, _, flipped = analyze_wcs_orientation(generator.header, generator.image_data)
+    if flipped is not None:
+        generator.image_data = np.asarray(flipped, dtype=np.int32)
+    generator.flip_required = bool(flip_y)
+    generator._flip_applied = bool(flip_y)
+
+
+def _resolve_segment_path(segment_name: str) -> Path:
+    if not segment_name or not segment_name.strip():
+        raise HTTPException(status_code=400, detail="segment_name is required")
+    normalized = segment_name.strip().strip("/\\")
+    allowed_roots = [
+        SEGMENTS_DIRECTORY,
+        FILES_ROOT
+    ]
+
+    def _within_allowed(path: Path) -> bool:
+        path_str = str(path)
+        for root in allowed_roots:
+            if path_str.startswith(str(root)):
+                return True
+        return False
+
+    candidates = []
+
+    def _add_candidate(base: Path, rel: str):
+        try:
+            candidates.append((base / rel).resolve())
+        except Exception:
+            pass
+
+    candidates.append((SEGMENTS_DIRECTORY / normalized).resolve())
+    candidates.append((FILES_ROOT / normalized).resolve())
+
+    lowered = normalized.lower()
+    if lowered.startswith('files/'):
+        trimmed = normalized.split('/', 1)[1]
+        _add_candidate(FILES_ROOT, trimmed)
+        _add_candidate(SEGMENTS_DIRECTORY, trimmed)
+    if lowered.startswith('segments/'):
+        trimmed = normalized.split('/', 1)[1]
+        _add_candidate(SEGMENTS_DIRECTORY, trimmed)
+
+    as_path = Path(segment_name)
+    if as_path.is_absolute():
+        try:
+            candidates.append(as_path.resolve())
+        except Exception:
+            pass
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists() and _within_allowed(candidate):
+            return candidate
+
+    raise HTTPException(status_code=404, detail=f"Segment file not found or not allowed: {segment_name}")
+
+
+async def _get_or_create_segment_generator(session_data, segment_name: str, segment_path: Path, color_map: str | None = None, base_file_id: str | None = None):
+    segment_generators = session_data.setdefault("segment_generators", {})
+    for seg_id, entry in segment_generators.items():
+        if entry.get("name") == segment_name and entry.get("base_id") == base_file_id:
+            generator = entry.get("generator")
+            if color_map:
+                try:
+                    generator.set_color_map(color_map)
+                except Exception as exc:
+                    print(f"[segments] Failed to set color map '{color_map}': {exc}")
+            return seg_id, generator
+    loop = asyncio.get_running_loop()
+    generator = await loop.run_in_executor(
+        app.state.thread_executor,
+        functools.partial(SegmentTileGenerator, str(segment_path))
+    )
+    segment_id = secrets.token_urlsafe(12)
+    if color_map:
+        try:
+            generator.set_color_map(color_map)
+        except Exception as exc:
+            print(f"[segments] Failed to set color map '{color_map}' on new generator: {exc}")
+    segment_generators[segment_id] = {
+        "name": segment_name,
+        "base_id": base_file_id,
+        "generator": generator
+    }
+    return segment_id, generator
+
+
+def _get_segment_generator_by_id(session_data, segment_id: str):
+    generators = session_data.get("segment_generators") or {}
+    entry = generators.get(segment_id)
+    if not entry:
+        return None, None
+    return entry.get("generator"), entry.get("name")
 @app.get("/fits-histogram/")
 async def get_fits_histogram(
     request: Request,
@@ -2412,7 +3250,7 @@ async def get_fits_histogram(
         image_data_raw = None
         height = width = None
         if session_data is not None:
-            file_id = f"{os.path.basename(current_file)}:{hdu_index}"
+            file_id = make_file_id(current_file, hdu_index)
             session_generators = session_data.setdefault("active_tile_generators", {})
             gen = session_generators.get(file_id)
             if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
@@ -3888,6 +4726,7 @@ from fastapi.responses import Response
 
 
 import requests
+import anyio
 from fastapi import Request, Response, HTTPException
 from urllib.parse import quote_plus
 from urllib.parse import urlparse, unquote
@@ -3911,8 +4750,17 @@ async def proxy_download(url: str):
     }
 
     try:
-        # Use a synchronous request which is simpler and fine for this proxy endpoint
-        response = requests.get(url, headers=headers, timeout=PROXY_DOWNLOAD_TIMEOUT, allow_redirects=True, verify=False, stream=True)
+        # Do NOT block the asyncio event loop with requests.get()
+        response = await anyio.to_thread.run_sync(
+            lambda: requests.get(
+                url,
+                headers=headers,
+                timeout=PROXY_DOWNLOAD_TIMEOUT,
+                allow_redirects=True,
+                verify=False,
+                stream=True,
+            )
+        )
         response.raise_for_status()
 
         # Get content length for progress tracking
@@ -4225,7 +5073,8 @@ async def mast_search(
             coords_key, round(radius, 4), int(fetch_limit),
             mission_norm, int(min_calib_level), (dp_types or '')
         )
-        all_rows = _astroquery_search_cached(cache_key)
+        # Astroquery is blocking; run in a worker thread so the event loop stays responsive.
+        all_rows = await anyio.to_thread.run_sync(lambda: _astroquery_search_cached(cache_key))
         start_idx = (int(page) - 1) * int(pagesize)
         end_idx = start_idx + int(pagesize)
         out_rows = all_rows[start_idx:end_idx]
@@ -4242,39 +5091,42 @@ async def mast_products(obsid: int = Query(..., description="Observation ID")):
         if not _ASTROQUERY_AVAILABLE:
             return JSONResponse(status_code=500, content={"error": "astroquery not available"})
 
-        # Limit products retrieval time
-        try:
-            Observations.TIMEOUT = 45  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        # Pass obsid as string per astroquery docs to avoid dtype issues
-        products_table = Observations.get_product_list(str(obsid))
-        filtered_rows: list[dict] = []
-        for r in products_table:
-            product_type = r.get('productType')
-            data_uri = r.get('dataURI')
-            calib = r.get('calib_level') or 0
-            dpt = r.get('dataproduct_type')
-            if product_type != 'SCIENCE':
-                continue
+        # Astroquery table retrieval + conversion can be slow and blocks; run in a worker thread.
+        def _products_sync() -> list[dict]:
+            # Limit products retrieval time
             try:
-                if int(calib) < 2:
-                    continue
+                Observations.TIMEOUT = 45  # type: ignore[attr-defined]
             except Exception:
-                continue
-            if dpt not in ('image', 'cube'):
-                continue
-            if isinstance(data_uri, str) and 'fitscut.cgi' in data_uri:
-                continue
-            row = {k: (v.item() if hasattr(v, 'item') else v) for k, v in zip(products_table.colnames, r)}
-            filtered_rows.append(row)
+                pass
+            # Pass obsid as string per astroquery docs to avoid dtype issues
+            products_table = Observations.get_product_list(str(obsid))
+            filtered_rows: list[dict] = []
+            for r in products_table:
+                product_type = r.get('productType')
+                data_uri = r.get('dataURI')
+                calib = r.get('calib_level') or 0
+                dpt = r.get('dataproduct_type')
+                if product_type != 'SCIENCE':
+                    continue
+                try:
+                    if int(calib) < 2:
+                        continue
+                except Exception:
+                    continue
+                if dpt not in ('image', 'cube'):
+                    continue
+                if isinstance(data_uri, str) and 'fitscut.cgi' in data_uri:
+                    continue
+                row = {k: (v.item() if hasattr(v, 'item') else v) for k, v in zip(products_table.colnames, r)}
+                filtered_rows.append(row)
+            try:
+                filtered_rows.sort(key=lambda p: p.get('calib_level', 0), reverse=True)
+            except Exception:
+                pass
+            return filtered_rows[:12]
 
-        try:
-            filtered_rows.sort(key=lambda p: p.get('calib_level', 0), reverse=True)
-        except Exception:
-            pass
-        # Cap to 12 items for speed
-        return JSONResponse(content={"data": filtered_rows[:12]})
+        rows = await anyio.to_thread.run_sync(_products_sync)
+        return JSONResponse(content={"data": rows})
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "MAST products error", "detail": str(e)})
 
@@ -4291,7 +5143,16 @@ async def mast_download(uri: str = Query(..., description="MAST dataURI or direc
                     'User-Agent': 'Mozilla/5.0',
                     'Accept': '*/*'
                 }
-                upstream = requests.get(mast_url, headers=hdrs, timeout=PROXY_DOWNLOAD_TIMEOUT, allow_redirects=True, verify=False, stream=True)
+                upstream = await anyio.to_thread.run_sync(
+                    lambda: requests.get(
+                        mast_url,
+                        headers=hdrs,
+                        timeout=PROXY_DOWNLOAD_TIMEOUT,
+                        allow_redirects=True,
+                        verify=False,
+                        stream=True,
+                    )
+                )
                 upstream.raise_for_status()
 
                 media_type = upstream.headers.get('Content-Type', 'application/octet-stream')
@@ -4407,6 +5268,89 @@ from concurrent.futures import ProcessPoolExecutor
 # because it was causing 'cannot pickle _thread.lock object' errors.
 # It has been replaced with SimpleTileGenerator (defined at end of file).
 # =============================================================================
+def make_file_id(path_like, hdu_index: int | str) -> str:
+    """Generate a unique file id based on absolute path + HDU index to avoid basename collisions."""
+    try:
+        p = str(path_like)
+        try:
+            p = str(Path(p).resolve())
+        except Exception:
+            import os as _os
+            p = _os.path.abspath(p)
+        # Keep backward compatibility for numeric HDU indexes, but allow composite keys (e.g. "2,17" for cube slice)
+        try:
+            suffix = str(int(hdu_index))
+        except Exception:
+            suffix = str(hdu_index)
+        return f"{p}:{suffix}"
+    except Exception:
+        return f"{str(path_like)}:{hdu_index}"
+
+
+def _current_session_slice_index(session_data: dict) -> int | None:
+    try:
+        v = session_data.get("current_slice_index", None)
+        if v is None:
+            return None
+        v = int(v)
+        # slice 0 is a valid cube channel; keep it (only negative means "unset")
+        return v if v >= 0 else None
+    except Exception:
+        return None
+
+
+def _make_active_file_id(fits_file: str, hdu_index: int, slice_index: int | None) -> str:
+    if slice_index is None:
+        return make_file_id(fits_file, hdu_index)
+    # Composite id: "hdu,slice" (slice 0 included; fixes inconsistent orientation between slice 0 and others)
+    return make_file_id(fits_file, f"{int(hdu_index)},{int(slice_index)}")
+
+
+def _get_session_display_settings(session_data: dict) -> dict | None:
+    try:
+        s = session_data.get("display_settings")
+        return s if isinstance(s, dict) else None
+    except Exception:
+        return None
+
+
+def _set_session_display_settings(session_data: dict, settings: dict) -> None:
+    try:
+        session_data["display_settings"] = settings
+    except Exception:
+        pass
+
+
+def _apply_display_settings_to_generator(tile_generator, settings: dict | None) -> None:
+    """
+    Apply persisted display settings (min/max, colormap, scaling, invert) to a generator.
+    Safe no-op if settings is missing.
+    """
+    if not tile_generator or not isinstance(settings, dict):
+        return
+    try:
+        if "min_value" in settings and settings["min_value"] is not None:
+            tile_generator.min_value = float(settings["min_value"])
+        if "max_value" in settings and settings["max_value"] is not None:
+            tile_generator.max_value = float(settings["max_value"])
+        if "color_map" in settings and settings["color_map"] is not None:
+            resolved = resolve_color_map_key(settings["color_map"]) or 'grayscale'
+            if getattr(tile_generator, "color_map", None) != resolved:
+                tile_generator.color_map = resolved
+                try:
+                    tile_generator._update_colormap_lut()
+                except Exception:
+                    pass
+        if "scaling_function" in settings and settings["scaling_function"] is not None:
+            tile_generator.scaling_function = str(settings["scaling_function"])
+        if "invert_colormap" in settings:
+            tile_generator.invert_colormap = bool(settings["invert_colormap"])
+        try:
+            tile_generator.overview_image = None
+        except Exception:
+            pass
+    except Exception:
+        pass
 @app.post("/request-tiles/")
 async def request_tiles(request: Request):
     """Request prefetching of tiles for a specific region (session-scoped)."""
@@ -4430,7 +5374,8 @@ async def request_tiles(request: Request):
             return JSONResponse(status_code=400, content={"error": "No FITS file currently loaded"})
 
         hdu_index = int(session_data.get("current_hdu_index", 0))
-        file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+        slice_index = _current_session_slice_index(session_data)
+        file_id = _make_active_file_id(fits_file, hdu_index, slice_index)
 
         session_generators = session_data.setdefault("active_tile_generators", {})
         tile_generator = session_generators.get(file_id)
@@ -4454,7 +5399,8 @@ async def get_fits_tile_information(request: Request):
     if not fits_file:
         raise HTTPException(status_code=400, detail="No FITS file currently loaded.")
 
-    file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+    slice_index = _current_session_slice_index(session_data)
+    file_id = _make_active_file_id(fits_file, hdu_index, slice_index)
     session_generators = session_data.setdefault("active_tile_generators", {})
     tile_generator = session_generators.get(file_id)
 
@@ -4463,6 +5409,11 @@ async def get_fits_tile_information(request: Request):
             # Initialize generator using the shared executor
             loop = asyncio.get_running_loop()
             tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+            # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
+            try:
+                _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
+            except Exception:
+                pass
             session_generators[file_id] = tile_generator
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize tile generator: {str(e)}")
@@ -4470,6 +5421,11 @@ async def get_fits_tile_information(request: Request):
     # Always return tile info (even if generator already existed)
     try:
         info = tile_generator.get_tile_info()
+        # Expose flip_y to frontend for WCS/overlay correctness
+        try:
+            info["flip_y"] = bool(getattr(tile_generator, "_flip_required", False))
+        except Exception:
+            info["flip_y"] = False
         # Ensure fields the frontend expects
         if "minLevel" not in info:
             info["minLevel"] = 0
@@ -4499,7 +5455,8 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         if not fits_file:
             return JSONResponse(status_code=400, content={"error": "No FITS file currently loaded in session"})
 
-        file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+        slice_index = _current_session_slice_index(session_data)
+        file_id = _make_active_file_id(fits_file, hdu_index, slice_index)
         session_generators = session_data.setdefault("active_tile_generators", {})
         tile_generator = session_generators.get(file_id)
         if not tile_generator:
@@ -4509,15 +5466,30 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
             loop = asyncio.get_running_loop()
             tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
             await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
+            # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
+            try:
+                _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
+            except Exception:
+                pass
             session_generators[file_id] = tile_generator
 
         # Per-session tile cache
         session_tile_cache = session_data.setdefault("tile_cache", TileCache(max_size=TILE_CACHE_MAX_SIZE))
 
-        tile_key = f"{file_id}/{level}/{x}/{y}/{tile_generator.color_map}/{tile_generator.scaling_function}/{tile_generator.min_value}/{tile_generator.max_value}"
+        invert_flag = int(getattr(tile_generator, "invert_colormap", False))
+        tile_key = (
+            f"{file_id}/{level}/{x}/{y}/"
+            f"{tile_generator.color_map}/{tile_generator.scaling_function}/"
+            f"{tile_generator.min_value}/{tile_generator.max_value}/{invert_flag}"
+        )
+        no_store_headers = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        }
+
         cached_tile = session_tile_cache.get(tile_key)
         if cached_tile:
-            return Response(content=cached_tile, media_type="image/png")
+            return Response(content=cached_tile, media_type="image/png", headers=no_store_headers)
 
         # Generate tile in a worker thread (PNG encoding can be heavy), limited by semaphore
         render_sem = getattr(app.state, "tile_render_semaphore", None)
@@ -4531,7 +5503,7 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
             return JSONResponse(status_code=404, content={"error": f"Tile ({level},{x},{y}) data not found or generation failed"})
 
         session_tile_cache.put(tile_key, tile_data)
-        return Response(content=tile_data, media_type="image/png")
+        return Response(content=tile_data, media_type="image/png", headers=no_store_headers)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to get tile: {str(e)}"})
 
@@ -5111,13 +6083,16 @@ async def load_file(request: Request, filepath: str, hdu: int = Query(DEFAULT_HD
         # Persist in this session only
         session_data["current_fits_file"] = str(file_path)
         session_data["current_hdu_index"] = hdu
+        # Reset cube slicing when a new file/HDU is selected
+        session_data.pop("current_slice_index", None)
+        session_data.pop("current_slice_count", None)
 
         # Per-session caches/generators
         session_tile_cache = session_data.setdefault("tile_cache", TileCache(max_size=TILE_CACHE_MAX_SIZE))
         session_tile_cache.clear()
         session_generators = session_data.setdefault("active_tile_generators", {})
 
-        file_id = f"{os.path.basename(file_path)}:{hdu}"
+        file_id = make_file_id(file_path, hdu)
         try:
             # Initialize the per-session tile generator
             session_generators[file_id] = SimpleTileGenerator(str(file_path), hdu)
@@ -5130,6 +6105,244 @@ async def load_file(request: Request, filepath: str, hdu: int = Query(DEFAULT_HD
         return JSONResponse(content={"message": f"File {filepath} set as active, HDU: {hdu}", "filepath": filepath, "hdu": hdu})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to set active file: {str(e)}"})
+
+
+## 3D endpoints removed
+
+
+@app.get("/cube/set-slice/")
+async def cube_set_slice(
+    request: Request,
+    slice_index: int = Query(..., ge=0, description="Cube slice/channel index (0-based)"),
+    filepath: str | None = Query(None, description="Optional filepath; defaults to session current"),
+    hdu: int | None = Query(None, description="Optional HDU; defaults to session current"),
+):
+    """
+    In 2D mode, set the active cube slice for the current session so /fits-tile uses that slice.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    current_file = filepath or session_data.get("current_fits_file")
+    if not current_file:
+        raise HTTPException(status_code=400, detail="No current FITS file")
+    hdu_index = int(hdu if hdu is not None else session_data.get("current_hdu_index", 0))
+
+    # Resolve path for reading
+    full_path = Path(current_file)
+    if not full_path.exists():
+        candidate = Path(FILES_DIRECTORY) / current_file
+        if candidate.exists():
+            full_path = candidate
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail=f"FITS file not found: {current_file}")
+
+    def _fits_header_to_jsonable(hdr) -> dict | None:
+        """
+        Convert an astropy.io.fits.Header into a JSON-safe dict.
+        Skips COMMENT/HISTORY and coerces numpy/scalar-ish types to Python primitives.
+        """
+        if hdr is None:
+            return None
+        out: dict = {}
+        try:
+            for k in hdr.keys():
+                if k in ("COMMENT", "HISTORY"):
+                    continue
+                try:
+                    v = hdr.get(k)
+                except Exception:
+                    continue
+                if v is None:
+                    out[k] = None
+                    continue
+                # numpy scalars -> python scalars
+                try:
+                    if hasattr(v, "item"):
+                        v = v.item()
+                except Exception:
+                    pass
+                # bytes -> string
+                if isinstance(v, (bytes, bytearray)):
+                    try:
+                        v = v.decode("utf-8", errors="replace")
+                    except Exception:
+                        v = str(v)
+                # Ensure basic JSON types; fallback to string
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    out[k] = v
+                else:
+                    out[k] = str(v)
+        except Exception:
+            return None
+        return out
+
+    # Clamp slice and build 2D slice
+    axis3_meta = {}
+    header_for_client = None
+    with fits.open(full_path, ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+        if not (0 <= hdu_index < len(hdul)):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        hdu_obj = hdul[hdu_index]
+        data = hdu_obj.data
+        if data is None or getattr(data, "ndim", 0) < 3:
+            raise HTTPException(status_code=400, detail="HDU is not a cube (ndim < 3)")
+        z_len = int(data.shape[0])
+        si = int(slice_index)
+        if si < 0 or si >= z_len:
+            raise HTTPException(status_code=400, detail=f"Slice index out of range: {si} (0..{z_len-1})")
+        slice2d = np.asarray(data[si, :, :])
+        # Extract axis-3 metadata for UI units (channel -> physical)
+        try:
+            hdr = hdu_obj.header
+            axis3_meta = {
+                "ctype3": hdr.get("CTYPE3", None),
+                "cunit3": hdr.get("CUNIT3", None),
+                "crval3": hdr.get("CRVAL3", None),
+                "cdelt3": hdr.get("CDELT3", None),
+                "crpix3": hdr.get("CRPIX3", None),
+            }
+        except Exception:
+            axis3_meta = {}
+        # Apply WCS orientation correction to match how coordinates are interpreted elsewhere
+        flip_y = False
+        try:
+            flip_y, _, corrected = analyze_wcs_orientation(hdu_obj.header, slice2d)
+            if flip_y and corrected is not None:
+                slice2d = np.asarray(corrected)
+        except Exception:
+            flip_y = False
+        # Keep a JSON-safe header around if callers want to refresh WCS (optional)
+        header_for_client = _fits_header_to_jsonable(hdu_obj.header)
+
+    # Update session state
+    session_data["current_fits_file"] = str(full_path)
+    session_data["current_hdu_index"] = int(hdu_index)
+    session_data["current_slice_index"] = int(si)
+    session_data["current_slice_count"] = int(z_len)
+
+    # Create (or reuse) a per-slice generator keyed by file_id
+    file_id = _make_active_file_id(str(full_path), int(hdu_index), int(si))
+    session_generators = session_data.setdefault("active_tile_generators", {})
+    if file_id not in session_generators:
+        loop = asyncio.get_running_loop()
+        generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, str(full_path), int(hdu_index), slice2d)
+        # Mark flip state (slice already corrected) so downstream endpoints can expose flip_y
+        try:
+            if flip_y:
+                setattr(generator_instance, "_flip_required", True)
+                setattr(generator_instance, "_flip_applied", True)
+        except Exception:
+            pass
+        session_generators[file_id] = generator_instance
+    else:
+        generator_instance = session_generators.get(file_id)
+
+    # Clear per-session tile cache so old tiles don't bleed through
+    try:
+        session_tile_cache = session_data.setdefault("tile_cache", TileCache(max_size=TILE_CACHE_MAX_SIZE))
+        session_tile_cache.clear()
+    except Exception:
+        pass
+
+    # Apply persisted display settings so min/max/scaling stay consistent across slices
+    try:
+        _apply_display_settings_to_generator(generator_instance, _get_session_display_settings(session_data))
+    except Exception:
+        pass
+
+    # Return fresh tile_info for this slice so the frontend uses correct width/height/maxLevel
+    # (important if analyze_wcs_orientation rotates/transposes the slice).
+    try:
+        tile_info = generator_instance.get_minimal_tile_info()
+        tile_info["flip_y"] = bool(flip_y)
+    except Exception:
+        tile_info = None
+
+    return JSONResponse(content={
+        "slice_index": int(si),
+        "slice_count": int(z_len),
+        "file_id": file_id,
+        "flip_y": bool(flip_y),
+        "axis3": axis3_meta,
+        "tile_info": tile_info,
+        # Optional header pass-through (can be large). Kept for compatibility with clients that
+        # want to refresh their WCS cache immediately after slice changes.
+        "wcs_header": header_for_client
+    })
+
+
+@app.get("/cube/overview/")
+async def cube_overview(
+    request: Request,
+    slice_index: int = Query(..., ge=0, description="Cube slice/channel index (0-based)"),
+    filepath: str | None = Query(None, description="Optional filepath; defaults to session current"),
+    hdu: int | None = Query(None, description="Optional HDU; defaults to session current"),
+):
+    """
+    Return a PNG overview for a specific cube slice WITHOUT caching.
+    Applies analyze_wcs_orientation for correct orientation and current session display settings.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    current_file = filepath or session_data.get("current_fits_file")
+    if not current_file:
+        raise HTTPException(status_code=400, detail="No current FITS file")
+    hdu_index = int(hdu if hdu is not None else session_data.get("current_hdu_index", 0))
+
+    # Resolve path
+    full_path = Path(current_file)
+    if not full_path.exists():
+        candidate = Path(FILES_DIRECTORY) / current_file
+        if candidate.exists():
+            full_path = candidate
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail=f"FITS file not found: {current_file}")
+
+    # Read slice + apply orientation
+    with fits.open(full_path, ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+        if not (0 <= hdu_index < len(hdul)):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        hdu_obj = hdul[hdu_index]
+        data = hdu_obj.data
+        if data is None or getattr(data, "ndim", 0) < 3:
+            raise HTTPException(status_code=400, detail="HDU is not a cube (ndim < 3)")
+        z_len = int(data.shape[0])
+        si = int(slice_index)
+        if si < 0 or si >= z_len:
+            raise HTTPException(status_code=400, detail=f"Slice index out of range: {si} (0..{z_len-1})")
+        slice2d = np.asarray(data[si, :, :])
+        try:
+            flip_y, _, corrected = analyze_wcs_orientation(hdu_obj.header, slice2d)
+            if flip_y and corrected is not None:
+                slice2d = np.asarray(corrected)
+        except Exception:
+            pass
+
+    # Build a temporary generator to reuse the existing overview pipeline (colormap/scaling)
+    gen = SimpleTileGenerator(str(full_path), int(hdu_index), image_data=slice2d)
+    try:
+        _apply_display_settings_to_generator(gen, _get_session_display_settings(session_data))
+        gen.ensure_overview_generated()
+        if not gen.overview_image:
+            raise HTTPException(status_code=404, detail="Overview not available")
+        png = base64.b64decode(gen.overview_image)
+    finally:
+        try:
+            gen.cleanup()
+        except Exception:
+            pass
+
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
+    return Response(content=png, media_type="image/png", headers=headers)
 @app.get("/catalog-info/")
 async def catalog_info(catalog_name: str):
     """Get information about a catalog file."""
@@ -5224,6 +6437,8 @@ async def update_dynamic_range(request: Request):
     max_value = data.get('max_value')
     color_map = data.get('color_map')
     scaling_function = data.get('scaling_function')
+    invert_colormap = bool(data.get('invert_colormap'))
+    requested_file_id = data.get('file_id')
 
     if min_value is None or max_value is None:
         raise HTTPException(status_code=400, detail="Missing min_value or max_value")
@@ -5234,29 +6449,50 @@ async def update_dynamic_range(request: Request):
 
     fits_file = session_data.get("current_fits_file")
     hdu_index = int(session_data.get("current_hdu_index", 0))
-    file_id = f"{os.path.basename(fits_file)}:{hdu_index}" if fits_file else None
+    slice_index = _current_session_slice_index(session_data)
+    file_id = _make_active_file_id(fits_file, hdu_index, slice_index) if fits_file else None
 
     session_generators = session_data.setdefault("active_tile_generators", {})
     tile_generator = session_generators.get(file_id) if file_id else None
+    # If client provided a file_id (e.g. slice-specific), prefer it when available.
+    if requested_file_id and requested_file_id in session_generators:
+        file_id = requested_file_id
+        tile_generator = session_generators.get(file_id)
     if not file_id or not tile_generator:
         raise HTTPException(status_code=404, detail="Tile generator not found in this session or no file loaded.")
 
     tile_generator.min_value = float(min_value)
     tile_generator.max_value = float(max_value)
-    if tile_generator.color_map != color_map:
-        tile_generator.color_map = color_map
+    resolved_color_map = resolve_color_map_key(color_map) or 'grayscale'
+    if tile_generator.color_map != resolved_color_map:
+        tile_generator.color_map = resolved_color_map
         tile_generator._update_colormap_lut()
     if tile_generator.scaling_function != scaling_function:
         tile_generator.scaling_function = scaling_function
+    if getattr(tile_generator, "invert_colormap", False) != invert_colormap:
+        tile_generator.invert_colormap = invert_colormap
 
     tile_generator.overview_image = None 
+
+    # Persist for future slice changes (apply to newly created slice generators too)
+    try:
+        _set_session_display_settings(session_data, {
+            "min_value": float(min_value),
+            "max_value": float(max_value),
+            "color_map": color_map,
+            "scaling_function": scaling_function,
+            "invert_colormap": bool(invert_colormap),
+        })
+    except Exception:
+        pass
 
     return {
         "status": "success", 
         "new_min": tile_generator.min_value, 
         "new_max": tile_generator.max_value,
         "color_map": tile_generator.color_map,
-        "scaling_function": tile_generator.scaling_function
+        "scaling_function": tile_generator.scaling_function,
+        "invert_colormap": bool(tile_generator.invert_colormap)
     }
 
 
@@ -5287,6 +6523,63 @@ from astropy.io import fits
 #           import numpy as np
 
 
+class WorldToPixelPoint(BaseModel):
+    ra: float
+    dec: float
+    index: Optional[int] = None
+
+
+class WorldToPixelBatchRequest(BaseModel):
+    points: List[WorldToPixelPoint]
+    filepath: Optional[str] = None
+    hdu: Optional[int] = None
+    origin: Optional[str] = "top"
+
+
+def _flip_y_from_header_quiet(header) -> bool:
+    """
+    Lightweight, non-logging variant of analyze_wcs_orientation(..., data=None)
+    used in hot paths (e.g. /probe-pixel).
+    """
+    try:
+        # CD matrix format
+        if 'CD1_1' in header:
+            cd11 = float(header.get('CD1_1', 0.0))
+            cd12 = float(header.get('CD1_2', 0.0))
+            cd21 = float(header.get('CD2_1', 0.0))
+            cd22 = float(header.get('CD2_2', 0.0))
+        # PC matrix format + CDELT
+        elif 'PC1_1' in header:
+            pc11 = float(header.get('PC1_1', 1.0))
+            pc12 = float(header.get('PC1_2', 0.0))
+            pc21 = float(header.get('PC2_1', 0.0))
+            pc22 = float(header.get('PC2_2', 1.0))
+            cdelt1 = float(header.get('CDELT1', 1.0))
+            cdelt2 = float(header.get('CDELT2', 1.0))
+            cd11 = pc11 * cdelt1
+            cd12 = pc12 * cdelt1
+            cd21 = pc21 * cdelt2
+            cd22 = pc22 * cdelt2
+        # Simple CDELT format
+        else:
+            cd11 = float(header.get('CDELT1', 1.0))
+            cd12 = 0.0
+            cd21 = 0.0
+            cd22 = float(header.get('CDELT2', 1.0))
+
+        determinant = cd11 * cd22 - cd12 * cd21
+        flip_y = (determinant < 0)
+        # If determinant is positive but Y scale is negative, still flip
+        if cd22 < 0 and determinant > 0:
+            flip_y = True
+        # Near-singular: fall back to cd22 sign
+        if abs(determinant) < 1e-15:
+            flip_y = (cd22 < 0)
+        return bool(flip_y)
+    except Exception:
+        return False
+
+
 @app.get("/probe-pixel/")
 async def probe_pixel(
     request: Request,
@@ -5314,67 +6607,77 @@ async def probe_pixel(
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
 
-        image_data = None
         header = None
         unit = None
         height = width = None
         used_generator = False
         applied_flip_y = False
 
-        try:
-            file_id = f"{full_path.name}:{hdu_index}"
-            session_generators = session_data.setdefault("active_tile_generators", {})
-            gen = session_generators.get(file_id)
-            if gen is not None and getattr(gen, "image_data", None) is not None:
-                image_data = gen.image_data
-                height, width = int(gen.height), int(gen.width)
-                header = getattr(gen, "header", None)
-                unit = header.get("BUNIT", None) if header is not None else None
-                used_generator = True
-        except Exception:
-            pass
+        # No caching for probe-pixel: read only the needed pixel directly from the FITS on each request.
+        # This avoids keeping extra per-session caches (and avoids copying/flipping full arrays).
+        slice_index = _current_session_slice_index(session_data)
 
-        if image_data is None:
-            with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
-                if not (0 <= hdu_index < len(hdul)):
-                    raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-                h = hdul[hdu_index]
-                header = h.header
-                unit = header.get("BUNIT", None)
-                data = h.data
-                if data is None or data.ndim < 2:
-                    raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
-                if data.ndim > 2:
-                    data = data[0] if data.ndim == 3 else data[0, 0]
+        # IMPORTANT: do_not_scale_image_data=True prevents Astropy from auto-applying BSCALE/BZERO
+        # to the full array (which can force materialization into RAM). We'll scale only the one pixel.
+        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+            if not (0 <= hdu_index < len(hdul)):
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+            h = hdul[hdu_index]
+            header = h.header
+            unit = header.get("BUNIT", None)
+            data = h.data
+            if data is None or getattr(data, "ndim", 0) < 2:
+                raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
 
-                try:
-                    flip_y, _, corrected = analyze_wcs_orientation(header, data)
-                    image_data = corrected if corrected is not None else data
-                    applied_flip_y = bool(flip_y)
-                except Exception:
-                    image_data = data
-                    applied_flip_y = False
+            arr = data
+            if getattr(arr, "ndim", 0) > 2:
+                # If cube: use current session slice (defaults to 0)
+                if arr.ndim >= 3:
+                    si = int(slice_index) if slice_index is not None else 0
+                    si = max(0, min(int(arr.shape[0]) - 1, si))
+                    arr = arr[si, :, :]
+                else:
+                    arr = arr[0] if arr.ndim == 3 else arr[0, 0]
 
-                height, width = int(image_data.shape[-2]), int(image_data.shape[-1])
+            height, width = int(arr.shape[-2]), int(arr.shape[-1])
 
-        x_idx = int(x)
-        y_idx = int(height - 1 - y) if origin.lower().startswith("bottom") else int(y)
+            # Determine flip_y from header only (cheap) WITHOUT noisy logging.
+            applied_flip_y = _flip_y_from_header_quiet(header)
 
-        if not (0 <= x_idx < width and 0 <= y_idx < height):
-            return JSONResponse(content={"value": None, "unit": unit, "x": x_idx, "y": y_idx,
-                                         "origin": origin, "filepath": str(full_path),
-                                         "hdu_index": hdu_index, "used_generator": used_generator,
-                                         "applied_flip_y": applied_flip_y, "detail": "Out of bounds"}, status_code=200)
-        try:
-            px = float(image_data[y_idx, x_idx])
-            if not np.isfinite(px):
+            x_idx = int(x)
+            y_idx = int(height - 1 - y) if origin.lower().startswith("bottom") else int(y)
+            if applied_flip_y:
+                y_idx = int(height - 1 - y_idx)
+
+            if not (0 <= x_idx < width and 0 <= y_idx < height):
+                return JSONResponse(content={"value": None, "unit": unit, "x": x_idx, "y": y_idx,
+                                             "origin": origin, "filepath": str(full_path),
+                                             "hdu_index": hdu_index, "used_generator": used_generator,
+                                             "applied_flip_y": applied_flip_y, "detail": "Out of bounds"}, status_code=200)
+            try:
+                raw_px = arr[y_idx, x_idx]
+                # Apply FITS scaling for just this pixel (avoid scaling the full array).
+                bscale = float(header.get("BSCALE", 1.0))
+                bzero = float(header.get("BZERO", 0.0))
+                # BLANK applies to integer arrays
+                blank = header.get("BLANK", None)
+                if blank is not None:
+                    try:
+                        if np.asarray(raw_px).dtype.kind in ("i", "u") and int(raw_px) == int(blank):
+                            raw_px = np.nan
+                    except Exception:
+                        pass
+                px = float(raw_px) * bscale + bzero
+                if not np.isfinite(px):
+                    px = None
+            except Exception:
                 px = None
-        except Exception:
-            px = None
 
-        return JSONResponse(content={"value": px, "unit": unit, "x": x_idx, "y": y_idx, "origin": origin,
-                                     "filepath": str(full_path), "hdu_index": hdu_index,
-                                     "used_generator": used_generator, "applied_flip_y": applied_flip_y}, status_code=200)
+            return JSONResponse(content={"value": px, "unit": unit, "x": x_idx, "y": y_idx, "origin": origin,
+                                         "filepath": str(full_path), "hdu_index": hdu_index,
+                                         "used_generator": used_generator, "applied_flip_y": applied_flip_y}, status_code=200)
+
+        # (response returned inside FITS context above)
     except HTTPException:
         raise
     except Exception as e:
@@ -5408,28 +6711,56 @@ async def pixel_to_world(
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
 
-        with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
-            if not (0 <= hdu_index < len(hdul)):
-                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-            h = hdul[hdu_index]
-            header = h.header
-            data = h.data
-            if data is None or data.ndim < 2:
-                raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
-            if data.ndim > 2:
-                data = data[0] if data.ndim == 3 else data[0, 0]
-            height = int(data.shape[-2])
+        # Prefer session generator (cached WCS + flip state) to avoid per-request WCS construction.
+        session_generators = session_data.setdefault("active_tile_generators", {})
+        slice_index = _current_session_slice_index(session_data)
+        file_id = _make_active_file_id(str(full_path), hdu_index, slice_index)
+        gen = session_generators.get(file_id)
 
-            x_idx = float(x)
-            y_idx = float(height - 1 - y) if origin.lower().startswith("bottom") else float(y)
+        w = getattr(gen, "wcs", None) if gen is not None else None
+        header = getattr(gen, "header", None) if gen is not None else None
+        height = int(getattr(gen, "height", 0)) if gen is not None else 0
+        flip_y = bool(getattr(gen, "_flip_required", False)) if gen is not None else False
 
-            w = WCS(header)
-            if not w.has_celestial:
-                return JSONResponse(content={"ra": None, "dec": None, "detail": "No celestial WCS"}, status_code=200)
+        if w is None or not getattr(w, "has_celestial", False) or height <= 0 or header is None:
+            with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
+                if not (0 <= hdu_index < len(hdul)):
+                    raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                h = hdul[hdu_index]
+                header = h.header
+                data = h.data
+                if data is None or data.ndim < 2:
+                    raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
+                if data.ndim > 2:
+                    data = data[0] if data.ndim == 3 else data[0, 0]
+                height = int(data.shape[-2])
+                try:
+                    flip_y, _, _ = analyze_wcs_orientation(header, None)
+                    flip_y = bool(flip_y)
+                except Exception:
+                    flip_y = False
+                # Build WCS; for cubes, use the celestial (2D) part so pixel->world accepts x,y.
+                w_full = WCS(header)
+                w = w_full.celestial if getattr(w_full, "has_celestial", False) else w_full
 
-            ra_deg, dec_deg = w.all_pix2world([[x_idx, y_idx]], 0)[0]
-            ra = float(ra_deg) if np.isfinite(ra_deg) else None
-            dec = float(dec_deg) if np.isfinite(dec_deg) else None
+        if not w or not getattr(w, "has_celestial", False):
+            return JSONResponse(content={"ra": None, "dec": None, "detail": "No celestial WCS"}, status_code=200)
+
+        # For some generators, `gen.wcs` can be a full N-D WCS. Use celestial subset so we can pass x,y.
+        try:
+            if getattr(w, "has_celestial", False) and int(getattr(w, "naxis", 2)) > 2:
+                w = w.celestial
+        except Exception:
+            pass
+
+        x_idx = float(x)
+        y_idx = float(height - 1 - y) if origin.lower().startswith("bottom") else float(y)
+        if flip_y:
+            y_idx = float(height - 1 - y_idx)
+
+        ra_deg, dec_deg = w.all_pix2world([[x_idx, y_idx]], 0)[0]
+        ra = float(ra_deg) if np.isfinite(ra_deg) else None
+        dec = float(dec_deg) if np.isfinite(dec_deg) else None
 
         return JSONResponse(content={"ra": ra, "dec": dec}, status_code=200)
     except HTTPException:
@@ -5437,6 +6768,199 @@ async def pixel_to_world(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"pixel-to-world failed: {e}")
 
+
+@app.get("/wcs-orientation/")
+async def wcs_orientation(
+    request: Request,
+    filepath: str | None = Query(None),
+    hdu: int | None = Query(None),
+):
+    """
+    Return the WCS orientation decision using the same Python logic as the backend renderer.
+
+    This endpoint exists so frontend overlays can use the exact `analyze_wcs_orientation()` logic
+    (including any backend-side nuances), rather than a JS heuristic.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    try:
+        current_file = filepath or session_data.get("current_fits_file")
+        if not current_file:
+            raise HTTPException(status_code=400, detail="No current FITS file and no 'filepath' provided.")
+        hdu_index = int(hdu if hdu is not None else session_data.get("current_hdu_index", 0))
+
+        full_path = Path(current_file)
+        if not full_path.exists():
+            if not str(full_path).startswith(str(FILES_DIRECTORY)):
+                full_path = Path(FILES_DIRECTORY) / current_file
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
+
+        # Prefer session generator flip state when available (matches displayed orientation).
+        session_generators = session_data.setdefault("active_tile_generators", {})
+        slice_index = _current_session_slice_index(session_data)
+        file_id = _make_active_file_id(str(full_path), hdu_index, slice_index)
+        gen = session_generators.get(file_id)
+        if gen is not None:
+            try:
+                flip_y = bool(getattr(gen, "_flip_required", False))
+                return JSONResponse(content={"flip_y": flip_y, "source": "generator"}, status_code=200)
+            except Exception:
+                pass
+
+        # Fallback: compute directly from the header using the canonical function.
+        with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
+            if not (0 <= hdu_index < len(hdul)):
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+            header = hdul[hdu_index].header
+            flip_y, determinant, _ = analyze_wcs_orientation(header, None)
+            return JSONResponse(
+                content={"flip_y": bool(flip_y), "determinant": float(determinant), "source": "header"},
+                status_code=200
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"wcs-orientation failed: {e}")
+
+
+
+@app.post("/world-to-pixel/")
+async def world_to_pixel_batch(
+    request: Request,
+    payload: WorldToPixelBatchRequest,
+):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    try:
+        points = payload.points or []
+        if not points:
+            return JSONResponse(content={"pixels": [], "width": None, "height": None, "flip_y": False})
+
+        fits_file = payload.filepath or session_data.get("current_fits_file")
+        if not fits_file:
+            raise HTTPException(status_code=400, detail="No current FITS file and no 'filepath' provided.")
+        hdu_index = int(payload.hdu if payload.hdu is not None else session_data.get("current_hdu_index", 0))
+
+        full_path = Path(fits_file)
+        if not full_path.exists():
+            candidate = Path(FILES_DIRECTORY) / fits_file
+            if candidate.exists():
+                full_path = candidate
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
+
+        # IMPORTANT: in cube mode the active tile generator is keyed by (filepath, hdu, slice_index).
+        # If we use a slice-agnostic key here, we'll miss the active generator and lose the correct
+        # height/flip_y (from analyze_wcs_orientation), causing mirrored/offset WCS-lock syncing.
+        try:
+            slice_index = _current_session_slice_index(session_data)
+        except Exception:
+            slice_index = None
+        try:
+            file_id = _make_active_file_id(str(full_path), hdu_index, slice_index)
+        except Exception:
+            file_id = make_file_id(full_path, hdu_index)
+        session_generators = session_data.setdefault("active_tile_generators", {})
+        tile_generator = session_generators.get(file_id)
+
+        wcs_obj = None
+        header_obj = None
+        width = None
+        height = None
+        flip_required = False
+
+        if tile_generator is not None:
+            wcs_obj = getattr(tile_generator, "wcs", None)
+            header_obj = getattr(tile_generator, "header", None)
+            width = getattr(tile_generator, "width", None)
+            height = getattr(tile_generator, "height", None)
+            flip_required = bool(getattr(tile_generator, "_flip_required", False))
+
+        if (wcs_obj is None or not getattr(wcs_obj, "has_celestial", False)) and header_obj is not None:
+            try:
+                prepared = _prepare_jwst_header_for_wcs(header_obj)
+                wcs_obj = WCS(prepared)
+            except Exception:
+                wcs_obj = None
+
+        if wcs_obj is None or not getattr(wcs_obj, "has_celestial", False):
+            with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
+                if not (0 <= hdu_index < len(hdul)):
+                    raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                hdu = hdul[hdu_index]
+                header_obj = hdu.header
+                data = hdu.data
+                if data is not None and data.ndim >= 2:
+                    height = int(data.shape[-2])
+                    width = int(data.shape[-1])
+                prepared = _prepare_jwst_header_for_wcs(header_obj)
+                wcs_obj = WCS(prepared)
+                try:
+                    flip_required, _, _ = analyze_wcs_orientation(header_obj, None)
+                except Exception:
+                    pass
+
+        pixels_out = []
+        for idx, point in enumerate(points):
+            out_index = point.index if point.index is not None else idx
+            pixels_out.append({"x": None, "y": None, "valid": False, "index": out_index})
+
+        valid_rows = []
+        valid_indices = []
+        for idx, point in enumerate(points):
+            try:
+                ra_val = float(point.ra)
+                dec_val = float(point.dec)
+            except (TypeError, ValueError):
+                continue
+            if not (np.isfinite(ra_val) and np.isfinite(dec_val)):
+                continue
+            valid_rows.append([ra_val, dec_val])
+            valid_indices.append(idx)
+
+        origin = (payload.origin or "top").lower()
+        if wcs_obj is not None and getattr(wcs_obj, "has_celestial", False) and valid_rows:
+            coords = np.array(valid_rows, dtype=float)
+            try:
+                # For cubes, use celestial subset so world->pixel accepts (ra,dec) rows.
+                w_use = wcs_obj
+                try:
+                    if getattr(w_use, "has_celestial", False) and int(getattr(w_use, "naxis", 2)) > 2:
+                        w_use = w_use.celestial
+                except Exception:
+                    w_use = wcs_obj
+                pix = w_use.all_world2pix(coords, 0)
+            except Exception:
+                pix = None
+            if pix is not None:
+                for arr_idx, point_idx in enumerate(valid_indices):
+                    out_index = pixels_out[point_idx]["index"]
+                    x_val = pix[arr_idx][0]
+                    y_val = pix[arr_idx][1]
+                    if np.isfinite(x_val) and np.isfinite(y_val):
+                        px = float(x_val)
+                        py = float(y_val)
+                        if origin.startswith("bottom") and height is not None and np.isfinite(py):
+                            py = (float(height) - 1.0) - py
+                        pixels_out[point_idx] = {"x": px, "y": py, "valid": True, "index": out_index}
+
+        return JSONResponse(content={
+            "pixels": pixels_out,
+            "width": width,
+            "height": height,
+            "flip_y": bool(flip_required)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"world-to-pixel failed: {e}")
 
 
 
@@ -5451,6 +6975,7 @@ async def fits_binary(
     initialize_tiles: bool = Query(True),
     fast_loading: bool = Query(True),
     hdu: int = Query(None),
+    slice: int = Query(None, description="Cube slice index (0-based) for 3D cubes; slice=0 or None = default"),
 ):
     try:
         # SED path unchanged
@@ -5464,6 +6989,8 @@ async def fits_binary(
         if session_data is not None:
             fits_file = session_data.get("current_fits_file")
             hdu_index = int(hdu if hdu is not None else session_data.get("current_hdu_index", 0))
+            if slice is not None:
+                session_data["current_slice_index"] = int(slice)
         else:
             fits_file = getattr(app.state, "current_fits_file", None)
             hdu_index = hdu if hdu is not None else getattr(app.state, "current_hdu_index", 0)
@@ -5489,7 +7016,8 @@ async def fits_binary(
         try:
             _ = os.path.getsize(fits_file)
             if fast_loading:
-                file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+                slice_index = _current_session_slice_index(session_data) if session_data is not None else None
+                file_id = _make_active_file_id(fits_file, int(hdu_index), slice_index)
                 if session_data is not None:
                     session_generators = session_data.setdefault("active_tile_generators", {})
                 else:
@@ -5500,8 +7028,46 @@ async def fits_binary(
                 if generator_instance is None:
                     # Header-only lazy init: avoid heavy image reads on cpah; return minimal info immediately
                     loop = asyncio.get_running_loop()
-                    generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+                    # For cube slice > 0, initialize generator with that 2D slice in memory
+                    if slice_index is not None and int(slice_index) >= 0:
+                        def _read_slice_sync():
+                            with fits.open(fits_file, ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+                                hdu_obj = hdul[int(hdu_index)]
+                                data = hdu_obj.data
+                                if data is None or getattr(data, "ndim", 0) < 3:
+                                    raise ValueError("Requested slice but HDU is not a cube")
+                                si = int(slice_index)
+                                if si < 0 or si >= int(data.shape[0]):
+                                    raise ValueError(f"Invalid slice index: {si}")
+                                slice2d = np.asarray(data[si, :, :])
+                                try:
+                                    flip_y, _, corrected = analyze_wcs_orientation(hdu_obj.header, slice2d)
+                                    if flip_y and corrected is not None:
+                                        slice2d = np.asarray(corrected)
+                                except Exception:
+                                    pass
+                                return slice2d
+                        slice2d = await loop.run_in_executor(app.state.thread_executor, _read_slice_sync)
+                        generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, int(hdu_index), slice2d)
+                        # Mark flip state for downstream consumers (even though slice is already corrected)
+                        try:
+                            header = getattr(generator_instance, "header", None)
+                            if header is not None:
+                                flip_y, _, _ = analyze_wcs_orientation(header, None)
+                                if flip_y:
+                                    setattr(generator_instance, "_flip_required", True)
+                                    setattr(generator_instance, "_flip_applied", True)
+                        except Exception:
+                            pass
+                    else:
+                        generator_instance = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
                     session_generators[file_id] = generator_instance
+                    # Apply persisted display settings (so slice changes keep same min/max/scaling)
+                    try:
+                        if session_data is not None:
+                            _apply_display_settings_to_generator(generator_instance, _get_session_display_settings(session_data))
+                    except Exception:
+                        pass
                     # Determine if Y-flip is required from header only; defer actual flip to first data access
                     try:
                         header = getattr(generator_instance, "header", None)
@@ -5740,7 +7306,8 @@ async def get_fits_overview(request: Request, quality: int = 0, file_id: str = Q
         if not fits_file:
             raise HTTPException(status_code=404, detail="No FITS file loaded in session and no file_id provided")
         hdu_index = int(session_data.get("current_hdu_index", 0))
-        file_id = f"{os.path.basename(fits_file)}:{hdu_index}"
+        slice_index = _current_session_slice_index(session_data)
+        file_id = _make_active_file_id(fits_file, hdu_index, slice_index)
 
     session_generators = session_data.setdefault("active_tile_generators", {})
     tile_generator = session_generators.get(file_id)
@@ -5748,10 +7315,26 @@ async def get_fits_overview(request: Request, quality: int = 0, file_id: str = Q
     if not tile_generator:
         try:
             base_filename, hdu_str = file_id.rsplit(":", 1)
-            hdu_idx_from_id = int(hdu_str)
+            # hdu_str can be "2" or "2,17" for cube slices
+            hdu_parts = str(hdu_str).split(",", 1)
+            hdu_idx_from_id = int(hdu_parts[0])
+            slice_from_id = int(hdu_parts[1]) if len(hdu_parts) > 1 else None
             current_full_path = session_data.get("current_fits_file", None)
-            if current_full_path and os.path.basename(current_full_path) == base_filename:
-                generator_instance = SimpleTileGenerator(current_full_path, hdu_idx_from_id)
+            if current_full_path:
+                generator_instance = None
+                if slice_from_id is None or slice_from_id <= 0:
+                    generator_instance = SimpleTileGenerator(current_full_path, hdu_idx_from_id)
+                else:
+                    # Read requested slice as 2D for overview rendering
+                    with fits.open(current_full_path, ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+                        hdu = hdul[hdu_idx_from_id]
+                        data = hdu.data
+                        if data is None or getattr(data, "ndim", 0) < 3:
+                            raise HTTPException(status_code=400, detail="Requested slice but HDU is not a cube")
+                        if slice_from_id < 0 or slice_from_id >= int(data.shape[0]):
+                            raise HTTPException(status_code=400, detail=f"Invalid slice index: {slice_from_id}")
+                        slice2d = np.asarray(data[slice_from_id, :, :])
+                    generator_instance = SimpleTileGenerator(current_full_path, hdu_idx_from_id, image_data=slice2d)
                 session_generators[file_id] = generator_instance
                 tile_generator = generator_instance
             else:
@@ -5766,6 +7349,304 @@ async def get_fits_overview(request: Request, quality: int = 0, file_id: str = Q
             raise HTTPException(status_code=404, detail="Overview not available or empty")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error serving overview for {file_id}: {str(e)}")
+
+
+@app.get("/fits/preview/")
+async def fits_preview(
+    request: Request,
+    filepath: str = Query(..., description="FITS filepath relative to server files directory"),
+    hdu: int | None = Query(None, description="Optional HDU index; if omitted, first image-like HDU is used"),
+    slice_index: int | None = Query(None, ge=0, description="Optional cube slice/channel (0-based); defaults to 0 for cubes"),
+    max_dim: int = Query(384, ge=64, le=2048, description="Max preview dimension (keeps aspect ratio)"),
+    min_value: float | None = Query(None, description="Optional display min (overrides session for this preview only)"),
+    max_value: float | None = Query(None, description="Optional display max (overrides session for this preview only)"),
+    color_map: str | None = Query(None, description="Optional colormap (overrides session for this preview only)"),
+    scaling_function: str | None = Query(None, description="Optional scaling function (overrides session for this preview only)"),
+    invert_colormap: bool | None = Query(None, description="Optional invert flag (overrides session for this preview only)"),
+):
+    """
+    Return a PNG preview for an arbitrary FITS file from the file browser.
+
+    - No caching (server returns no-store headers)
+    - Applies flip_y orientation logic to match displayed orientation (quiet; no log spam)
+    - For cubes (ndim>=3): uses the requested slice_index (default 0)
+    - Low-quality / fast: downsampled directly from memmap, keeps original aspect ratio
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+
+    # Resolve path safely under FILES_DIRECTORY
+    base_dir = Path(FILES_DIRECTORY).resolve()
+    # filepath coming from file browser is expected to be relative (e.g. "uploads/foo.fits")
+    candidate = (base_dir / filepath).resolve()
+    if not str(candidate).startswith(str(base_dir)):
+        raise HTTPException(status_code=400, detail="Invalid filepath")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail=f"FITS file not found: {filepath}")
+
+    # Load a 2D view for preview (and its header). IMPORTANT: do_not_scale_image_data=True
+    # avoids Astropy auto-scaling that can materialize huge arrays into RAM.
+    with fits.open(candidate, ignore_missing_end=True, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+        hdu_index: int | None = int(hdu) if hdu is not None else None
+        if hdu_index is not None:
+            if not (0 <= hdu_index < len(hdul)):
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+            hdu_obj = hdul[hdu_index]
+        else:
+            hdu_obj = None
+            for i, it in enumerate(hdul):
+                data = getattr(it, "data", None)
+                if data is None:
+                    continue
+                ndim = getattr(data, "ndim", 0)
+                if ndim >= 2:
+                    hdu_obj = it
+                    hdu_index = i
+                    break
+            if hdu_obj is None:
+                raise HTTPException(status_code=400, detail="No image-like HDU found (ndim < 2).")
+
+        header = hdu_obj.header
+        # Extract basic metadata (no data load)
+        try:
+            naxis = int(header.get("NAXIS", 0) or 0)
+        except Exception:
+            naxis = 0
+        dims = []
+        for i in range(1, max(1, naxis) + 1):
+            v = header.get(f"NAXIS{i}", None)
+            try:
+                if v is not None:
+                    dims.append(int(v))
+            except Exception:
+                pass
+        shape_str = "×".join(str(d) for d in dims) if dims else ""
+        bunit_str = ""
+        try:
+            bunit_str = str(header.get("BUNIT", "") or "").strip()
+        except Exception:
+            bunit_str = ""
+
+        # Radio metadata: beam + pixel scale (arcsec)
+        bmaj_arcsec = ""
+        bmin_arcsec = ""
+        bpa_deg = ""
+        try:
+            bmaj = header.get("BMAJ", None)
+            bmin = header.get("BMIN", None)
+            bpa = header.get("BPA", None)
+            if bmaj is not None and float(bmaj) != 0.0:
+                bmaj_arcsec = str(float(bmaj) * 3600.0)
+            if bmin is not None and float(bmin) != 0.0:
+                bmin_arcsec = str(float(bmin) * 3600.0)
+            if bpa is not None:
+                bpa_deg = str(float(bpa))
+        except Exception:
+            bmaj_arcsec = ""
+            bmin_arcsec = ""
+            bpa_deg = ""
+
+        pix_x_arcsec = ""
+        pix_y_arcsec = ""
+        try:
+            # Prefer CD matrix if present
+            if header.get("CD1_1", None) is not None:
+                cd11 = float(header.get("CD1_1", 0.0))
+                cd12 = float(header.get("CD1_2", 0.0))
+                cd21 = float(header.get("CD2_1", 0.0))
+                cd22 = float(header.get("CD2_2", 0.0))
+                # Approx pixel scale along x/y axes (deg/pix)
+                sx = math.sqrt(cd11 * cd11 + cd21 * cd21)
+                sy = math.sqrt(cd12 * cd12 + cd22 * cd22)
+                if sx and np.isfinite(sx):
+                    pix_x_arcsec = str(abs(sx) * 3600.0)
+                if sy and np.isfinite(sy):
+                    pix_y_arcsec = str(abs(sy) * 3600.0)
+            elif header.get("PC1_1", None) is not None:
+                # PC + CDELT
+                pc11 = float(header.get("PC1_1", 1.0))
+                pc12 = float(header.get("PC1_2", 0.0))
+                pc21 = float(header.get("PC2_1", 0.0))
+                pc22 = float(header.get("PC2_2", 1.0))
+                cdelt1 = float(header.get("CDELT1", 1.0))
+                cdelt2 = float(header.get("CDELT2", 1.0))
+                cd11 = pc11 * cdelt1
+                cd12 = pc12 * cdelt1
+                cd21 = pc21 * cdelt2
+                cd22 = pc22 * cdelt2
+                sx = math.sqrt(cd11 * cd11 + cd21 * cd21)
+                sy = math.sqrt(cd12 * cd12 + cd22 * cd22)
+                if sx and np.isfinite(sx):
+                    pix_x_arcsec = str(abs(sx) * 3600.0)
+                if sy and np.isfinite(sy):
+                    pix_y_arcsec = str(abs(sy) * 3600.0)
+            else:
+                # Simple CDELT
+                cdelt1 = header.get("CDELT1", None)
+                cdelt2 = header.get("CDELT2", None)
+                if cdelt1 is not None:
+                    pix_x_arcsec = str(abs(float(cdelt1)) * 3600.0)
+                if cdelt2 is not None:
+                    pix_y_arcsec = str(abs(float(cdelt2)) * 3600.0)
+        except Exception:
+            pix_x_arcsec = ""
+            pix_y_arcsec = ""
+        data = hdu_obj.data
+        if data is None or getattr(data, "ndim", 0) < 2:
+            raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
+
+        # Reduce N-D data to a single 2D plane (Y,X) for preview.
+        # Many radio products are 4D (e.g., Stokes x Channel x Y x X).
+        arr2d_view = data
+        try:
+            ndim = int(getattr(arr2d_view, "ndim", 0) or 0)
+        except Exception:
+            ndim = 0
+
+        if ndim > 2:
+            # Use slice_index for the FIRST leading axis, and 0 for any remaining leading axes.
+            lead = ndim - 2
+            idx = [0] * lead
+            try:
+                first_len = int(arr2d_view.shape[0])
+            except Exception:
+                first_len = 0
+            si = int(slice_index) if slice_index is not None else 0
+            if first_len > 0:
+                si = max(0, min(first_len - 1, si))
+            idx[0] = si
+            sl = tuple(idx + [slice(None), slice(None)])
+            arr2d_view = arr2d_view[sl]
+
+        # Be defensive: squeeze/strip any remaining singleton axes, then ensure 2D.
+        try:
+            arr2d_view = np.squeeze(arr2d_view)
+        except Exception:
+            pass
+        if getattr(arr2d_view, "ndim", 0) > 2:
+            # If still >2D for any reason, take the first plane until 2D.
+            while getattr(arr2d_view, "ndim", 0) > 2:
+                arr2d_view = arr2d_view[0]
+
+        # Compute a small preview directly from the memmap view (keep aspect ratio)
+        h = int(arr2d_view.shape[-2])
+        w = int(arr2d_view.shape[-1])
+        if h <= 0 or w <= 0:
+            raise HTTPException(status_code=400, detail="Invalid image dimensions")
+
+        # Use a UNIFORM stride in both axes. Using different strides (x != y) can make
+        # structures look "stretched" / anisotropically aliased in the preview.
+        stride = max(1, int(math.ceil(max(h, w) / float(max_dim))))
+        small = np.asarray(arr2d_view[0:h:stride, 0:w:stride])
+
+        # Apply FITS scaling to the small array only
+        try:
+            bscale = float(header.get("BSCALE", 1.0))
+            bzero = float(header.get("BZERO", 0.0))
+        except Exception:
+            bscale, bzero = 1.0, 0.0
+        try:
+            blank = header.get("BLANK", None)
+            if blank is not None and np.issubdtype(small.dtype, np.integer):
+                small = small.astype(np.float32, copy=False)
+                small[small == float(blank)] = np.nan
+        except Exception:
+            pass
+        small = small.astype(np.float32, copy=False) * float(bscale) + float(bzero)
+
+        # Flip Y if required (quiet, no expensive logging)
+        try:
+            if _flip_y_from_header_quiet(header):
+                small = np.flipud(small)
+        except Exception:
+            pass
+
+        # Choose display settings (preview-friendly defaults if user hasn't set min/max)
+        settings = {}
+        try:
+            settings = _get_session_display_settings(session_data) or {}
+        except Exception:
+            settings = {}
+
+        # Allow per-request overrides for tooltip/inset UIs
+        color_map = (color_map or settings.get("color_map") or "grayscale")
+        scaling_function = (scaling_function or settings.get("scaling_function") or "asinh")
+        if invert_colormap is None:
+            invert_colormap = bool(settings.get("invert_colormap")) if "invert_colormap" in settings else False
+
+        has_user_range = (
+            (min_value is not None and max_value is not None) or
+            (settings.get("min_value") is not None and settings.get("max_value") is not None)
+        )
+        if min_value is not None and max_value is not None:
+            vmin = float(min_value)
+            vmax = float(max_value)
+        elif settings.get("min_value") is not None and settings.get("max_value") is not None:
+            vmin = float(settings.get("min_value"))
+            vmax = float(settings.get("max_value"))
+        else:
+            # Brighter preview stretch: 1–99 percentile on the small image
+            valid = np.nan_to_num(small, nan=0.0, posinf=0.0, neginf=0.0)
+            vmin = float(np.percentile(valid, 1.0))
+            vmax = float(np.percentile(valid, 99.0))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                vmin = float(np.nanmin(valid))
+                vmax = float(np.nanmax(valid))
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                    vmin, vmax = 0.0, 1.0
+
+        # Normalize + scale (vectorized)
+        data = np.nan_to_num(small, nan=vmin, posinf=vmax, neginf=vmin)
+        delta = float(vmax - vmin)
+        if not np.isfinite(delta) or delta <= 0.0:
+            norm = np.full_like(data, 0.5, dtype=np.float32)
+        else:
+            t = (np.clip(data, vmin, vmax) - vmin) / delta
+            sf = str(scaling_function or "linear").lower()
+            if sf == "logarithmic":
+                norm = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
+            elif sf == "sqrt":
+                norm = np.sqrt(t)
+            elif sf == "power":
+                norm = t ** POWER_GAMMA
+            elif sf == "asinh" and ASINH_BETA > 0:
+                norm = np.arcsinh(ASINH_BETA * t) / np.arcsinh(ASINH_BETA)
+            else:
+                norm = t
+
+        img8 = (np.clip(norm, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if invert_colormap:
+            img8 = 255 - img8
+
+        # Apply colormap LUT (fast, pure-Python colormap functions)
+        cmap_key = str(color_map) if isinstance(color_map, str) else "grayscale"
+        color_map_func = COLOR_MAPS_PY.get(cmap_key, COLOR_MAPS_PY["grayscale"])
+        lut = np.zeros((256, 3), dtype=np.uint8)
+        for i in range(256):
+            lut[i] = color_map_func(i)
+        rgb = lut[img8]
+
+        from PIL import Image
+        img = Image.fromarray(rgb, "RGB")
+        buf = io.BytesIO()
+        # Fast encode: no compression (keeps CPU low)
+        img.save(buf, format="PNG", optimize=False, compress_level=0)
+        png = buf.getvalue()
+
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "X-FITS-SHAPE": shape_str,
+        "X-FITS-BUNIT": bunit_str,
+        "X-FITS-BMAJ-ARCSEC": bmaj_arcsec,
+        "X-FITS-BMIN-ARCSEC": bmin_arcsec,
+        "X-FITS-BPA-DEG": bpa_deg,
+        "X-FITS-PIXSCALE-X-ARCSEC": pix_x_arcsec,
+        "X-FITS-PIXSCALE-Y-ARCSEC": pix_y_arcsec,
+    }
+    return Response(content=png, media_type="image/png", headers=headers)
 def detect_coordinate_columns(colnames):
     """Detect RA and DEC column names from a list of column names."""
     ra_candidates = ra_columns
@@ -5826,6 +7707,442 @@ async def download_file(filepath: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+class RegionVertex(BaseModel):
+    x: float
+    y: float
+
+
+class RegionCutoutRequest(BaseModel):
+    ra: float
+    dec: float
+    region_type: str
+    region_id: Optional[str] = None
+    radius_pixels: Optional[float] = None
+    width_pixels: Optional[float] = None
+    height_pixels: Optional[float] = None
+    minor_radius_pixels: Optional[float] = None
+    fits_path: Optional[str] = None
+    hdu_index: Optional[int] = None
+    vertices: Optional[List[RegionVertex]] = None
+    galaxy_name: Optional[str] = None
+
+def _compute_arcsec_per_pixel(wcs: WCS) -> float:
+    try:
+        pixel_scales = wcs.proj_plane_pixel_scales()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unable to determine WCS pixel scale") from exc
+
+    if pixel_scales is None or len(pixel_scales) == 0:
+        raise HTTPException(status_code=400, detail="WCS does not provide pixel scale information")
+
+    try:
+        scale_quantity = u.Quantity(pixel_scales, copy=False)
+    except Exception:
+        # Fallback: treat as plain float array in degrees/pixel
+        scale_quantity = u.Quantity(np.asarray(pixel_scales, dtype=float), unit=u.deg)
+
+    if scale_quantity.unit is u.dimensionless_unscaled:
+        scale_quantity = scale_quantity * u.deg
+    else:
+        try:
+            scale_quantity = scale_quantity.to(u.deg)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unsupported pixel scale unit: {scale_quantity.unit}") from exc
+
+    scales_arcsec = np.abs(scale_quantity.to_value(u.arcsec))
+
+    finite = scales_arcsec[np.isfinite(scales_arcsec)]
+    if finite.size == 0:
+        raise HTTPException(status_code=400, detail="Pixel scale calculation produced non-finite values")
+    return float(np.mean(finite))
+
+
+def _compute_arcsec_per_pixel_xy(wcs: WCS) -> tuple[float, float]:
+    """
+    Return (arcsec_per_pixel_x, arcsec_per_pixel_y) for a celestial WCS.
+    Falls back to the mean scale for both axes if only one scale is available.
+    """
+    try:
+        pixel_scales = wcs.proj_plane_pixel_scales()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unable to determine WCS pixel scale") from exc
+
+    if pixel_scales is None or len(pixel_scales) == 0:
+        raise HTTPException(status_code=400, detail="WCS does not provide pixel scale information")
+
+    try:
+        scale_quantity = u.Quantity(pixel_scales, copy=False)
+    except Exception:
+        scale_quantity = u.Quantity(np.asarray(pixel_scales, dtype=float), unit=u.deg)
+
+    if scale_quantity.unit is u.dimensionless_unscaled:
+        scale_quantity = scale_quantity * u.deg
+    else:
+        try:
+            scale_quantity = scale_quantity.to(u.deg)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unsupported pixel scale unit: {scale_quantity.unit}") from exc
+
+    scales_arcsec = np.abs(scale_quantity.to_value(u.arcsec))
+    finite = scales_arcsec[np.isfinite(scales_arcsec)]
+    if finite.size == 0:
+        raise HTTPException(status_code=400, detail="Pixel scale calculation produced non-finite values")
+
+    # Typical celestial WCS: [sx, sy]
+    if scales_arcsec.size >= 2 and np.isfinite(scales_arcsec[0]) and np.isfinite(scales_arcsec[1]):
+        return float(scales_arcsec[0]), float(scales_arcsec[1])
+
+    mean = float(np.mean(finite))
+    return mean, mean
+
+
+def _safe_filename_component(value: Optional[str], fallback: str, max_length: int = 80) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        candidate = fallback
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+    sanitized = sanitized.strip("._-") or fallback
+    return sanitized[:max_length]
+
+
+def _build_hexagon_vertices(center_x: float, center_y: float, radius_x: float, radius_y: float) -> PixCoord:
+    angles = (np.pi / 3.0) * np.arange(6) + (np.pi / 6.0)
+    xs = center_x + radius_x * np.cos(angles)
+    ys = center_y + radius_y * np.sin(angles)
+    return PixCoord(x=np.asarray(xs, dtype=float), y=np.asarray(ys, dtype=float))
+
+
+def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_coord: SkyCoord):
+    region_type = (payload.region_type or "").lower()
+    if not region_type or not hasattr(source_wcs, "world_to_pixel"):
+        return None
+
+    try:
+        center_x, center_y = source_wcs.world_to_pixel(target_coord)
+    except Exception:
+        return None
+
+    if not (np.isfinite(center_x) and np.isfinite(center_y)):
+        return None
+
+    center = PixCoord(x=float(center_x), y=float(center_y))
+
+    def _to_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _positive(value):
+        val = _to_float(value)
+        return val if val and val > 0 else None
+
+    # IMPORTANT:
+    # The frontend may provide polygon vertices in "display coordinates" (e.g. after flip_y for viewer rendering).
+    # For hexagon cutouts we build the region from the WCS-derived center + width/height instead of trusting
+    # payload.vertices to avoid intermittent mask failures (falling back to a square cutout) and partial leaks.
+    if payload.vertices and region_type != "hexagon":
+        xs = []
+        ys = []
+        for vertex in payload.vertices:
+            xv = _to_float(vertex.x)
+            yv = _to_float(vertex.y)
+            if xv is None or yv is None:
+                continue
+            xs.append(xv)
+            ys.append(yv)
+        if len(xs) >= 3:
+            vertices = PixCoord(x=np.asarray(xs, dtype=float), y=np.asarray(ys, dtype=float))
+            return PolygonPixelRegion(vertices=vertices)
+
+    if region_type == "circle":
+        radius = _positive(payload.radius_pixels)
+        if radius:
+            return CirclePixelRegion(center=center, radius=radius)
+
+    elif region_type == "rectangle":
+        width = _positive(payload.width_pixels)
+        height = _positive(payload.height_pixels)
+        if width and height:
+            return RectanglePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
+
+    elif region_type == "ellipse":
+        # Prefer explicit width/height when provided so we preserve whether the ellipse was
+        # "tall" (major axis along Y) vs "wide" (major axis along X). If we only accept
+        # major/minor, we lose orientation information and the cutout mask appears horizontal.
+        width = _positive(payload.width_pixels)
+        height = _positive(payload.height_pixels)
+        if width and height:
+            return EllipsePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
+
+        # Backward-compatibility fallback: major/minor (assumes major is along X)
+        major = _positive(payload.radius_pixels)
+        minor = _positive(payload.minor_radius_pixels) or major
+        if major and minor:
+            return EllipsePixelRegion(center=center, width=2 * major, height=2 * minor, angle=0 * u.deg)
+
+    elif region_type == "hexagon":
+        width = _positive(payload.width_pixels)
+        height = _positive(payload.height_pixels)
+        if width and height:
+            if abs(width - height) <= 1e-6:
+                return RegularPolygonPixelRegion(center=center, nvertices=6, radius=width / 2.0, angle=30 * u.deg)
+            vertices = _build_hexagon_vertices(center.x, center.y, width / 2.0, height / 2.0)
+            return PolygonPixelRegion(vertices=vertices)
+
+    return None
+
+
+def _project_region_to_cutout(pixel_region, source_wcs: WCS, cutout_wcs: WCS):
+    if pixel_region is None or cutout_wcs is None:
+        return None
+    try:
+        sky_region = pixel_region.to_sky(source_wcs)
+        return sky_region.to_pixel(cutout_wcs)
+    except Exception as exc:
+        logger.warning("Failed to project region to cutout WCS: %s", exc)
+        return None
+
+
+def _compute_region_mask(pixel_region, cutout_shape):
+    if pixel_region is None:
+        return None
+
+    height, width = cutout_shape
+    try:
+        yy, xx = np.mgrid[0:height, 0:width]
+        coords = PixCoord(x=xx + 0.5, y=yy + 0.5)
+        mask = pixel_region.contains(coords)
+        if mask is None:
+            return None
+        mask_array = np.asarray(mask, dtype=bool)
+        if mask_array.shape != cutout_shape:
+            return None
+        return mask_array
+    except Exception as exc:
+        logger.warning("Failed to compute region mask: %s", exc, exc_info=True)
+        return None
+
+@app.post("/region-cutout/")
+async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
+    """Create a FITS cutout from a region and save it to the uploads folder."""
+    try:
+        session = session_manager.get(request.headers.get('x-session-id'))
+        if not session:
+            raise HTTPException(status_code=401, detail="Missing or invalid session")
+        
+        session_data = session.data
+        # Prefer an explicit payload target (used by zoom-inset "open another image")
+        fits_file = payload.fits_path or session_data.get("current_fits_file")
+        if not fits_file:
+            raise HTTPException(status_code=400, detail="No FITS file currently loaded")
+
+        base_dir = Path(__file__).parent.resolve()
+
+        def _resolve_fits_path(candidate: str) -> Path:
+            raw = Path(candidate.strip())
+            candidate_paths = []
+            try:
+                if raw.is_absolute():
+                    candidate_paths.append(raw)
+            except Exception:
+                pass
+            candidate_paths.append((base_dir / raw))
+            candidate_paths.append((FILES_ROOT / raw))
+
+            normalized = candidate.strip().strip("/\\")
+            lowered = normalized.lower()
+            if lowered.startswith('files/'):
+                trimmed = normalized.split('/', 1)[1]
+                candidate_paths.append((FILES_ROOT / trimmed))
+                candidate_paths.append((base_dir / trimmed))
+
+            seen = set()
+            for path_candidate in candidate_paths:
+                try:
+                    resolved = path_candidate.expanduser().resolve()
+                except Exception:
+                    continue
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                if resolved.exists():
+                    return resolved
+            raise HTTPException(status_code=404, detail=f"FITS file not found: {candidate}")
+
+        fits_path = _resolve_fits_path(fits_file)
+        
+        # Prefer an explicit payload HDU when provided (do not override with session HDU)
+        hdu_index = int(payload.hdu_index if payload.hdu_index is not None else session_data.get("current_hdu_index", 0))
+        
+        # Load the FITS file
+        with fits.open(str(fits_path), memmap=True, lazy_load_hdus=True) as hdul:
+            hdu = hdul[hdu_index]
+            image_data = hdu.data
+            header = hdu.header.copy()
+            
+            if image_data is None or image_data.ndim < 2:
+                raise HTTPException(status_code=400, detail="Invalid image data")
+
+            # If this is a cube (or higher-dim), take the first plane so Cutout2D receives 2D.
+            # (Zoom inset is a 2D view; cube slicing is handled elsewhere in the app.)
+            try:
+                while getattr(image_data, "ndim", 0) > 2:
+                    image_data = np.asarray(image_data[0])
+            except Exception:
+                pass
+            
+            # Get WCS
+            try:
+                wcs_full = WCS(header)
+                if not wcs_full.has_celestial:
+                    raise HTTPException(status_code=400, detail="No celestial WCS found")
+                # Use the celestial sub-WCS so world_to_pixel expects (RA, Dec) even for 3D/4D WCS headers.
+                wcs = wcs_full.celestial
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse WCS: {str(e)}")
+            
+            # Convert RA/Dec to pixel coordinates
+            try:
+                target_coord = SkyCoord(ra=payload.ra * u.deg, dec=payload.dec * u.deg, frame='icrs')
+                px, py = wcs.world_to_pixel(target_coord)
+                if not (np.isfinite(px) and np.isfinite(py)):
+                    raise HTTPException(status_code=400, detail="Coordinates outside image bounds")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to convert coordinates: {str(e)}")
+
+            pixel_region = _build_pixel_region(payload, wcs, target_coord)
+            arcsec_per_pixel = _compute_arcsec_per_pixel(wcs)
+            arcsec_per_pixel_x, arcsec_per_pixel_y = _compute_arcsec_per_pixel_xy(wcs)
+
+            def _positive_float(value):
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    return None
+                return value if value > 0 else None
+
+            region_type = (payload.region_type or "").lower()
+            size_arcsec = 10.0
+            size_arcsec_xy = None  # Optional (y_arcsec, x_arcsec) for rectangular cutouts
+
+            if region_type == 'circle':
+                radius = _positive_float(payload.radius_pixels)
+                if radius:
+                    size_arcsec = radius * arcsec_per_pixel * 2
+            elif region_type in ['rectangle', 'hexagon']:
+                width = _positive_float(payload.width_pixels)
+                height = _positive_float(payload.height_pixels)
+                if width and height:
+                    # Preserve aspect ratio of the requested region by using a rectangular cutout size.
+                    # Cutout2D supports a 2-tuple size; this avoids "vertical ellipse -> horizontal/square cutout" confusion.
+                    size_arcsec_xy = (
+                        max(2.0, height * arcsec_per_pixel_y),
+                        max(2.0, width * arcsec_per_pixel_x),
+                    )
+                    size_arcsec = max(width, height) * arcsec_per_pixel
+            elif region_type == 'ellipse':
+                width = _positive_float(payload.width_pixels)
+                height = _positive_float(payload.height_pixels)
+                if width and height:
+                    size_arcsec_xy = (
+                        max(2.0, height * arcsec_per_pixel_y),
+                        max(2.0, width * arcsec_per_pixel_x),
+                    )
+                    size_arcsec = max(width, height) * arcsec_per_pixel
+                else:
+                    major = _positive_float(payload.radius_pixels)
+                    if major:
+                        size_arcsec = major * arcsec_per_pixel * 2
+
+            size_arcsec = max(size_arcsec, 2.0)
+            
+            # Create cutout
+            try:
+                cutout_size = (size_arcsec * u.arcsec)
+                if size_arcsec_xy is not None:
+                    # Cutout2D expects (ny, nx) i.e. (y, x)
+                    cutout_size = (size_arcsec_xy[0] * u.arcsec, size_arcsec_xy[1] * u.arcsec)
+                cutout = Cutout2D(
+                    image_data,
+                    target_coord,
+                    cutout_size,
+                    wcs=wcs,
+                    mode='partial',
+                    fill_value=np.nan
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to create cutout: {str(e)}")
+            
+            cutout_data = np.array(cutout.data, copy=True)
+            region_mask_array = None
+            mask_fraction = None
+            try:
+                projected_region = _project_region_to_cutout(pixel_region, wcs, cutout.wcs)
+                mask_bool = _compute_region_mask(projected_region, cutout_data.shape)
+                if mask_bool is not None and mask_bool.any():
+                    mask_fraction = float(mask_bool.mean())
+                    cutout_data = np.where(mask_bool, cutout_data, np.nan)
+                    region_mask_array = mask_bool.astype(np.float32)
+            except Exception as mask_err:
+                logger.warning("Failed to apply %s region mask: %s", payload.region_type, mask_err, exc_info=True)
+                region_mask_array = None
+                mask_fraction = None
+
+            # Create new header from cutout WCS
+            cutout_header = cutout.wcs.to_header()
+            cutout_header['NAXIS1'] = cutout.data.shape[1]
+            cutout_header['NAXIS2'] = cutout.data.shape[0]
+            cutout_header['NAXIS'] = 2
+            
+            # Copy important keywords from original header
+            for key in ['BUNIT', 'BSCALE', 'BZERO']:
+                if key in header:
+                    cutout_header[key] = header[key]
+            
+            # Generate descriptive filename (galaxy, region type, RA/DEC, timestamp)
+            timestamp = int(time.time())
+            galaxy_source = (
+                payload.galaxy_name
+                or session_data.get("current_galaxy_name")
+                or session_data.get("last_selected_galaxy")
+                or SED_DEFAULT_GALAXY_NAME
+            )
+            galaxy_slug = _safe_filename_component(galaxy_source, SED_DEFAULT_GALAXY_NAME)
+            region_slug = _safe_filename_component(payload.region_type or "region", "region")
+            filename = f"{region_slug}_RA{payload.ra:.4f}_DEC{payload.dec:.4f}_{timestamp}.fits"
+            
+            # Save to uploads folder
+            uploads_dir = _resolve_uploads_dir()
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            output_path = uploads_dir / filename
+            
+            hdus = [fits.PrimaryHDU(data=cutout_data, header=cutout_header)]
+            if region_mask_array is not None:
+                mask_hdu = fits.ImageHDU(data=region_mask_array.astype(np.float32), name="REGIONMASK")
+                mask_hdu.header['COMMENT'] = "Mask values > 0 follow the requested region footprint"
+                hdus.append(mask_hdu)
+
+            fits.HDUList(hdus).writeto(output_path, overwrite=True)
+
+            response_payload = {
+                "success": True,
+                "filename": filename,
+                "path": f"files/uploads/{filename}",
+                "size_arcsec": size_arcsec,
+                "mask_applied": region_mask_array is not None
+            }
+            if mask_fraction is not None:
+                response_payload["mask_fraction"] = mask_fraction
+            return response_payload
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating region cutout: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 import gzip
 import io
 import asyncio
@@ -5881,6 +8198,7 @@ async def catalog_binary_raw(
     ra_col: Optional[str] = Query(None, description="Override RA column name"),
     dec_col: Optional[str] = Query(None, description="Override DEC column name"),
     size_col: Optional[str] = Query(None, description="Override size/radius column name"),
+    color_col: Optional[str] = Query(None, description="Column to prefetch for color coding"),
 ):
     from io import BytesIO
     import struct, gzip, numpy as np
@@ -6410,7 +8728,11 @@ async def catalog_binary(
         # and load_catalog_data will read overrides from request.query_params directly.
         # Build full path for loader
         full_path = (Path(str(catalogs_dir)) / catalog_name)
-        catalog_data = load_catalog_data(str(full_path), request=request)
+        loop = asyncio.get_running_loop()
+        catalog_data = await loop.run_in_executor(
+            None,
+            lambda: load_catalog_data(str(full_path), request=request)
+        )
         if not catalog_data:
             logger.warning(f"/catalog-binary: No in-bounds objects for {catalog_name}; returning empty result")
             catalog_data = []
@@ -6674,6 +8996,15 @@ async def catalog_with_flags(
     Return catalog data with advanced filtering, pagination, and TopCat-like features (session-scoped).
     """
     catalogs_dir = Path(CATALOGS_DIRECTORY)
+    # Normalize the catalog name: in the frontend we sometimes track catalogs as "catalogs/<file>".
+    # This endpoint expects names relative to CATALOGS_DIRECTORY, so strip the redundant prefix.
+    try:
+        if isinstance(catalog_name, str):
+            catalog_name = catalog_name.replace('\\', '/').lstrip('/')
+            if catalog_name.startswith('catalogs/'):
+                catalog_name = catalog_name[len('catalogs/'):]
+    except Exception:
+        pass
     try:
         catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
         if catalog_table is None:
@@ -6713,7 +9044,11 @@ async def catalog_with_flags(
                 path_arg = str((catalogs_dir / catalog_name))
         except Exception:
             path_arg = str((catalogs_dir / catalog_name))
-        catalog_data = load_catalog_data(path_arg, request=request)
+        loop = asyncio.get_running_loop()
+        catalog_data = await loop.run_in_executor(
+            None,
+            lambda: load_catalog_data(path_arg, request=request)
+        )
         if not catalog_data:
             raise HTTPException(status_code=500, detail="Failed to process catalog. An image with WCS may be required for full data.")
 
@@ -7427,6 +9762,36 @@ def load_catalog_data(catalog_path_str, request: Request = None):
 
     try:
         catalog_data = []
+        reserved_obj_keys = {
+            'ra',
+            'dec',
+            'x',
+            'y',
+            'x_bottom_left',
+            'y_bottom_left',
+            'radius_pixels',
+            'passesfilter',
+            'index',
+            '__catalog_columns'
+        }
+
+        def _attach_row_columns(obj: dict, row, column_names) -> None:
+            if not column_names:
+                return
+            col_map = obj.get('__catalog_columns')
+            if col_map is None:
+                col_map = {}
+                obj['__catalog_columns'] = col_map
+            for col_name in column_names:
+                key_str = str(col_name)
+                try:
+                    value = _to_py(row[col_name])
+                except Exception:
+                    continue
+                col_map[key_str] = value
+                normalized = key_str.strip().lower()
+                if normalized and normalized not in reserved_obj_keys and key_str not in obj:
+                    obj[key_str] = value
 
         # Prefer session-scoped viewer state when available
         session_data = None
@@ -7463,11 +9828,15 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     print("No image HDU found in FITS file")
                     return []
 
-                fy, _, _ = analyze_wcs_orientation(image_hdu.header, image_hdu.data)
+                fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
                 flip_y = bool(fy)
                 # IMPORTANT: vertical flip uses the number of rows (height)
-                image_height = int(image_hdu.data.shape[-2])
-                image_width = int(image_hdu.data.shape[-1])
+                if getattr(image_hdu, 'shape', None):
+                    image_height = int(image_hdu.shape[-2])
+                    image_width = int(image_hdu.shape[-1])
+                else:
+                    image_height = int(image_hdu.header.get('NAXIS2', 0))
+                    image_width = int(image_hdu.header.get('NAXIS1', 0))
 
                 if image_wcs is None:
                     try:
@@ -7491,7 +9860,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
             image_wcs = None
 
         # Column mapping must come from explicit overrides only
-        ra_col = dec_col = resolution_col = None
+        ra_col = dec_col = resolution_col = color_col = None
 
         # Allow one-shot override via query params or headers (highest precedence)
         try:
@@ -7500,24 +9869,30 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 ra_override = qp.get('ra_col')
                 dec_override = qp.get('dec_col')
                 res_override = qp.get('size_col') or qp.get('resolution_col')
+                color_override = qp.get('color_col')
                 if ra_override:
                     ra_col = ra_override
                 if dec_override:
                     dec_col = dec_override
                 if res_override:
                     resolution_col = res_override
+                if color_override:
+                    color_col = color_override
             # Header-based fallback (in case query params were stripped by caller)
             if request is not None and hasattr(request, 'headers'):
                 hdr = request.headers
                 ra_hdr = hdr.get('x-ra-col')
                 dec_hdr = hdr.get('x-dec-col')
                 res_hdr = hdr.get('x-size-col') or hdr.get('x-resolution-col')
+                color_hdr = hdr.get('x-color-col')
                 if ra_hdr and not ra_col:
                     ra_col = ra_hdr
                 if dec_hdr and not dec_col:
                     dec_col = dec_hdr
                 if res_hdr and not resolution_col:
                     resolution_col = res_hdr
+                if color_hdr and not color_col:
+                    color_col = color_hdr
             # Ultimate fallback: inspect ASGI raw headers (bytes)
             if request is not None and hasattr(request, 'scope') and isinstance(request.scope, dict):
                 try:
@@ -7535,6 +9910,8 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                             dec_col = v
                         elif not resolution_col and (k == 'x-size-col' or k == 'x-resolution-col') and v:
                             resolution_col = v
+                        elif not color_col and k == 'x-color-col' and v:
+                            color_col = v
                 except Exception:
                     pass
         except Exception:
@@ -7546,7 +9923,11 @@ def load_catalog_data(catalog_path_str, request: Request = None):
             return []
 
         rows = None
+        rows_column_names = []
+        full_rows_data = None
+        full_column_names = []
         lower_cols = []
+        galaxy_col_name = None
 
         if catalog_path.suffix.lower() in ('.fits', '.fit'):
             with fits.open(catalog_path) as hdul:
@@ -7554,8 +9935,6 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 if not table_hdus:
                     print("No table found in FITS catalog")
                     return []
-
-                from astropy.table import Table  # local import to ensure symbol is defined in this branch
 
                 def _normalize_colname(name):
                     try:
@@ -7565,10 +9944,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     except Exception:
                         return str(name)
 
-                def lower_map_for(tbl):
-                    return { _normalize_colname(c).strip().lower(): _normalize_colname(c) for c in getattr(tbl, 'colnames', []) }
-
-                selected_tbl = None
+                selected_hdu = None
                 selected_ra = ra_col
                 selected_dec = dec_col
                 selected_res = resolution_col
@@ -7581,10 +9957,11 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 if ra_col or dec_col or resolution_col:
                     for h in table_hdus:
                         try:
-                            tmp_tbl = Table(h.data)
-                            lm = lower_map_for(tmp_tbl)
+                            column_names = getattr(getattr(h, 'columns', None), 'names', None) or []
+                            normalized = [_normalize_colname(c).strip() for c in column_names]
+                            lm = {name.lower(): name for name in normalized}
                             try:
-                                print(f"[load_catalog_data] HDU cols: {list(lm.values())[:10]} ... total={len(lm)}")
+                                print(f"[load_catalog_data] HDU cols: {normalized[:10]} ... total={len(normalized)}")
                             except Exception:
                                 pass
                             ok = True
@@ -7595,7 +9972,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                             if resolution_col and resolution_col.lower() not in lm:
                                 ok = False
                             if ok:
-                                selected_tbl = tmp_tbl
+                                selected_hdu = h
                                 selected_ra = lm.get(ra_col.lower()) if ra_col else None
                                 selected_dec = lm.get(dec_col.lower()) if dec_col else None
                                 selected_res = lm.get(resolution_col.lower()) if resolution_col else None
@@ -7603,16 +9980,50 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                         except Exception:
                             continue
 
-                if selected_tbl is None:
+                if selected_hdu is None:
                     print("[load_catalog_data] Specified RA/Dec columns not found in any FITS table HDU.")
                     return []
 
-                table = selected_tbl
-                rows = table
-                lower_cols = [str(c).strip().lower() for c in table.colnames]
+                all_column_names = [
+                    _normalize_colname(c).strip()
+                    for c in getattr(selected_hdu.columns, 'names', []) or []
+                ]
+                lower_cols = [c.lower() for c in all_column_names]
                 ra_col = selected_ra
                 dec_col = selected_dec
                 resolution_col = selected_res
+
+                needed_columns = []
+
+                def _append_needed(name: str | None):
+                    if name and name not in needed_columns:
+                        needed_columns.append(name)
+
+                _append_needed(selected_ra)
+                _append_needed(selected_dec)
+                _append_needed(selected_res)
+                _append_needed(color_col)
+
+                for cand in all_column_names:
+                    if cand.strip().lower() in [n.lower() for n in RGB_GALAXY_COLUMN_NAMES]:
+                        galaxy_col_name = cand
+                        _append_needed(cand)
+                        break
+
+                if not needed_columns:
+                    needed_columns = all_column_names[:]
+
+                from astropy.table import Table  # local import to ensure symbol defined
+                col_data = {}
+                for name in needed_columns:
+                    try:
+                        col_data[name] = selected_hdu.data.field(name)
+                    except Exception:
+                        continue
+                rows = Table(col_data)
+                rows_column_names = list(rows.colnames)
+                full_rows_data = selected_hdu.data
+                full_column_names = list(all_column_names)
         else:
             from astropy.table import Table
             try:
@@ -7625,6 +10036,9 @@ def load_catalog_data(catalog_path_str, request: Request = None):
 
             rows = table
             lower_cols = [str(c).strip().lower() for c in table.colnames]
+            rows_column_names = list(table.colnames)
+            full_rows_data = rows
+            full_column_names = list(rows_column_names)
 
             # Validate required columns exist using overrides only
             if ra_col.lower() not in lower_cols or dec_col.lower() not in lower_cols:
@@ -7637,6 +10051,31 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 resolution_col = table.colnames[lower_cols.index(resolution_col.lower())]
             else:
                 resolution_col = None
+            if color_col and color_col.lower() in lower_cols:
+                color_col = table.colnames[lower_cols.index(color_col.lower())]
+                if color_col not in rows_column_names:
+                    rows = rows[[*rows_column_names, color_col]]
+                    rows_column_names = list(rows.colnames)
+            for name in table.colnames:
+                if str(name).strip().lower() in [n.lower() for n in RGB_GALAXY_COLUMN_NAMES]:
+                    galaxy_col_name = str(name)
+                    break
+
+        if rows is None:
+            print(f"[load_catalog_data] Failed to load rows for '{catalog_name}'.")
+            return []
+        if not rows_column_names:
+            rows_column_names = [ra_col, dec_col] if ra_col and dec_col else []
+        if galaxy_col_name is None:
+            search_columns = list(rows_column_names) if rows_column_names else full_column_names
+            for name in search_columns:
+                if str(name).strip().lower() in [n.lower() for n in RGB_GALAXY_COLUMN_NAMES]:
+                    galaxy_col_name = str(name)
+                    break
+        if full_rows_data is None:
+            full_rows_data = rows
+        if not full_column_names:
+            full_column_names = list(rows_column_names)
 
         # Build objects
         def _to_py(v):
@@ -7721,69 +10160,41 @@ def load_catalog_data(catalog_path_str, request: Request = None):
             except Exception:
                 return float('nan')
             return float('nan')
-        if catalog_path.suffix.lower() in ('.fits', '.fit'):
-            for r in rows:
-                try:
-                    ra_raw = _to_py(r[ra_col])
-                    dec_raw = _to_py(r[dec_col])
-                    ra = _normalize_coord(ra_raw, True, ra_col)
-                    dec = _normalize_coord(dec_raw, False, dec_col)
-                    if not (np.isfinite(ra) and np.isfinite(dec)):
-                        continue
-                    obj = {'ra': ra, 'dec': dec, 'x': 0.0, 'y': 0.0, 'radius_pixels': 5.0}
-                    # Attach galaxy name if present in the table under common column names
+        row_indices = []
+        for idx in range(len(rows)):
+            try:
+                r = rows[idx]
+                full_row = full_rows_data[idx] if full_rows_data is not None else r
+                ra_source = r if ra_col in rows_column_names else full_row
+                dec_source = r if dec_col in rows_column_names else full_row
+                ra_raw = _to_py(ra_source[ra_col])
+                dec_raw = _to_py(dec_source[dec_col])
+                ra = _normalize_coord(ra_raw, True, ra_col)
+                dec = _normalize_coord(dec_raw, False, dec_col)
+                if not (np.isfinite(ra) and np.isfinite(dec)):
+                    continue
+                obj = {'ra': ra, 'dec': dec, 'x': 0.0, 'y': 0.0, 'radius_pixels': 5.0}
+                if galaxy_col_name:
                     try:
-                        galaxy_col_candidates = [c for c in getattr(table, 'colnames', []) if str(c).strip().lower() in [n.lower() for n in RGB_GALAXY_COLUMN_NAMES]]
-                        if galaxy_col_candidates:
-                            gcol = galaxy_col_candidates[0]
-                            gval = _to_py(r[gcol])
-                            if gval is not None and str(gval).strip() != "":
-                                obj['galaxy_name'] = str(gval).strip()
-                                # Also mirror the original column name to ease frontend access if they expect exact key
-                                obj[str(gcol)] = str(gval).strip()
+                        galaxy_source = r if galaxy_col_name in rows_column_names else full_row
+                        gval = _to_py(galaxy_source[galaxy_col_name])
+                        if gval is not None and str(gval).strip() != "":
+                            obj['galaxy_name'] = str(gval).strip()
+                            obj[str(galaxy_col_name)] = str(gval).strip()
                     except Exception:
                         pass
-                    if resolution_col and resolution_col in table.colnames:
-                        try:
-                            rv = float(_to_py(r[resolution_col]))
-                            if np.isfinite(rv) and rv > 0:
-                                obj['radius_pixels'] = rv
-                        except Exception:
-                            pass
-                    catalog_data.append(obj)
-                except Exception:
-                    pass
-        else:
-            for r in rows:
-                try:
-                    ra_raw = _to_py(r[ra_col])
-                    dec_raw = _to_py(r[dec_col])
-                    ra = _normalize_coord(ra_raw, True, ra_col)
-                    dec = _normalize_coord(dec_raw, False, dec_col)
-                    if not (np.isfinite(ra) and np.isfinite(dec)):
-                        continue
-                    obj = {'ra': ra, 'dec': dec, 'x': 0.0, 'y': 0.0, 'radius_pixels': 5.0}
-                    # Attach galaxy name if present in the table under common column names
+                if resolution_col:
                     try:
-                        galaxy_col_candidates = [c for c in getattr(rows, 'colnames', []) if str(c).strip().lower() in [n.lower() for n in RGB_GALAXY_COLUMN_NAMES]]
-                        if galaxy_col_candidates:
-                            gcol = galaxy_col_candidates[0]
-                            gval = _to_py(r[gcol])
-                            if gval is not None and str(gval).strip() != "":
-                                obj['galaxy_name'] = str(gval).strip()
-                                obj[str(gcol)] = str(gval).strip()
+                        res_source = r if resolution_col in rows_column_names else full_row
+                        rv = float(_to_py(res_source[resolution_col]))
+                        if np.isfinite(rv) and rv > 0:
+                            obj['radius_pixels'] = rv
                     except Exception:
                         pass
-                    if resolution_col and resolution_col in rows.colnames:
-                        try:
-                            rv = float(_to_py(r[resolution_col]))
-                            if np.isfinite(rv) and rv > 0:
-                                obj['radius_pixels'] = rv
-                        except Exception:
-                            pass
-                    catalog_data.append(obj)
-                except Exception:
-                    pass
+                catalog_data.append(obj)
+                row_indices.append(idx)
+            except Exception:
+                pass
 
         # If parsing produced no objects, return early with a clear log
         if not catalog_data:
@@ -7796,7 +10207,22 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 ra_arr = np.array([o['ra'] for o in catalog_data])
                 dec_arr = np.array([o['dec'] for o in catalog_data])
 
-                px, py = image_wcs.all_world2pix(ra_arr, dec_arr, 0)  # origin=0 (array coords)
+                chunk_size = max(2000, len(catalog_data) // (os.cpu_count() or 2))
+                px = np.empty_like(ra_arr, dtype=float)
+                py = np.empty_like(dec_arr, dtype=float)
+
+                def _project_chunk(start, end):
+                    sub_px, sub_py = image_wcs.all_world2pix(ra_arr[start:end], dec_arr[start:end], 0)
+                    px[start:end] = sub_px
+                    py[start:end] = sub_py
+
+                with ThreadPoolExecutor(max_workers=min(4, (os.cpu_count() or 4))) as executor:
+                    futures = []
+                    for start in range(0, len(catalog_data), chunk_size):
+                        end = min(len(catalog_data), start + chunk_size)
+                        futures.append(executor.submit(_project_chunk, start, end))
+                    for f in futures:
+                        f.result()
 
                 keep = []
                 for i, o in enumerate(catalog_data):
@@ -7826,6 +10252,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     else:
                         keep.append(False)
 
+                row_indices = [ri for ri, k in zip(row_indices, keep) if k]
                 catalog_data = [o for o, k in zip(catalog_data, keep) if k]
                 print(f"WCS conversion kept {len(catalog_data)} objects in-bounds")
             except Exception as e:
@@ -7839,6 +10266,14 @@ def load_catalog_data(catalog_path_str, request: Request = None):
             for o in catalog_data:
                 o['x'] = np.nan; o['y'] = np.nan
                 o['x_bottom_left'] = np.nan; o['y_bottom_left'] = np.nan
+
+        if full_rows_data is not None and full_column_names:
+            try:
+                for obj, row_idx in zip(catalog_data, row_indices):
+                    full_row = full_rows_data[row_idx]
+                    _attach_row_columns(obj, full_row, full_column_names)
+            except Exception:
+                pass
 
         print(f"Final loaded object count for {catalog_name}: {len(catalog_data)}")
         for obj in catalog_data:
@@ -8994,4 +11429,81 @@ async def get_peak_finder_status(job_id: str):
 if __name__ == "__main__":
     # Allow running the API with: python main.py
     # Mirrors: uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-    uvicorn.run("main:app", host=UVICORN_HOST, port=UVICORN_PORT, reload=UVICORN_RELOAD_MODE)
+    def _env_flag(name: str, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+    def _server_url(host: str, port: int) -> str:
+        # If bound to 0.0.0.0, prefer loopback for opening a local browser.
+        open_host = host
+        if host in ("0.0.0.0", "::"):
+            open_host = "127.0.0.1"
+        return f"http://{open_host}:{port}/"
+
+    def _open_in_browser(url: str) -> None:
+        # Prefer OS-native openers; fall back to Python's webbrowser.
+        try:
+            if sys.platform == "darwin":
+                import subprocess
+                # Use Popen so we never block startup if macOS "open" is slow/hangs.
+                subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            if sys.platform.startswith("linux"):
+                import subprocess
+                subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            if sys.platform.startswith("win"):
+                import os as _os
+                _os.startfile(url)  # type: ignore[attr-defined]
+                return
+        except Exception:
+            pass
+        try:
+            import webbrowser
+            webbrowser.open(url, new=2)
+        except Exception:
+            pass
+
+    def _wait_then_open(url: str, timeout_s: float = 15.0) -> None:
+        import time
+        import urllib.request
+        # Give uvicorn a moment to bind/listen (especially with reload/spawn).
+        time.sleep(0.5)
+        end = time.time() + timeout_s
+        while time.time() < end:
+            try:
+                with urllib.request.urlopen(url, timeout=1) as resp:
+                    if getattr(resp, "status", 200) in (200, 204):
+                        break
+            except Exception:
+                time.sleep(0.2)
+        try:
+            _open_in_browser(url)
+        except Exception:
+            # Best-effort; still print the URL below so the user can open manually.
+            pass
+
+    # Auto-open the UI in a browser when running "python main.py"
+    # Disable with: NELOURA_OPEN_BROWSER=false
+    #
+    # Note: when running from an IDE/debugger, stdout is often not a TTY, so
+    # gating on isatty() prevents auto-open. Default to enabled instead.
+    if _env_flag("NELOURA_OPEN_BROWSER", default=True):
+        try:
+            url = _server_url(UVICORN_HOST, UVICORN_PORT)
+            threading.Thread(target=_wait_then_open, args=(url,), daemon=True).start()
+        except Exception:
+            pass
+
+    # Always print the URL so the user can open it manually if auto-open is blocked.
+    try:
+        print(f"Neloura UI: {_server_url(UVICORN_HOST, UVICORN_PORT)}")
+    except Exception:
+        pass
+
+    # Reload is great for dev, but can interfere with startup UX (and can double-open on some systems).
+    # Allow override via env; default to existing constant.
+    reload_mode = _env_flag("NELOURA_UVICORN_RELOAD", default=UVICORN_RELOAD_MODE)
+    uvicorn.run("main:app", host=UVICORN_HOST, port=UVICORN_PORT, reload=reload_mode)

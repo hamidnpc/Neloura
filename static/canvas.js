@@ -52,6 +52,23 @@ function verifyCanvasPopupMethods() {
 // Track the currently highlighted source index globally
 window.currentHighlightedSourceIndex = -1;
 
+// When WCS becomes available (common right after adding a new panel), redraw catalog overlay so
+// sources that were loaded with placeholder pixel coords (0,0) get reprojected via RA/Dec.
+try {
+    if (!window.__catalogOverlayWcsReadyListenerInstalled) {
+        const onWcsReady = () => {
+            try {
+                if (window.catalogCanvas && typeof canvasUpdateOverlay === 'function') {
+                    canvasUpdateOverlay();
+                }
+            } catch (_) {}
+        };
+        document.addEventListener('wcs:ready', onWcsReady);
+        document.addEventListener('wcs-ready', onWcsReady);
+        window.__catalogOverlayWcsReadyListenerInstalled = true;
+    }
+} catch (_) {}
+
 
 // Create a custom popup system for the canvas with improved styling
 // Add these properties to the canvasPopup object
@@ -73,8 +90,17 @@ window.canvasPopup = {
     
     // Initialize the DOM element for the popup
     initDomElement: function() {
-        // If already initialized, return
-        if (this.domElement) return;
+        // If already initialized, verify it's still in the DOM
+        if (this.domElement) {
+            // Check if element is still attached to DOM
+            if (!document.body.contains(this.domElement) && 
+                !(document.getElementById('openseadragon') && document.getElementById('openseadragon').contains(this.domElement))) {
+                console.warn('[canvasPopup.initDomElement] DOM element exists but is not attached, reinitializing');
+                this.domElement = null;
+            } else {
+                return this.domElement;
+            }
+        }
         
         // Create container for the popup
         const popup = document.createElement('div');
@@ -89,7 +115,8 @@ window.canvasPopup = {
         popup.style.boxShadow = '0 4px 10px rgba(0, 0, 0, 0.5)';
         popup.style.fontFamily = 'Arial, sans-serif';
         popup.style.fontSize = '14px';
-        popup.style.zIndex = '1000';
+        // Ensure the popup is always above region overlays, catalogs, etc.
+        popup.style.zIndex = '6000';
         popup.style.display = 'none';
         popup.style.width = this.width + 'px';
         popup.style.maxWidth = '350px';
@@ -177,11 +204,21 @@ window.canvasPopup = {
         popup.appendChild(header);
         popup.appendChild(content);
         
-        // Add to document
+        // Add to document – attach inside the viewer so it tracks its position,
+        // but make sure the viewer is a proper positioning context.
         const viewerElement = document.getElementById('openseadragon');
         if (viewerElement) {
+            try {
+                const cs = window.getComputedStyle ? window.getComputedStyle(viewerElement) : null;
+                const pos = cs ? cs.position : viewerElement.style.position;
+                if (!pos || pos === 'static') {
+                    viewerElement.style.position = 'relative';
+                }
+            } catch (_) {}
             viewerElement.appendChild(popup);
         } else {
+            // Fallback: attach to body using viewport coordinates
+            popup.style.position = 'fixed';
             document.body.appendChild(popup);
         }
         
@@ -191,6 +228,7 @@ window.canvasPopup = {
         // Make draggable
         this.makeDomPopupDraggable(popup, header);
         
+        console.log('[canvasPopup.initDomElement] DOM element created and attached, position:', popup.style.position);
         return popup;
     },
     
@@ -265,20 +303,58 @@ window.canvasPopup = {
     
     // Render method - now updates the DOM element instead of drawing on canvas
     render: function(ctx) {
-        if (!this.active || !this.domElement) return;
+        if (!this.active || !this.domElement) {
+            console.warn('[canvasPopup.render] Cannot render: active=', this.active, 'domElement=', !!this.domElement);
+            return;
+        }
+        
+        // Check if popup is attached to body (fixed) or viewer (absolute)
+        const isFixed = this.domElement.style.position === 'fixed' || 
+                       window.getComputedStyle(this.domElement).position === 'fixed';
         
         // Position the DOM element
         const viewerElement = document.getElementById('openseadragon');
-        const viewerWidth = viewerElement.clientWidth;
-        const viewerHeight = viewerElement.clientHeight;
         
-        // Position popup to the right of the point by default
-        let popupX = this.x + 15;
-        let popupY = this.y - this.height / 2;
+        let popupX, popupY;
+        let viewerWidth, viewerHeight;
+        
+        if (isFixed) {
+            // Popup is fixed to viewport - need to convert viewer-relative coords to viewport coords
+            if (viewerElement) {
+                const rect = viewerElement.getBoundingClientRect();
+                popupX = rect.left + this.x + 15;
+                popupY = rect.top + this.y - this.height / 2;
+                viewerWidth = window.innerWidth;
+                viewerHeight = window.innerHeight;
+            } else {
+                // Fallback: use click coordinates directly (assuming they're already viewport coords)
+                popupX = this.x + 15;
+                popupY = this.y - this.height / 2;
+                viewerWidth = window.innerWidth;
+                viewerHeight = window.innerHeight;
+            }
+        } else {
+            // Popup is absolute relative to viewer
+            if (!viewerElement) {
+                console.error('[canvasPopup.render] Viewer element not found, cannot position popup');
+                // Still try to show it at the click position as fallback
+                this.domElement.style.left = this.x + 'px';
+                this.domElement.style.top = this.y + 'px';
+                this.domElement.style.display = 'block';
+                return;
+            }
+            
+            viewerWidth = viewerElement.clientWidth || window.innerWidth;
+            viewerHeight = viewerElement.clientHeight || window.innerHeight;
+            
+            // Position popup to the right of the point by default
+            popupX = this.x + 15;
+            popupY = this.y - this.height / 2;
+        }
         
         // Adjust if popup would extend beyond right edge
         if (popupX + this.width > viewerWidth) {
-            popupX = this.x - this.width - 15;
+            popupX = (isFixed && viewerElement ? viewerElement.getBoundingClientRect().left + this.x : this.x) - this.width - 15;
         }
         
         // Adjust if popup would extend beyond top or bottom
@@ -294,10 +370,15 @@ window.canvasPopup = {
         
         // Ensure the DOM element is visible
         this.domElement.style.display = 'block';
+        
+        // Debug log to verify popup is being shown
+        console.log('[canvasPopup.render] Popup rendered at:', popupX, popupY, 'display:', this.domElement.style.display, 'isFixed:', isFixed);
     },
     
     // Show method - displays the popup for a source
     show: function(sourceIndex, x, y, content) {
+        console.log('[canvasPopup.show] Called with:', { sourceIndex, x, y, contentKeys: Object.keys(content || {}) });
+        
         this.active = true;
         this.sourceIndex = sourceIndex;
         this.x = x;
@@ -307,6 +388,24 @@ window.canvasPopup = {
         
         // Make sure the DOM element is initialized
         this.initDomElement();
+        
+        // Verify DOM element was created
+        if (!this.domElement) {
+            console.error('[canvasPopup.show] Failed to initialize DOM element');
+            return;
+        }
+        
+        // Adjust width for regions (to accommodate cutout and delete buttons)
+        const isRegion = this.content.source_type === 'region';
+        if (isRegion && this.domElement) {
+            this.width = 520;
+            this.domElement.style.width = this.width + 'px';
+            this.domElement.style.maxWidth = '520px';
+        } else if (this.domElement) {
+            this.width = 400;
+            this.domElement.style.width = this.width + 'px';
+            this.domElement.style.maxWidth = '350px';
+        }
         
         // Base height calculation
         let baseHeight = 70; // Header + padding
@@ -347,8 +446,38 @@ window.canvasPopup = {
         if (contentElement) {
             let html = '';
                     // Format coordinates with 6 decimal places
-        const x = typeof this.content.x_bottom_left === 'number' ? this.content.x_bottom_left.toFixed(2) : this.content.x_bottom_left;
-        const y = typeof this.content.y_bottom_left === 'number' ? this.content.y_bottom_left.toFixed(2) : this.content.y_bottom_left;
+        // Display coordinates using bottom-left origin (to match the coords overlay readout).
+        // Some call sites mistakenly pass OSD/top-left `imageY` into `y_bottom_left`, so prefer
+        // deriving bottom-left from `imageY` when available.
+        const resolvedXBottomLeft =
+            (typeof this.content.x_bottom_left === 'number' && Number.isFinite(this.content.x_bottom_left))
+                ? this.content.x_bottom_left
+                : ((typeof this.content.imageX === 'number' && Number.isFinite(this.content.imageX))
+                    ? this.content.imageX
+                    : ((typeof this.content.x === 'number' && Number.isFinite(this.content.x)) ? this.content.x : this.content.x_bottom_left));
+
+        let resolvedYBottomLeft =
+            (typeof this.content.y_bottom_left === 'number' && Number.isFinite(this.content.y_bottom_left))
+                ? this.content.y_bottom_left
+                : ((typeof this.content.imageY === 'number' && Number.isFinite(this.content.imageY))
+                    ? convertYToBottomOrigin(this.content.imageY)
+                    : ((typeof this.content.y === 'number' && Number.isFinite(this.content.y))
+                        ? convertYToBottomOrigin(this.content.y)
+                        : this.content.y_bottom_left));
+
+        // If we have imageY, ensure the displayed Y matches its bottom-left conversion.
+        // This fixes cases where y_bottom_left was accidentally set to the raw top-left imageY.
+        if (typeof this.content.imageY === 'number' && Number.isFinite(this.content.imageY)) {
+            const yFromImage = convertYToBottomOrigin(this.content.imageY);
+            if (typeof yFromImage === 'number' && Number.isFinite(yFromImage) &&
+                typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft) &&
+                Math.abs(yFromImage - resolvedYBottomLeft) > 1e-3) {
+                resolvedYBottomLeft = yFromImage;
+            }
+        }
+
+        const x = (typeof resolvedXBottomLeft === 'number' && Number.isFinite(resolvedXBottomLeft)) ? resolvedXBottomLeft.toFixed(2) : resolvedXBottomLeft;
+        const y = (typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft)) ? resolvedYBottomLeft.toFixed(2) : resolvedYBottomLeft;
         html += `
             <div style="margin-bottom: 8px;">
                 <span style="color: #aaa;">Position (image x, y):</span> ${x}, ${y}
@@ -356,9 +485,28 @@ window.canvasPopup = {
         `;
         
             
-            if (hasRA && hasDec) {
-                const ra = typeof this.content.ra === 'number' ? this.content.ra.toFixed(6) : this.content.ra;
-                const dec = typeof this.content.dec === 'number' ? this.content.dec.toFixed(6) : this.content.dec;
+            // Prefer computing RA/Dec from current WCS at the clicked image pixel.
+            // Catalogs may contain RA/Dec in a different convention or stale values; WCS readout
+            // should match the viewer's coordinate overlay.
+            try {
+                const ix = (typeof this.content.imageX === 'number' && Number.isFinite(this.content.imageX))
+                    ? this.content.imageX
+                    : ((typeof this.content.x === 'number' && Number.isFinite(this.content.x)) ? this.content.x : null);
+                const iy = (typeof this.content.imageY === 'number' && Number.isFinite(this.content.imageY))
+                    ? this.content.imageY
+                    : ((typeof this.content.y === 'number' && Number.isFinite(this.content.y)) ? this.content.y : null);
+                if (ix != null && iy != null) {
+                    const world = getWorldCoordinatesFromImage(ix, iy);
+                    if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
+                        this.content.ra = world.ra;
+                        this.content.dec = world.dec;
+                    }
+                }
+            } catch (_) {}
+
+            if (('ra' in this.content) && ('dec' in this.content) && Number.isFinite(this.content.ra) && Number.isFinite(this.content.dec)) {
+                const ra = this.content.ra.toFixed(6);
+                const dec = this.content.dec.toFixed(6);
                 html += `
                     <div style="margin-bottom: 8px;">
                         <span style="color: #aaa;">Coordinates (RA, Dec):</span> ${ra}°, ${dec}°
@@ -403,11 +551,14 @@ window.canvasPopup = {
             `;
             }
             else{
+                const isRegion = this.content.source_type === 'region';
                 html += `
-                <div style="margin-top: 12px; text-align: center;">
-                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show SED</button>
-                    <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show Properties</button>
-                    <button id="show-rgb-btn" class="rgb-button" style="padding: 6px 12px; background-color: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0 3px;">Show RGB</button>
+                <div style="margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;">
+                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Show SED</button>
+                    <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Show Properties</button>
+                    <button id="show-rgb-btn" class="rgb-button" style="padding: 6px 12px; background-color: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer;">Show RGB</button>
+                    ${isRegion ? '<button id="cutout-region-btn" class="cutout-region-button" style="padding: 6px 12px; background-color: #9C27B0; color: white; border: none; border-radius: 4px; cursor: pointer;">Cutout</button>' : ''}
+                    ${isRegion ? '<button id="delete-region-btn" class="delete-region-button" style="padding: 6px 12px; background-color: #DC2626; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete Region</button>' : ''}
                 </div>
             `;
             }
@@ -422,6 +573,8 @@ window.canvasPopup = {
                 const sedButton = document.getElementById('show-sed-btn');
                 const propertiesButton = document.getElementById('show-properties-btn');
                 const rgbButton = document.getElementById('show-rgb-btn');
+                const cutoutRegionButton = document.getElementById('cutout-region-btn');
+                const deleteRegionButton = document.getElementById('delete-region-btn');
                 
                 if (sedButton) {
                     sedButton.addEventListener('click', (e) => {
@@ -516,7 +669,7 @@ window.canvasPopup = {
                             galaxyNameForRgb = window.galaxyNameFromSearch.trim();
                         }
                         
-                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:???????????', galaxyNameForRgb);
+                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForRgb);
                         console.log('[canvasPopup] Content object:', this.content);
                         console.log('[canvasPopup] Available global variables - currentCatalogName:', window.currentCatalogName, 'activeCatalog:', window.activeCatalog);
                         
@@ -543,11 +696,112 @@ window.canvasPopup = {
                         rgbButton.style.backgroundColor = '#FF9800';
                     });
                 }
+                
+                if (cutoutRegionButton) {
+                    cutoutRegionButton.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        if (!this.content.ra || !this.content.dec) {
+                            console.error('[canvasPopup] Missing RA or Dec coordinates for cutout');
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification('Cannot create cutout: Missing coordinates', 3500, 'error');
+                            } else {
+                                alert('Cannot create cutout: Missing coordinates');
+                            }
+                            return;
+                        }
+                        
+                        const regionData = {
+                            ra: this.content.ra,
+                            dec: this.content.dec,
+                            region_type: this.content.region_type,
+                            region_id: this.content.region_id,
+                            radius_pixels: this.content.radius_pixels,
+                            width_pixels: this.content.width_pixels,
+                            height_pixels: this.content.height_pixels,
+                            minor_radius_pixels: this.content.minor_radius_pixels,
+                            vertices: Array.isArray(this.content.vertices) ? this.content.vertices : null,
+                            fits_path: window.currentFitsFile || null,
+                            hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
+                        };
+                        regionData.galaxy_name = resolveGalaxyNameForCutout(this.content);
+                        
+                        try {
+                            cutoutRegionButton.disabled = true;
+                            cutoutRegionButton.textContent = 'Creating...';
+                            
+                            // Ensure session ID exists
+                            if (!window.__sid) {
+                                const sessionRes = await fetch('/session/start');
+                                const sessionJson = await sessionRes.json();
+                                if (sessionJson && sessionJson.session_id) {
+                                    window.__sid = sessionJson.session_id;
+                                }
+                            }
+                            
+                            const headers = { 'Content-Type': 'application/json' };
+                            if (window.__sid) {
+                                headers['X-Session-ID'] = window.__sid;
+                            }
+                            
+                            const response = await fetch('/region-cutout/', {
+                                method: 'POST',
+                                headers: headers,
+                                body: JSON.stringify(regionData)
+                            });
+                            
+                            if (!response.ok) {
+                                const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+                                throw new Error(error.detail || 'Failed to create cutout');
+                            }
+                            
+                            const result = await response.json();
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification(`Cutout saved: ${result.filename}`, 3000, 'success');
+                            } else {
+                                console.log('Cutout saved successfully:', result.filename);
+                            }
+                        } catch (err) {
+                            console.error('[canvasPopup] Error creating cutout:', err);
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification(`Error creating cutout: ${err.message}`, 4000, 'error');
+                            } else {
+                                console.error('Error creating cutout:', err.message);
+                            }
+                        } finally {
+                            cutoutRegionButton.disabled = false;
+                            cutoutRegionButton.textContent = 'Cutout';
+                        }
+                    });
+                }
+                
+                if (deleteRegionButton) {
+                    deleteRegionButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (typeof window.deleteRegionById === 'function' && this.content.region_id) {
+                            window.deleteRegionById(this.content.region_id);
+                        } else {
+                            console.warn('[canvasPopup] deleteRegionById not available or missing region_id');
+                        }
+                    });
+                }
             }, 0);
         }
         
         // Update position and show
         this.render(null);
+        
+        // Verify popup is actually visible
+        if (this.domElement && this.domElement.style.display !== 'block') {
+            console.error('[canvasPopup.show] Popup DOM element display is not "block" after render:', this.domElement.style.display);
+            // Force it to be visible
+            this.domElement.style.display = 'block';
+        }
+        
+        // Double-check popup is in DOM and visible
+        if (this.domElement && (!document.body.contains(this.domElement) && 
+            !(document.getElementById('openseadragon') && document.getElementById('openseadragon').contains(this.domElement)))) {
+            console.error('[canvasPopup.show] Popup DOM element is not attached to DOM after render');
+        }
         
         // Highlight the source on canvas
         if (window.currentHighlightedSourceIndex !== sourceIndex) {
@@ -646,21 +900,46 @@ function canvasUpdateOverlay() {
     // Reset source map
     window.catalogSourceMap = [];
 
-    // Resolve image coordinates for each source (handle RC maps / missing x,y)
+    // Resolve image coordinates for each source (handle RC maps / missing x,y).
+    // Important: some loaders (e.g. /catalog-binary-raw) can return x_pixels=y_pixels=0 for all rows.
+    // Treat (0,0) as "missing" and recompute from RA/Dec via current WCS when available.
     const visibleSources = catalogData.filter((source, index) => {
         if (!source) return false;
 
         // Prefer explicit image coords if finite
-        let imgX = (Number.isFinite(source.x) ? source.x : (Number.isFinite(source.x_pixels) ? source.x_pixels : null));
-        let imgY = (Number.isFinite(source.y) ? source.y : (Number.isFinite(source.y_pixels) ? source.y_pixels : null));
+        let imgX = (Number.isFinite(source.x) ? source.x : null);
+        let imgY = (Number.isFinite(source.y) ? source.y : null);
+        if (Number.isFinite(imgX) && Number.isFinite(imgY) && imgX === 0 && imgY === 0) {
+            imgX = null;
+            imgY = null;
+        }
+
+        // Fallback to backend-provided pixel coords (if present)
+        if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) {
+            const px = Number.isFinite(source.x_pixels) ? source.x_pixels : null;
+            const py = Number.isFinite(source.y_pixels) ? source.y_pixels : null;
+            if (Number.isFinite(px) && Number.isFinite(py) && !(px === 0 && py === 0)) {
+                imgX = px;
+                imgY = py;
+            }
+        }
 
         // If missing, compute from RA/Dec via current WCS
-        if ((!Number.isFinite(imgX) || !Number.isFinite(imgY)) && Number.isFinite(source.ra) && Number.isFinite(source.dec) && window.parsedWCS && window.parsedWCS.hasWCS) {
+        if ((!Number.isFinite(imgX) || !Number.isFinite(imgY)) && Number.isFinite(source.ra) && Number.isFinite(source.dec)) {
             try {
-                const p = celestialToPixel(source.ra, source.dec, window.parsedWCS);
-                if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-                    imgX = p.x;
-                    imgY = p.y;
+                // Prefer the generic helper from main.js (handles flip_y and parseWCS fallback)
+                if (typeof worldToPixelGeneric === 'function') {
+                    const p = worldToPixelGeneric(source.ra, source.dec);
+                    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                        imgX = p.x;
+                        imgY = p.y;
+                    }
+                } else if (window.parsedWCS && window.parsedWCS.hasWCS && typeof window.parsedWCS.worldToPixels === 'function') {
+                    const p2 = window.parsedWCS.worldToPixels(source.ra, source.dec);
+                    if (p2 && Number.isFinite(p2.x) && Number.isFinite(p2.y)) {
+                        imgX = p2.x;
+                        imgY = p2.y;
+                    }
                 }
             } catch (_) {}
         }
@@ -680,9 +959,43 @@ function canvasUpdateOverlay() {
     });
 
     // Draw each source with its individual style
+    // Get base TiledImage (index 0) for accurate coordinate conversion (fixes multi-image warning)
+    // When segments are loaded, they're at index 1+, so we always use index 0 for the base image
+    const tiledImage = activeOsViewer.world && activeOsViewer.world.getItemAt && activeOsViewer.world.getItemAt(0);
+    const hasTiledImageMethod = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function';
+    
+    // Check for multiple images: count items or check if item at index 1 exists
+    let hasMultipleImages = false;
+    if (activeOsViewer.world) {
+        if (typeof activeOsViewer.world.getItemsCount === 'function') {
+            hasMultipleImages = activeOsViewer.world.getItemsCount() > 1;
+        } else if (activeOsViewer.world.getItemAt) {
+            // Fallback: check if second item exists
+            hasMultipleImages = !!activeOsViewer.world.getItemAt(1);
+        }
+    }
+    
+    // If multiple images exist but TiledImage method unavailable, skip overlay to avoid warnings
+    if (hasMultipleImages && !hasTiledImageMethod) {
+        console.warn('[canvas] Multiple images detected but TiledImage method unavailable, skipping overlay update');
+        return;
+    }
+    
     visibleSources.forEach((source, visibleIndex) => {
         const imagePoint = new OpenSeadragon.Point(source.x, source.y);
-        const center = activeOsViewer.viewport.imageToViewerElementCoordinates(imagePoint);
+        // Use TiledImage for image->viewport, then viewport->viewerElement
+        // NEVER use viewport method if multiple images exist (already checked above)
+        let viewportPoint;
+        if (hasTiledImageMethod) {
+            viewportPoint = tiledImage.imageToViewportCoordinates(imagePoint);
+        } else if (hasMultipleImages) {
+            // Multiple images but TiledImage unavailable - skip this source
+            return;
+        } else {
+            // Fallback only if single image and TiledImage method unavailable
+            viewportPoint = activeOsViewer.viewport.imageToViewportCoordinates(imagePoint);
+        }
+        const center = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
 
         // Get radius from source or use default
         const radiusInImageCoords = source.radius_pixels || 5;
@@ -691,8 +1004,20 @@ function canvasUpdateOverlay() {
         const sourceCenter = new OpenSeadragon.Point(source.x, source.y);
         const sourceEdge = new OpenSeadragon.Point(source.x + radiusInImageCoords, source.y);
 
-        const screenCenter = activeOsViewer.viewport.imageToViewerElementCoordinates(sourceCenter);
-        const screenEdge = activeOsViewer.viewport.imageToViewerElementCoordinates(sourceEdge);
+        // Use TiledImage for image->viewport, then viewport->viewerElement
+        let viewportCenter, viewportEdge;
+        if (hasTiledImageMethod) {
+            viewportCenter = tiledImage.imageToViewportCoordinates(sourceCenter);
+            viewportEdge = tiledImage.imageToViewportCoordinates(sourceEdge);
+        } else if (hasMultipleImages) {
+            // Multiple images but TiledImage unavailable - skip this source
+            return;
+        } else {
+            viewportCenter = activeOsViewer.viewport.imageToViewportCoordinates(sourceCenter);
+            viewportEdge = activeOsViewer.viewport.imageToViewportCoordinates(sourceEdge);
+        }
+        const screenCenter = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportCenter);
+        const screenEdge = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportEdge);
         
         // Calculate distance for radius (handles rotation correctly)
         const dx = screenEdge.x - screenCenter.x;
@@ -735,9 +1060,31 @@ function canvasUpdateOverlay() {
             ctx.fillStyle = source.fillColor || 'rgba(255, 140, 0, 0.3)';
         }
 
-        // Draw the circle
+        // Draw shape (circle / hexagon)
+        const rs = (() => {
+            if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+            try {
+                const topRs = window.top && window.top.regionStyles;
+                if (topRs && typeof topRs === 'object') return topRs;
+            } catch (_) {}
+            return {};
+        })();
+        const shapeType = (source && source.shape) ? String(source.shape) : (rs.shape ? String(rs.shape) : 'circle');
         ctx.beginPath();
-        ctx.arc(center.x, center.y, radius, 0, 2 * Math.PI, false);
+        if (shapeType === 'hexagon') {
+            const sides = 6;
+            const angleOffset = -Math.PI / 2; // pointy top/bottom
+            for (let s = 0; s < sides; s++) {
+                const ang = angleOffset + (s * 2 * Math.PI) / sides;
+                const px = center.x + radius * Math.cos(ang);
+                const py = center.y + radius * Math.sin(ang);
+                if (s === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+        } else {
+            ctx.arc(center.x, center.y, radius, 0, 2 * Math.PI, false);
+        }
         ctx.fill();
         ctx.stroke();
 
@@ -1289,18 +1636,59 @@ function canvasHandleClick_forCanvasPopup(event) { // RENAMED. THIS WAS THE CURR
         }
 
         // --- FIX START ---
+        // Resolve image coordinates - try multiple sources
+        let imgX = closestSource.imageX;
+        let imgY = closestSource.imageY;
+        
+        // If image coordinates are missing or invalid, try to get from sourceObj
+        if (!Number.isFinite(imgX) || !Number.isFinite(imgY) || imgX === 0 || imgY === 0) {
+            imgX = Number.isFinite(sourceObj.x) ? sourceObj.x : (Number.isFinite(sourceObj.x_pixels) ? sourceObj.x_pixels : null);
+            imgY = Number.isFinite(sourceObj.y) ? sourceObj.y : (Number.isFinite(sourceObj.y_pixels) ? sourceObj.y_pixels : null);
+        }
+        
+        // If still missing, compute from RA/Dec via WCS
+        if ((!Number.isFinite(imgX) || !Number.isFinite(imgY) || imgX === 0 || imgY === 0) && 
+            Number.isFinite(sourceObj.ra) && Number.isFinite(sourceObj.dec)) {
+            try {
+                if (typeof worldToPixelGeneric === 'function') {
+                    const p = worldToPixelGeneric(sourceObj.ra, sourceObj.dec);
+                    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                        imgX = p.x;
+                        imgY = p.y;
+                    }
+                } else if (window.parsedWCS && window.parsedWCS.hasWCS && typeof window.parsedWCS.worldToPixels === 'function') {
+                    const p2 = window.parsedWCS.worldToPixels(sourceObj.ra, sourceObj.dec);
+                    if (p2 && Number.isFinite(p2.x) && Number.isFinite(p2.y)) {
+                        imgX = p2.x;
+                        imgY = p2.y;
+                    }
+                }
+            } catch (_) {}
+        }
+        
         // To ensure all data is present for the popup, we'll use the rich `closestSource`
         // object we created earlier, which now contains all necessary properties.
         // We will merge it with any extra properties from `sourceObj` just in case.
-        // const mergedSourceData = { ...sourceObj, ...closestSource };
-        
         const mergedSourceData = {
             ...closestSource,
             ...sourceObj,               // sourceObj.x/sourceObj.y (image pixels) win
-            imageX: closestSource.imageX,
-            imageY: closestSource.imageY,
+            imageX: Number.isFinite(imgX) ? imgX : closestSource.imageX,
+            imageY: Number.isFinite(imgY) ? imgY : closestSource.imageY,
             screenX: closestSource.x,
-            screenY: closestSource.y
+            screenY: closestSource.y,
+            // Map image coordinates to the format expected by popup
+            x_bottom_left: Number.isFinite(imgX) ? imgX : (Number.isFinite(closestSource.imageX) ? closestSource.imageX : (Number.isFinite(sourceObj.x) ? sourceObj.x : undefined)),
+            // Bottom-left convention for display / backend cutouts (matches coords overlay).
+            y_bottom_left: Number.isFinite(imgY)
+                ? convertYToBottomOrigin(imgY)
+                : (Number.isFinite(closestSource.imageY)
+                    ? convertYToBottomOrigin(closestSource.imageY)
+                    : (Number.isFinite(sourceObj.y_bottom_left)
+                        ? sourceObj.y_bottom_left
+                        : (Number.isFinite(sourceObj.y) ? convertYToBottomOrigin(sourceObj.y) : undefined))),
+            // Also include x and y for backward compatibility
+            x: Number.isFinite(imgX) ? imgX : (Number.isFinite(closestSource.imageX) ? closestSource.imageX : (Number.isFinite(sourceObj.x) ? sourceObj.x : undefined)),
+            y: Number.isFinite(imgY) ? imgY : (Number.isFinite(closestSource.imageY) ? closestSource.imageY : (Number.isFinite(sourceObj.y) ? sourceObj.y : undefined))
           };
 
         console.log("Source object for popup:", mergedSourceData);
@@ -1543,6 +1931,21 @@ function canvasAddCatalogOverlay(catalogData) {
     }, 50);
     activeOsViewer.addHandler('zoom', debouncedZoomUpdate);
     
+    // Initial render - ensure overlay is drawn immediately with correct coordinates
+    // Use a small delay to ensure canvas is fully set up and viewer viewport is ready
+    setTimeout(() => {
+        if (typeof canvasUpdateOverlay === 'function') {
+            canvasUpdateOverlay();
+        }
+    }, 100);
+    
+    // Let the shared top-level controls know a catalog overlay is active for this pane
+    try {
+        if (typeof renderCatalogOverlayControls === 'function') {
+            renderCatalogOverlayControls();
+        }
+    } catch (_) {}
+    
     return catalogData.length;
 }
 
@@ -1594,6 +1997,2740 @@ function canvasClearCatalogOverlay() {
     // --- End clear scatter highlight ---
     
 }
+
+// -------------------------------------------------------------
+// Region drawing overlay + toolbar integration
+// -------------------------------------------------------------
+const REGION_TOOLS = [
+    { id: 'circle', cursor: 'crosshair' },
+    { id: 'rectangle', cursor: 'crosshair' },
+    { id: 'ellipse', cursor: 'crosshair' },
+    { id: 'hexagon', cursor: 'crosshair' }
+];
+
+const regionDrawingState = {
+    activeTool: null,
+    // Mouse mode controls behavior when no drawing tool is active:
+    // - 'pointer': clicking a region selects it / opens popup
+    // - 'pan': ignore region hit-testing so user can freely pan/zoom
+    mouseMode: 'pointer',
+    shapes: [],
+    previewShape: null,
+    startImagePoint: null,
+    currentImagePoint: null,
+    isDrawing: false,
+    pointerMoved: false,
+    pointerDownImage: null,
+    pointerDownPixel: null,
+    selectedShapeId: null,
+    counter: 1
+};
+
+let regionOverlayContainer = null;
+let regionOverlayCanvas = null;
+let regionOverlayPixelRatio = window.devicePixelRatio || 1;
+let regionViewerHandlersBound = false;
+let regionResizeTimeoutId = null;
+let regionViewerPollId = null;
+const REGION_CLICK_TOLERANCE_PX = 5;
+const regionWorldCache = { header: null, wcs: null };
+
+// -------------------------------------------------------------
+// Multi zoom inset (region cutout) overlays
+// -------------------------------------------------------------
+let __regionZoomInsets = [];
+let __regionZoomInsetIdCounter = 1;
+
+function _iosGlassStyle() {
+    return {
+        background: 'rgba(255,255,255,0.14)',
+        border: '1px solid rgba(255,255,255,0.22)',
+        backdropFilter: 'blur(14px) saturate(160%)',
+        WebkitBackdropFilter: 'blur(14px) saturate(160%)'
+    };
+}
+
+// -------------------------------------------------------------
+// Zoom inset (region cutout) overlay
+// -------------------------------------------------------------
+let __regionZoomInset = null;
+let __regionZoomInsetAbort = null;
+let __regionZoomInsetUrl = null;
+let __regionZoomInsetTargetRegionId = null;
+let __regionZoomInsetCalloutStyle = {
+    color: '#60A5FA',      // sky-ish blue
+    width: 6,              // px
+    style: 'solid'         // 'solid' | 'dashed'
+};
+
+function _cleanupRegionZoomInsetUrl() {
+    if (__regionZoomInsetUrl) {
+        try { URL.revokeObjectURL(__regionZoomInsetUrl); } catch (_) {}
+        __regionZoomInsetUrl = null;
+    }
+}
+
+function ensureRegionZoomInsetOverlay() {
+    if (__regionZoomInset && __regionZoomInset.el) return __regionZoomInset;
+    const viewerElement = document.getElementById('openseadragon') || document.body;
+
+    const el = document.createElement('div');
+    el.id = 'region-zoom-inset';
+    Object.assign(el.style, {
+        position: viewerElement === document.body ? 'fixed' : 'absolute',
+        right: '12px',
+        bottom: '12px',
+        width: '260px',
+        height: '260px',
+        background: 'rgba(10,10,10,0.92)',
+        border: '1px solid rgba(255,255,255,0.15)',
+        borderRadius: '10px',
+        boxShadow: '0 10px 26px rgba(0,0,0,0.55)',
+        zIndex: '9000',
+        overflow: 'hidden',
+        display: 'none',
+        color: '#fff',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+        height: '34px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 10px',
+        borderBottom: '1px solid rgba(255,255,255,0.12)',
+        cursor: 'move',
+        userSelect: 'none',
+        background: 'rgba(255,255,255,0.04)'
+    });
+
+    const title = document.createElement('div');
+    title.textContent = 'Zoom inset';
+    Object.assign(title.style, { fontSize: '12px', fontWeight: '600', opacity: '0.92' });
+    header.appendChild(title);
+
+    // Allow users to rename the inset title inline (no popup)
+    title.style.cursor = 'text';
+    title.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        title.contentEditable = 'true';
+        title.spellcheck = false;
+        title.style.outline = 'none';
+        title.style.background = 'rgba(255,255,255,0.06)';
+        title.style.borderRadius = '6px';
+        title.style.padding = '2px 6px';
+        try {
+            const range = document.createRange();
+            range.selectNodeContents(title);
+            const sel = window.getSelection();
+            sel && sel.removeAllRanges();
+            sel && sel.addRange(range);
+        } catch (_) {}
+        try { title.focus(); } catch (_) {}
+    });
+    const finishTitleEdit = (commit) => {
+        if (title.contentEditable !== 'true') return;
+        const current = (title.textContent || '').trim() || 'Zoom inset';
+        title.contentEditable = 'false';
+        title.style.background = '';
+        title.style.padding = '';
+        // If user cleared it, revert
+        title.textContent = current;
+        try { renderRegionOverlay(); } catch (_) {}
+    };
+    title.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            finishTitleEdit(true);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            // revert by just finishing; current text already present, but we keep it non-empty
+            finishTitleEdit(false);
+        }
+    });
+    title.addEventListener('blur', () => finishTitleEdit(true));
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.innerHTML = '&times;';
+    close.setAttribute('aria-label', 'Close zoom inset');
+    Object.assign(close.style, {
+        width: '26px',
+        height: '26px',
+        borderRadius: '7px',
+        border: '1px solid rgba(255,255,255,0.14)',
+        background: 'rgba(0,0,0,0.25)',
+        color: 'rgba(255,255,255,0.85)',
+        cursor: 'pointer',
+        lineHeight: '1',
+        fontSize: '18px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+    close.addEventListener('click', (e) => {
+        e.stopPropagation();
+        try { el.style.display = 'none'; } catch (_) {}
+        __regionZoomInsetTargetRegionId = null;
+        try { renderRegionOverlay(); } catch (_) {}
+    });
+    header.appendChild(close);
+
+    // Very simple config: callout color + line style + thickness
+    const cfgWrap = document.createElement('div');
+    Object.assign(cfgWrap.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        marginLeft: '10px'
+    });
+
+    const gear = document.createElement('button');
+    gear.type = 'button';
+    gear.setAttribute('aria-label', 'Inset settings');
+    gear.innerHTML = '&#9881;'; // gear
+    Object.assign(gear.style, {
+        width: '26px',
+        height: '26px',
+        borderRadius: '7px',
+        border: '1px solid rgba(255,255,255,0.14)',
+        background: 'rgba(0,0,0,0.25)',
+        color: 'rgba(255,255,255,0.85)',
+        cursor: 'pointer',
+        fontSize: '14px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const cfg = document.createElement('div');
+    Object.assign(cfg.style, {
+        position: 'absolute',
+        top: '36px',
+        right: '10px',
+        background: 'rgba(10,10,10,0.92)',
+        border: '1px solid rgba(255,255,255,0.14)',
+        borderRadius: '10px',
+        padding: '8px',
+        display: 'none',
+        zIndex: '9010',
+        backdropFilter: 'blur(3px)'
+    });
+
+    const row = (labelText) => {
+        const r = document.createElement('div');
+        Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' });
+        const lab = document.createElement('div');
+        lab.textContent = labelText;
+        Object.assign(lab.style, { fontSize: '11px', opacity: '0.8', width: '76px' });
+        r.appendChild(lab);
+        return { r, lab };
+    };
+
+    const r1 = row('Color');
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = __regionZoomInsetCalloutStyle.color || '#60A5FA';
+    Object.assign(colorInput.style, { width: '36px', height: '22px', padding: '0', border: 'none', background: 'transparent', cursor: 'pointer' });
+    r1.r.appendChild(colorInput);
+    cfg.appendChild(r1.r);
+
+    const r2 = row('Style');
+    const styleSelect = document.createElement('select');
+    styleSelect.innerHTML = `<option value="solid">Solid</option><option value="dashed">Dashed</option>`;
+    styleSelect.value = __regionZoomInsetCalloutStyle.style || 'solid';
+    Object.assign(styleSelect.style, {
+        fontSize: '12px',
+        color: '#fff',
+        background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '8px',
+        padding: '4px 8px',
+        cursor: 'pointer'
+    });
+    r2.r.appendChild(styleSelect);
+    cfg.appendChild(r2.r);
+
+    const r3 = row('Width');
+    const widthRange = document.createElement('input');
+    widthRange.type = 'range';
+    widthRange.min = '2';
+    widthRange.max = '12';
+    widthRange.step = '1';
+    widthRange.value = String(__regionZoomInsetCalloutStyle.width || 6);
+    r3.r.appendChild(widthRange);
+    cfg.appendChild(r3.r);
+
+    const applyCfg = () => {
+        __regionZoomInsetCalloutStyle = {
+            color: colorInput.value || '#60A5FA',
+            style: styleSelect.value === 'dashed' ? 'dashed' : 'solid',
+            width: Math.max(2, Math.min(12, parseInt(widthRange.value || '6', 10) || 6))
+        };
+        // Tint inset border to match
+        try {
+            el.style.borderColor = __regionZoomInsetCalloutStyle.color;
+        } catch (_) {}
+        try { renderRegionOverlay(); } catch (_) {}
+    };
+    colorInput.addEventListener('input', applyCfg);
+    styleSelect.addEventListener('change', applyCfg);
+    widthRange.addEventListener('input', applyCfg);
+
+    gear.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cfg.style.display = (cfg.style.display === 'none' || cfg.style.display === '') ? 'block' : 'none';
+    });
+    // Close config if clicking elsewhere inside inset
+    el.addEventListener('mousedown', (e) => {
+        try {
+            if (cfg.style.display === 'block' && !cfg.contains(e.target) && e.target !== gear) {
+                cfg.style.display = 'none';
+            }
+        } catch (_) {}
+    });
+
+    // Put gear next to close (right side)
+    cfgWrap.appendChild(gear);
+    header.insertBefore(cfgWrap, close);
+    el.appendChild(cfg);
+
+    const body = document.createElement('div');
+    Object.assign(body.style, {
+        position: 'relative',
+        width: '100%',
+        height: 'calc(100% - 34px)',
+        background: '#000'
+    });
+
+    const img = document.createElement('div');
+    Object.assign(img.style, {
+        position: 'absolute',
+        inset: '0',
+        backgroundSize: 'contain',
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center'
+    });
+    body.appendChild(img);
+
+    const spinner = document.createElement('div');
+    Object.assign(spinner.style, {
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        width: '22px',
+        height: '22px',
+        marginLeft: '-11px',
+        marginTop: '-11px',
+        borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.22)',
+        borderTopColor: 'rgba(255,255,255,0.85)',
+        animation: 'regionInsetSpin 0.9s linear infinite',
+        display: 'none'
+    });
+    body.appendChild(spinner);
+
+    if (!document.getElementById('region-inset-style')) {
+        const st = document.createElement('style');
+        st.id = 'region-inset-style';
+        st.textContent = `@keyframes regionInsetSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`;
+        document.head.appendChild(st);
+    }
+
+    el.appendChild(header);
+    el.appendChild(body);
+    viewerElement.appendChild(el);
+
+    // draggable
+    (function makeDraggable() {
+        let dragging = false;
+        let sx = 0, sy = 0;
+        let startLeft = 0, startTop = 0;
+        const onDown = (e) => {
+            e.preventDefault();
+            dragging = true;
+            const r = el.getBoundingClientRect();
+            sx = e.clientX; sy = e.clientY;
+            startLeft = r.left; startTop = r.top;
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+        const onMove = (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - sx;
+            const dy = e.clientY - sy;
+            el.style.left = `${startLeft + dx}px`;
+            el.style.top = `${startTop + dy}px`;
+            try { renderRegionOverlay(); } catch (_) {}
+        };
+        const onUp = () => {
+            dragging = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        header.addEventListener('mousedown', onDown);
+    })();
+
+    // resizable (bottom-right handle)
+    const resizeHandle = document.createElement('div');
+    Object.assign(resizeHandle.style, {
+        position: 'absolute',
+        right: '6px',
+        bottom: '6px',
+        width: '14px',
+        height: '14px',
+        borderRight: '2px solid rgba(255,255,255,0.35)',
+        borderBottom: '2px solid rgba(255,255,255,0.35)',
+        borderRadius: '2px',
+        cursor: 'nwse-resize',
+        opacity: '0.8',
+        pointerEvents: 'auto'
+    });
+    el.appendChild(resizeHandle);
+    (function makeResizable() {
+        let resizing = false;
+        let sx = 0, sy = 0;
+        let startW = 260, startH = 260;
+        const minSize = 180;
+        const maxSize = 560;
+        const onDown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resizing = true;
+            sx = e.clientX; sy = e.clientY;
+            const r = el.getBoundingClientRect();
+            startW = r.width; startH = r.height;
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+        const onMove = (e) => {
+            if (!resizing) return;
+            const dx = e.clientX - sx;
+            const dy = e.clientY - sy;
+            const next = Math.max(minSize, Math.min(maxSize, Math.round(Math.max(startW + dx, startH + dy))));
+            el.style.width = `${next}px`;
+            el.style.height = `${next}px`;
+            try { renderRegionOverlay(); } catch (_) {}
+        };
+        const onUp = () => {
+            resizing = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        resizeHandle.addEventListener('mousedown', onDown);
+    })();
+
+    __regionZoomInset = { el, title, img, spinner };
+    // Apply style once on creation
+    try { el.style.borderColor = __regionZoomInsetCalloutStyle.color; } catch (_) {}
+    return __regionZoomInset;
+}
+
+function _removeZoomInsetById(insetId) {
+    const idx = __regionZoomInsets.findIndex(z => z && z.id === insetId);
+    if (idx >= 0) {
+        const z = __regionZoomInsets[idx];
+        __regionZoomInsets.splice(idx, 1);
+        try { if (z.abort) z.abort.abort(); } catch (_) {}
+        try { if (z.objectUrl) URL.revokeObjectURL(z.objectUrl); } catch (_) {}
+        try { if (z.el && z.el.parentNode) z.el.parentNode.removeChild(z.el); } catch (_) {}
+    }
+}
+
+function _removeZoomInsetsForRegion(regionId) {
+    if (!regionId) return;
+    const ids = __regionZoomInsets.filter(z => z && String(z.regionId) === String(regionId)).map(z => z.id);
+    ids.forEach(_removeZoomInsetById);
+}
+
+function _removeAllZoomInsets() {
+    const ids = __regionZoomInsets.map(z => z && z.id).filter(Boolean);
+    ids.forEach(_removeZoomInsetById);
+}
+
+function _serializeZoomInsets() {
+    try {
+        return (__regionZoomInsets || []).filter(Boolean).map((z) => {
+            const el = z.el;
+            const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            const left = el && el.style ? el.style.left : '';
+            const top = el && el.style ? el.style.top : '';
+            const width = el && el.style ? el.style.width : '';
+            const height = el && el.style ? el.style.height : '';
+            return {
+                filepathRel: z.filepathRel || null,
+                title: (z.titleEl && z.titleEl.textContent) ? String(z.titleEl.textContent).trim() : 'Zoom inset',
+                regionId: z.regionId || null,
+                sourceRegionData: z.sourceRegionData || null,
+                // Prefer explicit styles; fall back to current rect in px
+                left: left || (r ? `${r.left}px` : ''),
+                top: top || (r ? `${r.top}px` : ''),
+                width: width || (r ? `${r.width}px` : ''),
+                height: height || (r ? `${r.height}px` : '')
+            };
+        });
+    } catch (_) {
+        return [];
+    }
+}
+
+async function _restoreZoomInsetsFromSerialized(list) {
+    try { _removeAllZoomInsets(); } catch (_) {}
+    const items = Array.isArray(list) ? list : [];
+    for (const it of items) {
+        try {
+            if (!it || !it.filepathRel) continue;
+            const z = createRegionZoomInsetOverlay({ filepathRel: it.filepathRel, titleText: it.title || 'Zoom inset', regionId: it.regionId || null });
+            try { z.sourceRegionData = it.sourceRegionData || null; } catch (_) {}
+            try {
+                // Position/size
+                z.el.style.right = 'auto';
+                z.el.style.bottom = 'auto';
+                if (it.left) z.el.style.left = String(it.left);
+                if (it.top) z.el.style.top = String(it.top);
+                if (it.width) z.el.style.width = String(it.width);
+                if (it.height) z.el.style.height = String(it.height);
+            } catch (_) {}
+            try { await z.reload(); } catch (_) {}
+        } catch (_) {}
+    }
+    try { renderRegionOverlay(); } catch (_) {}
+}
+
+function _restoreRegionsFromSerialized(shapes) {
+    try {
+        if (!Array.isArray(shapes)) return 0;
+        try { if (typeof ensureRegionInfrastructure === 'function') ensureRegionInfrastructure(); } catch (_) {}
+        // Deep clone to avoid cross-window object graph issues
+        const cloned = JSON.parse(JSON.stringify(shapes));
+        if (!Array.isArray(cloned)) return 0;
+        regionDrawingState.shapes = cloned;
+        regionDrawingState.previewShape = null;
+        regionDrawingState.selectedShapeId = null;
+        try { if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') window.canvasPopup.hide(); } catch (_) {}
+        renderRegionOverlay();
+        return cloned.length;
+    } catch (_) {
+        return 0;
+    }
+}
+
+function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
+    const viewerElement = document.getElementById('openseadragon') || document.body;
+    const insetId = __regionZoomInsetIdCounter++;
+    const glass = _iosGlassStyle();
+
+    const el = document.createElement('div');
+    el.className = 'region-zoom-inset';
+    el.dataset.insetId = String(insetId);
+    el.dataset.zoomInset = 'true';
+    Object.assign(el.style, {
+        position: viewerElement === document.body ? 'fixed' : 'absolute',
+        right: `${12 + (insetId - 1) * 10}px`,
+        bottom: `${12 + (insetId - 1) * 10}px`,
+        width: '260px',
+        height: '260px',
+        borderRadius: '14px',
+        boxShadow: '0 14px 34px rgba(0,0,0,0.55)',
+        zIndex: String(9000 + insetId),
+        overflow: 'hidden',
+        color: '#fff',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        background: 'rgba(10,10,10,0.92)',
+        border: `1px solid rgba(255,255,255,0.15)`
+    });
+
+    const body = document.createElement('div');
+    Object.assign(body.style, { position: 'relative', width: '100%', height: '100%', background: '#000' });
+    el.appendChild(body);
+
+    const img = document.createElement('div');
+    img.dataset.zoomInsetImg = 'true';
+    Object.assign(img.style, {
+        position: 'absolute',
+        inset: '0',
+        backgroundSize: 'contain',
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center'
+    });
+    body.appendChild(img);
+
+    const spinner = document.createElement('div');
+    Object.assign(spinner.style, {
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        width: '22px',
+        height: '22px',
+        marginLeft: '-11px',
+        marginTop: '-11px',
+        borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.22)',
+        borderTopColor: 'rgba(255,255,255,0.85)',
+        animation: 'regionInsetSpin 0.9s linear infinite',
+        display: 'none'
+    });
+    body.appendChild(spinner);
+
+    if (!document.getElementById('region-inset-style')) {
+        const st = document.createElement('style');
+        st.id = 'region-inset-style';
+        st.textContent = `@keyframes regionInsetSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`;
+        document.head.appendChild(st);
+    }
+
+    const makeCircleBtn = (html, title, onClick) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.title = title || '';
+        b.innerHTML = html;
+        const BTN_SIZE = 34; // slightly larger touch target
+        Object.assign(b.style, {
+            width: `${BTN_SIZE}px`,
+            height: `${BTN_SIZE}px`,
+            borderRadius: '999px',
+            border: glass.border,
+            background: glass.background,
+            backdropFilter: glass.backdropFilter,
+            WebkitBackdropFilter: glass.WebkitBackdropFilter,
+            color: 'rgba(255,255,255,0.92)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 6px 16px rgba(0,0,0,0.25)',
+            fontSize: '18px',
+            lineHeight: '1'
+        });
+        b.addEventListener('click', (e) => { e.stopPropagation(); onClick && onClick(e); });
+        return b;
+    };
+
+    // Title pill (editable) near top-left
+    const titlePill = document.createElement('div');
+    titlePill.dataset.zoomInsetTitlePill = 'true';
+    Object.assign(titlePill.style, {
+        position: 'absolute',
+        top: '8px',
+        left: '8px',
+        maxWidth: 'calc(100% - 52px)', // leave room for close button on the right
+        padding: '6px 8px',
+        borderRadius: '999px',
+        border: glass.border,
+        background: glass.background,
+        backdropFilter: glass.backdropFilter,
+        WebkitBackdropFilter: glass.WebkitBackdropFilter,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontSize: '12px',
+        fontWeight: '600',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        zIndex: '2'
+    });
+    body.appendChild(titlePill);
+
+    const titleTextEl = document.createElement('div');
+    titleTextEl.dataset.zoomInsetTitle = 'true';
+    titleTextEl.textContent = (titleText && String(titleText).trim()) ? String(titleText).trim() : 'Zoom inset';
+    Object.assign(titleTextEl.style, {
+        flex: '1',
+        minWidth: '0',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        cursor: 'text'
+    });
+    titlePill.appendChild(titleTextEl);
+
+    // Close button (outside title pill, on the right)
+    const closeBtn = makeCircleBtn('&times;', 'Close', () => {
+        _removeZoomInsetById(insetId);
+        try { renderRegionOverlay(); } catch (_) {}
+    });
+    closeBtn.dataset.zoomInsetControl = 'true';
+    Object.assign(closeBtn.style, {
+        position: 'absolute',
+        top: '8px',
+        right: '8px',
+        zIndex: '2'
+    });
+    body.appendChild(closeBtn);
+
+    // "Open another image" button (next to close)
+    const openOtherBtn = makeCircleBtn(
+        `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M12 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M9 14h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg>`,
+        'Open another image (same RA/Dec)',
+        async () => {
+            const getInset = () => __regionZoomInsets.find(zz => zz && zz.id === insetId);
+            const zcur = getInset();
+            const src = zcur && zcur.sourceRegionData ? zcur.sourceRegionData : null;
+            if (!src || typeof src.ra !== 'number' || typeof src.dec !== 'number') {
+                try { window.showNotification && window.showNotification('Zoom inset has no saved RA/Dec context.', 3500, 'error'); } catch (_) {}
+                return;
+            }
+
+            if (typeof window.showFileBrowser !== 'function') {
+                try { window.showNotification && window.showNotification('File browser not available.', 3500, 'error'); } catch (_) {}
+                return;
+            }
+
+            window.showFileBrowser(async (pickedPath) => {
+                try {
+                    const p = String(pickedPath || '');
+                    const low = p.toLowerCase();
+                    const isFits = low.endsWith('.fits') || low.endsWith('.fit') || low.endsWith('.fts') || low.endsWith('.fits.gz') || low.endsWith('.fit.gz') || low.endsWith('.fts.gz');
+                    if (!isFits) {
+                        try { window.showNotification && window.showNotification('Please select a FITS file.', 2500, 'error'); } catch (_) {}
+                        return;
+                    }
+
+                    const znow = getInset();
+                    if (!znow) return;
+
+                    // Pick best image HDU for this file (prevents 400 on multi-HDU FITS)
+                    let pickedHdu = 0;
+                    try {
+                        // Important: keep slashes unescaped for FastAPI {filepath:path}
+                        // and include session header (some deployments require it even for this endpoint).
+                        const hHeaders = {};
+                        if (window.__sid) hHeaders['X-Session-ID'] = window.__sid;
+                        const hduResp = await fetch(`/fits-hdu-info/${encodeURI(p)}`, { headers: hHeaders, cache: 'no-store' });
+                        if (hduResp.ok) {
+                            const hj = await hduResp.json();
+                            const list = Array.isArray(hj?.hduList) ? hj.hduList : [];
+                            const rec = list.find(x => x && x.isRecommended);
+                            if (rec && Number.isFinite(rec.index)) pickedHdu = Number(rec.index);
+                        }
+                    } catch (_) {}
+
+                    // Re-cutout at same RA/Dec (and same region geometry if available), but from chosen FITS
+                    const regionData = Object.assign({}, src, {
+                        fits_path: p,
+                        hdu_index: pickedHdu
+                    });
+
+                    // Ensure session for region-cutout (existing backend expects it in some flows)
+                    if (!window.__sid) {
+                        try {
+                            const sessionRes = await fetch('/session/start');
+                            const sessionJson = await sessionRes.json();
+                            if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+                        } catch (_) {}
+                    }
+
+                    const headers = { 'Content-Type': 'application/json' };
+                    if (window.__sid) headers['X-Session-ID'] = window.__sid;
+
+                    // UI
+                    try { znow.spinner.style.display = 'block'; } catch (_) {}
+
+                    const resp = await fetch('/region-cutout/', {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(regionData)
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}: ${resp.statusText}` }));
+                        throw new Error(err.detail || 'Failed to create cutout');
+                    }
+                    const result = await resp.json();
+                    const cutoutRel = `uploads/${result.filename}`;
+                    znow.filepathRel = cutoutRel;
+                    await znow.reload();
+                    try { renderRegionOverlay(); } catch (_) {}
+                } catch (err) {
+                    try { window.showNotification && window.showNotification(`Zoom inset: ${err.message}`, 4000, 'error'); } catch (_) {}
+                } finally {
+                    const znow = getInset();
+                    try { if (znow) znow.spinner.style.display = 'none'; } catch (_) {}
+                }
+            });
+        }
+    );
+    openOtherBtn.dataset.zoomInsetControl = 'true';
+    Object.assign(openOtherBtn.style, {
+        position: 'absolute',
+        top: '8px',
+        right: '48px',
+        zIndex: '2'
+    });
+    body.appendChild(openOtherBtn);
+
+    // Inline title editing
+    titleTextEl.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        titleTextEl.contentEditable = 'true';
+        titleTextEl.spellcheck = false;
+        titleTextEl.style.outline = 'none';
+        titleTextEl.style.whiteSpace = 'normal';
+        try { titleTextEl.focus(); } catch (_) {}
+    });
+    const finishTitle = () => {
+        if (titleTextEl.contentEditable !== 'true') return;
+        const t = (titleTextEl.textContent || '').trim() || 'Zoom inset';
+        titleTextEl.contentEditable = 'false';
+        titleTextEl.textContent = t;
+        titleTextEl.style.whiteSpace = 'nowrap';
+        try { renderRegionOverlay(); } catch (_) {}
+    };
+    titleTextEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); finishTitle(); }
+        if (e.key === 'Escape') { e.preventDefault(); finishTitle(); }
+    });
+    titleTextEl.addEventListener('blur', finishTitle);
+
+    const z = {
+        id: insetId,
+        regionId: regionId || null,
+        filepathRel,
+        el,
+        body,
+        img,
+        spinner,
+        titleEl: titleTextEl,
+        objectUrl: null,
+        abort: null,
+        // Default callout: white, 1px
+        calloutStyle: { color: '#FFFFFF', width: 1, style: 'solid' },
+        // Default display: grayscale (not session-dependent)
+        display: { min: null, max: null, colorMap: 'grayscale', fontSize: 12 },
+        // Used for "open another image" -> re-cutout at same RA/Dec
+        sourceRegionData: null
+    };
+
+    // Settings panels (callout + display)
+    const makePanel = () => {
+        const p = document.createElement('div');
+        Object.assign(p.style, {
+            position: 'absolute',
+            top: '44px',
+            left: '8px',
+            padding: '10px',
+            borderRadius: '14px',
+            border: glass.border,
+            background: glass.background,
+            backdropFilter: glass.backdropFilter,
+            WebkitBackdropFilter: glass.WebkitBackdropFilter,
+            color: '#fff',
+            zIndex: '3',
+            display: 'none',
+            opacity: '0',
+            transform: 'translateY(8px) scale(0.98)',
+            pointerEvents: 'none',
+            transition: 'opacity 160ms ease, transform 160ms ease',
+            boxShadow: '0 10px 26px rgba(0,0,0,0.35)',
+            minWidth: '210px'
+        });
+        return p;
+    };
+
+    const calloutPanel = makePanel();
+    const displayPanel = makePanel();
+    displayPanel.style.top = 'auto';
+    displayPanel.style.bottom = '44px';
+    body.appendChild(calloutPanel);
+    body.appendChild(displayPanel);
+
+    const __setPanelOpen = (panel, open) => {
+        if (!panel) return;
+        // Cancel any pending close timer
+        try { if (panel.__closeT) { clearTimeout(panel.__closeT); panel.__closeT = null; } } catch (_) {}
+        if (open) {
+            panel.style.display = 'block';
+            // Force to initial hidden state before animating in
+            panel.style.opacity = '0';
+            panel.style.transform = 'translateY(8px) scale(0.98)';
+            panel.style.pointerEvents = 'none';
+            requestAnimationFrame(() => {
+                // Guard: could have been closed immediately
+                if (panel.style.display !== 'block') return;
+                panel.style.opacity = '1';
+                panel.style.transform = 'translateY(0) scale(1)';
+                panel.style.pointerEvents = 'auto';
+            });
+        } else {
+            if (panel.style.display === 'none' || panel.style.display === '') return;
+            panel.style.opacity = '0';
+            panel.style.transform = 'translateY(8px) scale(0.98)';
+            panel.style.pointerEvents = 'none';
+            panel.__closeT = setTimeout(() => {
+                panel.style.display = 'none';
+            }, 170);
+        }
+    };
+
+    const row = (labelText) => {
+        const r = document.createElement('div');
+        Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' });
+        const lab = document.createElement('div');
+        lab.textContent = labelText;
+        Object.assign(lab.style, { fontSize: '11px', opacity: '0.85', width: '76px' });
+        r.appendChild(lab);
+        return { r, lab };
+    };
+
+    // Callout panel controls
+    const c1 = row('Color');
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = z.calloutStyle.color;
+    Object.assign(colorInput.style, { width: '36px', height: '24px', padding: '0', border: 'none', background: 'transparent', cursor: 'pointer' });
+    c1.r.appendChild(colorInput);
+    calloutPanel.appendChild(c1.r);
+
+    const c2 = row('Style');
+    const styleSelect = document.createElement('select');
+    styleSelect.innerHTML = `<option value="solid">Solid</option><option value="dashed">Dashed</option>`;
+    styleSelect.value = z.calloutStyle.style;
+    Object.assign(styleSelect.style, {
+        fontSize: '12px',
+        color: '#fff',
+        background: 'rgba(0,0,0,0.25)',
+        border: '1px solid rgba(255,255,255,0.18)',
+        borderRadius: '10px',
+        padding: '6px 10px',
+        cursor: 'pointer'
+    });
+    c2.r.appendChild(styleSelect);
+    calloutPanel.appendChild(c2.r);
+
+    const c3 = row('Width');
+    const widthRange = document.createElement('input');
+    widthRange.type = 'range';
+    widthRange.min = '1';
+    widthRange.max = '12';
+    widthRange.step = '1';
+    widthRange.value = String(z.calloutStyle.width);
+    c3.r.appendChild(widthRange);
+    calloutPanel.appendChild(c3.r);
+
+    const applyCallout = () => {
+        z.calloutStyle = {
+            color: colorInput.value || '#FFFFFF',
+            style: styleSelect.value === 'dashed' ? 'dashed' : 'solid',
+            width: Math.max(1, Math.min(12, parseInt(widthRange.value || '1', 10) || 1))
+        };
+        try { z.el.style.borderColor = z.calloutStyle.color; } catch (_) {}
+        try { renderRegionOverlay(); } catch (_) {}
+    };
+    colorInput.addEventListener('input', applyCallout);
+    styleSelect.addEventListener('change', applyCallout);
+    widthRange.addEventListener('input', applyCallout);
+
+    // Display panel (min/max + colormap)
+    const d1 = row('Min');
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.step = 'any';
+    Object.assign(minInput.style, { width: '110px', padding: '6px 8px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.18)', background: 'rgba(0,0,0,0.25)', color: '#fff' });
+    d1.r.appendChild(minInput);
+    displayPanel.appendChild(d1.r);
+
+    const d2 = row('Max');
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.step = 'any';
+    Object.assign(maxInput.style, { width: '110px', padding: '6px 8px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.18)', background: 'rgba(0,0,0,0.25)', color: '#fff' });
+    d2.r.appendChild(maxInput);
+    displayPanel.appendChild(d2.r);
+
+    const d3 = row('Colormap');
+    const cmap = document.createElement('select');
+    cmap.innerHTML = `
+        <option value="grayscale">Grayscale</option>
+        <option value="viridis">Viridis</option>
+        <option value="inferno">Inferno</option>
+        <option value="plasma">Plasma</option>
+        <option value="cividis">Cividis</option>
+        <option value="spectral">Spectral</option>
+        <option value="rdbu">RdBu</option>
+        <option value="hot">Hot</option>
+        <option value="cool">Cool</option>
+        <option value="rainbow">Rainbow</option>
+        <option value="jet">Jet</option>
+        <option value="red">Red</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+        <option value="cyan">Cyan</option>
+        <option value="magenta">Magenta</option>
+        <option value="yellow">Yellow</option>
+        <option value="orange">Orange</option>
+    `;
+    cmap.value = 'grayscale';
+    Object.assign(cmap.style, {
+        fontSize: '12px',
+        color: '#fff',
+        background: 'rgba(0,0,0,0.25)',
+        border: '1px solid rgba(255,255,255,0.18)',
+        borderRadius: '10px',
+        padding: '6px 10px',
+        cursor: 'pointer'
+    });
+    d3.r.appendChild(cmap);
+    displayPanel.appendChild(d3.r);
+
+    // Font size (title pill)
+    const d4 = row('Font size');
+    const fsWrap = document.createElement('div');
+    Object.assign(fsWrap.style, { display: 'flex', alignItems: 'center', gap: '10px', width: '100%' });
+    const fs = document.createElement('input');
+    fs.type = 'range';
+    fs.min = '10';
+    fs.max = '20';
+    fs.step = '1';
+    fs.value = String(z.display.fontSize || 12);
+    Object.assign(fs.style, { flex: '1' });
+    const fsVal = document.createElement('div');
+    fsVal.textContent = `${fs.value}px`;
+    Object.assign(fsVal.style, { width: '44px', textAlign: 'right', color: 'rgba(255,255,255,0.85)', fontSize: '12px' });
+    fsWrap.appendChild(fs);
+    fsWrap.appendChild(fsVal);
+    d4.r.appendChild(fsWrap);
+    displayPanel.appendChild(d4.r);
+
+    const applyFontSize = () => {
+        const v = parseInt(fs.value || '12', 10);
+        const px = (isFinite(v) ? Math.max(10, Math.min(20, v)) : 12);
+        z.display.fontSize = px;
+        fsVal.textContent = `${px}px`;
+        try { titlePill.style.fontSize = `${px}px`; } catch (_) {}
+    };
+    fs.addEventListener('input', applyFontSize);
+    fs.addEventListener('change', applyFontSize);
+    // apply initial
+    try { titlePill.style.fontSize = `${z.display.fontSize || 12}px`; } catch (_) {}
+
+    const applyDisplay = () => {
+        const mn = minInput.value === '' ? null : Number(minInput.value);
+        const mx = maxInput.value === '' ? null : Number(maxInput.value);
+        z.display.min = (mn != null && isFinite(mn)) ? mn : null;
+        z.display.max = (mx != null && isFinite(mx)) ? mx : null;
+        z.display.colorMap = cmap.value || 'grayscale';
+        z.reload && z.reload();
+    };
+    minInput.addEventListener('change', applyDisplay);
+    maxInput.addEventListener('change', applyDisplay);
+    cmap.addEventListener('change', applyDisplay);
+
+    // Bottom-left buttons: histogram + settings (settings on the right of histogram)
+    const bottomLeft = document.createElement('div');
+    Object.assign(bottomLeft.style, { position: 'absolute', left: '8px', bottom: '8px', display: 'flex', gap: '6px', zIndex: '2' });
+    body.appendChild(bottomLeft);
+
+    const histBtn = makeCircleBtn(
+        `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M4 19V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M4 19H20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M7 19V11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M11 19V7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M15 19V14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M19 19V9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg>`,
+        'Display (min/max, colormap)',
+        () => {
+            const open = (displayPanel.style.display === 'none' || displayPanel.style.display === '');
+            __setPanelOpen(displayPanel, open);
+            __setPanelOpen(calloutPanel, false);
+        });
+    bottomLeft.appendChild(histBtn);
+    histBtn.dataset.zoomInsetControl = 'true';
+
+    const settingsBtn = makeCircleBtn(
+        `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M4 12h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M8 6h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M4 18h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="8" cy="6" r="2" fill="currentColor"/>
+  <circle cx="16" cy="12" r="2" fill="currentColor"/>
+  <circle cx="16" cy="18" r="2" fill="currentColor"/>
+</svg>`,
+        'Callout style',
+        () => {
+            const open = (calloutPanel.style.display === 'none' || calloutPanel.style.display === '');
+            __setPanelOpen(calloutPanel, open);
+            __setPanelOpen(displayPanel, false);
+        }
+    );
+    bottomLeft.appendChild(settingsBtn);
+    settingsBtn.dataset.zoomInsetControl = 'true';
+
+    // Click outside panels closes them
+    el.addEventListener('mousedown', (e) => {
+        try {
+            if (!calloutPanel.contains(e.target) && e.target !== settingsBtn) __setPanelOpen(calloutPanel, false);
+            if (!displayPanel.contains(e.target) && e.target !== histBtn) __setPanelOpen(displayPanel, false);
+        } catch (_) {}
+    });
+
+    // Draggable: grab anywhere on the inset (except controls/panels/resize), so it doesn't feel "locked"
+    (function makeDraggable() {
+        let dragging = false;
+        let sx = 0, sy = 0;
+        let startLeft = 0, startTop = 0;
+        const isBlockedTarget = (t) => {
+            const tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+            if (!t) return false;
+            if (tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea') return true;
+            if (t.isContentEditable) return true;
+            if (calloutPanel.contains(t) || displayPanel.contains(t)) return true;
+            // Resize handle (bottom-right)
+            if (t === resizeHandle) return true;
+            return false;
+        };
+        const onDown = (e) => {
+            if (titleTextEl.contentEditable === 'true') return;
+            if (isBlockedTarget(e.target)) return;
+            e.preventDefault();
+            dragging = true;
+            const r = el.getBoundingClientRect();
+            sx = e.clientX; sy = e.clientY;
+            if (viewerElement === document.body) {
+                startLeft = r.left; startTop = r.top;
+            } else {
+                const pr = viewerElement.getBoundingClientRect();
+                startLeft = r.left - pr.left;
+                startTop = r.top - pr.top;
+            }
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+            el.style.left = `${startLeft}px`;
+            el.style.top = `${startTop}px`;
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+        const onMove = (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - sx;
+            const dy = e.clientY - sy;
+            el.style.left = `${startLeft + dx}px`;
+            el.style.top = `${startTop + dy}px`;
+            try { renderRegionOverlay(); } catch (_) {}
+        };
+        const onUp = () => {
+            dragging = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        el.addEventListener('mousedown', onDown);
+    })();
+
+    // Resizable handle (bottom-right)
+    const resizeHandle = document.createElement('div');
+    Object.assign(resizeHandle.style, {
+        position: 'absolute',
+        right: '7px',
+        bottom: '7px',
+        width: '14px',
+        height: '14px',
+        borderRight: '2px solid rgba(255,255,255,0.50)',
+        borderBottom: '2px solid rgba(255,255,255,0.50)',
+        borderRadius: '2px',
+        cursor: 'nwse-resize',
+        opacity: '0.95',
+        zIndex: '2'
+    });
+    body.appendChild(resizeHandle);
+    (function makeResizable() {
+        let resizing = false;
+        let sx = 0, sy = 0;
+        let startW = 260, startH = 260;
+        const minSize = 180;
+        const maxSize = 560;
+        const onDown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resizing = true;
+            sx = e.clientX; sy = e.clientY;
+            const r = el.getBoundingClientRect();
+            startW = r.width; startH = r.height;
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+        const onMove = (e) => {
+            if (!resizing) return;
+            const dx = e.clientX - sx;
+            const dy = e.clientY - sy;
+            const next = Math.max(minSize, Math.min(maxSize, Math.round(Math.max(startW + dx, startH + dy))));
+            el.style.width = `${next}px`;
+            el.style.height = `${next}px`;
+            try { renderRegionOverlay(); } catch (_) {}
+        };
+        const onUp = () => {
+            resizing = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        resizeHandle.addEventListener('mousedown', onDown);
+    })();
+
+    // Reload preview
+    z.reload = async () => {
+        try {
+            try { if (z.abort) z.abort.abort(); } catch (_) {}
+            z.abort = new AbortController();
+            if (z.objectUrl) { try { URL.revokeObjectURL(z.objectUrl); } catch (_) {} z.objectUrl = null; }
+            z.img.style.backgroundImage = '';
+            z.spinner.style.display = 'block';
+
+        // Ensure session
+        if (!window.__sid) {
+            try {
+                const sessionRes = await fetch('/session/start');
+                const sessionJson = await sessionRes.json();
+                if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+            } catch (_) {}
+        }
+        const headers = {};
+        if (window.__sid) headers['X-Session-ID'] = window.__sid;
+
+        const v = Date.now();
+        const params = new URLSearchParams();
+        params.set('filepath', z.filepathRel || filepathRel);
+        // Higher-quality preview for zoom insets (dynamic, capped)
+        let maxDim = 1024;
+        try {
+            const r = z.el.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            const base = Math.max(260, Math.max(r.width || 0, r.height || 0));
+            maxDim = Math.round(base * dpr * 2);
+            maxDim = Math.max(768, Math.min(2048, maxDim));
+        } catch (_) {}
+        params.set('max_dim', String(maxDim));
+        params.set('v', String(v));
+        if (z.display.min != null && z.display.max != null) {
+            params.set('min_value', String(z.display.min));
+            params.set('max_value', String(z.display.max));
+        }
+        if (z.display.colorMap) params.set('color_map', z.display.colorMap);
+
+        const url = `/fits/preview/?${params.toString()}`;
+        const resp = await fetch(url, { headers, cache: 'no-store', signal: z.abort.signal });
+        if (!resp.ok) throw new Error(`Preview failed: ${resp.status}`);
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        z.objectUrl = objUrl;
+            z.img.style.backgroundImage = `url("${objUrl}")`;
+        } finally {
+            z.spinner.style.display = 'none';
+        }
+    };
+
+    // tint border (default: white)
+    try { el.style.borderColor = z.calloutStyle.color; } catch (_) {}
+
+    viewerElement.appendChild(el);
+    __regionZoomInsets.push(z);
+    return z;
+}
+
+async function showRegionZoomInsetFromCutout(filepathRel, label, regionId, sourceRegionData = null) {
+    const z = createRegionZoomInsetOverlay({ filepathRel, titleText: label, regionId });
+    try { z.sourceRegionData = sourceRegionData ? JSON.parse(JSON.stringify(sourceRegionData)) : null; } catch (_) { try { z.sourceRegionData = sourceRegionData || null; } catch (_) {} }
+    await z.reload();
+    try { renderRegionOverlay(); } catch (_) {}
+}
+
+function getImageHeight() {
+    const height = window?.fitsData?.height;
+    return (typeof height === 'number' && Number.isFinite(height)) ? height : null;
+}
+
+function convertYToBottomOrigin(y) {
+    if (!Number.isFinite(y)) return y;
+    const height = getImageHeight();
+    if (height == null) return y;
+    return (height - 1) - y;
+}
+
+function convertYForWorld(y) {
+    if (!Number.isFinite(y)) return y;
+    const height = getImageHeight();
+    const flipY = !!(window?.fitsData?.flip_y);
+    if (flipY && height != null) {
+        return (height - 1) - y;
+    }
+    return y;
+}
+
+function resolveGalaxyNameForCutout(content) {
+    const fallback = 'UnknownGalaxy';
+    const candidates = [
+        'galaxy_name',
+        'galaxy',
+        'PHANGS_GALAXY',
+        'gal_name',
+        'object_name',
+        'obj_name',
+        'NAME',
+        'name',
+        'target'
+    ];
+
+    if (content && typeof content === 'object') {
+        for (const key of candidates) {
+            const value = content[key];
+            if (typeof value === 'string' && value.trim()) {
+                return value.trim();
+            }
+        }
+    }
+
+    if (typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim()) {
+        return window.galaxyNameFromSearch.trim();
+    }
+
+    return fallback;
+}
+
+function buildHexagonVertices(center, radiusX, radiusY) {
+    if (!center) return [];
+    const rx = Math.max(radiusX || 0, 1);
+    const ry = Math.max(radiusY || 0, 1);
+    const verts = [];
+    for (let i = 0; i < 6; i += 1) {
+        const angle = (Math.PI / 3) * i + Math.PI / 6; // flat-top orientation
+        verts.push({
+            x: center.x + rx * Math.cos(angle),
+            y: center.y + ry * Math.sin(angle)
+        });
+    }
+    return verts;
+}
+
+function pointInPolygon(point, vertices) {
+    if (!point || !Array.isArray(vertices) || vertices.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i, i += 1) {
+        const xi = vertices[i].x;
+        const yi = vertices[i].y;
+        const xj = vertices[j].x;
+        const yj = vertices[j].y;
+        const intersect = ((yi > point.y) !== (yj > point.y))
+            && (point.x < ((xj - xi) * (point.y - yi)) / (yj - yi + Number.EPSILON) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+function getActiveOsdViewer() {
+    return window.viewer || window.tiledViewer || null;
+}
+
+function ensureRegionOverlayCanvas() {
+    const viewerElement = document.getElementById('openseadragon');
+    if (!viewerElement) {
+        return null;
+    }
+
+    if (regionOverlayCanvas && regionOverlayCanvas.parentElement) {
+        return regionOverlayCanvas;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'region-overlay-container';
+    Object.assign(container.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+        zIndex: '35'
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'region-overlay-canvas';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+
+    container.appendChild(canvas);
+    viewerElement.appendChild(container);
+
+    regionOverlayContainer = container;
+    regionOverlayCanvas = canvas;
+    regionOverlayPixelRatio = window.devicePixelRatio || 1;
+    window.regionOverlayCanvas = canvas;
+
+    resizeRegionCanvas();
+    return regionOverlayCanvas;
+}
+
+function resizeRegionCanvas() {
+    if (!regionOverlayCanvas) return;
+    const viewerElement = document.getElementById('openseadragon');
+    if (!viewerElement) return;
+    regionOverlayPixelRatio = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(viewerElement.clientWidth));
+    const height = Math.max(1, Math.round(viewerElement.clientHeight));
+    regionOverlayCanvas.width = Math.round(width * regionOverlayPixelRatio);
+    regionOverlayCanvas.height = Math.round(height * regionOverlayPixelRatio);
+    regionOverlayCanvas.style.width = '100%';
+    regionOverlayCanvas.style.height = '100%';
+    renderRegionOverlay();
+}
+
+function scheduleRegionCanvasResize() {
+    if (regionResizeTimeoutId) {
+        clearTimeout(regionResizeTimeoutId);
+    }
+    regionResizeTimeoutId = setTimeout(() => {
+        regionResizeTimeoutId = null;
+        resizeRegionCanvas();
+    }, 120);
+}
+
+function attachRegionViewerHandlers(viewer) {
+    if (!viewer || regionViewerHandlersBound) return;
+
+    const pressHandler = (event) => {
+        regionDrawingState.pointerMoved = false;
+        regionDrawingState.pointerDownImage = convertPixelPointToImage(event.position);
+        regionDrawingState.pointerDownPixel = event && event.position
+            ? { x: event.position.x, y: event.position.y }
+            : null;
+
+        if (!regionDrawingState.activeTool) {
+            regionDrawingState.isDrawing = false;
+            regionDrawingState.startImagePoint = null;
+            regionDrawingState.currentImagePoint = null;
+            regionDrawingState.previewShape = null;
+            return;
+        }
+        const imagePoint = convertPixelPointToImage(event.position);
+        if (!imagePoint) return;
+
+        regionDrawingState.isDrawing = true;
+        regionDrawingState.startImagePoint = imagePoint;
+        regionDrawingState.currentImagePoint = imagePoint;
+        regionDrawingState.previewShape = null;
+
+        if (event) {
+            event.preventDefaultAction = true;
+        }
+    };
+
+    const dragHandler = (event) => {
+        if (regionDrawingState.isDrawing && regionDrawingState.activeTool) {
+            const imagePoint = convertPixelPointToImage(event.position);
+            if (!imagePoint) return;
+            regionDrawingState.pointerMoved = true;
+            regionDrawingState.currentImagePoint = imagePoint;
+            regionDrawingState.previewShape = buildRegionShape(regionDrawingState.activeTool, regionDrawingState.startImagePoint, imagePoint, true);
+            renderRegionOverlay();
+            if (event) {
+                event.preventDefaultAction = true;
+            }
+            return;
+        }
+
+        if (regionDrawingState.pointerDownPixel && event && event.position) {
+            const dx = event.position.x - regionDrawingState.pointerDownPixel.x;
+            const dy = event.position.y - regionDrawingState.pointerDownPixel.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance >= REGION_CLICK_TOLERANCE_PX) {
+                regionDrawingState.pointerMoved = true;
+            }
+        }
+    };
+
+    const releaseHandler = (event) => {
+        const imagePoint = convertPixelPointToImage(event.position);
+
+        if (regionDrawingState.isDrawing && regionDrawingState.activeTool) {
+            finalizeRegionShape(imagePoint);
+            if (event) {
+                event.preventDefaultAction = true;
+            }
+        } else if (!regionDrawingState.pointerMoved && imagePoint) {
+            if (regionDrawingState.mouseMode === 'pan') {
+                // In pan mode, ignore region hit-testing/popups.
+                return;
+            }
+            const hitShape = hitTestRegions(imagePoint);
+            if (hitShape) {
+                showRegionPopup(hitShape);
+                if (event) {
+                    event.preventDefaultAction = true;
+                }
+            }
+        }
+
+        regionDrawingState.pointerDownImage = null;
+        regionDrawingState.pointerDownPixel = null;
+        regionDrawingState.pointerMoved = false;
+    };
+
+    const scheduleRedraw = () => {
+        window.requestAnimationFrame(() => renderRegionOverlay());
+    };
+
+    // Fallback DOM click handler, for cases where OSD canvas-click doesn't fire (e.g. complex layouts)
+    const domClickHandler = (ev) => {
+        try {
+            if (regionDrawingState.activeTool) return;
+            if (regionDrawingState.mouseMode === 'pan') return;
+            const viewerElement = document.getElementById('openseadragon');
+            if (!viewerElement) return;
+            const rect = viewerElement.getBoundingClientRect();
+            const pixelPoint = {
+                x: ev.clientX - rect.left,
+                y: ev.clientY - rect.top
+            };
+            const imagePoint = convertPixelPointToImage(pixelPoint);
+            if (!imagePoint) return;
+            const hitShape = hitTestRegions(imagePoint);
+            if (hitShape) {
+                showRegionPopup(hitShape);
+                ev.preventDefault();
+                ev.stopPropagation();
+            }
+        } catch (err) {
+            console.warn('[regions] DOM click handler failed', err);
+        }
+    };
+
+    const clickHandler = (event) => {
+        if (regionDrawingState.activeTool) return;
+        if (regionDrawingState.mouseMode === 'pan') return;
+        const imagePoint = convertPixelPointToImage(event.position);
+        if (!imagePoint) return;
+        const hitShape = hitTestRegions(imagePoint);
+        if (hitShape) {
+            showRegionPopup(hitShape);
+            if (event) {
+                event.preventDefaultAction = true;
+            }
+        }
+    };
+
+    viewer.addHandler('canvas-press', pressHandler);
+    viewer.addHandler('canvas-drag', dragHandler);
+    viewer.addHandler('canvas-release', releaseHandler);
+    viewer.addHandler('canvas-click', clickHandler);
+    viewer.addHandler('animation', scheduleRedraw);
+    viewer.addHandler('zoom', scheduleRedraw);
+    viewer.addHandler('pan', scheduleRedraw);
+    viewer.addHandler('open', () => {
+        resizeRegionCanvas();
+        scheduleRedraw();
+    });
+
+    // Also listen to DOM click events (capturing) for robustness (multi-grid panes, etc.)
+    try {
+        const viewerElement = document.getElementById('openseadragon');
+        if (viewerElement && !viewerElement.__regionDomClickBound) {
+            document.addEventListener('click', domClickHandler, { capture: true });
+            viewerElement.__regionDomClickBound = true;
+        }
+    } catch (_) {}
+
+    regionViewerHandlersBound = true;
+}
+
+function ensureRegionInfrastructure() {
+    const viewer = getActiveOsdViewer();
+    if (viewer && viewer.viewport) {
+        ensureRegionOverlayCanvas();
+        attachRegionViewerHandlers(viewer);
+        return viewer;
+    }
+
+    if (!regionViewerPollId) {
+        regionViewerPollId = setInterval(() => {
+            const v = getActiveOsdViewer();
+            if (v && v.viewport) {
+                clearInterval(regionViewerPollId);
+                regionViewerPollId = null;
+                ensureRegionInfrastructure();
+            }
+        }, 400);
+    }
+    return null;
+}
+
+function convertPixelPointToImage(pixelPoint) {
+    const viewer = getActiveOsdViewer();
+    if (!viewer || !viewer.viewport || !pixelPoint) return null;
+    try {
+        // OpenSeadragon expects an OpenSeadragon.Point (with plus/minus methods)
+        // event.position is already a Point; DOM clicks pass a plain {x,y}
+        let osPixelPoint = pixelPoint;
+        try {
+            // Heuristic: if minus is not a function, wrap it
+            if (!osPixelPoint || typeof osPixelPoint.minus !== 'function') {
+                osPixelPoint = new OpenSeadragon.Point(pixelPoint.x, pixelPoint.y);
+            }
+        } catch (_) {
+            osPixelPoint = new OpenSeadragon.Point(pixelPoint.x, pixelPoint.y);
+        }
+
+        const viewportPoint = viewer.viewport.pointFromPixel(osPixelPoint);
+        if (!viewportPoint) return null;
+        const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+        if (!imagePoint) return null;
+        return { x: imagePoint.x, y: imagePoint.y };
+    } catch (err) {
+        console.warn('[regions] Failed to convert point', err);
+        return null;
+    }
+}
+
+function buildRegionShape(type, start, end, isPreview = false) {
+    if (!type || !start || !end) return null;
+    const MIN_DELTA = 2;
+
+    if (type === 'circle') {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const radius = Math.sqrt(dx * dx + dy * dy);
+        if (radius < MIN_DELTA) return null;
+        return {
+            type,
+            center: { x: start.x, y: start.y },
+            radius,
+            isPreview
+        };
+    }
+
+    if (type === 'rectangle') {
+        const width = Math.abs(end.x - start.x);
+        const height = Math.abs(end.y - start.y);
+        if (width < MIN_DELTA || height < MIN_DELTA) return null;
+        return {
+            type,
+            x1: Math.min(start.x, end.x),
+            y1: Math.min(start.y, end.y),
+            x2: Math.max(start.x, end.x),
+            y2: Math.max(start.y, end.y),
+            isPreview
+        };
+    }
+
+    if (type === 'ellipse') {
+        const radiusX = Math.abs(end.x - start.x) / 2;
+        const radiusY = Math.abs(end.y - start.y) / 2;
+        if (radiusX < MIN_DELTA || radiusY < MIN_DELTA) return null;
+        return {
+            type,
+            center: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
+            radiusX,
+            radiusY,
+            isPreview
+        };
+    }
+
+    if (type === 'hexagon') {
+        const radiusX = Math.abs(end.x - start.x) / 2;
+        const radiusY = Math.abs(end.y - start.y) / 2;
+        if (radiusX < MIN_DELTA || radiusY < MIN_DELTA) return null;
+        return {
+            type,
+            center: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
+            radiusX,
+            radiusY,
+            isPreview
+        };
+    }
+
+    return null;
+}
+
+function finalizeRegionShape(endPoint) {
+    const shape = buildRegionShape(regionDrawingState.activeTool, regionDrawingState.startImagePoint, endPoint);
+    regionDrawingState.isDrawing = false;
+    regionDrawingState.previewShape = null;
+    regionDrawingState.startImagePoint = null;
+    regionDrawingState.currentImagePoint = null;
+
+    if (!shape) {
+        if (endPoint) {
+            const hitShape = hitTestRegions(endPoint);
+            if (hitShape) {
+                showRegionPopup(hitShape);
+            }
+        }
+        renderRegionOverlay();
+        return;
+    }
+
+    const index = regionDrawingState.counter++;
+    shape.id = `region-${Date.now()}-${index}`;
+    shape.label = `Region ${index}`;
+    shape.createdAt = Date.now();
+    regionDrawingState.shapes.push(shape);
+    regionDrawingState.selectedShapeId = shape.id;
+    renderRegionOverlay();
+    showRegionPopup(shape);
+}
+
+function hitTestRegions(imagePoint) {
+    if (!imagePoint) return null;
+    for (let i = regionDrawingState.shapes.length - 1; i >= 0; i -= 1) {
+        const shape = regionDrawingState.shapes[i];
+        if (isPointInsideShape(shape, imagePoint)) {
+            return shape;
+        }
+    }
+    return null;
+}
+
+function isPointInsideShape(shape, point) {
+    if (!shape || !point) return false;
+
+    if (shape.type === 'circle') {
+        const dx = point.x - shape.center.x;
+        const dy = point.y - shape.center.y;
+        return Math.sqrt(dx * dx + dy * dy) <= shape.radius;
+    }
+
+    if (shape.type === 'rectangle') {
+        const xMin = Math.min(shape.x1, shape.x2);
+        const xMax = Math.max(shape.x1, shape.x2);
+        const yMin = Math.min(shape.y1, shape.y2);
+        const yMax = Math.max(shape.y1, shape.y2);
+        return point.x >= xMin && point.x <= xMax && point.y >= yMin && point.y <= yMax;
+    }
+
+    if (shape.type === 'ellipse') {
+        const dx = point.x - shape.center.x;
+        const dy = point.y - shape.center.y;
+        const rx = Math.max(shape.radiusX, 1);
+        const ry = Math.max(shape.radiusY, 1);
+        const value = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+        return value <= 1;
+    }
+
+    if (shape.type === 'hexagon') {
+        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY);
+        return pointInPolygon(point, vertices);
+    }
+
+    return false;
+}
+
+function renderRegionOverlay() {
+    const canvas = ensureRegionOverlayCanvas();
+    const viewer = getActiveOsdViewer();
+    if (!canvas || !viewer || !viewer.viewport) return;
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(regionOverlayPixelRatio, 0, 0, regionOverlayPixelRatio, 0, 0);
+
+    regionDrawingState.shapes.forEach((shape) => {
+        drawRegionShape(ctx, shape, { highlight: shape.id === regionDrawingState.selectedShapeId });
+    });
+
+    if (regionDrawingState.previewShape) {
+        drawRegionShape(ctx, regionDrawingState.previewShape, { preview: true });
+    }
+
+    // Draw callout connector lines from regions -> zoom insets (if visible)
+    try {
+        if (Array.isArray(__regionZoomInsets) && __regionZoomInsets.length) {
+            const viewerEl = document.getElementById('openseadragon');
+            if (viewerEl) {
+                const viewerRect = viewerEl.getBoundingClientRect();
+                __regionZoomInsets.forEach((zinset) => {
+                    try {
+                        if (!zinset || !zinset.el || zinset.el.style.display === 'none') return;
+                        if (!zinset.regionId) return;
+                        const shape = regionDrawingState.shapes.find(s => s && String(s.id) === String(zinset.regionId)) || null;
+                        if (!shape) return;
+                        const insetRect = zinset.el.getBoundingClientRect();
+
+                    const centerImage = (() => {
+                        if (shape.type === 'circle' && shape.center) return shape.center;
+                        if (shape.type === 'ellipse' && shape.center) return shape.center;
+                        if (shape.type === 'hexagon' && shape.center) return shape.center;
+                        if (shape.type === 'rectangle') {
+                            const cx = (Number(shape.x1) + Number(shape.x2)) / 2;
+                            const cy = (Number(shape.y1) + Number(shape.y2)) / 2;
+                            return { x: cx, y: cy };
+                        }
+                        return null;
+                    })();
+
+                    const centerScreen = centerImage ? imagePointToScreen(centerImage) : null;
+                    if (centerScreen) {
+                        const callout = zinset.calloutStyle || { color: '#60A5FA', width: 6, style: 'solid' };
+                        const stroke = callout.color || '#60A5FA';
+                        const lw = Math.max(1, Math.min(16, Number(callout.width) || 1));
+                        const dashed = (callout.style === 'dashed');
+
+                        // Choose the side of inset closest to region center
+                        const insetLeft = insetRect.left - viewerRect.left;
+                        const insetRight = insetRect.right - viewerRect.left;
+                        const insetTop = insetRect.top - viewerRect.top;
+                        const insetBottom = insetRect.bottom - viewerRect.top;
+                        const insetMidY = (insetTop + insetBottom) / 2;
+
+                        const useLeft = Math.abs(centerScreen.x - insetLeft) < Math.abs(centerScreen.x - insetRight);
+                        const xEdge = useLeft ? insetLeft : insetRight;
+
+                        // For rectangle callout like your example, use inset corner points on the facing side.
+                        // For circle callout, use two points on inset edge (top/bottom) like a "bridge".
+                        const insetA = useLeft ? { x: insetLeft, y: insetTop } : { x: insetRight, y: insetTop };
+                        const insetB = useLeft ? { x: insetLeft, y: insetBottom } : { x: insetRight, y: insetBottom };
+                        const p1 = (shape.type === 'rectangle') ? insetA : { x: xEdge, y: insetTop + (insetBottom - insetTop) * 0.30 };
+                        const p2 = (shape.type === 'rectangle') ? insetB : { x: xEdge, y: insetTop + (insetBottom - insetTop) * 0.70 };
+
+                        // Pick two anchor points ON THE REGION BOUNDARY (not center)
+                        const anchors = (() => {
+                            // Circle
+                            if (shape.type === 'circle' && shape.center) {
+                                const edgeScreen = imagePointToScreen({ x: shape.center.x + shape.radius, y: shape.center.y });
+                                if (!edgeScreen) return null;
+                                const r = Math.hypot(edgeScreen.x - centerScreen.x, edgeScreen.y - centerScreen.y);
+                                // Start callout from TOP and BOTTOM of the circle (matches reference style)
+                                return [
+                                    { x: centerScreen.x, y: centerScreen.y - r },
+                                    { x: centerScreen.x, y: centerScreen.y + r }
+                                ];
+                            }
+                            // Ellipse
+                            if (shape.type === 'ellipse' && shape.center) {
+                                const xAxisPoint = imagePointToScreen({ x: shape.center.x + shape.radiusX, y: shape.center.y });
+                                const yAxisPoint = imagePointToScreen({ x: shape.center.x, y: shape.center.y + shape.radiusY });
+                                if (!xAxisPoint || !yAxisPoint) return null;
+                                const rx = Math.hypot(xAxisPoint.x - centerScreen.x, xAxisPoint.y - centerScreen.y);
+                                const ry = Math.hypot(yAxisPoint.x - centerScreen.x, yAxisPoint.y - centerScreen.y);
+                                // Start callout from TOP and BOTTOM of the ellipse
+                                return [
+                                    { x: centerScreen.x, y: centerScreen.y - ry },
+                                    { x: centerScreen.x, y: centerScreen.y + ry }
+                                ];
+                            }
+                            // Rectangle: use side nearest inset
+                            if (shape.type === 'rectangle') {
+                                const topLeft = imagePointToScreen({ x: shape.x1, y: shape.y1 });
+                                const bottomRight = imagePointToScreen({ x: shape.x2, y: shape.y2 });
+                                if (!topLeft || !bottomRight) return null;
+                                const x0 = Math.min(topLeft.x, bottomRight.x);
+                                const x1 = Math.max(topLeft.x, bottomRight.x);
+                                const y0 = Math.min(topLeft.y, bottomRight.y);
+                                const y1 = Math.max(topLeft.y, bottomRight.y);
+                                const xSide = useLeft ? x0 : x1;
+                                // Use corners on that side (matches the trapezoid look)
+                                return [
+                                    { x: xSide, y: y0 },
+                                    { x: xSide, y: y1 }
+                                ];
+                            }
+                            // Hexagon: choose extreme x vertices on the side toward inset
+                            if (shape.type === 'hexagon' && shape.center) {
+                                const verts = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY)
+                                    .map(imagePointToScreen)
+                                    .filter(Boolean);
+                                if (verts.length < 3) return null;
+                                const extremeX = useLeft
+                                    ? Math.min(...verts.map(v => v.x))
+                                    : Math.max(...verts.map(v => v.x));
+                                const near = verts.filter(v => Math.abs(v.x - extremeX) < 2.5);
+                                const pool = near.length ? near : verts;
+                                const topV = pool.reduce((a, b) => (a.y < b.y ? a : b));
+                                const botV = pool.reduce((a, b) => (a.y > b.y ? a : b));
+                                return [topV, botV];
+                            }
+                            return null;
+                        })();
+                        const a1 = anchors && anchors[0] ? anchors[0] : centerScreen;
+                        const a2 = anchors && anchors[1] ? anchors[1] : centerScreen;
+
+                        ctx.save();
+                        ctx.globalAlpha = 0.92;
+                        ctx.lineWidth = lw;
+                        ctx.strokeStyle = stroke;
+                        ctx.lineCap = 'round';
+                        ctx.lineJoin = 'round';
+                        ctx.setLineDash(dashed ? [10, 8] : []);
+
+                        ctx.beginPath();
+                        ctx.moveTo(a1.x, a1.y);
+                        ctx.lineTo(p1.x, p1.y);
+                        ctx.stroke();
+
+                        ctx.beginPath();
+                        ctx.moveTo(a2.x, a2.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.stroke();
+
+                        // Anchor dots on region boundary + inset edge
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = stroke;
+                        ctx.beginPath();
+                        ctx.arc(a1.x, a1.y, 2.4, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(a2.x, a2.y, 2.4, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Dot near inset edge mid
+                        ctx.beginPath();
+                        ctx.arc(xEdge, insetMidY, 2.2, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        ctx.restore();
+                    }
+                    } catch (_) {}
+                });
+            }
+        }
+    } catch (_) {}
+}
+
+function imagePointToScreen(point) {
+    const viewer = getActiveOsdViewer();
+    if (!viewer || !viewer.viewport || typeof OpenSeadragon === 'undefined' || !point) return null;
+    try {
+        const osPoint = new OpenSeadragon.Point(point.x, point.y);
+        // Use base TiledImage (index 0) for accurate coordinate conversion (fixes multi-image warning)
+        const tiledImage = viewer.world && viewer.world.getItemAt && viewer.world.getItemAt(0);
+        const hasTiledImageMethod = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function';
+        // If multiple images exist (base + segments), we MUST use TiledImage to avoid warnings
+        const hasMultipleImages = viewer.world && typeof viewer.world.getItemsCount === 'function' && viewer.world.getItemsCount() > 1;
+        const mustUseTiledImage = hasMultipleImages && hasTiledImageMethod;
+        
+        let viewportPoint;
+        if (mustUseTiledImage || hasTiledImageMethod) {
+            viewportPoint = tiledImage.imageToViewportCoordinates(osPoint);
+        } else {
+            // Fallback only if TiledImage method truly unavailable and single image
+            viewportPoint = viewer.viewport.imageToViewportCoordinates(osPoint);
+        }
+        return viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+    } catch (err) {
+        console.warn('[regions] Failed to convert image point to screen', err);
+        return null;
+    }
+}
+
+function drawRegionShape(ctx, shape, options = {}) {
+    if (!shape) return;
+    const isPreview = options.preview;
+    const highlight = options.highlight;
+
+    ctx.save();
+    ctx.globalAlpha = isPreview ? 0.5 : 0.85;
+    ctx.lineWidth = highlight ? 3 : (isPreview ? 1.5 : 2);
+    ctx.strokeStyle = highlight ? '#FBBF24' : '#38BDF8';
+    ctx.fillStyle = highlight ? 'rgba(251,191,36,0.15)' : 'rgba(56,189,248,0.12)';
+
+    if (shape.type === 'circle') {
+        const centerScreen = imagePointToScreen(shape.center);
+        const edgeScreen = imagePointToScreen({ x: shape.center.x + shape.radius, y: shape.center.y });
+        if (!centerScreen || !edgeScreen) {
+            ctx.restore();
+            return;
+        }
+        const radius = Math.sqrt(Math.pow(edgeScreen.x - centerScreen.x, 2) + Math.pow(edgeScreen.y - centerScreen.y, 2));
+        ctx.beginPath();
+        ctx.arc(centerScreen.x, centerScreen.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'rectangle') {
+        const topLeft = imagePointToScreen({ x: shape.x1, y: shape.y1 });
+        const bottomRight = imagePointToScreen({ x: shape.x2, y: shape.y2 });
+        if (!topLeft || !bottomRight) {
+            ctx.restore();
+            return;
+        }
+        const x = Math.min(topLeft.x, bottomRight.x);
+        const y = Math.min(topLeft.y, bottomRight.y);
+        const width = Math.abs(bottomRight.x - topLeft.x);
+        const height = Math.abs(bottomRight.y - topLeft.y);
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'ellipse') {
+        const centerScreen = imagePointToScreen(shape.center);
+        const xAxisPoint = imagePointToScreen({ x: shape.center.x + shape.radiusX, y: shape.center.y });
+        const yAxisPoint = imagePointToScreen({ x: shape.center.x, y: shape.center.y + shape.radiusY });
+        if (!centerScreen || !xAxisPoint || !yAxisPoint) {
+            ctx.restore();
+            return;
+        }
+        const radiusX = Math.sqrt(Math.pow(xAxisPoint.x - centerScreen.x, 2) + Math.pow(xAxisPoint.y - centerScreen.y, 2));
+        const radiusY = Math.sqrt(Math.pow(yAxisPoint.x - centerScreen.x, 2) + Math.pow(yAxisPoint.y - centerScreen.y, 2));
+        ctx.beginPath();
+        ctx.ellipse(centerScreen.x, centerScreen.y, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'hexagon') {
+        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY)
+            .map(imagePointToScreen)
+            .filter(Boolean);
+        if (vertices.length < 3) {
+            ctx.restore();
+            return;
+        }
+        ctx.beginPath();
+        ctx.moveTo(vertices[0].x, vertices[0].y);
+        for (let i = 1; i < vertices.length; i += 1) {
+            ctx.lineTo(vertices[i].x, vertices[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
+
+    ctx.restore();
+}
+
+function getShapeCenter(shape) {
+    if (!shape) return null;
+    if (shape.type === 'circle') return { x: shape.center.x, y: shape.center.y };
+    if (shape.type === 'ellipse') return { x: shape.center.x, y: shape.center.y };
+    if (shape.type === 'hexagon') return { x: shape.center.x, y: shape.center.y };
+    if (shape.type === 'rectangle') {
+        return {
+            x: (shape.x1 + shape.x2) / 2,
+            y: (shape.y1 + shape.y2) / 2
+        };
+    }
+    return null;
+}
+
+function getWorldCoordinatesFromImage(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const parsed = window.parsedWCS;
+    const yForWorld = convertYForWorld(y);
+    if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+        try {
+            const world = parsed.pixelsToWorld(x, yForWorld);
+            if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
+                return world;
+            }
+        } catch (err) {
+            console.warn('[regions] pixelsToWorld (parsed) failed', err);
+        }
+    }
+    const header = window.fitsData && window.fitsData.wcs;
+    if (header && typeof window.parseWCS === 'function') {
+        try {
+            if (regionWorldCache.header !== header) {
+                const parsedHeader = window.parseWCS(header);
+                regionWorldCache.header = header;
+                regionWorldCache.wcs = parsedHeader && parsedHeader.hasWCS ? parsedHeader : null;
+            }
+            const fallback = regionWorldCache.wcs;
+            if (fallback && fallback.hasWCS && typeof fallback.pixelsToWorld === 'function') {
+                const world = fallback.pixelsToWorld(x, yForWorld);
+                if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
+                    return world;
+                }
+            }
+        } catch (err) {
+            console.warn('[regions] pixelsToWorld fallback failed', err);
+        }
+    }
+    return null;
+}
+
+function showSimpleRegionPopup(content, anchor) {
+    try {
+        let box = document.getElementById('simple-region-popup');
+        const viewerElement = document.getElementById('openseadragon');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'simple-region-popup';
+            Object.assign(box.style, {
+                position: viewerElement ? 'absolute' : 'fixed',
+                maxWidth: '380px',
+                background: 'rgba(42,42,42,0.95)',
+                color: '#fff',
+                padding: '0',
+                borderRadius: '8px',
+                boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
+                fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+                fontSize: '14px',
+                zIndex: '6500'
+            });
+            // Make the simple popup draggable by its header area
+            (function makeDraggable(el) {
+                let isDragging = false;
+                let startX = 0, startY = 0;
+                let startLeft = 0, startTop = 0;
+                const onMouseDown = (e) => {
+                    e.preventDefault();
+                    isDragging = true;
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    const rect = el.getBoundingClientRect();
+                    startLeft = rect.left;
+                    startTop = rect.top;
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                };
+                const onMouseMove = (e) => {
+                    if (!isDragging) return;
+                    const dx = e.clientX - startX;
+                    const dy = e.clientY - startY;
+                    el.style.left = `${startLeft + dx}px`;
+                    el.style.top = `${startTop + dy}px`;
+                    el.style.right = 'auto';
+                };
+                const onMouseUp = () => {
+                    isDragging = false;
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                };
+                // Attach later to the header element once it's created
+                el.__attachDragHandle = (handle) => {
+                    if (!handle) return;
+                    handle.style.cursor = 'move';
+                    handle.addEventListener('mousedown', onMouseDown);
+                };
+            })(box);
+            if (viewerElement) {
+                viewerElement.appendChild(box);
+            } else {
+                document.body.appendChild(box);
+            }
+        }
+        const ra = typeof content.ra === 'number' ? content.ra.toFixed(6) : (content.ra ?? 'N/A');
+        const dec = typeof content.dec === 'number' ? content.dec.toFixed(6) : (content.dec ?? 'N/A');
+        // Display coordinates using bottom-left origin (to match coords overlay).
+        const resolvedXBottomLeft =
+            (typeof content.x_bottom_left === 'number' && Number.isFinite(content.x_bottom_left))
+                ? content.x_bottom_left
+                : ((typeof content.imageX === 'number' && Number.isFinite(content.imageX))
+                    ? content.imageX
+                    : ((typeof content.x === 'number' && Number.isFinite(content.x)) ? content.x : content.x_bottom_left));
+
+        let resolvedYBottomLeft =
+            (typeof content.y_bottom_left === 'number' && Number.isFinite(content.y_bottom_left))
+                ? content.y_bottom_left
+                : ((typeof content.imageY === 'number' && Number.isFinite(content.imageY))
+                    ? convertYToBottomOrigin(content.imageY)
+                    : ((typeof content.y === 'number' && Number.isFinite(content.y))
+                        ? convertYToBottomOrigin(content.y)
+                        : content.y_bottom_left));
+
+        // If we have imageY, ensure the displayed Y matches its bottom-left conversion.
+        if (typeof content.imageY === 'number' && Number.isFinite(content.imageY)) {
+            const yFromImage = convertYToBottomOrigin(content.imageY);
+            if (typeof yFromImage === 'number' && Number.isFinite(yFromImage) &&
+                typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft) &&
+                Math.abs(yFromImage - resolvedYBottomLeft) > 1e-3) {
+                resolvedYBottomLeft = yFromImage;
+            }
+        }
+
+        const x = (typeof resolvedXBottomLeft === 'number' && Number.isFinite(resolvedXBottomLeft)) ? resolvedXBottomLeft.toFixed(2) : (resolvedXBottomLeft ?? 'N/A');
+        const y = (typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft)) ? resolvedYBottomLeft.toFixed(2) : (resolvedYBottomLeft ?? 'N/A');
+        const isRegion = content.source_type === 'region';
+        // Track which region this popup is showing (so deletes can close it)
+        try {
+            box.dataset.regionId = (isRegion && content.region_id) ? String(content.region_id) : '';
+        } catch (_) {}
+
+        box.innerHTML = `
+            <div id="simple-region-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.2);">
+              <div style="font-weight:bold;font-size:14px;">Source Information</div>
+              <button type="button" id="simple-region-close-btn" style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:20px;line-height:1;padding:0 2px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;" aria-label="Close">
+                &times;
+              </button>
+            </div>
+            <div id="simple-region-content" style="padding:12px;"></div>
+        `;
+
+        const headerEl = box.querySelector('#simple-region-header');
+        if (box.__attachDragHandle && headerEl) {
+            try { box.__attachDragHandle(headerEl); } catch (_) {}
+        }
+
+        const contentElement = box.querySelector('#simple-region-content');
+        if (contentElement) {
+            let html = '';
+            html += `
+                <div style="margin-bottom:8px;">
+                    <span style="color:#aaa;">Position (image x, y):</span> ${x}, ${y}
+                </div>
+            `;
+            if (ra !== 'N/A' && dec !== 'N/A') {
+                html += `
+                    <div style="margin-bottom:8px;">
+                        <span style="color:#aaa;">Coordinates (RA, Dec):</span> ${ra}°, ${dec}°
+                    </div>
+                `;
+            }
+            if (typeof content.radius_pixels === 'number') {
+                const radius = content.radius_pixels.toFixed(2);
+                html += `
+                    <div style="margin-bottom:8px;">
+                        <span style="color:#aaa;">Region Radius:</span> ${radius} pixels
+                    </div>
+                `;
+            }
+
+            // Galaxy name resolution (similar to canvasPopup)
+            let galaxyName = 'UnknownGalaxy';
+            if (typeof content.galaxy_name === 'string' && content.galaxy_name.trim() !== '') {
+                galaxyName = content.galaxy_name.trim();
+            } else if (typeof content.NAME === 'string' && content.NAME.trim() !== '') {
+                galaxyName = content.NAME.trim();
+            } else if (typeof content.name === 'string' && content.name.trim() !== '') {
+                galaxyName = content.name.trim();
+            } else if (typeof content.galaxy === 'string' && content.galaxy.trim() !== '') {
+                galaxyName = content.galaxy.trim();
+            } else if (typeof content.PHANGS_GALAXY === 'string' && content.PHANGS_GALAXY.trim() !== '') {
+                galaxyName = content.PHANGS_GALAXY.trim();
+            } else if (typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== '') {
+                galaxyName = window.galaxyNameFromSearch.trim();
+            }
+
+            // Action buttons (identical set: SED, Properties, RGB, Cutout/Delete for regions)
+            html += `
+                <div style="margin-top:12px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;">
+                    <button id="simple-show-sed-btn" style="padding:6px 12px;background-color:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Show SED</button>
+                    <button id="simple-show-properties-btn" style="padding:6px 12px;background-color:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;">Show Properties</button>
+                    <button id="simple-show-rgb-btn" style="padding:6px 12px;background-color:#FF9800;color:white;border:none;border-radius:4px;cursor:pointer;">Show RGB</button>
+                    ${isRegion ? '<button id="simple-cutout-region-btn" style="padding:6px 12px;background-color:#9C27B0;color:white;border:none;border-radius:4px;cursor:pointer;">Cutout</button>' : ''}
+                    ${isRegion ? '<button id="simple-zoom-inset-btn" style="padding:6px 12px;background-color:#111827;color:white;border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;">Zoom inset</button>' : ''}
+                    ${isRegion ? '<button id="simple-delete-region-btn" style="padding:6px 12px;background-color:#DC2626;color:white;border:none;border-radius:4px;cursor:pointer;">Delete Region</button>' : ''}
+                </div>
+            `;
+
+            contentElement.innerHTML = html;
+
+            // Wire up buttons (using same logic as canvasPopup.show but without "this")
+            setTimeout(() => {
+                const closeBtn = box.querySelector('#simple-region-close-btn');
+                if (closeBtn) {
+                    closeBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        try { box.style.display = 'none'; } catch (_) {}
+                    };
+                }
+
+                const sedButton = box.querySelector('#simple-show-sed-btn');
+                const propertiesButton = box.querySelector('#simple-show-properties-btn');
+                const rgbButton = box.querySelector('#simple-show-rgb-btn');
+                const cutoutRegionButton = box.querySelector('#simple-cutout-region-btn');
+                const zoomInsetButton = box.querySelector('#simple-zoom-inset-btn');
+                const deleteRegionButton = box.querySelector('#simple-delete-region-btn');
+
+                // Ensure RA/Dec exist for actions (cutout/inset/RGB). Some maps (e.g. RA---SIN/DEC--SIN)
+                // won't resolve RA/Dec reliably in JS; use backend Astropy WCS instead.
+                async function ensureRegionWorldCoords() {
+                    try {
+                        if (Number.isFinite(content.ra) && Number.isFinite(content.dec)) return true;
+
+                        const x = (typeof content.x_bottom_left === 'number' && Number.isFinite(content.x_bottom_left))
+                            ? Math.round(content.x_bottom_left)
+                            : ((typeof content.x === 'number' && Number.isFinite(content.x)) ? Math.round(content.x) : null);
+
+                        const yBottom = (typeof content.y_bottom_left === 'number' && Number.isFinite(content.y_bottom_left))
+                            ? Math.round(content.y_bottom_left)
+                            : null;
+
+                        if (!Number.isFinite(x) || !Number.isFinite(yBottom)) return false;
+
+                        const fitsPath = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || null;
+                        const hduIndex = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+
+                        // Ensure session header exists (same pattern used by cutout/inset calls)
+                        if (!window.__sid) {
+                            const sessionRes = await fetch('/session/start');
+                            const sessionJson = await sessionRes.json();
+                            if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+                        }
+
+                        const headers = {};
+                        if (window.__sid) headers['X-Session-ID'] = window.__sid;
+
+                        const url =
+                            `/pixel-to-world/?x=${encodeURIComponent(x)}&y=${encodeURIComponent(yBottom)}` +
+                            `&origin=bottom` +
+                            (fitsPath ? `&filepath=${encodeURIComponent(fitsPath)}` : '') +
+                            `&hdu=${encodeURIComponent(hduIndex)}` +
+                            `&_t=${Date.now()}`;
+
+                        const resp = await fetch(url, { headers, cache: 'no-store' });
+                        if (!resp.ok) return false;
+                        const data = await resp.json().catch(() => null);
+                        if (data && Number.isFinite(data.ra) && Number.isFinite(data.dec)) {
+                            content.ra = data.ra;
+                            content.dec = data.dec;
+                            return true;
+                        }
+                        return false;
+                    } catch (_) {
+                        return false;
+                    }
+                }
+
+                if (sedButton) {
+                    sedButton.onclick = (e) => {
+                        e.stopPropagation();
+                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        const getGalaxyFrom = (obj) => {
+                            if (!obj) return null;
+                            const candidates = [obj.galaxy_name, obj.PHANGS_GALAXY, obj.NAME, obj.name, obj.galaxy];
+                            for (const v of candidates) {
+                                if (typeof v === 'string') {
+                                    const s = v.trim();
+                                    if (s) return s;
+                                }
+                            }
+                            return null;
+                        };
+                        let galaxyNameForSed =
+                            getGalaxyFrom(content) ||
+                            (typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim()) ||
+                            galaxyName;
+
+                        if (typeof window.showSed === 'function') {
+                            window.showSed(content.ra, content.dec, catalogName, galaxyNameForSed || 'UnknownGalaxy');
+                        }
+                    };
+                }
+
+                if (propertiesButton) {
+                    propertiesButton.onclick = (e) => {
+                        e.stopPropagation();
+                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        if (typeof window.showProperties === 'function') {
+                            window.showProperties(content.ra, content.dec, catalogName);
+                        }
+                    };
+                }
+
+                if (rgbButton) {
+                    rgbButton.onclick = async (e) => {
+                        e.stopPropagation();
+                        let catalogName = window.currentCatalogName || window.activeCatalog || 'UnknownCatalog';
+                        if (!catalogName || catalogName === 'undefined') {
+                            if (content.catalogName) catalogName = content.catalogName;
+                            else if (content.catalog) catalogName = content.catalog;
+                            else if (content.source) catalogName = content.source;
+                        }
+                        let galaxyNameForRgb = 'UnknownGalaxy';
+                        try {
+                            const lowerToOrig = {};
+                            for (const k in content) lowerToOrig[k.toLowerCase()] = k;
+                            const candidates = ['gal_name','PHANGS_GALAXY','phangs_galaxy','galaxy','galaxy_name','name','object_name','obj_name','target'];
+                            for (const key of candidates) {
+                                const orig = lowerToOrig[key];
+                                if (orig && typeof content[orig] === 'string') {
+                                    const v = content[orig].trim();
+                                    if (v) { galaxyNameForRgb = v; break; }
+                                }
+                            }
+                        } catch (_) {}
+                        if (galaxyNameForRgb === 'UnknownGalaxy' && typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim() !== '') {
+                            galaxyNameForRgb = window.galaxyNameFromSearch.trim();
+                        }
+                        if (!(Number.isFinite(content.ra) && Number.isFinite(content.dec))) {
+                            const ok = await ensureRegionWorldCoords();
+                            if (!ok) {
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification('Cannot open RGB: Missing coordinates', 3500, 'error');
+                                }
+                                return;
+                            }
+                        }
+                        if (typeof fetchRgbCutouts === 'function') {
+                            fetchRgbCutouts(content.ra, content.dec, catalogName, galaxyNameForRgb);
+                        }
+                    };
+                }
+
+                if (cutoutRegionButton) {
+                    cutoutRegionButton.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!(Number.isFinite(content.ra) && Number.isFinite(content.dec))) {
+                            const ok = await ensureRegionWorldCoords();
+                            if (!ok) {
+                                console.error('[simpleRegionPopup] Missing RA or Dec coordinates for cutout');
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification('Cannot create cutout: Missing coordinates', 3500, 'error');
+                                } else {
+                                    alert('Cannot create cutout: Missing coordinates');
+                                }
+                                return;
+                            }
+                        }
+                        const regionData = {
+                            ra: content.ra,
+                            dec: content.dec,
+                            region_type: content.region_type,
+                            region_id: content.region_id,
+                            radius_pixels: content.radius_pixels,
+                            width_pixels: content.width_pixels,
+                            height_pixels: content.height_pixels,
+                            minor_radius_pixels: content.minor_radius_pixels,
+                            vertices: Array.isArray(content.vertices) ? content.vertices : null,
+                            fits_path: window.currentFitsFile || null,
+                            hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
+                        };
+                        regionData.galaxy_name = galaxyName;
+                        try {
+                            cutoutRegionButton.disabled = true;
+                            cutoutRegionButton.textContent = 'Creating...';
+                            if (!window.__sid) {
+                                const sessionRes = await fetch('/session/start');
+                                const sessionJson = await sessionRes.json();
+                                if (sessionJson && sessionJson.session_id) {
+                                    window.__sid = sessionJson.session_id;
+                                }
+                            }
+                            const headers = { 'Content-Type': 'application/json' };
+                            if (window.__sid) headers['X-Session-ID'] = window.__sid;
+                            const response = await fetch('/region-cutout/', {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify(regionData)
+                            });
+                            if (!response.ok) {
+                                const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+                                throw new Error(error.detail || 'Failed to create cutout');
+                            }
+                            const result = await response.json();
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification(`Cutout saved: ${result.filename}`, 3000, 'success');
+                            }
+                        } catch (err) {
+                            console.error('[simpleRegionPopup] Error creating cutout:', err);
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification(`Error creating cutout: ${err.message}`, 4000, 'error');
+                            }
+                        } finally {
+                            cutoutRegionButton.disabled = false;
+                            cutoutRegionButton.textContent = 'Cutout';
+                        }
+                    };
+                }
+
+                if (zoomInsetButton) {
+                    // Use onclick (not addEventListener) and scope queries to this popup to avoid duplicate handlers
+                    zoomInsetButton.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!(Number.isFinite(content.ra) && Number.isFinite(content.dec))) {
+                            const ok = await ensureRegionWorldCoords();
+                            if (!ok) {
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification('Cannot create inset: Missing coordinates', 3500, 'error');
+                                } else {
+                                    alert('Cannot create inset: Missing coordinates');
+                                }
+                                return;
+                            }
+                        }
+                        const regionData = {
+                            ra: content.ra,
+                            dec: content.dec,
+                            region_type: content.region_type,
+                            region_id: content.region_id,
+                            radius_pixels: content.radius_pixels,
+                            width_pixels: content.width_pixels,
+                            height_pixels: content.height_pixels,
+                            minor_radius_pixels: content.minor_radius_pixels,
+                            vertices: Array.isArray(content.vertices) ? content.vertices : null,
+                            fits_path: window.currentFitsFile || null,
+                            hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
+                        };
+                        regionData.galaxy_name = galaxyName;
+                        try {
+                            zoomInsetButton.disabled = true;
+                            zoomInsetButton.textContent = 'Loading...';
+                            if (!window.__sid) {
+                                const sessionRes = await fetch('/session/start');
+                                const sessionJson = await sessionRes.json();
+                                if (sessionJson && sessionJson.session_id) {
+                                    window.__sid = sessionJson.session_id;
+                                }
+                            }
+                            const headers = { 'Content-Type': 'application/json' };
+                            if (window.__sid) headers['X-Session-ID'] = window.__sid;
+                            const response = await fetch('/region-cutout/', {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify(regionData)
+                            });
+                            if (!response.ok) {
+                                const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+                                throw new Error(error.detail || 'Failed to create cutout');
+                            }
+                            const result = await response.json();
+                            const cutoutRel = `uploads/${result.filename}`;
+                            await showRegionZoomInsetFromCutout(
+                                cutoutRel,
+                                (content.region_type || 'Zoom').toString(),
+                                content.region_id,
+                                regionData
+                            );
+                        } catch (err) {
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification(`Zoom inset error: ${err.message}`, 4000, 'error');
+                            }
+                        } finally {
+                            zoomInsetButton.disabled = false;
+                            zoomInsetButton.textContent = 'Zoom inset';
+                        }
+                    };
+                }
+
+                if (deleteRegionButton) {
+                    deleteRegionButton.onclick = (e) => {
+                        e.stopPropagation();
+                        if (typeof window.deleteRegionById === 'function' && content.region_id) {
+                            window.deleteRegionById(content.region_id);
+                        }
+                    };
+                }
+            }, 0);
+        }
+
+        // Position near the region center (anchor), clamped to viewer bounds
+        try {
+            const target = box;
+            if (viewerElement) {
+                const vw = viewerElement.clientWidth || 0;
+                const vh = viewerElement.clientHeight || 0;
+                let px = anchor && typeof anchor.x === 'number' ? anchor.x + 15 : vw / 2;
+                let py = anchor && typeof anchor.y === 'number' ? anchor.y - 40 : vh / 2;
+                const rect = target.getBoundingClientRect();
+                const w = rect.width || 320;
+                const h = rect.height || 160;
+                if (px + w > vw - 10) px = Math.max(10, vw - w - 10);
+                if (px < 10) px = 10;
+                if (py + h > vh - 10) py = Math.max(10, vh - h - 10);
+                if (py < 10) py = 10;
+                target.style.left = `${px}px`;
+                target.style.top = `${py}px`;
+            } else if (anchor && typeof anchor.x === 'number' && typeof anchor.y === 'number') {
+                target.style.left = `${anchor.x + 15}px`;
+                target.style.top = `${Math.max(10, anchor.y - 40)}px`;
+            }
+            target.style.right = 'auto';
+        } catch (_) {}
+
+        box.style.display = 'block';
+    } catch (e) {
+        console.warn('[regions] simple region popup fallback failed', e);
+    }
+}
+
+function computeRegionPopupContent(shape) {
+    const center = getShapeCenter(shape);
+    const content = {
+        source_type: 'region',
+        region_type: shape?.type || 'unknown',
+        region_label: shape?.label || 'Region',
+        region_id: shape?.id || null,
+        x_bottom_left: center && Number.isFinite(center.x) ? Number(center.x.toFixed(2)) : undefined,
+        y_bottom_left: center && Number.isFinite(center.y)
+            ? Number(convertYToBottomOrigin(center.y).toFixed(2))
+            : undefined
+    };
+
+    if (shape.type === 'circle') {
+        content.radius_pixels = Number(shape.radius.toFixed(2));
+    } else if (shape.type === 'rectangle') {
+        content.width_pixels = Number(Math.abs(shape.x2 - shape.x1).toFixed(2));
+        content.height_pixels = Number(Math.abs(shape.y2 - shape.y1).toFixed(2));
+    } else if (shape.type === 'ellipse') {
+        // Preserve ellipse orientation for cutouts by sending explicit axis-aligned width/height.
+        // (If we only send major/minor, the backend can't know whether the major axis was X or Y,
+        //  and the masked cutout will appear "always horizontal".)
+        content.width_pixels = Number((shape.radiusX * 2).toFixed(2));
+        content.height_pixels = Number((shape.radiusY * 2).toFixed(2));
+        // Keep the legacy fields too (used elsewhere / backward compatibility).
+        content.radius_pixels = Number(Math.max(shape.radiusX, shape.radiusY).toFixed(2));
+        content.minor_radius_pixels = Number(Math.min(shape.radiusX, shape.radiusY).toFixed(2));
+    } else if (shape.type === 'hexagon') {
+        content.width_pixels = Number((shape.radiusX * 2).toFixed(2));
+        content.height_pixels = Number((shape.radiusY * 2).toFixed(2));
+        const verts = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY) || [];
+        content.vertices = verts.map((v) => ({
+            x: Number(v.x.toFixed(3)),
+            y: Number(v.y.toFixed(3))
+        }));
+    }
+
+    if (center) {
+        const world = getWorldCoordinatesFromImage(center.x, center.y);
+        if (world) {
+            content.ra = world.ra;
+            content.dec = world.dec;
+        }
+    }
+
+    return content;
+}
+
+function showRegionPopup(shape) {
+    if (!shape) return;
+    const center = getShapeCenter(shape);
+    const screenPoint = center ? imagePointToScreen(center) : null;
+    if (!screenPoint) return;
+
+    // Mark selection for highlight
+    regionDrawingState.selectedShapeId = shape.id;
+    const content = computeRegionPopupContent(shape);
+
+    // Use unified DOM popup implementation for regions (works in single + multi-panel)
+    showSimpleRegionPopup(content, screenPoint);
+    renderRegionOverlay();
+}
+
+// Expose simple popup helper globally so the top-level window can render popups for panes
+try { window.showSimpleRegionPopup = showSimpleRegionPopup; } catch (_) {}
+
+function updateRegionCursor() {
+    const viewerElement = document.getElementById('openseadragon');
+    if (!viewerElement) return;
+    const tool = REGION_TOOLS.find(t => t.id === regionDrawingState.activeTool);
+    if (tool) {
+        viewerElement.style.cursor = tool.cursor || 'crosshair';
+        return;
+    }
+    viewerElement.style.cursor = (regionDrawingState.mouseMode === 'pan') ? 'grab' : '';
+}
+
+function setRegionMouseMode(mode) {
+    const normalized = (mode === 'pan') ? 'pan' : 'pointer';
+    if (regionDrawingState.mouseMode === normalized) return;
+    regionDrawingState.mouseMode = normalized;
+    updateRegionCursor();
+    try {
+        document.dispatchEvent(new CustomEvent('region-mouse-mode-changed', { detail: { mode: normalized } }));
+    } catch (_) {}
+}
+
+function setRegionDrawingTool(toolId) {
+    const normalized = toolId || null;
+    if (regionDrawingState.activeTool === normalized) {
+        regionDrawingState.activeTool = null;
+    } else {
+        regionDrawingState.activeTool = normalized;
+        if (normalized) {
+            ensureRegionInfrastructure();
+            // Drawing implies pointer intent
+            regionDrawingState.mouseMode = 'pointer';
+        }
+    }
+    updateRegionCursor();
+    document.dispatchEvent(new CustomEvent('region-tool-changed', { detail: { toolId: regionDrawingState.activeTool } }));
+}
+
+function clearRegionSelections() {
+    regionDrawingState.selectedShapeId = null;
+    renderRegionOverlay();
+}
+
+function clearAllRegions() {
+    if (!regionDrawingState.shapes.length && !regionDrawingState.previewShape) return 0;
+    regionDrawingState.shapes = [];
+    regionDrawingState.previewShape = null;
+    regionDrawingState.selectedShapeId = null;
+    try {
+        if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') {
+            window.canvasPopup.hide();
+        }
+    } catch (_) {}
+    renderRegionOverlay();
+    return 0;
+}
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && regionDrawingState.activeTool) {
+        setRegionDrawingTool(null);
+    }
+    // Delete selected region with Delete/Backspace (when not typing in an input)
+    try {
+        const key = event.key;
+        if (key === 'Delete' || key === 'Backspace') {
+            const t = event.target;
+            const tag = (t && t.tagName) ? String(t.tagName).toLowerCase() : '';
+            const isTypingTarget =
+                (tag === 'input' || tag === 'textarea' || tag === 'select') ||
+                (t && t.isContentEditable);
+            if (isTypingTarget) return;
+            const selId = regionDrawingState.selectedShapeId;
+            if (selId) {
+                event.preventDefault();
+                if (typeof window.deleteRegionById === 'function') {
+                    window.deleteRegionById(selId);
+                } else {
+                    // Fallback: delete locally
+                    const idx = regionDrawingState.shapes.findIndex((shape) => shape.id === selId);
+                    if (idx >= 0) {
+                        regionDrawingState.shapes.splice(idx, 1);
+                        regionDrawingState.selectedShapeId = null;
+                        renderRegionOverlay();
+                    }
+                }
+            }
+        }
+    } catch (_) {}
+});
+
+window.addEventListener('resize', scheduleRegionCanvasResize);
+
+window.setRegionDrawingTool = setRegionDrawingTool;
+window.clearRegionDrawingTool = () => setRegionDrawingTool(null);
+window.setRegionMouseMode = setRegionMouseMode;
+window.listDrawnRegions = () => regionDrawingState.shapes.slice();
+window.clearRegionSelections = clearRegionSelections;
+window.clearAllRegions = clearAllRegions;
+window.removeAllZoomInsets = _removeAllZoomInsets;
+window.serializeZoomInsets = _serializeZoomInsets;
+window.restoreZoomInsetsFromSerialized = _restoreZoomInsetsFromSerialized;
+window.restoreRegionsFromSerialized = _restoreRegionsFromSerialized;
+window.deleteRegionById = (regionId) => {
+    if (!regionId) return;
+    const idx = regionDrawingState.shapes.findIndex((shape) => shape.id === regionId);
+    if (idx >= 0) {
+        regionDrawingState.shapes.splice(idx, 1);
+        if (regionDrawingState.selectedShapeId === regionId) {
+            regionDrawingState.selectedShapeId = null;
+        }
+        renderRegionOverlay();
+        if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') {
+            window.canvasPopup.hide();
+        }
+        // Remove any zoom insets associated with this region
+        try { _removeZoomInsetsForRegion(regionId); } catch (_) {}
+        // Also hide the "Source Information" (simple region) popup if it was showing this region
+        try {
+            const box = document.getElementById('simple-region-popup');
+            const shownId = box && box.dataset ? box.dataset.regionId : '';
+            if (box && (String(shownId || '') === String(regionId))) {
+                box.style.display = 'none';
+            }
+        } catch (_) {}
+    }
+};
 
 // Main initialization function to override existing methods with canvas versions
 function initPureCanvasImplementation() {

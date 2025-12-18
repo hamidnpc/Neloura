@@ -127,7 +127,12 @@ function generateHistogram() {
     // Determine current catalog
     const catalogSelect = document.getElementById('catalog-select');
     const selectedCatalog = catalogSelect ? catalogSelect.value : null;
-    const catalogToUse = selectedCatalog || activeCatalog;
+    const catalogToUse =
+        selectedCatalog ||
+        window.plotterSelectedCatalogName ||
+        window.currentCatalogName ||
+        window.activeCatalog ||
+        (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
 
     // Use the existing data only if it matches the current catalog
     if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0 && window.sourcePropertiesCatalogName === catalogToUse) {
@@ -200,8 +205,8 @@ function generateHistogram() {
         if (sizeCol) headers['X-Size-Col'] = sizeCol;
         const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
         // Load the catalog data
-        console.log('[plotter] /load-catalog bootstrap URL:', `/load-catalog/${apiName}${suffix}`, 'headers:', headers);
-        apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
+        console.log('[plotter] /plotter/load-catalog bootstrap URL:', `/plotter/load-catalog/${apiName}${suffix}`, 'headers:', headers);
+        apiFetch(`/plotter/load-catalog/${apiName}${suffix}`, { headers })
         .then(response => {
             if (!response.ok) {
                 throw new Error('Failed to load catalog');
@@ -1582,18 +1587,216 @@ function populateAxisDropdowns() {
         yAxisDropdown.innerHTML = errorMessage;
         colorDropdown.innerHTML = colorDropdown.innerHTML + errorMessage;
     }
+
+    // Helper: in multi-panel mode, use the active pane's window for image/catalog state.
+    function getPlotterActivePaneWindow() {
+        try {
+            if (typeof window.getActivePaneWindow === 'function') {
+                const w = window.getActivePaneWindow();
+                if (w) return w;
+            }
+        } catch (_) {}
+        return window;
+    }
+    const paneWin = getPlotterActivePaneWindow();
+
+    // Small context note (helps when multiple catalogs / images are loaded)
+    function updatePlotterContextNote() {
+        const noteEl = document.getElementById('plotter-context-note');
+        if (!noteEl) return;
+        try {
+            const paneWin = getPlotterActivePaneWindow();
+            // Catalog name: prefer plotter-selected, otherwise active pane's active/current catalog,
+            // otherwise last loaded in active pane.
+            const plotterPicked = (window.plotterSelectedCatalogName || '').toString();
+            const paneActive = (paneWin && (paneWin.currentCatalogName || paneWin.activeCatalog)) || '';
+            let paneLast = '';
+            try {
+                if (paneWin && typeof paneWin.getLoadedCatalogOverlays === 'function') {
+                    const entries = paneWin.getLoadedCatalogOverlays() || [];
+                    if (Array.isArray(entries) && entries.length) {
+                        const lastKey = entries[entries.length - 1]?.key;
+                        if (lastKey) paneLast = String(lastKey);
+                    }
+                }
+            } catch (_) {}
+            const catalogName = (plotterPicked || paneActive || paneLast || window.sourcePropertiesCatalogName || window.currentCatalogName || window.activeCatalog || '').toString();
+            const cleanCatalog = catalogName ? catalogName.split('/').pop().split('\\').pop().replace(/\.fits$/i, '') : '—';
+
+            const fileRaw = (paneWin && paneWin.fitsData && paneWin.fitsData.filename) || (paneWin && paneWin.currentFitsFile) || '';
+            const cleanImage = fileRaw ? fileRaw.toString().split('/').pop().split('\\').pop().replace(/\.fits$/i, '') : '—';
+
+            noteEl.textContent = `Catalog: ${cleanCatalog} | Image: ${cleanImage}`;
+        } catch (_) {
+            noteEl.textContent = '';
+        }
+    }
+    // Expose so other listeners (e.g. active pane change) can refresh it.
+    try { window.updatePlotterContextNote = updatePlotterContextNote; } catch (_) {}
+    updatePlotterContextNote();
+
+    // If multiple catalogs are loaded, show a selector above "Select Axes"
+    function updatePlotterCatalogPicker() {
+        const row = document.getElementById('plotter-catalog-picker-row');
+        const sel = document.getElementById('plotter-catalog-select');
+        if (!row || !sel) return;
+        let entries = [];
+        try {
+            const paneWin = getPlotterActivePaneWindow();
+            if (paneWin && typeof paneWin.getLoadedCatalogOverlays === 'function') {
+                entries = paneWin.getLoadedCatalogOverlays() || [];
+            } else if (typeof window.getLoadedCatalogOverlays === 'function') {
+                entries = window.getLoadedCatalogOverlays() || [];
+            }
+        } catch (_) { entries = []; }
+        if (!Array.isArray(entries)) entries = [];
+        // Filter to those with any objects (but keep zero-count if it's the only one)
+        const nonEmpty = entries.filter(e => e && e.key && (e.count == null || e.count > 0));
+        const list = nonEmpty.length ? nonEmpty : entries.filter(e => e && e.key);
+
+        if (!list || list.length < 2) {
+            row.style.display = 'none';
+            return;
+        }
+        row.style.display = 'flex';
+
+        // Default selection: LAST loaded catalog (last entry in list), unless user already picked one.
+        const paneWin = getPlotterActivePaneWindow();
+        const fallbackActive = (paneWin && (paneWin.currentCatalogName || paneWin.activeCatalog)) || (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
+        const lastKey = (list[list.length - 1] && list[list.length - 1].key) ? String(list[list.length - 1].key) : null;
+        const current =
+            (window.plotterSelectedCatalogName || null) ||
+            lastKey ||
+            (paneWin && paneWin.currentCatalogName) ||
+            (paneWin && paneWin.activeCatalog) ||
+            window.currentCatalogName ||
+            window.activeCatalog ||
+            fallbackActive ||
+            null;
+
+        // Rebuild options
+        while (sel.firstChild) sel.removeChild(sel.firstChild);
+        list.forEach(e => {
+            const key = String(e.key || '');
+            if (!key) return;
+            const opt = document.createElement('option');
+            opt.value = key;
+            const label = key.split('/').pop().split('\\').pop().replace(/\.fits$/i, '');
+            opt.textContent = label || key;
+            sel.appendChild(opt);
+        });
+        if (current) sel.value = String(current);
+        // Persist default so Generate Plot uses it even before user changes the dropdown.
+        if (!window.plotterSelectedCatalogName && sel.value) {
+            window.plotterSelectedCatalogName = sel.value;
+        }
+
+        if (!sel.__plotterBound) {
+            sel.addEventListener('change', () => {
+                const v = sel.value || '';
+                window.plotterSelectedCatalogName = v || null;
+                // Force dropdowns to refresh for the newly selected catalog
+                try { window.plotterColumnSampleData = null; } catch (_) {}
+                try { window.plotterColumnSampleCatalogName = null; } catch (_) {}
+                try { window.sourcePropertiesData = null; } catch (_) {}
+                try { window.sourcePropertiesCatalogName = null; } catch (_) {}
+
+                // Clear any stale UI selections so it doesn't look like we're still using the previous catalog
+                try {
+                    const idsToClear = [
+                        'x-axis-search', 'y-axis-search', 'color-axis-search',
+                        'x-axis-select', 'y-axis-select', 'color-axis-select',
+                        'boolean-filter-search', 'boolean-filter-column-select', 'boolean-filter-value-select'
+                    ];
+                    idsToClear.forEach((id) => {
+                        const el = document.getElementById(id);
+                        if (!el) return;
+                        if (el.tagName === 'SELECT') el.value = '';
+                        if (el.tagName === 'INPUT') el.value = '';
+                    });
+                    // Hide any open dropdowns
+                    ['x-axis-dropdown', 'y-axis-dropdown', 'color-axis-dropdown', 'boolean-filter-dropdown'].forEach((id) => {
+                        const el = document.getElementById(id);
+                        if (el && el.style) el.style.display = 'none';
+                    });
+                    const valWrap = document.getElementById('boolean-filter-value-wrap');
+                    if (valWrap && valWrap.style) valWrap.style.display = 'none';
+                } catch (_) {}
+                // Keep other modules in sync (optional)
+                try {
+                    if (typeof window.setActiveCatalogForControls === 'function' && v) {
+                        window.setActiveCatalogForControls(v);
+                    }
+                } catch (_) {}
+                try { populateAxisDropdowns(); } catch (_) {}
+                try { updatePlotterContextNote(); } catch (_) {}
+            });
+            sel.__plotterBound = true;
+        }
+    }
+    updatePlotterCatalogPicker();
+
+    // Also refresh the picker automatically when catalogs change while Plotter is open.
+    // catalogs.js emits:
+    // - 'catalog:changed' when a catalog is activated via controls
+    // - 'catalogs:updated' when catalogs are loaded/unloaded/toggled
+    try {
+        if (!window.__plotterCatalogEventsListenerInstalled) {
+            const __plotterOnCatalogEvent = () => {
+                try {
+                    // Only do work if plotter UI exists
+                    if (!document.getElementById('dynamic-plotter-panel')) return;
+                    if (!document.getElementById('plotter-catalog-select')) return;
+                    // Rebuild list and update context
+                    try { updatePlotterCatalogPicker(); } catch (_) {}
+                    try { updatePlotterContextNote(); } catch (_) {}
+                } catch (_) {}
+            };
+            window.addEventListener('catalog:changed', __plotterOnCatalogEvent);
+            window.addEventListener('catalogs:updated', __plotterOnCatalogEvent);
+            window.__plotterCatalogEventsListenerInstalled = true;
+        }
+    } catch (_) {}
     
-    // If we have catalog data, use it
-    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0) {
+    // If we have cached data, use it to populate dropdowns.
+    // IMPORTANT: Only treat window.sourcePropertiesData as usable if it looks like REAL plot data
+    // (it will include _originalObj from /plotter/load-catalog + /source-properties).
+    const __activeFallback = (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
+    const __catalogSelectForDropdowns = document.getElementById('catalog-select');
+    const __selectedCatalogForDropdowns = __catalogSelectForDropdowns ? (__catalogSelectForDropdowns.value || null) : null;
+        const __catalogToUseForDropdowns =
+            __selectedCatalogForDropdowns ||
+            window.plotterSelectedCatalogName ||
+            window.sourcePropertiesCatalogName ||
+            window.currentCatalogName ||
+            window.activeCatalog ||
+            __activeFallback ||
+            null;
+
+    const __sourcePropsLooksReal =
+        Array.isArray(window.sourcePropertiesData) &&
+        window.sourcePropertiesData.length > 0 &&
+        // If we know the current catalog, ensure cache matches it
+        (!__catalogToUseForDropdowns || window.sourcePropertiesCatalogName === __catalogToUseForDropdowns) &&
+        window.sourcePropertiesData.some(o => o && (o._originalObj || (o.ra != null && o.dec != null)));
+
+    const __columnSampleLooksUsable =
+        Array.isArray(window.plotterColumnSampleData) &&
+        window.plotterColumnSampleData.length > 0 &&
+        (!__catalogToUseForDropdowns || window.plotterColumnSampleCatalogName === __catalogToUseForDropdowns);
+
+    const __dropdownData =
+        __sourcePropsLooksReal ? window.sourcePropertiesData :
+        (__columnSampleLooksUsable ? window.plotterColumnSampleData : null);
+
+    if (__dropdownData) {
         showLoadingIndicators();
         setTimeout(() => {
-            processDropdownOptions(window.sourcePropertiesData);
+            processDropdownOptions(__dropdownData);
             // Populate boolean filter columns using backend helper
             const boolSelect = document.getElementById('boolean-filter-column-select');
             if (boolSelect) {
-                const catalogSelectEl = document.getElementById('catalog-select');
-                const selectedCatalog = catalogSelectEl ? catalogSelectEl.value : null;
-                const catalogToUse = selectedCatalog || activeCatalog;
+                const catalogToUse = __catalogToUseForDropdowns;
                 if (catalogToUse) {
                     detectBooleanColumns(catalogToUse).then(cols => {
                         // Reset options (keep 'None')
@@ -1659,38 +1862,47 @@ function populateAxisDropdowns() {
         return;
     }
     
-    // Otherwise, check if we have catalog overlay data
-    if (window.catalogDataForOverlay && window.catalogDataForOverlay.length > 0 && activeCatalog) {
+    // Otherwise, check if we have catalog overlay data (prefer active pane in multi-grid)
+    const paneHasOverlay = !!(paneWin && paneWin.catalogDataForOverlay && paneWin.catalogDataForOverlay.length > 0);
+    const topHasOverlay = !!(window.catalogDataForOverlay && window.catalogDataForOverlay.length > 0);
+    const paneCatalogName = (paneWin && (paneWin.currentCatalogName || paneWin.activeCatalog)) || null;
+    const topCatalogName = window.currentCatalogName || window.activeCatalog || (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
+    if ((paneHasOverlay || topHasOverlay) && (paneCatalogName || topCatalogName)) {
         showLoadingIndicators();
-        
-        // Get a sample object to fetch properties
-        const sampleObject = window.catalogDataForOverlay[0];
-        
-        // Fetch properties for the sample object to get column names (use apiFetch to ensure session)
-        apiFetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${activeCatalog}`)
+
+        // Use /catalog-columns/ to populate axis dropdowns (more robust than probing /source-properties/)
+        const catalogSelect = document.getElementById('catalog-select');
+        const selectedCatalog = catalogSelect ? catalogSelect.value : null;
+        const catalogToUse =
+            selectedCatalog ||
+            window.plotterSelectedCatalogName ||
+            paneCatalogName ||
+            window.currentCatalogName ||
+            window.activeCatalog ||
+            (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
+        apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(String(catalogToUse || ''))}`)
             .then(response => {
                 if (!response.ok) {
-                    return response.json().then(err => { throw new Error(err.detail || 'Failed to load properties'); });
+                    return response.json().then(err => { throw new Error(err.detail || err.error || 'Failed to load columns'); });
                 }
                 return response.json();
             })
             .then(data => {
-                if (data.error) {
-                    console.error('Error fetching properties:', data.error);
-                    showErrorMessage('Error loading data');
-                    return;
+                const cols = (data && data.columns) ? data.columns : [];
+                if (!Array.isArray(cols) || cols.length === 0) {
+                    throw new Error('No columns returned');
                 }
-                
-                // Get properties and create a sample data array
-                const properties = data.properties || {};
-                const sampleData = [properties];
-                
-                // Process the sample data to populate dropdowns
-                processDropdownOptions(sampleData);
+                const sample = {};
+                cols.forEach(c => { sample[c] = null; });
+                // Store as a "columns-only" sample for dropdown population only (do NOT overwrite plot data cache)
+                try { window.plotterColumnSampleData = [sample]; } catch (_) {}
+                try { window.plotterColumnSampleCatalogName = catalogToUse; } catch (_) {}
+                processDropdownOptions([sample]);
+
                 // Populate boolean filter columns
                 const boolSelect = document.getElementById('boolean-filter-column-select');
-                if (boolSelect && activeCatalog) {
-                    detectBooleanColumns(activeCatalog).then(cols => {
+                if (boolSelect && catalogToUse) {
+                    detectBooleanColumns(catalogToUse).then(cols => {
                         for (let i = boolSelect.options.length - 1; i >= 1; i--) boolSelect.remove(i);
                         const dropdown = document.getElementById('boolean-filter-dropdown');
                         if (dropdown) {
@@ -1746,8 +1958,8 @@ function populateAxisDropdowns() {
                 }
             })
             .catch(error => {
-                console.error('Error loading catalog data:', error);
-                showErrorMessage('Error loading data: ' + error.message);
+                console.error('Error loading catalog columns:', error);
+                showErrorMessage('Error loading columns: ' + (error && error.message ? error.message : String(error)));
             });
         return;
     }
@@ -1756,78 +1968,51 @@ function populateAxisDropdowns() {
     const catalogSelect = document.getElementById('catalog-select');
     const selectedCatalog = catalogSelect ? catalogSelect.value : null;
     
-    if (!selectedCatalog && !activeCatalog) {
+    if (
+        !selectedCatalog &&
+        !window.plotterSelectedCatalogName &&
+        !paneCatalogName &&
+        !(typeof activeCatalog !== 'undefined' ? activeCatalog : null) &&
+        !window.currentCatalogName &&
+        !window.activeCatalog
+    ) {
         showErrorMessage('No catalog selected');
         return;
     }
     // Use either the selected catalog or active catalog
-    const catalogToUse = selectedCatalog || activeCatalog;
+    const catalogToUse =
+        selectedCatalog ||
+        window.plotterSelectedCatalogName ||
+        paneCatalogName ||
+        window.currentCatalogName ||
+        window.activeCatalog ||
+        (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
     // Show loading indicators
     showLoadingIndicators();
-    // Load the catalog data - ensure RA/DEC overrides are sent
-    // First, load the catalog to get a sample object
-    {
-        const apiName = (catalogToUse || '').toString().split('/').pop().split('\\').pop();
-        const persisted = (window.catalogOverridesByCatalog && (
-            window.catalogOverridesByCatalog[catalogToUse] ||
-            window.catalogOverridesByCatalog[apiName]
-        )) || null;
-        const raCol = persisted && persisted.ra_col ? persisted.ra_col : 'ra';
-        const decCol = persisted && persisted.dec_col ? persisted.dec_col : 'dec';
-        const sizeCol = persisted && persisted.size_col ? persisted.size_col : null;
-        const urlParams = new URLSearchParams();
-        if (raCol) urlParams.set('ra_col', raCol);
-        if (decCol) urlParams.set('dec_col', decCol);
-        if (sizeCol) urlParams.set('size_col', sizeCol);
-        const headers = {};
-        if (raCol) headers['X-RA-Col'] = raCol;
-        if (decCol) headers['X-DEC-Col'] = decCol;
-        if (sizeCol) headers['X-Size-Col'] = sizeCol;
-        const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
-        console.log('[plotter] /load-catalog detect-string URL:', `/load-catalog/${encodeURIComponent(apiName)}${suffix}`, 'headers:', headers);
-        apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
+    // Use /catalog-columns/ to populate dropdowns without requiring a RA/Dec match.
+    apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(String(catalogToUse || ''))}`)
         .then(response => {
             if (!response.ok) {
-                throw new Error('Failed to load catalog');
-            }
-            return response.json();
-        })
-        .then(catalogData => {
-            if (!catalogData || !catalogData.length) {
-                throw new Error('No catalog data available');
-            }
-            
-            // Get a sample object
-            const sampleObject = catalogData[0];
-            
-            // Fetch properties for the sample object
-            return apiFetch(`/source-properties/?ra=${sampleObject.ra}&dec=${sampleObject.dec}&catalog_name=${catalogToUse}`);
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to load properties');
+                return response.json().then(err => { throw new Error(err.detail || err.error || 'Failed to load columns'); });
             }
             return response.json();
         })
         .then(data => {
-            if (data.error) {
-                throw new Error(data.error);
+            const cols = (data && data.columns) ? data.columns : [];
+            if (!Array.isArray(cols) || cols.length === 0) {
+                throw new Error('No columns returned');
             }
-            
-            // Get properties and create a sample data array
-            const properties = data.properties || {};
-            
-            // Store the properties for future use
-            window.sourcePropertiesData = [properties];
-            
-            // Process the sample data to populate dropdowns
-            processDropdownOptions([properties]);
+            const sample = {};
+            cols.forEach(c => { sample[c] = null; });
+            // Store as a "columns-only" sample for dropdown population only (do NOT overwrite plot data cache)
+            try { window.plotterColumnSampleData = [sample]; } catch (_) {}
+            try { window.plotterColumnSampleCatalogName = catalogToUse; } catch (_) {}
+            processDropdownOptions([sample]);
         })
         .catch(error => {
-            console.error('Error loading catalog data:', error);
-            showErrorMessage('Error: ' + error.message);
+            console.error('Error loading catalog columns:', error);
+            showErrorMessage('Error: ' + (error && error.message ? error.message : String(error)));
         });
-    }
     
     function processDropdownOptions(data) {
         // Get column names from all objects
@@ -2243,7 +2428,8 @@ function createPlotterContainer() {
     plotterContainer.style.padding = '15px';
     plotterContainer.style.boxSizing = 'border-box';
     plotterContainer.style.boxShadow = '-2px 0 20px rgba(0, 0, 0, 0.8)';
-    plotterContainer.style.zIndex = '3000';
+    // Must be above toolbar/file-browser in multi-panel mode (toolbar.js raises them to ~3501/3502)
+    plotterContainer.style.zIndex = '3605';
     plotterContainer.style.transition = 'transform 0.3s ease';
     plotterContainer.style.overflowY = 'auto';
     plotterContainer.style.overflowX = 'hidden';
@@ -2363,6 +2549,44 @@ function createPlotterContainer() {
     axisSelectionSection.id = 'axis-selection-section';
     axisSelectionSection.style.marginBottom = '20px';
     
+    // Context note shown ABOVE the "Select Axes" heading (requested UX)
+    const contextNote = document.createElement('div');
+    contextNote.id = 'plotter-context-note';
+    contextNote.style.margin = '0 0 6px 0';
+    contextNote.style.fontSize = '12px';
+    contextNote.style.color = '#aaa';
+    contextNote.textContent = 'Catalog: — | Image: —';
+    axisSelectionSection.appendChild(contextNote);
+
+    // Catalog picker (only shown when 2+ catalogs are loaded)
+    const catalogPickerRow = document.createElement('div');
+    catalogPickerRow.id = 'plotter-catalog-picker-row';
+    catalogPickerRow.style.display = 'none';
+    catalogPickerRow.style.margin = '0 0 8px 0';
+    catalogPickerRow.style.gap = '8px';
+    catalogPickerRow.style.alignItems = 'center';
+    catalogPickerRow.style.fontSize = '12px';
+    catalogPickerRow.style.color = '#ccc';
+    catalogPickerRow.style.flexWrap = 'wrap';
+    catalogPickerRow.style.display = 'flex';
+
+    const catalogPickerLabel = document.createElement('span');
+    catalogPickerLabel.textContent = 'Catalog:';
+    catalogPickerLabel.style.opacity = '0.9';
+    catalogPickerRow.appendChild(catalogPickerLabel);
+
+    const catalogPickerSelect = document.createElement('select');
+    catalogPickerSelect.id = 'plotter-catalog-select';
+    catalogPickerSelect.style.padding = '6px 8px';
+    catalogPickerSelect.style.backgroundColor = '#333';
+    catalogPickerSelect.style.color = 'white';
+    catalogPickerSelect.style.border = '1px solid #555';
+    catalogPickerSelect.style.borderRadius = '6px';
+    catalogPickerSelect.style.minWidth = '220px';
+    catalogPickerRow.appendChild(catalogPickerSelect);
+
+    axisSelectionSection.appendChild(catalogPickerRow);
+
     const axisSelectionTitle = document.createElement('h3');
     axisSelectionTitle.textContent = 'Select Axes';
     axisSelectionTitle.style.fontSize = '16px';
@@ -3358,12 +3582,7 @@ function createPlotterContainer() {
     scatterControls.appendChild(saveButton);
 
     // Inline status inside scatter/histogram tools
-    const inlineStatus = document.createElement('div');
-    inlineStatus.id = 'plotter-inline-status';
-    inlineStatus.style.margin = '0 0 8px 0';
-    inlineStatus.style.fontSize = '12px';
-    inlineStatus.style.color = '#ccc';
-    scatterControls.appendChild(inlineStatus);
+    // (Removed) inline status row: was showing "Catalog: ... | Image: ..." under the buttons.
 
     // Preload notice (shown when image/catalog not loaded)
     const preloadNotice = document.createElement('div');
@@ -3577,8 +3796,21 @@ function updateScatterControlsVisibility(plotType) {
 // Global helper to toggle Scatter/Histogram availability based on loaded image/catalog
 window.updatePlotterAvailability = function updatePlotterAvailability() {
     try {
-        const hasImage = !!(window.currentFitsFile || (window.fitsData && (window.fitsData.filename || window.fitsData.width)));
-        const hasCatalog = !!(window.currentCatalogName || window.activeCatalog);
+        // In multi-panel mode, availability should reflect the ACTIVE pane's loaded image.
+        let paneWin = null;
+        try { paneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null; } catch (_) { paneWin = null; }
+        const imgWin = paneWin || window;
+        const hasImage = !!(imgWin.currentFitsFile || (imgWin.fitsData && (imgWin.fitsData.filename || imgWin.fitsData.width)));
+        // Catalogs may be loaded inside the active pane (iframe) in multi-grid mode.
+        const hasCatalog = !!(
+            window.currentCatalogName || window.activeCatalog ||
+            (paneWin && (paneWin.currentCatalogName || paneWin.activeCatalog)) ||
+            // Or: overlay store populated (best signal when multiple catalogs are loaded)
+            (typeof window.getLoadedCatalogOverlays === 'function' && (window.getLoadedCatalogOverlays() || []).length > 0) ||
+            (paneWin && typeof paneWin.getLoadedCatalogOverlays === 'function' && (paneWin.getLoadedCatalogOverlays() || []).length > 0) ||
+            (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay) && window.catalogDataForOverlay.length > 0) ||
+            (paneWin && paneWin.catalogDataForOverlay && Array.isArray(paneWin.catalogDataForOverlay) && paneWin.catalogDataForOverlay.length > 0)
+        );
         const isScatterOrHist = (window.currentPlotType === 'scatter' || window.currentPlotType === 'histogram');
 
         const axis = document.getElementById('axis-selection-section');
@@ -3588,29 +3820,7 @@ window.updatePlotterAvailability = function updatePlotterAvailability() {
         const plotArea = document.getElementById('plot-area');
         const notice = document.getElementById('plotter-preload-notice');
         const status = null; // top status removed
-        const inlineStatus = document.getElementById('plotter-inline-status');
-
-        // Update status bar text
-        if (status || inlineStatus) {
-            const catalogNameRaw = (window.currentCatalogName || window.activeCatalog || '') + '';
-            const catalogName = catalogNameRaw ? catalogNameRaw.split('/').pop().replace(/\.fits$/i, '') : null;
-            const filepath = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
-            const imageName = filepath ? filepath.split('/').pop() : null;
-            const headerObject = (window.fitsData && window.fitsData.wcs && (window.fitsData.wcs.OBJECT || window.fitsData.wcs.object)) || null;
-            const galaxyName = headerObject || (imageName ? imageName.replace(/\.fits$/i, '') : null);
-            let text = '';
-            if (hasImage && hasCatalog) {
-                text = `Catalog: ${catalogName || 'unknown'}  |  Image: ${galaxyName || 'unknown'}`;
-            } else if (hasImage && !hasCatalog) {
-                text = `Image loaded${imageName ? ` (${imageName})` : ''}. Catalog: not loaded.`;
-            } else if (!hasImage && hasCatalog) {
-                text = `Catalog loaded${catalogName ? ` (${catalogName})` : ''}. Image: not loaded.`;
-            } else {
-                text = 'Image: not loaded. Catalog: not loaded.';
-            }
-            if (status) status.textContent = text;
-            if (inlineStatus) inlineStatus.textContent = text;
-        }
+        // (Removed) inline status text under buttons: context is shown above "Select Axes" instead.
 
         // If not in scatter/histogram, do not show notice, but keep everything as-is
         if (!isScatterOrHist) {
@@ -3650,9 +3860,12 @@ window.updatePlotterAvailability = function updatePlotterAvailability() {
 // Helper to infer current galaxy name from FITS header (OBJECT) or filename
 function getCurrentGalaxyName() {
     try {
-        const headerObj = (window?.fitsData?.wcs && (window.fitsData.wcs.OBJECT || window.fitsData.wcs.object)) || null;
+        let paneWin = null;
+        try { paneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null; } catch (_) { paneWin = null; }
+        const imgWin = paneWin || window;
+        const headerObj = (imgWin?.fitsData?.wcs && (imgWin.fitsData.wcs.OBJECT || imgWin.fitsData.wcs.object)) || null;
         if (headerObj && String(headerObj).trim()) return String(headerObj).trim();
-        const fp = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
+        const fp = imgWin.currentFitsFile || (imgWin.fitsData && imgWin.fitsData.filename) || '';
         if (fp) {
             const base = fp.split('/').pop() || fp;
             const name = base.replace(/\.fits$/i, '').trim();
@@ -3673,10 +3886,27 @@ function generatePlot() {
     const colormapSelect = document.getElementById('colormap-select');
     const colorScaleSelect = document.getElementById('color-scale-select');
     
+    // Resolve axis selection: only accept values that exist in the current dropdown options.
+    // This prevents "empty plot" after switching catalogs when an input still contains a column
+    // that isn't present in the newly-selected catalog.
+    const resolveAxis = (selectEl, searchEl) => {
+        try {
+            const vSel = (selectEl && selectEl.value) ? String(selectEl.value) : '';
+            if (vSel) return vSel;
+            const vSearch = (searchEl && searchEl.value) ? String(searchEl.value).trim() : '';
+            if (!vSearch) return '';
+            const opts = selectEl && selectEl.options ? Array.from(selectEl.options) : [];
+            const ok = opts.some(o => o && String(o.value) === vSearch);
+            return ok ? vSearch : '';
+        } catch (_) {
+            return '';
+        }
+    };
+
     // Get the selected values
-    const xAxisName = xAxisSelect.value || xAxisSearch.value;
-    const yAxisName = yAxisSelect.value || yAxisSearch.value;
-    const colorAxisName = colorSelect.value || colorSearch.value;
+    const xAxisName = resolveAxis(xAxisSelect, xAxisSearch);
+    const yAxisName = resolveAxis(yAxisSelect, yAxisSearch);
+    const colorAxisName = resolveAxis(colorSelect, colorSearch);
     const colormap = colormapSelect.value || 'viridis';
     const colorScale = colorScaleSelect ? colorScaleSelect.value || 'linear' : 'linear';
     
@@ -3686,10 +3916,57 @@ function generatePlot() {
         return;
     }
     
-    // Determine current catalog to use early so we can validate cache
+    // Determine current catalog to use early so we can validate cache.
+    // In multi-panel mode, the plotter lives in the top window but catalogs live in the active pane window,
+    // so we must fall back to the active pane's catalog state if the dropdown is empty.
     const catalogSelect = document.getElementById('catalog-select');
-    const selectedCatalog = catalogSelect ? catalogSelect.value : null;
-    const catalogToUse = selectedCatalog || activeCatalog;
+    const plotterCatalogSelect = document.getElementById('plotter-catalog-select');
+    const selectedCatalog = catalogSelect ? (catalogSelect.value || null) : null;
+    const selectedPlotterCatalog = plotterCatalogSelect ? (plotterCatalogSelect.value || null) : null;
+    let paneWin = null;
+    try { paneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null; } catch (_) { paneWin = null; }
+    const paneCatalogName = (paneWin && (paneWin.currentCatalogName || paneWin.activeCatalog)) || null;
+    let paneLast = null;
+    try {
+        if (paneWin && typeof paneWin.getLoadedCatalogOverlays === 'function') {
+            const entries = paneWin.getLoadedCatalogOverlays() || [];
+            if (Array.isArray(entries) && entries.length) {
+                const lastKey = entries[entries.length - 1]?.key;
+                if (lastKey) paneLast = String(lastKey);
+            }
+        }
+    } catch (_) {}
+    let catalogToUse =
+        selectedPlotterCatalog ||
+        selectedCatalog ||
+        window.plotterSelectedCatalogName ||
+        paneCatalogName ||
+        paneLast ||
+        window.currentCatalogName ||
+        window.activeCatalog ||
+        (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
+    // Persist the derived selection so subsequent calls behave consistently.
+    try {
+        if (catalogToUse && !window.plotterSelectedCatalogName) {
+            window.plotterSelectedCatalogName = String(catalogToUse);
+        }
+        if (catalogToUse && plotterCatalogSelect && !plotterCatalogSelect.value) {
+            plotterCatalogSelect.value = String(catalogToUse);
+        }
+        if (catalogToUse && catalogSelect && !catalogSelect.value) {
+            catalogSelect.value = String(catalogToUse);
+        }
+    } catch (_) {}
+
+    // Remember which pane the plot was generated from (critical for multi-panel scatter-click behavior).
+    // Scatter points should pan/highlight inside the SAME pane/WCS used for plotting, not whatever pane
+    // happens to be active at click time.
+    try {
+        let plotPaneWin = null;
+        try { plotPaneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null; } catch (_) { plotPaneWin = null; }
+        window.__plotterLastPlotPaneWindow = plotPaneWin;
+        window.__plotterLastPlotCatalogName = catalogToUse || null;
+    } catch (_) {}
     
     // Get customization options
     const plotTitle = document.getElementById('plot-title-input')?.value || '';
@@ -3821,8 +4098,20 @@ function generatePlot() {
     loadingContainer.appendChild(loadingText);
     plotArea.appendChild(loadingContainer);
     
-    // Use existing data only if it matches the current catalog
-    if (window.sourcePropertiesData && window.sourcePropertiesData.length > 0 && window.sourcePropertiesCatalogName === catalogToUse) {
+    // Use existing data only if it matches the current catalog AND looks like real data for the chosen axes.
+    // (Avoid using the "columns-only" sample that is meant just for dropdowns.)
+    const canUseCache =
+        !!catalogToUse &&
+        Array.isArray(window.sourcePropertiesData) &&
+        window.sourcePropertiesData.length > 0 &&
+        window.sourcePropertiesCatalogName === catalogToUse &&
+        window.sourcePropertiesData.some(o =>
+            o &&
+            o._originalObj &&
+            o[xAxisName] != null &&
+            o[yAxisName] != null
+        );
+    if (canUseCache) {
         processPlotData(
             plotArea, 
             window.sourcePropertiesData, 
@@ -3890,8 +4179,8 @@ function generatePlot() {
             if (decFinal) headers['X-DEC-Col'] = decFinal;
             if (sizeFinal) headers['X-Size-Col'] = sizeFinal;
             const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
-            console.log('[plotter] /load-catalog generatePlot URL:', `/load-catalog/${apiName}${suffix}`, 'headers:', headers);
-            return apiFetch(`/load-catalog/${apiName}${suffix}`, { headers })
+            console.log('[plotter] /plotter/load-catalog generatePlot URL:', `/plotter/load-catalog/${apiName}${suffix}`, 'headers:', headers);
+            return apiFetch(`/plotter/load-catalog/${apiName}${suffix}`, { headers })
         };
 
         const fetchPromise = (raCol && decCol)
@@ -4327,6 +4616,15 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
         colormap = 'viridis',
         colorScale = 'linear' // NEW: Color scale parameter
     } = customizationOptions || {};
+
+    // Capture the pane for this plot ONCE so each scatter plot is bound to the correct viewer/WCS.
+    // (In dual-panel mode, "active pane" can differ from the pane that generated the plot.)
+    let plotPaneWin = null;
+    try { plotPaneWin = window.__plotterLastPlotPaneWindow || null; } catch (_) { plotPaneWin = null; }
+    if (!plotPaneWin) {
+        try { plotPaneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null; } catch (_) { plotPaneWin = null; }
+    }
+    const plotTargetWin = plotPaneWin || window;
     
     // Find min and max values for axes
     const xValues = processedData.map(point => point.x);
@@ -5031,112 +5329,200 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
                 const clickedCircle = this; // Reference to the clicked SVG circle
                 console.log(`Plotter Click: RA=${ra}, DEC=${dec}`);
 
-                // Check if the canvas overlay data and source map exist
-                const catalogData = window.catalogDataForOverlay;
-                const sourceMap = window.catalogSourceMap; 
-                if (!catalogData || catalogData.length === 0 || !sourceMap || sourceMap.length === 0) {
-                    console.error("Plotter Click: window.catalogDataForOverlay or window.catalogSourceMap is empty or not available.");
-                    return;
-                }
+                // Use the pane bound to THIS plot (not necessarily the currently-active pane).
+                const targetWin = plotTargetWin || window;
+
+                // Helper: normalize catalog names to the same key used by overlays ("catalogs/<basename>")
+                const plotterCatalogKey = (name) => {
+                    const raw = String(name || '').trim();
+                    if (!raw) return null;
+                    if (raw.startsWith('catalogs/')) return raw;
+                    const base = raw.split('/').pop().split('\\').pop();
+                    return `catalogs/${base}`;
+                };
+
+                // The plot is tied to a specific catalog; when multiple catalogs are loaded/visible,
+                // we must match/highlight within that catalog only (otherwise we can jump to the wrong source).
+                let plotCatalogKey = null;
+                try { plotCatalogKey = plotterCatalogKey(window.__plotterLastPlotCatalogName || null); } catch (_) { plotCatalogKey = null; }
 
                 // Find the closest source in the catalog data
                 let closestSourceIndex = -1;
                 let minDistance = Infinity;
 
-                catalogData.forEach((source, index) => {
-                    if (source.ra !== undefined && source.dec !== undefined) {
-                        const sourceRa = parseFloat(source.ra);
-                        const sourceDec = parseFloat(source.dec);
-
-                        if (!isNaN(sourceRa) && !isNaN(sourceDec)) {
-                            const distance = Math.sqrt(
-                                Math.pow(ra - sourceRa, 2) +
-                                Math.pow(dec - sourceDec, 2)
-                            );
-
-                            if (distance < minDistance) {
-                                minDistance = distance;
-                                closestSourceIndex = index;
+                // Use the canvas overlay catalog data; NOTE: catalogSourceMap only contains VISIBLE sources,
+                // so we must not depend on it for matching (otherwise clicks fail when the target is offscreen).
+                const catalogData = targetWin.catalogDataForOverlay;
+                if (catalogData && catalogData.length > 0) {
+                    catalogData.forEach((source, index) => {
+                        if (!source) return;
+                        // Restrict matching to the catalog that generated this plot (when available)
+                        if (plotCatalogKey && source.__catalogName && source.__catalogName !== plotCatalogKey) return;
+                        if (source.ra !== undefined && source.dec !== undefined) {
+                            const sourceRa = parseFloat(source.ra);
+                            const sourceDec = parseFloat(source.dec);
+                            if (!isNaN(sourceRa) && !isNaN(sourceDec)) {
+                                // Normalize RA difference into [-180, +180] to avoid wrap issues near 0/360.
+                                let dra = ra - sourceRa;
+                                if (isFinite(dra)) dra = ((dra + 540) % 360) - 180;
+                                const ddec = dec - sourceDec;
+                                const distance = Math.sqrt(dra * dra + ddec * ddec);
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    closestSourceIndex = index;
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
 
                 console.log(`Plotter Click: Closest source search complete. Index: ${closestSourceIndex}`);
 
-                // Trigger canvas click, highlight scatter point, and zoom if found
-                const tolerance = 0.1; 
-                if (closestSourceIndex !== -1 && minDistance < tolerance) {
-                    console.log(`Plotter Click: Found matching source at index ${closestSourceIndex}`);
-                    const sourceMapEntry = sourceMap.find(s => s.sourceIndex === closestSourceIndex);
-
-                    if (!sourceMapEntry) {
-                        console.warn(`Plotter Click: Could not find sourceMapEntry for index ${closestSourceIndex}. Cannot trigger map interaction.`);
-                        return;
-                    }
-
-                    // 1. Highlight Scatter Plot Point
-                    // Clear previous scatter highlight
-                    if (window.highlightedScatterCircle) {
-                        window.highlightedScatterCircle.setAttribute('stroke', '#333');
-                        window.highlightedScatterCircle.setAttribute('stroke-width', '1');
-                        window.highlightedScatterCircle.setAttribute('r', pointRadius); 
-                    }
-                    // Apply new highlight
-                    clickedCircle.setAttribute('stroke', 'yellow');
-                    clickedCircle.setAttribute('stroke-width', '2');
-                    clickedCircle.setAttribute('r', pointRadius * 1.5); 
-                    window.highlightedScatterCircle = clickedCircle; // Store reference
-                    
-                    // 2. Trigger Map Interaction (Highlight + Popup via canvasHandleClick)
-                    const sourceObj = catalogData[closestSourceIndex];
-                    if (sourceObj && sourceMapEntry) {
-                        // Highlight on Canvas first
-                        if (typeof canvasHighlightSource === 'function') {
-                             console.log(`Plotter Click: Calling canvasHighlightSource for index ${closestSourceIndex}`);
-                             canvasHighlightSource(closestSourceIndex);
-                         } else {
-                            console.warn("Plotter Click: canvasHighlightSource function not available.");
-                         }
-                         
-                         // Then show the popup directly
-                         if (window.canvasPopup && typeof window.canvasPopup.show === 'function') {
-                             console.log(`Plotter Click: Calling window.canvasPopup.show for index ${closestSourceIndex}`);
-                              window.canvasPopup.show(
-                                 closestSourceIndex,
-                                 sourceMapEntry.x, // Screen X for popup position
-                                 sourceMapEntry.y, // Screen Y for popup position
-                                 sourceObj
-                             );
-                         } else {
-                             console.warn("Plotter Click: window.canvasPopup.show function not available.");
-                         }
-                    } else {
-                         console.warn(`Plotter Click: Could not find sourceObj or sourceMapEntry for index ${closestSourceIndex}. Cannot show popup.`);
-                    }
-                    
-                    // 3. Zoom and Pan on Map (Keep this logic)
-                    if (typeof viewer !== 'undefined' && viewer && sourceMapEntry.imageX !== undefined && sourceMapEntry.imageY !== undefined) {
-                        try {
-                            console.log(`Plotter Click: Zooming to image coordinates (${sourceMapEntry.imageX}, ${sourceMapEntry.imageY})`);
-                            const imageCoords = new OpenSeadragon.Point(sourceMapEntry.imageX, sourceMapEntry.imageY);
-                            const viewportCoords = viewer.viewport.imageToViewportCoordinates(imageCoords);
-                            const currentZoom = viewer.viewport.getZoom();
-                            const targetZoom = Math.max(currentZoom * 1.5, 5); 
-                            viewer.viewport.panTo(viewportCoords, false);
-                            console.log(`Plotter Click: Panning and zooming.`);
-                        } catch (zoomError) {
-                            console.error("Plotter Click: Error during zoom/pan:", zoomError);
+                // Always try to pan/zoom based on the clicked point's RA/Dec using the plot pane's WCS.
+                // This avoids jumping due to stale/incorrect cached overlay x/y.
+                const activeViewer = (targetWin.tiledViewer || targetWin.viewer || (typeof targetWin.viewer !== 'undefined' ? targetWin.viewer : null));
+                let imgX = undefined;
+                let imgY = undefined;
+                try {
+                    const raNum = Number(ra);
+                    const decNum = Number(dec);
+                    if (Number.isFinite(raNum) && Number.isFinite(decNum)) {
+                        if (typeof targetWin.worldToPixelGeneric === 'function') {
+                            const p = targetWin.worldToPixelGeneric(raNum, decNum);
+                            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                                imgX = Number(p.x);
+                                imgY = Number(p.y);
+                            }
+                        } else if (targetWin.parsedWCS && targetWin.parsedWCS.hasWCS && typeof targetWin.parsedWCS.worldToPixels === 'function') {
+                            const p2 = targetWin.parsedWCS.worldToPixels(raNum, decNum);
+                            if (p2 && Number.isFinite(p2.x) && Number.isFinite(p2.y)) {
+                                // parsedWCS.worldToPixels returns WCS pixels; convert to display/output if needed
+                                if (typeof targetWin.convertWcsPixelToDisplayOutput === 'function') {
+                                    const disp = targetWin.convertWcsPixelToDisplayOutput(Number(p2.x), Number(p2.y));
+                                    if (disp && Number.isFinite(disp.x) && Number.isFinite(disp.y)) {
+                                        imgX = Number(disp.x);
+                                        imgY = Number(disp.y);
+                                    } else {
+                                        imgX = Number(p2.x);
+                                        imgY = Number(p2.y);
+                                    }
+                                } else {
+                                    imgX = Number(p2.x);
+                                    imgY = Number(p2.y);
+                                }
+                            }
                         }
-                    } else {
-                        console.warn("Plotter Click: Viewer not available or source map entry missing image coordinates for zoom.");
                     }
+                } catch (_) {}
+
+                // Sanity check: if computed pixels are wildly outside the image, treat as invalid
+                try {
+                    const w = Number(targetWin?.fitsData?.width);
+                    const h = Number(targetWin?.fitsData?.height);
+                    if (Number.isFinite(imgX) && Number.isFinite(imgY) && Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                        const margin = 5;
+                        if (imgX < -margin || imgY < -margin || imgX > (w + margin) || imgY > (h + margin)) {
+                            console.warn('Plotter Click: computed image coords out of bounds; will not pan', { imgX, imgY, w, h });
+                            imgX = undefined;
+                            imgY = undefined;
+                        }
+                    }
+                } catch (_) {}
+
+                // 1) Highlight Scatter Plot Point (always)
+                if (window.highlightedScatterCircle) {
+                    window.highlightedScatterCircle.setAttribute('stroke', '#333');
+                    window.highlightedScatterCircle.setAttribute('stroke-width', '1');
+                    window.highlightedScatterCircle.setAttribute('r', pointRadius);
+                }
+                clickedCircle.setAttribute('stroke', 'yellow');
+                clickedCircle.setAttribute('stroke-width', '2');
+                clickedCircle.setAttribute('r', pointRadius * 1.5);
+                window.highlightedScatterCircle = clickedCircle;
+
+                // Pan immediately (if possible)
+                let viewportCoords = null;
+                if (activeViewer && activeViewer.viewport && Number.isFinite(imgX) && Number.isFinite(imgY) && typeof OpenSeadragon !== 'undefined') {
+                    try {
+                        const imageCoords = new OpenSeadragon.Point(imgX, imgY);
+                        const tiledImage = activeViewer.world && typeof activeViewer.world.getItemAt === 'function'
+                            ? activeViewer.world.getItemAt(0)
+                            : null;
+                        viewportCoords = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function'
+                            ? tiledImage.imageToViewportCoordinates(imageCoords)
+                            : activeViewer.viewport.imageToViewportCoordinates(imageCoords);
+                        if (!viewportCoords || !Number.isFinite(viewportCoords.x) || !Number.isFinite(viewportCoords.y)) {
+                            throw new Error('viewportCoords not finite');
+                        }
+                        activeViewer.viewport.panTo(viewportCoords, true);
+                        // Prevent getting "stuck" on black background by clamping to image bounds.
+                        try {
+                            if (typeof activeViewer.viewport.applyConstraints === 'function') {
+                                activeViewer.viewport.applyConstraints(true);
+                            } else if (typeof activeViewer.viewport.ensureVisible === 'function') {
+                                activeViewer.viewport.ensureVisible(true);
+                            }
+                        } catch (_) {}
+                    } catch (zoomError) {
+                        console.warn('Plotter Click: pan/zoom failed', zoomError);
+                        viewportCoords = null;
+                    }
+                }
+
+                // Compute popup coordinates directly from the viewer (no need to wait for sourceMap).
+                let screenX = 10, screenY = 10;
+                if (viewportCoords && activeViewer && activeViewer.viewport && typeof activeViewer.viewport.viewportToViewerElementCoordinates === 'function') {
+                    try {
+                        const p = activeViewer.viewport.viewportToViewerElementCoordinates(viewportCoords);
+                        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                            screenX = p.x;
+                            screenY = p.y;
+                        }
+                    } catch (_) {}
+                }
+
+                // Trigger highlight/popup if we can match to an overlay entry for this catalog.
+                // Use a tight tolerance (arcseconds) to avoid snapping to a different catalog/source.
+                const tolerance = 10 / 3600; // 10 arcsec
+                const hasOverlayMatch = (closestSourceIndex !== -1 && minDistance < tolerance);
+                if (hasOverlayMatch) {
+                    console.log(`Plotter Click: Found matching source at index ${closestSourceIndex}`);
+
+                    // Highlight immediately (no intentional delay)
+                    try {
+                        if (targetWin && typeof targetWin.canvasHighlightSource === 'function') {
+                            targetWin.canvasHighlightSource(closestSourceIndex);
+                        } else {
+                            // Fallback: set global and request redraw if available
+                            try { targetWin.currentHighlightedSourceIndex = closestSourceIndex; } catch (_) {}
+                            try { if (targetWin && typeof targetWin.canvasUpdateOverlay === 'function') targetWin.canvasUpdateOverlay(); } catch (_) {}
+                        }
+                    } catch (_) {}
+
+                    try {
+                        const sourceObj = catalogData && catalogData[closestSourceIndex] ? catalogData[closestSourceIndex] : null;
+                        if (targetWin && targetWin.canvasPopup && typeof targetWin.canvasPopup.show === 'function' && sourceObj) {
+                            targetWin.canvasPopup.show(closestSourceIndex, screenX, screenY, sourceObj);
+                        }
+                    } catch (_) {}
 
                 } else {
                     console.log(`Plotter Click: No matching source found within tolerance (${tolerance}).`);
                     if (closestSourceIndex !== -1) {
                         console.log(`Plotter Click: Closest source found had distance ${minDistance}`);
                     }
+                    // Still show a minimal popup at the computed location if possible
+                    try {
+                        if (targetWin && targetWin.canvasPopup && typeof targetWin.canvasPopup.show === 'function') {
+                            targetWin.canvasPopup.show(-1, screenX, screenY, {
+                                ra: Number(ra),
+                                dec: Number(dec),
+                                imageX: Number.isFinite(imgX) ? imgX : undefined,
+                                imageY: Number.isFinite(imgY) ? imgY : undefined,
+                                galaxy: point?.obj?._originalObj?.galaxy
+                            });
+                        }
+                    } catch (_) {}
                 }
 
                 // Add/Update Clear Selection Button
@@ -5850,7 +6236,10 @@ function detectBooleanColumns(catalogName) {
         return Promise.resolve([]);
     }
 
-    return apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
+    // IMPORTANT: /catalog-with-flags expects an API catalog name (basename). In multi-panel mode we often
+    // track catalogs internally as "catalogs/<file>", which will 500 the endpoint ("catalogs/catalogs/...").
+    const apiName = String(catalogName || '').split('/').pop().split('\\').pop();
+    return apiFetch(`/catalog-with-flags/${encodeURIComponent(apiName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
                 console.warn('Failed to load boolean columns, will treat all as numeric');
@@ -5990,7 +6379,9 @@ function populateSedFlagDropdown() {
         return;
     }
 
-    apiFetch(`/catalog-with-flags/${encodeURIComponent(catalogName)}?prevent_auto_load=true`)
+    // IMPORTANT: /catalog-with-flags expects an API catalog name (basename), not "catalogs/<file>"
+    const apiName = String(catalogName || '').split('/').pop().split('\\').pop();
+    apiFetch(`/catalog-with-flags/${encodeURIComponent(apiName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
                 return response.text().then(text => { 
@@ -6092,7 +6483,7 @@ function detectStringColumns(catalogName) {
             if (decCol) headers['X-DEC-Col'] = decCol;
             if (sizeCol) headers['X-Size-Col'] = sizeCol;
             const suffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
-            return apiFetch(`/load-catalog/${encodeURIComponent(apiName)}${suffix}`, { headers })
+            return apiFetch(`/plotter/load-catalog/${encodeURIComponent(apiName)}${suffix}`, { headers })
                 .then(response => {
                     if (!response.ok) {
                         console.warn('Failed to load catalog sample for string detection');
@@ -6912,12 +7303,13 @@ document.addEventListener('DOMContentLoaded', function() {
         manualLimitsContainer.style.display = autoLimitsCheckbox.checked ? 'none' : 'block';
     }
 
-    // When catalog or FITS image changes globally, refresh plotter availability/status
-    window.addEventListener('catalog:changed', ()=>{
+    // When catalog changes globally, refresh plotter availability/status
+    const __plotterOnCatalogChangedOrUpdated = ()=>{
         if (typeof window.updatePlotterAvailability==='function') window.updatePlotterAvailability();
         // If plotter is open, repopulate dropdowns after catalog change
         if (document.getElementById('dynamic-plotter-panel')) {
             try { window.sourcePropertiesData = null; } catch(_) {}
+            try { window.plotterColumnSampleData = null; } catch(_) {}
             // Clear current plot so next Generate uses the updated catalog
             try {
                 const plotArea = document.getElementById('plot-area');
@@ -6955,7 +7347,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dropdown = document.getElementById('boolean-filter-dropdown');
                 const catalogSelectEl = document.getElementById('catalog-select');
                 const selectedCatalog = catalogSelectEl ? catalogSelectEl.value : null;
-                const catalogToUse = selectedCatalog || activeCatalog;
+                const catalogToUse =
+                    selectedCatalog ||
+                    window.plotterSelectedCatalogName ||
+                    window.currentCatalogName ||
+                    window.activeCatalog ||
+                    (typeof activeCatalog !== 'undefined' ? activeCatalog : null);
                 if (boolSelect && catalogToUse) {
                     detectBooleanColumns(catalogToUse).then(cols => {
                         // Reset options (keep 'None')
@@ -7021,7 +7418,69 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             } catch(_) {}
         }
+    };
+    window.addEventListener('catalog:changed', __plotterOnCatalogChangedOrUpdated);
+    window.addEventListener('catalogs:updated', __plotterOnCatalogChangedOrUpdated);
+    
+    // Active pane changed (toolbar.js emits this in the top window)
+    window.addEventListener('pane:activated', () => {
+        try {
+            if (document.getElementById('dynamic-plotter-panel')) {
+                // If the previously selected catalog isn't available in the newly active pane, reset it.
+                try {
+                    const paneWin = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || null) : null;
+                    if (paneWin && typeof paneWin.getLoadedCatalogOverlays === 'function') {
+                        const entries = paneWin.getLoadedCatalogOverlays() || [];
+                        const keys = Array.isArray(entries) ? entries.map(e => String(e && e.key || '')).filter(Boolean) : [];
+                        const current = window.plotterSelectedCatalogName ? String(window.plotterSelectedCatalogName) : '';
+                        if (current && keys.length && !keys.includes(current)) {
+                            window.plotterSelectedCatalogName = null;
+                        }
+                        if (!window.plotterSelectedCatalogName && keys.length) {
+                            window.plotterSelectedCatalogName = keys[keys.length - 1];
+                        }
+                        // Sync dropdown UI if present
+                        const sel = document.getElementById('plotter-catalog-select');
+                        if (sel && window.plotterSelectedCatalogName) {
+                            sel.value = window.plotterSelectedCatalogName;
+                        }
+                    }
+                } catch (_) {}
+                // Reset caches so dropdowns reflect the newly active pane context/catalogs
+                try { window.plotterColumnSampleData = null; } catch(_) {}
+                try { window.plotterColumnSampleCatalogName = null; } catch(_) {}
+                try { window.sourcePropertiesData = null; } catch(_) {}
+                try { window.sourcePropertiesCatalogName = null; } catch(_) {}
+                // Refresh UI
+                try { if (typeof window.updatePlotterContextNote === 'function') window.updatePlotterContextNote(); } catch (_) {}
+                try { if (typeof window.updatePlotterAvailability === 'function') window.updatePlotterAvailability(); } catch (_) {}
+                setTimeout(()=>{ try { populateAxisDropdowns(); } catch(_) {} }, 0);
+            }
+        } catch (_) {}
     });
+
+    // When the active pane changes in multi-panel mode, update Plotter's image context and availability.
+    // toolbar.js updates window.__activePaneHolder; we hook selection clicks on the grid to refresh.
+    try {
+        if (!window.__plotterActivePaneListenerInstalled) {
+            const refresh = () => {
+                try { if (typeof window.updatePlotterContextNote === 'function') window.updatePlotterContextNote(); } catch (_) {}
+                try { if (typeof window.updatePlotterAvailability === 'function') window.updatePlotterAvailability(); } catch (_) {}
+            };
+            document.addEventListener('click', (e) => {
+                try {
+                    const grid = document.getElementById('multi-panel-grid');
+                    if (!grid) return;
+                    const t = e && e.target;
+                    if (!t || !t.closest) return;
+                    if (t.closest('#multi-panel-grid')) {
+                        refresh();
+                    }
+                } catch (_) {}
+            }, { capture: true });
+            window.__plotterActivePaneListenerInstalled = true;
+        }
+    } catch (_) {}
     window.addEventListener('fits:imageLoaded', ()=>{
         if (typeof window.updatePlotterAvailability==='function') window.updatePlotterAvailability();
         // If plotter is open, repopulate dropdowns after image load

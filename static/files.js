@@ -1,6 +1,14 @@
-// Ensure session and attach header for all API requests
+// Ensure session and attach header for all API requests (pane-aware)
+function __paneSid() {
+    try {
+        const sp = new URLSearchParams(window.location.search);
+        return (window.__forcedSid) || sp.get('sid') || sp.get('pane_sid') || null;
+    } catch (_) { return window.__forcedSid || null; }
+}
 async function ensureSession() {
     try {
+        const forced = __paneSid();
+        if (forced) return forced;
         let sid = sessionStorage.getItem('sid');
         if (!sid) {
             const r = await fetch('/session/start');
@@ -22,7 +30,13 @@ async function apiFetch(url, options = {}) {
     const sid = await ensureSession();
     const headers = options.headers ? { ...options.headers } : {};
     if (sid) headers['X-Session-ID'] = sid;
-    return fetch(url, { ...options, headers });
+    try {
+        const u = new URL(url, window.location.origin);
+        if (sid && !u.searchParams.get('sid')) u.searchParams.set('sid', sid);
+        return fetch(u.toString(), { ...options, headers });
+    } catch(_) {
+        return fetch(url, { ...options, headers });
+    }
 }
 
 function debounce(func, delay) {
@@ -244,6 +258,30 @@ async function downloadAndLoadFitsFromUrl(url) {
         const chunks = [];
         const reader = response.body.getReader();
 
+        // Throttle UI updates to once per frame (prevents UI jank/freezing on many small chunks)
+        let pendingProgress = null;
+        let rafScheduled = false;
+        const flushProgress = () => {
+            rafScheduled = false;
+            if (!pendingProgress) return;
+            try {
+                updateProgressCircle(
+                    pendingProgress.percent,
+                    pendingProgress.received,
+                    pendingProgress.total,
+                    startTime
+                );
+            } catch (_) {}
+            pendingProgress = null;
+        };
+        const scheduleProgress = (percent, received, total) => {
+            pendingProgress = { percent, received, total };
+            if (rafScheduled) return;
+            rafScheduled = true;
+            try { requestAnimationFrame(flushProgress); } catch (_) { flushProgress(); }
+        };
+
+        let iter = 0;
         while (true) {
             const { done, value } = await reader.read();
 
@@ -256,24 +294,30 @@ async function downloadAndLoadFitsFromUrl(url) {
 
             if (contentLength && isFinite(contentLength) && contentLength > 0) {
                 const percent = Math.round((receivedLength / contentLength) * 100);
-                updateProgressCircle(percent, receivedLength, contentLength, startTime);
+                scheduleProgress(percent, receivedLength, contentLength);
             } else {
                 // Unknown length: show spinner style progress with received bytes and speed
                 const elapsedSeconds = (Date.now() - startTime) / 1000;
                 const speedBps = elapsedSeconds > 0 ? receivedLength / elapsedSeconds : 0;
                 // Start at 0% and grow smoothly (0.5% per MB), capped at 95%
                 const pseudoPercent = Math.min(95, Math.max(0, Math.floor(receivedLength / (2 * 1024 * 1024))));
-                updateProgressCircle(pseudoPercent, receivedLength, 0, startTime);
+                scheduleProgress(pseudoPercent, receivedLength, 0);
+            }
+
+            // Yield occasionally so clicks/paint continue during large downloads
+            iter++;
+            if (iter % 12 === 0) {
+                try { await new Promise(r => requestAnimationFrame(r)); } catch (_) {}
             }
         }
 
         updateProgressCircle(null);
 
         const blob = new Blob(chunks);
-        const arrayBuffer = await blob.arrayBuffer();
         
         showNotification(true, 'Processing downloaded file...');
-        const serverFilePath = await uploadFitsToServer(arrayBuffer, filename);
+        // Avoid converting large FITS blobs into ArrayBuffers on the main thread (can freeze UI).
+        const serverFilePath = await uploadFitsToServer(blob, filename);
         await loadFitsFileWithHduSelection(serverFilePath);
 
     } catch (error) {
@@ -293,7 +337,9 @@ function uploadFitsToServer(fileData, filename) {
             const sid = await ensureSession();
 
             const formData = new FormData();
-            const blob = new Blob([fileData], { type: 'application/octet-stream' });
+            const blob = (fileData instanceof Blob)
+                ? fileData
+                : new Blob([fileData], { type: 'application/octet-stream' });
             formData.append('file', blob, filename);
 
             // Show 0% on the existing progress UI
@@ -383,8 +429,18 @@ function loadLocalFitsFile(file) {
 
 // Enhanced HDU selector with search functionality and close button
 function createHduSelectorPopup(hduList, filepath) {
+    const popupDoc = (typeof getHduPopupDocument === 'function') ? getHduPopupDocument() : document;
+    const createEl = (tag) => popupDoc.createElement(tag);
+    const removePopup = () => {
+        if (typeof removeExistingHduPopup === 'function') removeExistingHduPopup(popupDoc);
+        else {
+            const existing = popupDoc.getElementById('hdu-selector-popup');
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        }
+    };
+    removePopup();
     // Create container for the popup
-    const popup = document.createElement('div');
+    const popup = createEl('div');
     popup.id = 'hdu-selector-popup';
     popup.style.position = 'fixed';
     popup.style.top = '50%';
@@ -394,14 +450,14 @@ function createHduSelectorPopup(hduList, filepath) {
     popup.style.border = '1px solid #555';
     popup.style.borderRadius = '5px';
     popup.style.padding = '15px';
-    popup.style.zIndex = '2000';
+    popup.style.zIndex = '65000';
     popup.style.width = '500px';
     popup.style.maxHeight = '80vh';
     popup.style.overflowY = 'auto';
     popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
     
     // Create header container with title and close button
-    const headerContainer = document.createElement('div');
+    const headerContainer = createEl('div');
     headerContainer.style.display = 'flex';
     headerContainer.style.justifyContent = 'space-between';
     headerContainer.style.alignItems = 'center';
@@ -410,7 +466,7 @@ function createHduSelectorPopup(hduList, filepath) {
     headerContainer.style.paddingBottom = '10px';
     
     // Create title
-    const title = document.createElement('h3');
+    const title = createEl('h3');
     title.textContent = 'Select HDU to Display';
     title.style.margin = '0';
     title.style.color = '#fff';
@@ -419,7 +475,7 @@ function createHduSelectorPopup(hduList, filepath) {
     title.style.fontWeight = 'bold';
     
     // Create close button
-    const closeButton = document.createElement('button');
+    const closeButton = createEl('button');
     closeButton.innerHTML = '&times;';
     closeButton.style.background = 'transparent';
     closeButton.style.border = 'none';
@@ -448,7 +504,7 @@ function createHduSelectorPopup(hduList, filepath) {
     
     // Add click handler
     closeButton.addEventListener('click', function() {
-        document.body.removeChild(popup);
+        removePopup();
     });
     
     // Add title and close button to header
@@ -456,17 +512,17 @@ function createHduSelectorPopup(hduList, filepath) {
     headerContainer.appendChild(closeButton);
     
     // Add description
-    const description = document.createElement('p');
+    const description = createEl('p');
     description.textContent = 'This FITS file contains multiple data units (HDUs). Please select which one to open:';
     description.style.color = '#ddd';
     description.style.marginBottom = '15px';
     description.style.fontFamily = 'Arial, sans-serif';
     
     // Create search box
-    const searchContainer = document.createElement('div');
+    const searchContainer = createEl('div');
     searchContainer.style.marginBottom = '15px';
     
-    const searchInput = document.createElement('input');
+    const searchInput = createEl('input');
     searchInput.type = 'text';
     searchInput.placeholder = 'Search HDUs...';
     searchInput.style.width = '100%';
@@ -492,7 +548,7 @@ function createHduSelectorPopup(hduList, filepath) {
     searchContainer.appendChild(searchInput);
     
     // Create selection container
-    const selectionContainer = document.createElement('div');
+    const selectionContainer = createEl('div');
     selectionContainer.style.display = 'flex';
     selectionContainer.style.flexDirection = 'column';
     selectionContainer.style.gap = '10px';
@@ -504,7 +560,7 @@ function createHduSelectorPopup(hduList, filepath) {
     
     // Add each HDU as an option
     hduList.forEach((hdu, index) => {
-        const option = document.createElement('div');
+        const option = createEl('div');
         option.className = 'hdu-option';
         option.style.padding = '10px';
         option.style.backgroundColor = '#444';
@@ -531,14 +587,14 @@ function createHduSelectorPopup(hduList, filepath) {
         });
         
         // Create header for the option
-        const header = document.createElement('div');
+        const header = createEl('div');
         header.style.display = 'flex';
         header.style.justifyContent = 'space-between';
         header.style.alignItems = 'center';
         header.style.marginBottom = '5px';
         
         // Title for the option
-        const optionTitle = document.createElement('div');
+        const optionTitle = createEl('div');
         optionTitle.style.fontWeight = 'bold';
         optionTitle.style.color = '#fff';
         optionTitle.textContent = `HDU ${index}: ${hdu.type}`;
@@ -548,7 +604,7 @@ function createHduSelectorPopup(hduList, filepath) {
         
         // Add recommended badge if this is likely the best HDU
         if (hdu.isRecommended) {
-            const badge = document.createElement('span');
+            const badge = createEl('span');
             badge.textContent = 'Recommended';
             badge.style.backgroundColor = '#4CAF50';
             badge.style.color = 'white';
@@ -562,7 +618,7 @@ function createHduSelectorPopup(hduList, filepath) {
         header.appendChild(optionTitle);
         
         // Details container
-        const details = document.createElement('div');
+        const details = createEl('div');
         details.style.fontSize = '13px';
         details.style.color = '#ccc';
         details.style.marginTop = '5px';
@@ -603,7 +659,7 @@ function createHduSelectorPopup(hduList, filepath) {
         // Add click handler to select this HDU
         option.addEventListener('click', function() {
             selectHdu(index, filepath);
-            document.body.removeChild(popup);
+            removePopup();
         });
         
         selectionContainer.appendChild(option);
@@ -634,12 +690,12 @@ function createHduSelectorPopup(hduList, filepath) {
     });
     
     // Create button container
-    const buttonContainer = document.createElement('div');
+    const buttonContainer = createEl('div');
     buttonContainer.style.display = 'flex';
     buttonContainer.style.justifyContent = 'space-between';
     
     // Cancel button
-    const cancelButton = document.createElement('button');
+    const cancelButton = createEl('button');
     cancelButton.textContent = 'Cancel';
     cancelButton.style.flex = '1';
     cancelButton.style.marginRight = '10px';
@@ -661,11 +717,11 @@ function createHduSelectorPopup(hduList, filepath) {
     });
     
     cancelButton.addEventListener('click', () => {
-        document.body.removeChild(popup);
+        removePopup();
     });
     
     // Auto-select recommended HDU button
-    const autoSelectButton = document.createElement('button');
+    const autoSelectButton = createEl('button');
     autoSelectButton.textContent = 'Use Recommended HDU';
     autoSelectButton.style.flex = '1';
     autoSelectButton.style.padding = '10px 0';
@@ -694,7 +750,7 @@ function createHduSelectorPopup(hduList, filepath) {
             // If no recommended HDU, use the first one
             selectHdu(0, filepath);
         }
-        document.body.removeChild(popup);
+        removePopup();
     });
     
     // Add buttons to container
@@ -709,7 +765,7 @@ function createHduSelectorPopup(hduList, filepath) {
     popup.appendChild(buttonContainer);
     
     // Add popup to document
-    document.body.appendChild(popup);
+    popupDoc.body.appendChild(popup);
     
     // Make popup draggable
     makeDraggable(popup, title);
@@ -1048,8 +1104,15 @@ window.onclick = function(event) {
 
 // NEW function: Popup for selecting which FITS HEADER to view (styled like createHduSelectorPopup)
 function showHduHeaderSelectionPopup(hduList, filepath) {
+    const popupDoc = (typeof getHduPopupDocument === 'function') ? getHduPopupDocument() : document;
+    const createEl = (tag) => popupDoc.createElement(tag);
+    const removePopup = () => {
+        const existing = popupDoc.getElementById('hdu-header-selector-popup');
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    };
+    removePopup();
     // Create container for the popup (similar structure to createHduSelectorPopup)
-    const popup = document.createElement('div');
+    const popup = createEl('div');
     popup.id = 'hdu-header-selector-popup'; // Use a distinct ID
     popup.style.position = 'fixed';
     popup.style.top = '50%';
@@ -1059,7 +1122,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     popup.style.border = '1px solid #555';
     popup.style.borderRadius = '5px';
     popup.style.padding = '15px';
-    popup.style.zIndex = '2000'; // Ensure it's on top
+    popup.style.zIndex = '65000'; // Ensure it's on top
     popup.style.width = '500px';
     popup.style.maxHeight = '80vh';
     popup.style.overflowY = 'auto';
@@ -1068,7 +1131,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     // --- Replicate Header and Content from createHduSelectorPopup --- 
 
     // Header container
-    const headerContainer = document.createElement('div');
+    const headerContainer = createEl('div');
     headerContainer.style.display = 'flex';
     headerContainer.style.justifyContent = 'space-between';
     headerContainer.style.alignItems = 'center';
@@ -1077,7 +1140,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     headerContainer.style.paddingBottom = '10px';
 
     // Title
-    const title = document.createElement('h3');
+    const title = createEl('h3');
     title.textContent = 'Select HDU Header to View'; // Adjusted title
     title.style.margin = '0';
     title.style.color = '#fff';
@@ -1086,7 +1149,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     title.style.fontWeight = 'bold';
 
     // Close button (identical styling)
-    const closeButton = document.createElement('button');
+    const closeButton = createEl('button');
     closeButton.innerHTML = '&times;';
     closeButton.style.background = 'transparent';
     closeButton.style.border = 'none';
@@ -1103,21 +1166,21 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     closeButton.title = 'Close';
     closeButton.addEventListener('mouseover', function() { this.style.backgroundColor = 'rgba(255,255,255,0.1)'; this.style.color = '#fff'; });
     closeButton.addEventListener('mouseout', function() { this.style.backgroundColor = 'transparent'; this.style.color = '#aaa'; });
-    closeButton.addEventListener('click', function() { document.body.removeChild(popup); });
+    closeButton.addEventListener('click', function() { removePopup(); });
     headerContainer.appendChild(title);
     headerContainer.appendChild(closeButton);
 
     // Description
-    const description = document.createElement('p');
+    const description = createEl('p');
     description.textContent = 'This FITS file contains multiple headers. Please select which one to view:';
     description.style.color = '#ddd';
     description.style.marginBottom = '15px';
     description.style.fontFamily = 'Arial, sans-serif';
 
     // Search box (identical styling)
-    const searchContainer = document.createElement('div');
+    const searchContainer = createEl('div');
     searchContainer.style.marginBottom = '15px';
-    const searchInput = document.createElement('input');
+    const searchInput = createEl('input');
     searchInput.type = 'text';
     searchInput.placeholder = 'Search HDUs...';
     searchInput.style.width = '100%';
@@ -1133,7 +1196,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     searchContainer.appendChild(searchInput);
 
     // Selection container
-    const selectionContainer = document.createElement('div');
+    const selectionContainer = createEl('div');
     selectionContainer.style.display = 'flex';
     selectionContainer.style.flexDirection = 'column';
     selectionContainer.style.gap = '10px';
@@ -1144,7 +1207,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
 
     // Add each HDU as an option (using same styling as createHduSelectorPopup)
     hduList.forEach((hdu, index) => {
-        const option = document.createElement('div');
+        const option = createEl('div');
         option.className = 'hdu-option'; // Reuse class for styling
         option.style.padding = '10px';
         option.style.backgroundColor = '#444';
@@ -1162,18 +1225,18 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
         option.dataset.searchText = searchText.toLowerCase();
 
         // Option header
-        const header = document.createElement('div');
+        const header = createEl('div');
         header.style.display = 'flex';
         header.style.justifyContent = 'space-between';
         header.style.alignItems = 'center';
         header.style.marginBottom = '5px';
-        const optionTitle = document.createElement('div');
+        const optionTitle = createEl('div');
         optionTitle.style.fontWeight = 'bold';
         optionTitle.style.color = '#fff';
         optionTitle.textContent = `HDU ${index}: ${hdu.type}`; 
         if (hdu.name && hdu.name !== '') optionTitle.textContent += ` (${hdu.name})`;
         if (hdu.isRecommended) {
-            const badge = document.createElement('span');
+            const badge = createEl('span');
             badge.textContent = 'Recommended';
             badge.style.backgroundColor = '#4CAF50';
             badge.style.color = 'white';
@@ -1186,7 +1249,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
         header.appendChild(optionTitle);
 
         // Details (simplified)
-        const details = document.createElement('div');
+        const details = createEl('div');
         details.style.fontSize = '13px';
         details.style.color = '#ccc';
         details.style.marginTop = '5px';
@@ -1209,7 +1272,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
                 console.error('loadAndDisplayFitsHeader function not found.');
                 showNotification('Error: Header display function not available.', 3000, 'error');
             }
-            document.body.removeChild(popup);
+            removePopup();
         });
 
         selectionContainer.appendChild(option);
@@ -1230,13 +1293,13 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     });
 
     // Button container (Cancel only, or add Recommended? Let's add Recommended for consistency)
-    const buttonContainer = document.createElement('div');
+    const buttonContainer = createEl('div');
     buttonContainer.style.display = 'flex';
     buttonContainer.style.justifyContent = 'space-between';
     buttonContainer.style.marginTop = '15px'; // Added margin top
 
     // Cancel button (identical)
-    const cancelButton = document.createElement('button');
+    const cancelButton = createEl('button');
     cancelButton.textContent = 'Cancel';
     cancelButton.style.flex = '1';
     cancelButton.style.marginRight = '10px';
@@ -1250,10 +1313,10 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     cancelButton.style.fontSize = '14px';
     cancelButton.addEventListener('mouseover', () => { cancelButton.style.backgroundColor = '#d32f2f'; });
     cancelButton.addEventListener('mouseout', () => { cancelButton.style.backgroundColor = '#f44336'; });
-    cancelButton.addEventListener('click', () => { document.body.removeChild(popup); });
+    cancelButton.addEventListener('click', () => { removePopup(); });
 
     // Auto-select recommended HDU button (calls loadAndDisplayFitsHeader)
-    const autoSelectButton = document.createElement('button');
+    const autoSelectButton = createEl('button');
     autoSelectButton.textContent = 'View Recommended Header';
     autoSelectButton.style.flex = '1';
     autoSelectButton.style.padding = '10px 0';
@@ -1275,7 +1338,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
              console.error('loadAndDisplayFitsHeader function not found.');
              showNotification('Error: Header display function not available.', 3000, 'error');
         }
-        document.body.removeChild(popup);
+        removePopup();
     });
 
     buttonContainer.appendChild(cancelButton);
@@ -1289,7 +1352,7 @@ function showHduHeaderSelectionPopup(hduList, filepath) {
     popup.appendChild(buttonContainer);
 
     // Add popup to document
-    document.body.appendChild(popup);
+    popupDoc.body.appendChild(popup);
     
     // Make popup draggable (assuming makeDraggable function exists and works with the title element)
     if (typeof makeDraggable === 'function') {
@@ -1626,10 +1689,27 @@ function createItemElement(item, currentPath) {
 
     const nameElement = document.createElement('div');
     nameElement.className = 'file-name';
-    nameElement.textContent = item.name;
     nameElement.title = item.name;
     nameElement.style.fontWeight = 'bold';
+    Object.assign(nameElement.style, { display: 'flex', alignItems: 'center', gap: '8px' });
+
+    const nameText = document.createElement('div');
+    nameText.textContent = item.name;
+    Object.assign(nameText.style, { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+    nameElement.appendChild(nameText);
     contentContainer.appendChild(nameElement);
+
+    // Right-side actions column (keeps icons vertically centered within the whole row)
+    const rightActions = document.createElement('div');
+    rightActions.className = 'file-item-actions';
+    Object.assign(rightActions.style, {
+        marginLeft: 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        paddingLeft: '8px',
+        alignSelf: 'stretch'
+    });
 
     if (item.type === 'file') {
         if (item.size !== undefined) {
@@ -1676,7 +1756,14 @@ function createItemElement(item, currentPath) {
             contentContainer.appendChild(downloadBtn);
         }
 
-        if (item.name.toLowerCase().endsWith('.fits') || item.name.toLowerCase().endsWith('.fits.gz')) {
+        const isFits = isFitsFilename(item.name);
+        if (isFits) {
+            // Preview icon (FITS only) - centered in the row, on the far right
+            try {
+                const previewBtn = createFitsPreviewIconButton(item);
+                if (previewBtn) rightActions.appendChild(previewBtn);
+            } catch (_) {}
+
             const headerButton = document.createElement('button');
             headerButton.textContent = 'Header';
             headerButton.className = 'load-header-button';
@@ -1718,6 +1805,10 @@ function createItemElement(item, currentPath) {
     }
 
     itemElement.appendChild(contentContainer);
+    // Only attach actions if we added something (keeps directories clean)
+    if (rightActions.childNodes && rightActions.childNodes.length > 0) {
+        itemElement.appendChild(rightActions);
+    }
     itemElement.addEventListener('mouseover', () => {
         itemElement.style.backgroundColor = '#444';
         itemElement.style.transform = 'translateY(-2px)';
@@ -1746,6 +1837,406 @@ function createItemElement(item, currentPath) {
     });
     
     return itemElement;
+}
+
+function isFitsFilename(name) {
+    const n = String(name || '').toLowerCase();
+    return (
+        n.endsWith('.fits') ||
+        n.endsWith('.fit') ||
+        n.endsWith('.fts') ||
+        n.endsWith('.fits.gz') ||
+        n.endsWith('.fit.gz') ||
+        n.endsWith('.fts.gz')
+    );
+}
+
+function ensureFitsPreviewTooltip() {
+    if (window.__fitsPreviewTooltip && window.__fitsPreviewTooltip.el) return window.__fitsPreviewTooltip;
+
+    const el = document.createElement('div');
+    el.id = 'fits-preview-tooltip';
+    Object.assign(el.style, {
+        position: 'fixed',
+        // Keep above everything (toolbar/modals/etc.)
+        zIndex: '2147483647',
+        width: '360px',
+        maxWidth: 'min(420px, calc(100vw - 24px))',
+        background: 'rgba(10, 10, 10, 0.96)',
+        border: '1px solid rgba(255,255,255,0.15)',
+        borderRadius: '10px',
+        boxShadow: '0 14px 40px rgba(0,0,0,0.55)',
+        padding: '10px',
+        display: 'none',
+        opacity: '0',
+        transform: 'translateY(6px) scale(0.985)',
+        transition: 'opacity 140ms ease, transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1)',
+        color: '#fff',
+        fontFamily: 'Raleway, Arial, sans-serif'
+    });
+
+    const title = document.createElement('div');
+    title.className = 'fits-preview-title';
+    Object.assign(title.style, {
+        fontSize: '12px',
+        color: 'rgba(255,255,255,0.85)',
+        marginBottom: '8px',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+    });
+    el.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'fits-preview-body';
+    Object.assign(body.style, {
+        position: 'relative',
+        width: '100%',
+        height: '240px',
+        borderRadius: '8px',
+        overflow: 'hidden',
+        background: '#000',
+        border: '1px solid rgba(255,255,255,0.10)'
+    });
+    el.appendChild(body);
+
+    const img = document.createElement('div');
+    img.className = 'fits-preview-img';
+    Object.assign(img.style, {
+        position: 'absolute',
+        inset: '0',
+        backgroundSize: 'contain',
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center',
+        imageRendering: 'auto'
+    });
+    body.appendChild(img);
+
+    const spinner = document.createElement('div');
+    spinner.className = 'fits-preview-spinner';
+    Object.assign(spinner.style, {
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        width: '22px',
+        height: '22px',
+        marginLeft: '-11px',
+        marginTop: '-11px',
+        borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.25)',
+        borderTopColor: 'rgba(255,255,255,0.85)',
+        animation: 'fitsPreviewSpin 0.9s linear infinite',
+        display: 'none'
+    });
+    body.appendChild(spinner);
+
+    // In-image overlays
+    const overlayCommon = {
+        position: 'absolute',
+        left: '8px',
+        maxWidth: 'calc(100% - 16px)',
+        padding: '6px 8px',
+        borderRadius: '8px',
+        background: 'rgba(0,0,0,0.45)',
+        border: '1px solid rgba(255,255,255,0.12)',
+        color: 'rgba(255,255,255,0.92)',
+        fontSize: '11px',
+        lineHeight: '1.25',
+        whiteSpace: 'pre-line',
+        pointerEvents: 'none',
+        backdropFilter: 'blur(3px)'
+    };
+
+    const overlayTopLeft = document.createElement('div');
+    overlayTopLeft.className = 'fits-preview-overlay-top-left';
+    Object.assign(overlayTopLeft.style, overlayCommon, { top: '8px', display: 'none' });
+    overlayTopLeft.textContent = '';
+    body.appendChild(overlayTopLeft);
+
+    const overlayBottomLeft = document.createElement('div');
+    overlayBottomLeft.className = 'fits-preview-overlay-bottom-left';
+    Object.assign(overlayBottomLeft.style, overlayCommon, { bottom: '8px', display: 'none' });
+    overlayBottomLeft.textContent = '';
+    body.appendChild(overlayBottomLeft);
+
+    // One-time keyframes
+    if (!document.getElementById('fits-preview-tooltip-style')) {
+        const st = document.createElement('style');
+        st.id = 'fits-preview-tooltip-style';
+        st.textContent = `
+@keyframes fitsPreviewSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        `;
+        document.head.appendChild(st);
+    }
+
+    document.body.appendChild(el);
+
+    const state = {
+        el,
+        title,
+        img,
+        spinner,
+        overlayTopLeft,
+        overlayBottomLeft,
+        pinned: false,
+        hoverTimer: null,
+        abort: null,
+        lastUrl: null,
+        lastKey: null
+    };
+
+    function cleanupImageUrl() {
+        if (state.lastUrl) {
+            try { URL.revokeObjectURL(state.lastUrl); } catch (_) {}
+            state.lastUrl = null;
+        }
+        state.img.style.backgroundImage = '';
+    }
+
+    function hide() {
+        state.pinned = false;
+        if (state.hoverTimer) {
+            clearTimeout(state.hoverTimer);
+            state.hoverTimer = null;
+        }
+        try { if (state.abort) state.abort.abort(); } catch (_) {}
+        state.abort = null;
+        state.spinner.style.display = 'none';
+        state.overlayTopLeft.textContent = '';
+        state.overlayTopLeft.style.display = 'none';
+        state.overlayBottomLeft.textContent = '';
+        state.overlayBottomLeft.style.display = 'none';
+        cleanupImageUrl();
+        // Animate out, then hide
+        state.el.style.opacity = '0';
+        state.el.style.transform = 'translateY(6px) scale(0.985)';
+        setTimeout(() => {
+            // If repinned/reopened, don't hide
+            if (state.pinned) return;
+            state.el.style.display = 'none';
+        }, 180);
+    }
+
+    function positionNear(rect) {
+        // Show temporarily to measure
+        state.el.style.visibility = 'hidden';
+        state.el.style.display = 'block';
+        const tipRect = state.el.getBoundingClientRect();
+        state.el.style.display = 'none';
+        state.el.style.visibility = 'visible';
+
+        const margin = 10;
+        const vw = window.innerWidth || 1200;
+        const vh = window.innerHeight || 800;
+
+        let left = rect.right + margin;
+        let top = rect.top - 6;
+
+        // Prefer left side if it would overflow right edge
+        if (left + tipRect.width > vw - margin) {
+            left = rect.left - tipRect.width - margin;
+        }
+        // Clamp horizontally
+        left = Math.max(margin, Math.min(left, vw - tipRect.width - margin));
+
+        // If tooltip would overflow bottom, shift up; if overflow top, place below icon
+        if (top + tipRect.height > vh - margin) {
+            top = vh - tipRect.height - margin;
+        }
+        if (top < margin) {
+            top = rect.bottom + margin;
+        }
+        top = Math.max(margin, Math.min(top, vh - tipRect.height - margin));
+
+        state.el.style.left = `${left}px`;
+        state.el.style.top = `${top}px`;
+    }
+
+    async function showForItem(item, anchorRect) {
+        if (!item || !item.path) return;
+        state.title.textContent = item.name || item.path;
+        positionNear(anchorRect);
+        state.el.style.display = 'block';
+        // Animate in
+        state.el.style.opacity = '0';
+        state.el.style.transform = 'translateY(6px) scale(0.985)';
+        requestAnimationFrame(() => {
+            state.el.style.opacity = '1';
+            state.el.style.transform = 'translateY(0) scale(1)';
+        });
+
+        // Always refetch (no caching); also avoid showing a stale image if user switches quickly
+        const v = Date.now();
+        const key = `${item.path}|${v}`;
+        state.lastKey = key;
+
+        // Reset UI
+        cleanupImageUrl();
+        state.spinner.style.display = 'block';
+        state.overlayTopLeft.textContent = '';
+        state.overlayTopLeft.style.display = 'none';
+        state.overlayBottomLeft.textContent = '';
+        state.overlayBottomLeft.style.display = 'none';
+
+        try {
+            try { if (state.abort) state.abort.abort(); } catch (_) {}
+            state.abort = new AbortController();
+
+            const url = `/fits/preview/?filepath=${encodeURIComponent(item.path)}&max_dim=320&v=${v}`;
+            const resp = await apiFetch(url, { signal: state.abort.signal, cache: 'no-store' });
+            if (!resp || !resp.ok) throw new Error(`Preview failed: ${resp ? resp.status : 'no response'}`);
+
+            // Read lightweight metadata from response headers (no extra request)
+            try {
+                const shape = resp.headers.get('x-fits-shape');
+                const bunit = resp.headers.get('x-fits-bunit');
+                const bmaj = resp.headers.get('x-fits-bmaj-arcsec');
+                const bmin = resp.headers.get('x-fits-bmin-arcsec');
+                const bpa = resp.headers.get('x-fits-bpa-deg');
+                const psx = resp.headers.get('x-fits-pixscale-x-arcsec');
+                const psy = resp.headers.get('x-fits-pixscale-y-arcsec');
+
+                // Top-left: shape + unit
+                const topLines = [];
+                if (shape) topLines.push(`Shape: ${shape}`);
+                if (bunit) topLines.push(`BUNIT: ${bunit}`);
+                if (topLines.length) {
+                    state.overlayTopLeft.textContent = topLines.join('\n');
+                    state.overlayTopLeft.style.display = 'block';
+                }
+
+                const beamParts = [];
+                if (bmaj && bmin) {
+                    const maj = Number(bmaj);
+                    const min = Number(bmin);
+                    const pa = bpa ? Number(bpa) : null;
+                    if (isFinite(maj) && isFinite(min)) {
+                        beamParts.push(`Beam: ${maj.toFixed(2)}″×${min.toFixed(2)}″`);
+                        if (pa != null && isFinite(pa)) beamParts.push(`PA: ${pa.toFixed(1)}°`);
+                    }
+                }
+
+                const pixParts = [];
+                if (psx || psy) {
+                    const x = psx ? Number(psx) : NaN;
+                    const y = psy ? Number(psy) : NaN;
+                    if (isFinite(x) && isFinite(y)) {
+                        // If nearly square pixels, show one value
+                        if (Math.abs(x - y) / Math.max(x, y) < 0.02) {
+                            pixParts.push(`Pixel size: ${((x + y) / 2).toFixed(3)}″/pix`);
+                        } else {
+                            pixParts.push(`Pixel size: ${x.toFixed(3)}″×${y.toFixed(3)}″/pix`);
+                        }
+                    } else if (isFinite(x)) {
+                        pixParts.push(`Pixel size: ${x.toFixed(3)}″/pix`);
+                    } else if (isFinite(y)) {
+                        pixParts.push(`Pixel size: ${y.toFixed(3)}″/pix`);
+                    }
+                }
+
+                // Bottom-left: beam + pix
+                const bottomLines = [];
+                if (beamParts.length) bottomLines.push(beamParts.join('   '));
+                if (pixParts.length) bottomLines.push(pixParts.join('   '));
+                if (bottomLines.length) {
+                    state.overlayBottomLeft.textContent = bottomLines.join('\n');
+                    state.overlayBottomLeft.style.display = 'block';
+                }
+            } catch (_) {}
+
+            const blob = await resp.blob();
+            if (state.lastKey !== key) return; // stale
+
+            const objUrl = URL.createObjectURL(blob);
+            // Do not cache: always replace and revoke previous
+            cleanupImageUrl();
+            state.lastUrl = objUrl;
+            state.img.style.backgroundImage = `url("${objUrl}")`;
+        } catch (e) {
+            // Hide image but keep tooltip frame (so user sees it's a preview feature)
+            cleanupImageUrl();
+        } finally {
+            if (state.lastKey === key) state.spinner.style.display = 'none';
+        }
+    }
+
+    // click outside closes when pinned
+    document.addEventListener('mousedown', (e) => {
+        if (!state.pinned) return;
+        if (!state.el.contains(e.target)) hide();
+    }, true);
+
+    window.__fitsPreviewTooltip = {
+        ...state,
+        showForItem,
+        hide
+    };
+    return window.__fitsPreviewTooltip;
+}
+
+function createFitsPreviewIconButton(item) {
+    const btn = document.createElement('button');
+    btn.className = 'fits-preview-icon';
+    btn.type = 'button';
+    btn.title = 'Preview';
+    Object.assign(btn.style, {
+        marginLeft: '8px',
+        width: '28px',
+        height: '28px',
+        borderRadius: '8px',
+        border: '1px solid rgba(255,255,255,0.15)',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#fff',
+        cursor: 'pointer',
+        flexShrink: '0',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        alignSelf: 'center'
+    });
+
+    // Simple "eye" SVG (no external deps)
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Z" stroke="rgba(255,255,255,0.9)" stroke-width="1.6"/>
+  <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="rgba(255,255,255,0.9)" stroke-width="1.6"/>
+</svg>`;
+
+    const tip = ensureFitsPreviewTooltip();
+
+    btn.addEventListener('mouseenter', (e) => {
+        if (tip.pinned) return;
+        const rect = btn.getBoundingClientRect();
+        if (tip.hoverTimer) clearTimeout(tip.hoverTimer);
+        tip.hoverTimer = setTimeout(() => {
+            tip.showForItem(item, rect);
+        }, 120);
+    });
+    btn.addEventListener('mouseleave', () => {
+        if (tip.pinned) return;
+        if (tip.hoverTimer) {
+            clearTimeout(tip.hoverTimer);
+            tip.hoverTimer = null;
+        }
+        tip.hide();
+    });
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rect = btn.getBoundingClientRect();
+        // Toggle pin
+        tip.pinned = !tip.pinned;
+        if (tip.pinned) {
+            tip.showForItem(item, rect);
+        } else {
+            tip.hide();
+        }
+    });
+
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('mouseover', () => { btn.style.background = 'rgba(33, 150, 243, 0.16)'; btn.style.borderColor = 'rgba(33,150,243,0.45)'; });
+    btn.addEventListener('mouseout', () => { btn.style.background = 'rgba(255,255,255,0.06)'; btn.style.borderColor = 'rgba(255,255,255,0.15)'; });
+
+    return btn;
 }
 
 function createTabInterface(contentContainer) {
@@ -3082,10 +3573,33 @@ function addFileBrowserButton() {
 
 document.addEventListener('DOMContentLoaded', () => {
     addFileBrowserButton();
-    setTimeout(() => {
-        showFileBrowser();
-        showNotification('Please select a FITS file to open', 1000);
-    }, 500);
+    try {
+        const isTop = (window.self === window.top);
+        const disabled = !!window.__DISABLE_AUTO_FILE_BROWSER;
+        if (isTop && !disabled) {
+            // Auto-open the in-app file browser once on startup (requested UX).
+            // Keep it best-effort and avoid fighting multi-panel/pane iframes.
+            const shouldAutoOpen = (typeof window.__AUTO_OPEN_FILE_BROWSER === 'undefined')
+                ? true
+                : !!window.__AUTO_OPEN_FILE_BROWSER;
+
+            if (shouldAutoOpen) {
+                // Only auto-open if we don't already have a file loaded.
+                const hasFile = !!(window.currentFitsFile || window.currentFilePath);
+                // Only open once per page load.
+                if (!hasFile && !window.__FILE_BROWSER_AUTO_OPENED) {
+                    window.__FILE_BROWSER_AUTO_OPENED = true;
+                    setTimeout(() => {
+                        try {
+                            if (typeof window.showFileBrowser === 'function') {
+                                window.showFileBrowser();
+                            }
+                        } catch (_) {}
+                    }, 250);
+                }
+            }
+        }
+    } catch(_) {}
 });
 
 // NOTE: Other functions like loadFitsFile, checkFileSize, getFitsHduInfo, etc.

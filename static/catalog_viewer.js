@@ -215,7 +215,8 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
     Object.assign(popup.style, {
         position: 'fixed', top: '5%', left: '5%', 
         width: '90vw', height: '90vh', backgroundColor: '#2d2d2d',
-        border: '1px solid #444', borderRadius: '8px', zIndex: '2000',
+        // Keep above Plotter/Region Style (z-index ~3600 range)
+        border: '1px solid #444', borderRadius: '8px', zIndex: '3705',
         display: 'flex', flexDirection: 'column',
         boxShadow: '0 8px 16px rgba(0,0,0,0.5)',
         color: 'white', fontFamily: 'Arial, sans-serif'
@@ -1690,7 +1691,8 @@ function createAdvancedCatalogViewer(catalogName, metadata) {
         overlay.id = id;
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
-            backgroundColor: 'rgba(0, 0, 0, 0.7)', zIndex: '3000',
+            // Must be above #catalog-viewer-popup (z-index ~3705)
+            backgroundColor: 'rgba(0, 0, 0, 0.7)', zIndex: '3805',
             display: 'flex', alignItems: 'center', justifyContent: 'center'
         });
         
