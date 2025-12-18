@@ -11486,11 +11486,12 @@ if __name__ == "__main__":
             pass
 
     # Auto-open the UI in a browser when running "python main.py"
-    # Disable with: NELOURA_OPEN_BROWSER=false
+    # Enable with: NELOURA_OPEN_BROWSER=true
     #
     # Note: when running from an IDE/debugger, stdout is often not a TTY, so
     # gating on isatty() prevents auto-open. Default to enabled instead.
-    if _env_flag("NELOURA_OPEN_BROWSER", default=True):
+    # Default to NOT auto-opening to avoid surprise tabs/popups in production and during scripted runs.
+    if _env_flag("NELOURA_OPEN_BROWSER", default=False):
         try:
             url = _server_url(UVICORN_HOST, UVICORN_PORT)
             threading.Thread(target=_wait_then_open, args=(url,), daemon=True).start()
