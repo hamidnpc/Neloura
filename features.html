@@ -1,21 +1,24 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Nelourav v2</title>
+  
   <style>
-    :root{
+    :root {
       --bg: #06070b;
-      --glass: rgba(255,255,255,0.12);
-      --glass-2: rgba(255,255,255,0.18);
-      --border: rgba(255,255,255,0.22);
-      --shadow: rgba(0,0,0,0.55);
-      --text: rgba(255,255,255,0.92);
-      --text-2: rgba(255,255,255,0.72);
+      --glass: rgba(255, 255, 255, 0.12);
+      --glass-2: rgba(255, 255, 255, 0.18);
+      --border: rgba(255, 255, 255, 0.22);
+      --shadow: rgba(0, 0, 0, 0.55);
+      --text: rgba(255, 255, 255, 0.92);
+      --text-2: rgba(255, 255, 255, 0.72);
     }
 
-    html, body {
+    html,
+    body {
       height: 100%;
       margin: 0;
       background: var(--bg);
@@ -26,15 +29,137 @@
       overflow-x: hidden;
     }
 
-    .stage{
+    html {
+      scroll-behavior: smooth;
+    }
+
+    /* Offset for fixed header when jumping to anchors */
+    .section[id],
+    .features[id],
+    .feature-row[id],
+    .feature-grid[id]{
+      scroll-margin-top: 86px;
+    }
+
+    /* -------- Sticky full menu (top nav) -------- */
+    .topnav {
+      position: fixed;
+      top: 0;
+      z-index: 120;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      padding: 10px 12px;
+      pointer-events: none;
+      /* enable clicks only on inner */
+    }
+
+    .topnav-inner {
+      pointer-events: auto;
+      width: min(1180px, calc(100vw - 24px));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 10px 12px;
+      border-radius: 18px;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(14px) saturate(160%);
+      -webkit-backdrop-filter: blur(14px) saturate(160%);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, 0.42);
+      transition: background 260ms ease, border-color 260ms ease, box-shadow 260ms ease;
+    }
+
+    /* When the nav sits over light/white sections, make it darker/more opaque */
+    .topnav.is-on-light .topnav-inner{
+      background: rgba(0, 0, 0, 0.48);
+      border-color: rgba(255, 255, 255, 0.18);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, 0.55);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: rgba(255, 255, 255, 0.90);
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .brand img {
+      width: 28px;
+      height: 28px;
+      display: block;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.35));
+    }
+
+    .brand span {
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .navlinks {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .navlinks a {
+      display: inline-flex;
+      align-items: center;
+      height: 40px;
+      padding: 0 14px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-size: 15px;
+      letter-spacing: 0.02em;
+      color: rgba(255, 255, 255, 0.84);
+      border: 1px solid transparent;
+      transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+    }
+
+    .navlinks a:hover {
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+
+    .navlinks a.is-active{
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.22);
+      color: rgba(255, 255, 255, 0.92);
+    }
+
+    .navlinks a:active {
+      transform: scale(0.99);
+    }
+
+    @media (max-width: 520px) {
+      .navlinks a {
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .brand span {
+        display: none;
+      }
+    }
+
+    .stage {
       position: relative;
-      width: 100vw;
+      width: 100%;
       isolation: isolate;
     }
 
-    .section{
+    .section {
       position: relative;
-      width: 100vw;
+      width: 100%;
       height: 100vh;
       display: grid;
       place-items: center;
@@ -43,38 +168,395 @@
     }
 
     /* Full-bleed background */
-    .bg{
+    .bg {
       position: absolute;
       inset: 0;
       background-size: cover;
       background-position: center;
-      transform: scale(1.02);
       filter: saturate(1.08) contrast(1.05) brightness(0.98);
       z-index: -3;
     }
 
-    .bg--ngc4254{ background-image: url("/static/images/ngc4254_1.png"); }
-    .bg--ngc0628{ background-image: url("/static/images/ngc0628_2.png"); }
+    .bg--ngc4254 {
+      background-image: url("/static/images/ngc4254_1.png");
+    }
+
+    .bg--ngc0628 {
+      background-image: url("/static/images/ngc0628_2.png");
+    }
+    
+    .bg--side {
+      background-image: url("/static/images/side.png");
+    }
+
+    /* -------- Slider (first section) -------- */
+    #top .slider {
+      position: absolute;
+      inset: 0;
+      z-index: -3;
+    }
+
+    #top .slide {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      filter: saturate(1.08) contrast(1.05) brightness(0.98);
+      opacity: 0;
+      transition: opacity 900ms ease;
+      will-change: opacity;
+    }
+
+    #top .slide.is-active {
+      opacity: 1;
+    }
+
+    /* -------- Neloura slider (uses styles from your desktop page) -------- */
+    .full-bleed{
+      width: 100vw;
+      margin-left: calc(50% - 50vw);
+      margin-right: calc(50% - 50vw);
+    }
+
+    .neloura-hero{
+      margin: 0;
+      padding: 0;
+    }
+
+    .neloura-slider{
+      position: relative;
+      overflow: hidden;
+      border-radius: 0;
+      min-height: clamp(700px, 100vh, 960px);
+      width: 100%;
+      box-shadow: 0 65px 130px rgba(15, 23, 42, 0.35);
+    }
+
+    /* Override the global background-slider .slider behavior for this component */
+    .neloura-slider.slider{
+      position: relative;
+      inset: auto;
+      z-index: 0;
+    }
+
+    .neloura-slider > img{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      filter: saturate(1.15);
+    }
+    .neloura-slider > img.active{ opacity: 1; }
+
+    .neloura-slider::after{
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(4, 7, 18, 0.45), rgba(4, 7, 18, 0.08));
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .pill{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background-color: rgba(255, 122, 24, 0.12);
+      color: #ff7a18;
+      font-size: 12px;
+      padding: 0.2rem 0.65rem;
+      border-radius: 999px;
+      margin-bottom: 0.8rem;
+      letter-spacing: 0.02em;
+      text-transform: none;
+    }
+
+    .neloura-overlay{
+      position: absolute;
+      inset: 12% auto auto 8%;
+      max-width: min(550px, 70vw);
+      padding: 2rem;
+      border-radius: 28px;
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      background: rgba(3, 7, 18, 0.42);
+      color: #fff;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .neloura-overlay h3{
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 1.05;
+      margin: 0;
+    }
+    .neloura-overlay p{
+      margin: 0;
+      color: rgba(255, 255, 255, 0.90);
+    }
+
+    .neloura-actions{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 0.25rem;
+    }
+    .neloura-btn{
+      text-decoration: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 999px;
+      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      box-shadow: 0 15px 30px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s ease, opacity 0.2s ease;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .neloura-btn.github{
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      color: #fff;
+    }
+    .neloura-btn.cloud{
+      background: linear-gradient(120deg, #ff7a18, #ffd819);
+      color: #2b0c00;
+    }
+    .neloura-btn:hover{ transform: translateY(-2px); opacity: 0.92; }
+
+    .neloura-slider .slider-controls{
+      position: absolute;
+      bottom: 3rem;
+      right: 5vw;
+      display: flex;
+      gap: 0.5rem;
+      z-index: 3;
+    }
+    .slider-control{
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      background: rgba(0, 0, 0, 0.35);
+      color: #fff;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+    .slider-control.active{
+      background: linear-gradient(120deg, #ff7a18, #8f57ff);
+      border-color: transparent;
+      transform: scale(1.05);
+    }
+
+    .caption {
+      position: absolute;
+      left: 20px;
+      bottom: 20px;
+      max-width: min(560px, calc(100vw - 40px));
+      padding: 12px 14px 12px 14px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.08));
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(16px) saturate(180%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      box-shadow:
+        0 22px 60px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      color: rgba(255, 255, 255, 0.92);
+      font-size: 13px;
+      line-height: 1.35;
+      letter-spacing: 0.01em;
+    }
+
+    /* iOS-like border highlight + soft sheen (static) */
+    .caption::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      border-radius: 19px;
+      pointer-events: none;
+      background:
+        linear-gradient(135deg,
+          rgba(255, 255, 255, 0.28),
+          rgba(255, 255, 255, 0.08) 35%,
+          rgba(125, 211, 252, 0.12) 65%,
+          rgba(255, 255, 255, 0.14));
+      opacity: 0.55;
+      mix-blend-mode: screen;
+      filter: blur(0.2px);
+      -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      /* Standard mask for non-WebKit */
+      mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      mask-composite: exclude;
+      padding: 1px;
+    }
+
+    .caption::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 18px;
+      pointer-events: none;
+      background: radial-gradient(120% 80% at 25% 20%, rgba(255, 255, 255, 0.18), transparent 55%);
+      opacity: 0.55;
+      mix-blend-mode: screen;
+    }
+
+    .slider-ui {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 42px;
+      height: 42px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      pointer-events: auto;
+      cursor: pointer;
+      user-select: none;
+      background: rgba(255, 255, 255, 0.10);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(10px) saturate(160%);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+      color: rgba(255, 255, 255, 0.88);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .nav:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .nav:active {
+      transform: translateY(-50%) scale(0.98);
+    }
+
+    .nav-left {
+      left: 14px;
+    }
+
+    .nav-right {
+      right: 18px;
+    }
+
+    .slide-count {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.26);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(10px) saturate(160%);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      color: rgba(255, 255, 255, 0.80);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .credit {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      max-width: 350px;
+      text-align: right;
+      padding: 8px 12px;
+      border-radius: 12px;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.26);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(10px) saturate(160%);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      color: rgba(255, 255, 255, 0.65);
+      font-size: 9px;
+      line-height: 1.2;
+      letter-spacing: 0.04em;
+    }
+
+    /* Credit for section backgrounds (e.g., ngc0628_2) */
+    .credit--section {
+      bottom: 18px;
+      right: 18px;
+      max-width: min(520px, calc(100vw - 36px));
+      font-size: 11px;
+      line-height: 1.25;
+      color: rgba(255, 255, 255, 0.62);
+      background: rgba(0, 0, 0, 0.22);
+    }
+
+    /* Footer credit bar */
+    .footbar{
+      padding: 14px 16px 18px;
+      display: flex;
+      justify-content: center;
+      background: transparent;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .footbar-inner{
+      width: min(1180px, calc(100vw - 32px));
+      padding: 0;
+      color: rgba(255,255,255,0.60);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+    .footbar-inner a{
+      color: rgba(255,255,255,0.78);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(255,255,255,0.18);
+    }
+    .footbar-inner a:hover{
+      border-bottom-color: rgba(255,255,255,0.34);
+    }
 
     /* Soft vignette + depth */
-    .vignette{
+    .vignette {
       position: absolute;
       inset: -20%;
       background:
-        radial-gradient(60% 55% at 50% 40%, rgba(0,0,0,0.10) 0%, rgba(0,0,0,0.55) 55%, rgba(0,0,0,0.82) 100%),
-        linear-gradient(to bottom, rgba(0,0,0,0.10), rgba(0,0,0,0.40));
+        radial-gradient(60% 55% at 50% 40%, rgba(0, 0, 0, 0.10) 0%, rgba(0, 0, 0, 0.55) 55%, rgba(0, 0, 0, 0.82) 100%),
+        linear-gradient(to bottom, rgba(0, 0, 0, 0.10), rgba(0, 0, 0, 0.40));
       z-index: -2;
       pointer-events: none;
     }
 
+    /* Slightly lighter vignette for sections where the image should read more clearly */
+    .vignette.vignette--light {
+      background:
+        radial-gradient(60% 55% at 50% 42%, rgba(0, 0, 0, 0.06) 0%, rgba(0, 0, 0, 0.40) 58%, rgba(0, 0, 0, 0.62) 100%),
+        linear-gradient(to bottom, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.26));
+    }
+
     /* iOS-like “ambient” gradient tint (static) */
-    .ambient{
+    .ambient {
       position: absolute;
       inset: -40%;
       background:
-        radial-gradient(35% 30% at 25% 30%, rgba(125,211,252,0.20), transparent 60%),
-        radial-gradient(35% 30% at 70% 55%, rgba(167,139,250,0.18), transparent 60%),
-        radial-gradient(35% 30% at 55% 20%, rgba(34,197,94,0.10), transparent 60%);
+        radial-gradient(35% 30% at 25% 30%, rgba(125, 211, 252, 0.20), transparent 60%),
+        radial-gradient(35% 30% at 70% 55%, rgba(167, 139, 250, 0.18), transparent 60%),
+        radial-gradient(35% 30% at 55% 20%, rgba(34, 197, 94, 0.10), transparent 60%);
       mix-blend-mode: screen;
       opacity: 0.85;
       filter: blur(18px);
@@ -83,33 +565,312 @@
     }
 
     /* Center glass card */
-    .card{
+    .card {
       position: relative;
+      margin-inline: auto;
       padding: 22px 26px;
       border-radius: 22px;
       background: linear-gradient(180deg, var(--glass-2), var(--glass));
       border: 1px solid var(--border);
       box-shadow:
         0 18px 60px var(--shadow),
-        inset 0 1px 0 rgba(255,255,255,0.18);
+        inset 0 1px 0 rgba(255, 255, 255, 0.18);
       backdrop-filter: blur(16px) saturate(170%);
       -webkit-backdrop-filter: blur(16px) saturate(170%);
       text-align: center;
       transform-origin: 50% 50%;
     }
 
+    .card--hero{
+      width: min(500px, calc(100vw - 40px));
+    }
+
+    /* Hero buttons under "Neloura v2" */
+    .hero-stack{
+      position: relative;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .hero-actions{
+      margin-top: 0;
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .hero-btn{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      height: 40px;
+      padding: 0 14px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+      color: rgba(255,255,255,0.88);
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.18);
+      backdrop-filter: blur(12px) saturate(160%);
+      -webkit-backdrop-filter: blur(12px) saturate(160%);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.30);
+      transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+      user-select: none;
+    }
+    .hero-btn:hover{
+      background: rgba(255,255,255,0.14);
+      border-color: rgba(255,255,255,0.22);
+      transform: translateY(-1px);
+    }
+    .hero-btn:active{
+      transform: translateY(0px) scale(0.99);
+    }
+    .hero-btn svg{
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: currentColor;
+      opacity: 0.9;
+    }
+
+    /* Top-center-positioned glass card (for section headings) */
+    .card-center {
+      position: absolute;
+      top: 18px;
+      left: 50%;
+      /* Keep centered even when .reveal controls transform */
+      --reveal-x: -50%;
+      width: min(560px, calc(100vw - 40px));
+      padding: 16px 18px;
+      border-radius: 20px;
+      text-align: center;
+    }
+
+    /* Bottom-center-positioned glass card (for section headings) */
+    .card-bottom {
+      position: absolute;
+      bottom: 18px;
+      left: 50%;
+      /* Keep centered even when .reveal controls transform */
+      --reveal-x: -50%;
+      width: min(560px, calc(100vw - 40px));
+      padding: 16px 18px;
+      border-radius: 20px;
+      text-align: center;
+    }
+
+    /* -------- Feature layouts (post-hero) -------- */
+    .features {
+      position: relative;
+      padding: 86px 18px 96px;
+      border-top: 1px solid rgba(255, 255, 255, 0.10);
+    }
+
+    /* Light/white features section */
+    .features.features--light {
+      color: #0b1020;
+      background:
+        radial-gradient(900px 520px at 18% 15%, rgba(56, 189, 248, 0.20), transparent 60%),
+        radial-gradient(860px 520px at 78% 30%, rgba(167, 139, 250, 0.18), transparent 62%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 247, 255, 0.96));
+      border-top: 1px solid rgba(15, 23, 42, 0.10);
+    }
+
+    .features-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: grid;
+      gap: 28px;
+    }
+
+    .features-head {
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    .features-head h2 {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 40px);
+      letter-spacing: -0.03em;
+      color: rgba(11, 16, 32, 0.92);
+    }
+
+    .features-head p {
+      margin: 10px auto 0;
+      max-width: 720px;
+      color: rgba(11, 16, 32, 0.68);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .feature-row {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .feature-row.is-reverse {
+      grid-template-columns: 0.95fr 1.05fr;
+    }
+
+    .feature-row.is-reverse .feature-media {
+      order: -1;
+    }
+
+    .feature-copy {
+      padding: 18px 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      backdrop-filter: blur(14px) saturate(160%);
+      -webkit-backdrop-filter: blur(14px) saturate(160%);
+      box-shadow: 0 22px 70px rgba(2, 6, 23, 0.10);
+    }
+
+    .feature-kicker {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(11, 16, 32, 0.62);
+    }
+
+    .feature-title {
+      margin: 0;
+      font-size: clamp(20px, 3.0vw, 32px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.12;
+      color: rgba(11, 16, 32, 0.92);
+    }
+
+    .feature-desc {
+      margin: 10px 0 0 0;
+      font-size: 14px;
+      line-height: 1.55;
+      color: rgba(11, 16, 32, 0.70);
+    }
+
+    .feature-media {
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      box-shadow: 0 26px 90px rgba(2, 6, 23, 0.14);
+      /* A "frame" so contain-images don't look empty/letterboxed */
+      background:
+        radial-gradient(120% 90% at 25% 20%, rgba(56, 189, 248, 0.22), transparent 55%),
+        radial-gradient(110% 90% at 80% 35%, rgba(167, 139, 250, 0.18), transparent 60%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(245, 247, 255, 0.78));
+      /* Let the media height follow the actual image to avoid top/bottom empty space */
+      aspect-ratio: auto;
+      position: relative;
+      padding: 0;
+    }
+
+    .feature-media img {
+      width: 100%;
+      height: auto;
+      /* No cropping; scale as large as possible within the frame */
+      object-fit: contain;
+      object-position: center;
+      display: block;
+      border-radius: 0;
+    }
+
+    .feature-media::after{
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 18px;
+      pointer-events: none;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+      opacity: 0.8;
+    }
+
+    .feature-badge {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.70);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      color: rgba(11, 16, 32, 0.74);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      backdrop-filter: blur(10px) saturate(160%);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 10px;
+    }
+
+    .mini {
+      border-radius: 16px;
+      padding: 14px 14px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      box-shadow: 0 18px 60px rgba(2, 6, 23, 0.10);
+    }
+
+    .mini strong {
+      display: block;
+      font-size: 15px;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: rgba(11, 16, 32, 0.72);
+      margin-bottom: 6px;
+    }
+
+    .mini span {
+      display: block;
+      font-size: 14px;
+      line-height: 1.55;
+      color: rgba(11, 16, 32, 0.68);
+    }
+
+    /* (Dropdown menu removed; using sticky full top nav instead.) */
+
+    @media (max-width: 980px) {
+      .feature-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 860px) {
+
+      .feature-row,
+      .feature-row.is-reverse {
+        grid-template-columns: 1fr;
+      }
+
+      .feature-row.is-reverse .feature-media {
+        order: 0;
+      }
+    }
+
     /* Shimmer highlight sweep */
-    .card::before{
+    .card::before {
       content: "";
       position: absolute;
       inset: -2px;
       border-radius: 24px;
       background: linear-gradient(120deg,
-        transparent 0%,
-        rgba(255,255,255,0.10) 35%,
-        rgba(255,255,255,0.28) 50%,
-        rgba(255,255,255,0.10) 65%,
-        transparent 100%);
+          transparent 0%,
+          rgba(255, 255, 255, 0.10) 35%,
+          rgba(255, 255, 255, 0.28) 50%,
+          rgba(255, 255, 255, 0.10) 65%,
+          transparent 100%);
       transform: none;
       filter: blur(0.2px);
       opacity: 0.22;
@@ -117,54 +878,596 @@
       mix-blend-mode: screen;
     }
 
-    .title{
+    .title {
       margin: 0;
       font-size: clamp(34px, 5vw, 56px);
       font-weight: 800;
       letter-spacing: -0.04em;
       line-height: 1.05;
-      text-shadow: 0 10px 40px rgba(0,0,0,0.55);
-      background: linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0.70));
+      text-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.70));
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
     }
 
-    .subtitle{
+    .subtitle {
       margin: 10px 0 0 0;
-      font-size: 14px;
+      font-size: 15px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--text-2);
     }
 
+    /* (Removed accidental override that made all cards position:absolute and broke hero layout) */
+    /* App logo */
+    .logo {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 50;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(14px) saturate(160%);
+      -webkit-backdrop-filter: blur(14px) saturate(160%);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, 0.45);
+      user-select: none;
+      pointer-events: none;
+    }
+
+    .logo img {
+      width: 28px;
+      height: 28px;
+      display: block;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.35));
+    }
+
+    .logo span {
+      font-size: 12px;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.78);
+      white-space: nowrap;
+    }
+
     /* Reduce motion (no animations remain; keep for safety) */
-    @media (prefers-reduced-motion: reduce){
-      .ambient, .card, .card::before { animation: none !important; }
+    @media (prefers-reduced-motion: reduce) {
+
+      .ambient,
+      .card,
+      .card::before {
+        animation: none !important;
+      }
+    }
+
+    /* -------- Scroll reveal (subtle) -------- */
+    .reveal {
+      opacity: 0;
+      /* Allow preserving X positioning (e.g., centered with -50%) */
+      --reveal-y: 14px;
+      transform: translateX(var(--reveal-x, 0px)) translateY(var(--reveal-y));
+      filter: blur(6px);
+      transition: opacity 700ms ease, transform 700ms cubic-bezier(0.2, 0.9, 0.2, 1), filter 700ms ease;
+      will-change: opacity, transform, filter;
+    }
+
+    .reveal.is-visible {
+      opacity: 1;
+      --reveal-y: 0px;
+      filter: blur(0);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal {
+        opacity: 1;
+        transform: none;
+        filter: none;
+        transition: none;
+      }
     }
   </style>
 </head>
+
 <body>
+  <header class="topnav" aria-label="Site navigation">
+    <div class="topnav-inner">
+      <a class="brand" href="#top">
+        <img src="/static/logo/logo.png" alt="Neloura logo" />
+        <span>Neloura</span>
+      </a>
+      <nav class="navlinks" aria-label="Menu">
+        <a href="#top">Home</a>
+        <a href="#cutout">Cutout</a>
+        <a href="#fits-cubes">FITS & Cubes</a>
+        <a href="#downloads">NED & MAST</a>
+        <a href="#tools">Tools</a>
+        <a href="#side-by-side">Side by side</a>
+        <a href="#masks">Masks</a>
+        <a href="#neloura">Scatter Plot</a>
+      </nav>
+    </div>
+  </header>
   <main class="stage">
-    <section class="section" aria-label="Neloura v2 hero">
-      <div class="bg bg--ngc4254" aria-hidden="true"></div>
+    <section class="section" aria-label="Neloura v2 hero" id="top">
+      <!-- Background slider -->
+      <div class="slider" aria-hidden="true">
+        <div class="slide is-active" data-slide="0" style="background-image:url('/static/images/ngc4254_1.png');"></div>
+        <div class="slide" data-slide="1" style="background-image:url('/static/images/ngc1566_1.png');"></div>
+        <div class="slide" data-slide="2" style="background-image:url('/static/images/ngc1566_2.png');"></div>
+        <div class="slide" data-slide="3" style="background-image:url('/static/images/6281.png');"></div>
+      </div>
       <div class="vignette" aria-hidden="true"></div>
       <div class="ambient" aria-hidden="true"></div>
-      <div class="card">
-        <h1 class="title">Neloura v2</h1>
-        <p class="subtitle">is here.</p>
+      <div class="hero-stack">
+        <div class="card card--hero">
+          <h1 class="title">Neloura v2</h1>
+          <p class="subtitle">is here!</p>
+        </div>
+        <div class="hero-actions" aria-label="Links">
+          <a class="hero-btn" href="https://neloura.com" target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.35 10.04A7.49 7.49 0 0 0 5.14 8.37 5.99 5.99 0 0 0 6 20h12a5 5 0 0 0 1.35-9.96ZM18 18H6a4 4 0 0 1-.31-7.99l.95-.08.34-.9A5.5 5.5 0 0 1 17.4 10l.52 1.1 1.21.07A3 3 0 0 1 18 18Z"/>
+            </svg>
+            Cloud version
+          </a>
+          <a class="hero-btn" href="https://github.com/hamidnpc/Neloura/" target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 .5A11.5 11.5 0 0 0 8.37 22.9c.57.1.78-.25.78-.55v-2.1c-3.17.7-3.84-1.34-3.84-1.34-.52-1.33-1.26-1.68-1.26-1.68-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.73 2.65 1.23 3.3.94.1-.74.4-1.23.72-1.52-2.53-.29-5.19-1.27-5.19-5.64 0-1.25.45-2.27 1.17-3.07-.12-.29-.5-1.45.11-3.02 0 0 .96-.31 3.14 1.17a10.9 10.9 0 0 1 5.72 0c2.18-1.48 3.14-1.17 3.14-1.17.61 1.57.23 2.73.11 3.02.72.8 1.17 1.82 1.17 3.07 0 4.38-2.67 5.35-5.21 5.63.41.36.77 1.06.77 2.14v3.17c0 .3.2.66.79.55A11.5 11.5 0 0 0 12 .5Z"/>
+            </svg>
+            GitHub
+          </a>
+        </div>
+      </div>
+      <div class="caption" id="slide-caption">Caption placeholder (edit me)</div>
+      <div class="slider-ui" aria-hidden="true">
+        <div class="nav nav-left" id="slide-prev" title="Previous">&lsaquo;</div>
+        <div class="nav nav-right" id="slide-next" title="Next">&rsaquo;</div>
+        <div class="slide-count" id="slide-count">01 / 04</div>
+        <div class="credit" id="slide-credit"></div>
+      </div>
+
+    </section>
+
+    <section class="section" aria-label="Cutout and zoom inset" id="cutout">
+      <div class="bg bg--ngc0628" aria-hidden="true"></div>
+      <div class="vignette vignette--light" aria-hidden="true"></div>
+      <div class="ambient" aria-hidden="true"></div>
+      <div class="card card-center reveal">
+        <h1 class="title" style="font-size: clamp(20px, 3.0vw, 30px);">
+          Unlimited Cutouts &amp; Zoom Insets
+        </h1>
+        <p class="subtitle" style="margin-top: 8px; font-size: 12px;">
+          Create as many cutouts and zoomed-in views as you need, with no limitations.
+        </p>
+      </div>
+
+      <div class="credit credit--section" id="cutout-credit">
+        Credits: NGC0628 with JWST. Williams et al. (2024); Lee et al. (2023)
+      </div>
+      
+    </section>
+
+    <!-- Feature explanation layouts (editable placeholders) -->
+    <section class="features features--light" aria-label="Feature explanations" id="features">
+      <div class="features-inner">
+        <header class="features-head reveal">
+          <h2>What you can do with Neloura?</h2>
+          <p>
+            Neloura is a comprehensive platform for astronomical data analysis, specializing in FITS image processing,
+            catalog management, and multi-wavelength visualization. Built on a Python FastAPI backend with a sophisticated
+            JavaScript frontend, and powered by the Astropy ecosystem, Neloura provides an intuitive web-based interface
+            for exploring astronomical datasets with different analysis capabilities.
+          </p>
+          
+        </header>
+
+        <div class="feature-row is-reverse reveal">
+          <div class="feature-copy">
+            <p class="feature-kicker">Browse and preview FITS files</p>
+            <h3 class="feature-title">Explore complex astronomical datasets</h3>
+            <p class="feature-desc">
+              Load and interactively explore FITS files with multiple HDUs, including images, data cubes, and tables.
+              Easily switch between extensions, preview their contents, and inspect each component within a unified
+              visualization environment.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge">NGC 0628 - HST</div>
+            <img src="/static/images/list.png" alt="">
+          </div>
+        </div>
+
+        <!-- Layout 1: text left, image right -->
+        <div class="feature-row reveal" id="fits-cubes">
+          <div class="feature-copy">
+            <h3 class="feature-title">Load FITS 2D Images & 3D Data Cubes</h3>
+            <p class="feature-desc">
+              Seamlessly load and explore FITS 2D images and 3D spectral cubes with full WCS awareness.
+              Inspect spatial and spectral structures, browse extensions, and interactively navigate large datasets directly in your browser.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge">ALMA CO (2-1)- NGC 0628</div>
+            <img src="/static/images/628_cube.png" alt="">
+          </div>
+        </div>
+
+        <!-- Layout 2: text right, image left -->
+        <div class="feature-row is-reverse reveal">
+          <div class="feature-copy">
+            <p class="feature-kicker">Multi-HDU FITS Support</p>
+            <h3 class="feature-title">Explore complex astronomical datasets</h3>
+            <p class="feature-desc">
+              Load and navigate FITS files containing multiple HDUs, including images, data cubes, and tables.
+              Seamlessly switch between extensions and inspect each component within a unified, interactive view.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge"></div>
+            <img src="/static/images/hdu.png" alt="">
+          </div>
+        </div>
+
+        <div class="feature-row reveal" id="downloads">
+          <div class="feature-copy">
+            <h3 class="feature-title">Download data directly from NED and MAST</h3>
+            <p class="feature-desc">
+              Fetch astronomical datasets straight from NED and MAST and explore FITS 2D images and 3D  cubes with full WCS awareness.
+              Inspect spatial and spectral structures, browse multiple HDUs, and interactively navigate large datasets directly in your browser.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge"></div>
+            <img src="/static/images/ned.png" alt="">
+          </div>
+        </div>
+
+
+
+     <!-- Layout 3: mini cards (quick bullets) -->
+<div class="feature-grid reveal" aria-label="Quick highlights" id="tools">
+  <div class="mini">
+    <strong>Peak Finder</strong>
+    <span>
+      Detect and characterize compact sources with configurable peak-finding algorithms,
+      integrated directly into the analysis workflow.
+    </span>
+  </div>
+  <div class="mini">
+    <strong>JWST Completeness</strong>
+    <span>
+      Run artificial source injection and recovery tests to quantify detection completeness
+      for JWST and other high-resolution datasets.
+    </span>
+  </div>
+  <div class="mini">
+    <strong>Fully Configurable</strong>
+    <span>
+      Fine-tune analysis, visualization, and performance options through a dedicated settings page—
+      no code changes required.
+    </span>
+  </div>
+</div>
+
       </div>
     </section>
 
-    <section class="section" aria-label="Cutout and zoom inset">
-      <div class="bg bg--ngc0628" aria-hidden="true"></div>
-      <div class="vignette" aria-hidden="true"></div>
+    <section class="section" aria-label="Side by side view" id="side-by-side">
+      <div class="bg bg--side" aria-hidden="true"></div>
+      <div class="vignette vignette--light" aria-hidden="true"></div>
       <div class="ambient" aria-hidden="true"></div>
-      <div class="card">
-        <h1 class="title" style="font-size: clamp(28px, 4vw, 44px);">Unlimited cutout &amp; zoom inset</h1>
-        <p class="subtitle">You can create unlimited cutout and zoom inset</p>
+      <div class="card card-bottom reveal">
+        <h1 class="title" style="font-size: clamp(20px, 3.0vw, 30px);">
+          Side-by-Side FITS Visualization
+        </h1>
+        <p class="subtitle" style="margin-top: 8px; font-size: 12px;">
+          Overlay catalogs as circles or hexagons
+        </p>
+      </div>
+
+      <div class="credit credit--section" id="side-credit">
+        Credits: NGC0628 with JWST. Williams et al. (2024); Lee et al. (2023)
       </div>
     </section>
+
+    <section class="features features--light" aria-label="Masks & segmentation" id="masks">
+      <div class="features-inner">
+
+        <!-- Feature 4 -->
+        <div class="feature-row reveal">
+          <div class="feature-copy">
+            <p class="feature-kicker">envoirmental masks</p>
+            <h3 class="feature-title">Overlay Segmentation Maps & Masks</h3>
+            <p class="feature-desc">
+              Load region masks and segmentation maps directly on FITS images for visual inspection and analysis.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge">mask</div>
+            <img src="/static/images/mask.png" alt="">
+          </div>
+        </div>
+
+        <!-- Feature 5 -->
+        <div class="feature-row is-reverse reveal">
+          <div class="feature-copy">
+            <p class="feature-kicker">Segmentation Masks</p>
+            <h3 class="feature-title">Load Generated Segmentation Masks</h3>
+            <p class="feature-desc">
+              Overlay pip segmentation masks on FITS images for inspection and analysis.
+            </p>
+            
+          </div>
+          <div class="feature-media">
+            <div class="feature-badge">Image</div>
+            <img src="/static/images/seg.png" alt="">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="neloura" class="neloura-hero full-bleed">
+      <div class="neloura-slider slider" data-slider="neloura">
+        <img src="/static/images/nl1.png" alt="Neloura interface showing multi-panel FITS workflows" class="active" data-index="0" />
+        <img src="/static/images/nl2.png" alt="Neloura catalog overlays and diagnostics" data-index="1" />
+        <img src="/static/images/nl3.png" alt="Neloura catalog overlays and diagnostics" data-index="2" />
+        <img src="/static/images/nl4.png" alt="Neloura catalog overlays and diagnostics" data-index="3" />
+
+        <div class="neloura-overlay">
+          <div class="neloura-brand">
+            <div class="neloura-brand-copy">
+              <span class="pill">Next-gen astronomical image visualization and analysis.</span>
+              <h3>Neloura</h3>
+            </div>
+          </div>
+          <p>
+          Powered by Python and JavaScript, Neloura delivers in-browser visualization of large astronomical mosaics, catalogs, SEDs, and interactive source finding—no installation required. It is designed for the massive datasets expected from SKA, Roman, and other next-generation missions.
+          </p>
+   
+        </div>
+        <div class="slider-controls">
+          <button type="button" class="slider-control active" data-target="0">01</button>
+          <button type="button" class="slider-control" data-target="1">02</button>
+          <button type="button" class="slider-control" data-target="2">03</button>
+          <button type="button" class="slider-control" data-target="3">04</button>
+        </div>
+      </div>
+    </section>
+    
+    
   </main>
+
+  <footer class="footbar" aria-label="Credits">
+    <div class="footbar-inner">
+      PI: <a href="https://hamidnpc.github.io/" target="_blank" rel="noopener noreferrer">Hamid Hassani</a>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      const slides = Array.from(document.querySelectorAll('.slider .slide'));
+      const captionEl = document.getElementById('slide-caption');
+      const creditEl = document.getElementById('slide-credit');
+      const countEl = document.getElementById('slide-count');
+      const prevBtn = document.getElementById('slide-prev');
+      const nextBtn = document.getElementById('slide-next');
+      if (!slides.length) return;
+
+      const slideData = [
+  {
+    text: 'Diagonal view of NGC 4254 showing JWST F2100W (top) and VLT/MUSE Hα (bottom)',
+    credit: 'Credits: JWST/NASA/ESA/CSA; Emsellem et al. (2022); Lee et al. (2023)'
+  },
+  {
+    text: '2×3 tiled multi-wavelength view of the nearby galaxy NGC 1566 (HST, JWST, ALMA)',
+    credit: 'Credits: HST/NASA/ESA/CSA; Leroy et al. (2021); Lee et al. (2022, 2023)'
+  },
+  {
+    text: 'Side-by-side comparison of NGC 1566 with HST Hα (left) and JWST F2100W (right)',
+    credit: 'Credits: Multi-mission data; Chandar et al. (2025); Williams et al. (2024); Lee et al. (2023)'
+  },
+  {
+    text: 'Diagonal view of NGC 628 combining ALMA CO(2–1) (top) and JWST F2100W (bottom)',
+    credit: 'Credits: PHANGS-JWST; Leroy et al. (2021); Lee et al. (2023)'
+  }
+];
+
+      let idx = 0;
+      const intervalMs = 3600;
+      let timer = null;
+
+      function fmt(n) {
+        return String(n).padStart(2, '0');
+      }
+
+      function setActive(next) {
+        const cur = slides[idx];
+        const nxt = slides[next];
+        if (!nxt || nxt === cur) return;
+        cur.classList.remove('is-active');
+        nxt.classList.add('is-active');
+        idx = next;
+
+        const data = slideData[idx] || {};
+        if (captionEl) captionEl.textContent = data.text || '';
+        if (creditEl) creditEl.textContent = data.credit || '';
+        if (countEl) countEl.textContent = `${fmt(idx + 1)} / ${fmt(slides.length)}`;
+      }
+
+      // Initialize
+      {
+        const data = slideData[0] || {};
+        if (captionEl) captionEl.textContent = data.text || '';
+        if (creditEl) creditEl.textContent = data.credit || '';
+        if (countEl) countEl.textContent = `${fmt(1)} / ${fmt(slides.length)}`;
+      }
+
+      function start() {
+        if (timer) clearInterval(timer);
+        timer = setInterval(() => {
+          setActive((idx + 1) % slides.length);
+        }, intervalMs);
+      }
+
+      function step(dir) {
+        const next = (idx + dir + slides.length) % slides.length;
+        setActive(next);
+        start(); // reset autoplay on manual nav
+      }
+
+      if (prevBtn) prevBtn.addEventListener('click', () => step(-1));
+      if (nextBtn) nextBtn.addEventListener('click', () => step(1));
+
+      start();
+    })();
+  </script>
+
+  <script>
+    // Neloura gallery slider (copied behavior from your desktop page)
+    (function () {
+      const slider = document.querySelector('.neloura-slider[data-slider="neloura"]');
+      if (!slider) return;
+      const slides = Array.from(slider.querySelectorAll('img[data-index]'));
+      const buttons = Array.from(slider.querySelectorAll('.slider-control'));
+      if (!slides.length) return;
+
+      const showSlide = (index) => {
+        slides.forEach((img, i) => img.classList.toggle('active', i === index));
+        buttons.forEach((btn, i) => btn.classList.toggle('active', i === index));
+      };
+
+      buttons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = Number(btn.dataset.target);
+          if (Number.isFinite(target)) showSlide(target);
+        });
+      });
+
+      showSlide(0);
+    })();
+  </script>
+
+  <script>
+    // Reveal elements when scrolling down
+    (function () {
+      const nodes = Array.from(document.querySelectorAll('.reveal'));
+      if (!nodes.length) return;
+      const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduced) {
+        nodes.forEach(n => n.classList.add('is-visible'));
+        return;
+      }
+      const io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            e.target.classList.add('is-visible');
+            io.unobserve(e.target);
+          }
+        }
+      }, { root: null, threshold: 0.18, rootMargin: '0px 0px -8% 0px' });
+      nodes.forEach(n => io.observe(n));
+    })();
+  </script>
+
+  <script>
+    // Darken sticky nav when scrolling over light (white) sections
+    (function () {
+      const nav = document.querySelector('.topnav');
+      if (!nav) return;
+      const targets = Array.from(document.querySelectorAll('.features.features--light'));
+      if (!targets.length) return;
+
+      const io = new IntersectionObserver((entries) => {
+        const anyLight = entries.some(e => e.isIntersecting);
+        nav.classList.toggle('is-on-light', anyLight);
+      }, {
+        root: null,
+        // When a light section occupies the top region (under the nav), enable dark nav
+        rootMargin: "-10% 0px -70% 0px",
+        threshold: 0.01
+      });
+
+      targets.forEach(t => io.observe(t));
+    })();
+  </script>
+
+  <script>
+    // Smooth scroll animation for menu links (works with fixed header + anchors)
+    (function(){
+      const links = Array.from(document.querySelectorAll('.topnav a[href^="#"]'));
+      if (!links.length) return;
+      links.forEach(a => {
+        a.addEventListener('click', (e) => {
+          const href = a.getAttribute('href') || '';
+          if (!href.startsWith('#')) return;
+          const id = href.slice(1);
+          const target = document.getElementById(id);
+          if (!target) return;
+          e.preventDefault();
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      });
+    })();
+  </script>
+
+  <script>
+    // Scrollspy: highlight active menu link based on the section in view
+    (function () {
+      const nav = document.querySelector('.topnav');
+      const links = Array.from(document.querySelectorAll('.topnav .navlinks a[href^="#"]'));
+      if (!nav || !links.length) return;
+
+      const hrefToLink = new Map(links.map(a => [a.getAttribute('href'), a]));
+      const sections = links
+        .map(a => {
+          const href = a.getAttribute('href') || '';
+          const id = href.startsWith('#') ? href.slice(1) : '';
+          return id ? document.getElementById(id) : null;
+        })
+        .filter(Boolean);
+
+      if (!sections.length) return;
+
+      const setActiveHref = (href) => {
+        links.forEach(a => a.classList.toggle('is-active', a.getAttribute('href') === href));
+      };
+
+      // Default on load
+      setActiveHref('#top');
+
+      const io = new IntersectionObserver((entries) => {
+        // Pick the section closest to the middle of the viewport
+        const visible = entries
+          .filter(e => e.isIntersecting)
+          .sort((a, b) => Math.abs(a.boundingClientRect.top) - Math.abs(b.boundingClientRect.top));
+
+        const best = visible[0];
+        if (!best || !best.target || !best.target.id) return;
+        const href = `#${best.target.id}`;
+        if (hrefToLink.has(href)) setActiveHref(href);
+      }, {
+        root: null,
+        // Activate when a section crosses the middle band of the viewport
+        rootMargin: "-45% 0px -45% 0px",
+        threshold: 0.01
+      });
+
+      sections.forEach(s => io.observe(s));
+    })();
+  </script>
+
+  <!-- (Dropdown menu JS removed; sticky full menu is always visible.) -->
 </body>
+
 </html>
