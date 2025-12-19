@@ -2903,7 +2903,31 @@ function stopProgressSimulation() {
 async function applyPercentile(percentileValue) {
     console.log(`Attempting to apply ${percentileValue * 100}% percentile`);
 
+    // Multi-panel: toolbar/popups may invoke this in the top window which has no fitsData.
+    // Delegate to the active pane (or a best-effort pane with fitsData) instead of erroring.
     if (!window.fitsData) {
+        try {
+            const isTop = (window.top === window);
+            if (isTop) {
+                const wrap = document.getElementById('multi-panel-container');
+                const grid = document.getElementById('multi-panel-grid');
+                const multiActive = !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 1);
+                if (multiActive) {
+                    const hasFits = (w) => !!(w && w.fitsData);
+                    let target = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                    if (!hasFits(target)) {
+                        const frames = Array.from(grid.querySelectorAll('iframe'));
+                        for (const f of frames) {
+                            const w = f && f.contentWindow;
+                            if (hasFits(w)) { target = w; break; }
+                        }
+                    }
+                    if (target && target !== window && typeof target.applyPercentile === 'function') {
+                        return target.applyPercentile(percentileValue);
+                    }
+                }
+            }
+        } catch (_) {}
         showNotification('Image metadata not loaded. Please load an image first.', 3000, 'error');
         return;
     }
@@ -4255,7 +4279,64 @@ function showDynamicRangePopup(options = {}) {
         }
     } catch (_) {}
 
-    if (!window.fitsData || typeof window.fitsData.min_value === 'undefined' || typeof window.fitsData.max_value === 'undefined') {
+    // In tiled mode, the image can be open while fitsData min/max hasn't been seeded yet
+    // (especially for pane #1 during base→multi transitions). Try to recover from currentTileInfo
+    // or fetch tile-info once before warning.
+    const hasMinMax = (fd) => !!(fd && typeof fd.min_value !== 'undefined' && typeof fd.max_value !== 'undefined' &&
+                                isFinite(fd.min_value) && isFinite(fd.max_value) && fd.max_value > fd.min_value);
+    if (!window.fitsData) window.fitsData = {};
+    if (!hasMinMax(window.fitsData)) {
+        try {
+            const ti = (typeof currentTileInfo !== 'undefined' && currentTileInfo) ? currentTileInfo : (window.currentTileInfo || null);
+            const pickMinMax = (tileInfo) => {
+                if (!tileInfo) return null;
+                const a = tileInfo.initial_display_min, b = tileInfo.initial_display_max;
+                const c = tileInfo.data_min, d = tileInfo.data_max;
+                if (isFinite(a) && isFinite(b) && b > a) return { min: a, max: b };
+                if (isFinite(c) && isFinite(d) && d > c) return { min: c, max: d };
+                return null;
+            };
+            const mm = pickMinMax(ti);
+            if (mm) {
+                window.fitsData.min_value = mm.min;
+                window.fitsData.max_value = mm.max;
+                window.fitsData.initial_min_value = window.fitsData.initial_min_value ?? mm.min;
+                window.fitsData.initial_max_value = window.fitsData.initial_max_value ?? mm.max;
+            }
+        } catch (_) { }
+    }
+    if (!hasMinMax(window.fitsData)) {
+        if (isTiledViewActive && !opts.__retryMeta) {
+            try {
+                showNotification(true, 'Loading image metadata...');
+                apiFetch('/fits-tile-info/')
+                    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+                    .then(tileInfo => {
+                        try {
+                            if (typeof currentTileInfo !== 'undefined') currentTileInfo = tileInfo;
+                            window.currentTileInfo = tileInfo;
+                            const a = tileInfo && tileInfo.initial_display_min;
+                            const b = tileInfo && tileInfo.initial_display_max;
+                            const c = tileInfo && tileInfo.data_min;
+                            const d = tileInfo && tileInfo.data_max;
+                            const mm = (isFinite(a) && isFinite(b) && b > a) ? { min: a, max: b }
+                                     : ((isFinite(c) && isFinite(d) && d > c) ? { min: c, max: d } : null);
+                            if (mm) {
+                                window.fitsData.min_value = mm.min;
+                                window.fitsData.max_value = mm.max;
+                                window.fitsData.initial_min_value = window.fitsData.initial_min_value ?? mm.min;
+                                window.fitsData.initial_max_value = window.fitsData.initial_max_value ?? mm.max;
+                            }
+                        } catch (_) { }
+                    })
+                    .catch(() => { /* fall through */ })
+                    .finally(() => {
+                        try { showNotification(false); } catch (_) { }
+                        try { showDynamicRangePopup({ ...(opts || {}), __retryMeta: true }); } catch (_) { }
+                    });
+                return;
+            } catch (_) { }
+        }
         showNotification('Image metadata not loaded. Please load an image first.', 3000, 'warning');
         return;
     }
@@ -4719,7 +4800,30 @@ function applyDynamicRange() {
     
     console.log(`Applying dynamic range: ${minValue} to ${maxValue}`);
     
+    // Multi-panel: dynamic range UI may live in the top document but must apply to the active pane window.
     if (!window.fitsData) {
+        try {
+            const isTop = (window.top === window);
+            if (isTop) {
+                const wrap = document.getElementById('multi-panel-container');
+                const grid = document.getElementById('multi-panel-grid');
+                const multiActive = !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 1);
+                if (multiActive) {
+                    const hasFits = (w) => !!(w && w.fitsData);
+                    let target = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                    if (!hasFits(target)) {
+                        const frames = Array.from(grid.querySelectorAll('iframe'));
+                        for (const f of frames) {
+                            const w = f && f.contentWindow;
+                            if (hasFits(w)) { target = w; break; }
+                        }
+                    }
+                    if (target && target !== window && typeof target.applyDynamicRange === 'function') {
+                        return target.applyDynamicRange();
+                    }
+                }
+            }
+        } catch (_) {}
         console.error('No FITS data available in global scope for applyDynamicRange');
         showNotification('No image data available. Please load an image first.', 3000, 'error');
         return;

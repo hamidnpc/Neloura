@@ -2717,9 +2717,11 @@
                             } catch (_) { }
                             if (w && w.parent) {
                                 const sendActivate = () => { try { w.parent.postMessage({ type: 'neloura-activate-pane' }, '*'); } catch (_) { } };
-                                ['click'].forEach(ev => {
-                                    try { doc.addEventListener(ev, sendActivate, { capture: true }); } catch (_) { }
-                                    try { if (doc.body) doc.body.addEventListener(ev, sendActivate, { capture: true }); } catch (_) { }
+                                // IMPORTANT: OSD and other viewers may prevent real 'click' events from firing.
+                                // Use early pointer/mouse/touch events so the parent reliably tracks the active pane.
+                                ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach(ev => {
+                                    try { doc.addEventListener(ev, sendActivate, { capture: true, passive: true }); } catch (_) { }
+                                    try { if (doc.body) doc.body.addEventListener(ev, sendActivate, { capture: true, passive: true }); } catch (_) { }
                                 });
                             }
                         } catch (_) { }
@@ -3282,9 +3284,11 @@
                             } catch (_) { }
                             if (w && w.parent) {
                                 const sendActivate = () => { try { w.parent.postMessage({ type: 'neloura-activate-pane' }, '*'); } catch (_) { } };
-                                ['click'].forEach(ev => {
-                                    try { doc.addEventListener(ev, sendActivate, { capture: true }); } catch (_) { }
-                                    try { if (doc.body) doc.body.addEventListener(ev, sendActivate, { capture: true }); } catch (_) { }
+                                // IMPORTANT: OSD and other viewers may prevent real 'click' events from firing.
+                                // Use early pointer/mouse/touch events so the parent reliably tracks the active pane.
+                                ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach(ev => {
+                                    try { doc.addEventListener(ev, sendActivate, { capture: true, passive: true }); } catch (_) { }
+                                    try { if (doc.body) doc.body.addEventListener(ev, sendActivate, { capture: true, passive: true }); } catch (_) { }
                                 });
                             }
                         } catch (_) { }
@@ -3934,6 +3938,27 @@
                                 }
                             } catch (_) { }
                             return window.__origShowDynamicRangePopup(options || {});
+                        };
+                    }
+                }
+                // Forward percentile & dynamic-range apply helpers too (these can be called from popups created in the top window).
+                if (typeof window.applyPercentile === 'function') {
+                    if (!window.__origApplyPercentile) {
+                        window.__origApplyPercentile = window.applyPercentile;
+                        window.applyPercentile = function (percentileValue) {
+                            const w = window.getActivePaneWindow && window.getActivePaneWindow();
+                            if (w && w !== window && typeof w.applyPercentile === 'function') return w.applyPercentile(percentileValue);
+                            return window.__origApplyPercentile(percentileValue);
+                        };
+                    }
+                }
+                if (typeof window.applyDynamicRange === 'function') {
+                    if (!window.__origApplyDynamicRange) {
+                        window.__origApplyDynamicRange = window.applyDynamicRange;
+                        window.applyDynamicRange = function () {
+                            const w = window.getActivePaneWindow && window.getActivePaneWindow();
+                            if (w && w !== window && typeof w.applyDynamicRange === 'function') return w.applyDynamicRange();
+                            return window.__origApplyDynamicRange();
                         };
                     }
                 }
