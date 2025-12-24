@@ -11301,7 +11301,7 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWorldToPixelBatch(points) {
+async function fetchWorldToPixelBatch(points, signal) {
     if (!Array.isArray(points) || points.length === 0) return null;
     try {
         // Always bind conversion to the current pane's file/HDU so multi-panel sync can't drift
@@ -11312,6 +11312,7 @@ async function fetchWorldToPixelBatch(points) {
         const response = await apiFetch('/world-to-pixel/?origin=top', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal,
             body: JSON.stringify({
                 points,
                 filepath: filepath || undefined,
@@ -11327,15 +11328,16 @@ async function fetchWorldToPixelBatch(points) {
     }
 }
 
-async function convertWorldQuadViaBackend(worldQuad) {
+async function convertWorldQuadViaBackend(worldQuad, opts) {
     if (!Array.isArray(worldQuad) || worldQuad.length === 0) return [];
+    const signal = opts && opts.signal;
     const payloadPoints = [];
     worldQuad.forEach((world, idx) => {
         if (!world || !isFinite(world.ra) || !isFinite(world.dec)) return;
         payloadPoints.push({ ra: world.ra, dec: world.dec, index: idx });
     });
     if (!payloadPoints.length) return [];
-    const data = await fetchWorldToPixelBatch(payloadPoints);
+    const data = await fetchWorldToPixelBatch(payloadPoints, signal);
     if (!data || !Array.isArray(data.pixels)) return [];
     const points = [];
     data.pixels.forEach(entry => {
@@ -11734,8 +11736,12 @@ window.ensureWcsData = function () {
     return false;
 };
 
-window.getWcsSyncState = function () {
+window.getWcsSyncState = function (opts) {
     try {
+        const options = (opts && typeof opts === 'object') ? opts : {};
+        // Default to "full" (include worldQuad) for manual sync calls, but allow the viewport emitter
+        // to request a cheap "coarse" state during interaction.
+        const includeQuad = (options.includeQuad !== false);
         const viewer = window.tiledViewer || window.viewer;
         if (!viewer || !viewer.viewport) return null;
         if (!window.fitsData) return null;
@@ -11760,50 +11766,52 @@ window.getWcsSyncState = function () {
             // Include display-orientation hints (derived from analyze_wcs_orientation on backend).
             flip_y: !!window?.fitsData?.flip_y
         };
-        const worldQuad = [];
         const headerForLock = window?.fitsData?.wcs || null;
         const ctype1Lock = (() => { try { return headerForLock ? String((('CTYPE1' in headerForLock) ? headerForLock.CTYPE1 : (headerForLock.ctype1 || headerForLock.CTYPE1 || ''))) : ''; } catch (_) { return ''; } })();
         const ctype2Lock = (() => { try { return headerForLock ? String((('CTYPE2' in headerForLock) ? headerForLock.CTYPE2 : (headerForLock.ctype2 || headerForLock.CTYPE2 || ''))) : ''; } catch (_) { return ''; } })();
         const forceHeaderSin = (String(ctype1Lock).includes('SIN') && String(ctype2Lock).includes('SIN'));
-        try {
-            const bounds = viewer.viewport.getBounds(true);
-            if (bounds) {
-        const samplesX = 8;
-        const samplesY = 6;
-        const corners = [];
-        for (let ix = 0; ix < samplesX; ix++) {
-            for (let iy = 0; iy < samplesY; iy++) {
-                const px = bounds.x + (ix / (samplesX - 1)) * bounds.width;
-                const py = bounds.y + (iy / (samplesY - 1)) * bounds.height;
-                corners.push({ x: px, y: py });
-            }
+
+        // Expensive: compute a world "quad" for bounding-box sync (used by fitBounds()).
+        // Keep it small (corners+center) and allow callers to skip it during active dragging.
+        if (includeQuad) {
+            const worldQuad = [];
+            try {
+                const bounds = viewer.viewport.getBounds(true);
+                if (bounds) {
+                    const pts = [
+                        { x: bounds.x, y: bounds.y },
+                        { x: bounds.x + bounds.width, y: bounds.y },
+                        { x: bounds.x, y: bounds.y + bounds.height },
+                        { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+                        { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+                    ];
+                    pts.forEach(pt => {
+                        try {
+                            const imgPt = viewer.viewport.viewportToImageCoordinates(pt.x, pt.y);
+                            if (!imgPt || !isFinite(imgPt.x) || !isFinite(imgPt.y)) return;
+                            const mapped = convertDisplayPixelToWcsInputForWcsLock(imgPt.x, imgPt.y);
+                            let world = null;
+                            if (!forceHeaderSin) {
+                                try {
+                                    const parsed = getOrCreateParsedWcsForSync();
+                                    if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+                                        world = parsed.pixelsToWorld(mapped.x, mapped.y);
+                                    }
+                                } catch (_) {}
+                            }
+                            if (!world) {
+                                try {
+                                    const header = window?.fitsData?.wcs;
+                                    if (header) world = pixelsToWorldFromHeaderForWcsLock(header, mapped.x, mapped.y);
+                                } catch (_) {}
+                            }
+                            if (world && isFinite(world.ra) && isFinite(world.dec)) worldQuad.push(world);
+                        } catch(_) {}
+                    });
+                }
+            } catch(_) {}
+            if (worldQuad.length >= 2) state.worldQuad = worldQuad;
         }
-                corners.forEach(pt => {
-                    try {
-                        const imgPt = viewer.viewport.viewportToImageCoordinates(pt.x, pt.y);
-                        if (!imgPt || !isFinite(imgPt.x) || !isFinite(imgPt.y)) return;
-                        const mapped = convertDisplayPixelToWcsInputForWcsLock(imgPt.x, imgPt.y);
-                        let world = null;
-                        if (!forceHeaderSin) {
-                            try {
-                                const parsed = getOrCreateParsedWcsForSync();
-                                if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
-                                    world = parsed.pixelsToWorld(mapped.x, mapped.y);
-                                }
-                            } catch (_) {}
-                        }
-                        if (!world) {
-                            try {
-                                const header = window?.fitsData?.wcs;
-                                if (header) world = pixelsToWorldFromHeaderForWcsLock(header, mapped.x, mapped.y);
-                            } catch (_) {}
-                        }
-                        if (world && isFinite(world.ra) && isFinite(world.dec)) worldQuad.push(world);
-                    } catch(_) {}
-                });
-            }
-        } catch(_) {}
-        if (worldQuad.length >= 2) state.worldQuad = worldQuad;
         const parsed = getOrCreateParsedWcsForSync();
         let centerWorld = null;
         if (!forceHeaderSin && parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
@@ -11831,8 +11839,10 @@ window.getWcsSyncState = function () {
     }
 };
 
-async function applyWcsStateInternal(state, retries = 6) {
+async function applyWcsStateInternal(state, retries = 6, ctx) {
     if (!state) return false;
+    const applySeq = ctx && ctx.seq;
+    const signal = ctx && ctx.signal;
     const viewer = window.tiledViewer || window.viewer;
     if (!viewer || !viewer.viewport) {
         if (retries > 0) {
@@ -11861,7 +11871,8 @@ async function applyWcsStateInternal(state, retries = 6) {
     } catch (_) {}
     let boundsApplied = false;
     if (state.worldQuad && state.worldQuad.length >= 2) {
-        let quadPx = await convertWorldQuadViaBackend(state.worldQuad);
+        let quadPx = await convertWorldQuadViaBackend(state.worldQuad, { signal });
+        if (applySeq && window.__wcsApplySeq && applySeq !== window.__wcsApplySeq) return false;
         if (!Array.isArray(quadPx) || quadPx.length < 2) {
             quadPx = convertWorldQuadViaFallback(state.worldQuad);
         }
@@ -11896,7 +11907,8 @@ async function applyWcsStateInternal(state, retries = 6) {
         if (!targetPixel) {
             let backendPoint = null;
             try {
-                const pts = await convertWorldQuadViaBackend([state.world]);
+                const pts = await convertWorldQuadViaBackend([state.world], { signal });
+                if (applySeq && window.__wcsApplySeq && applySeq !== window.__wcsApplySeq) return false;
                 if (Array.isArray(pts) && pts.length && pts[0] && isFinite(pts[0].x) && isFinite(pts[0].y)) {
                     backendPoint = pts[0];
                 }
@@ -11960,9 +11972,16 @@ async function applyWcsStateInternal(state, retries = 6) {
 window.__wcsLockApplying = false;
 window.applyWcsSyncState = async function (state) {
     if (!state) return false;
+    // Latest-only semantics: abort any in-flight backend conversion and ignore stale apply calls.
+    window.__wcsApplySeq = (window.__wcsApplySeq || 0) + 1;
+    const applySeq = window.__wcsApplySeq;
+    try { if (window.__wcsWorldToPixelAbort) window.__wcsWorldToPixelAbort.abort(); } catch (_) {}
+    window.__wcsWorldToPixelAbort = new AbortController();
+    const signal = window.__wcsWorldToPixelAbort.signal;
+
     window.__wcsLockApplying = true;
     try {
-        const result = await applyWcsStateInternal(state, 8);
+        const result = await applyWcsStateInternal(state, 8, { seq: applySeq, signal });
         if (result && state.sourceId) {
             window.__lastWcsSyncSourceId = state.sourceId;
             window.__lastWcsSyncTime = Date.now();
@@ -12021,27 +12040,46 @@ function installViewportSyncEmitter() {
     if (!viewer || !viewer.viewport || typeof viewer.addHandler !== 'function') return false;
     if (viewer.__wcsSyncEmitterInstalled) return true;
     viewer.__wcsSyncEmitterInstalled = true;
-    let lastEmit = 0;
-    const emitState = (force) => {
+    let lastCoarseEmit = 0;
+    let lastFullEmit = 0;
+    let fullTimer = null;
+
+    const postState = (includeQuad) => {
         if (!window.__wcsLockStateEnabled) return;
         if (!window.__wcsIsActivePane) return;
         if (window.__wcsLockApplying) return;
         if (window.__lastWcsSyncSourceId === window.__paneSyncId && Date.now() - (window.__lastWcsSyncTime || 0) < 50) return;
-        const now = Date.now();
-        if (!force && now - lastEmit < 60) return;
-        lastEmit = now;
-        const state = window.getWcsSyncState && window.getWcsSyncState();
+        const state = window.getWcsSyncState && window.getWcsSyncState({ includeQuad });
         if (!state) return;
         state.sourceId = window.__paneSyncId || null;
         try { window.parent.postMessage({ type: 'neloura-sync-viewport', state }, '*'); } catch(_) {}
     };
-    const throttled = () => emitState(false);
-    const immediate = () => emitState(true);
-    viewer.addHandler('animation', throttled);
-    viewer.addHandler('animation-finish', immediate);
-    viewer.addHandler('pan', immediate);
-    viewer.addHandler('zoom', immediate);
-    viewer.addHandler('rotate', immediate);
+
+    const emitCoarse = () => {
+        const now = Date.now();
+        if (now - lastCoarseEmit < 120) return;
+        lastCoarseEmit = now;
+        postState(false);
+        // After interaction settles, send a single full sync (worldQuad) for perfect alignment.
+        if (fullTimer) clearTimeout(fullTimer);
+        fullTimer = setTimeout(() => {
+            try { emitFull(); } catch (_) {}
+        }, 180);
+    };
+
+    const emitFull = () => {
+        const now = Date.now();
+        if (now - lastFullEmit < 120) return;
+        lastFullEmit = now;
+        if (fullTimer) { clearTimeout(fullTimer); fullTimer = null; }
+        postState(true);
+    };
+
+    viewer.addHandler('animation', emitCoarse);
+    viewer.addHandler('pan', emitCoarse);
+    viewer.addHandler('zoom', emitCoarse);
+    viewer.addHandler('rotate', emitCoarse);
+    viewer.addHandler('animation-finish', emitFull);
     return true;
 }
 
