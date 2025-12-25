@@ -2100,7 +2100,10 @@ function renderCatalogOverlayControls() {
 
     clearBtn.addEventListener('click', () => {
         try {
-            if (ownerWin && typeof ownerWin.clearCatalog === 'function') {
+            // In multi-catalog mode, "Clear" should remove ALL loaded catalogs.
+            if (ownerWin && typeof ownerWin.clearAllCatalogs === 'function') {
+                ownerWin.clearAllCatalogs();
+            } else if (ownerWin && typeof ownerWin.clearCatalog === 'function') {
                 ownerWin.clearCatalog();
             }
         } catch (_) {}

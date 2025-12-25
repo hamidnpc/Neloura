@@ -4933,18 +4933,29 @@ window.updateCatalogDropdown = function(catalogs) {
 function clearAllCatalogs() {
     console.log("Clearing all loaded catalogs and overlays.");
 
-    // Clear the overlay from the canvas
-    if (typeof canvasClearCatalogOverlay === 'function') {
-        canvasClearCatalogOverlay();
-    }
+    // Clear overlay stores (multi-catalog support)
+    try {
+        if (typeof _ensureCatalogOverlayStore === 'function') _ensureCatalogOverlayStore();
+    } catch (_) {}
+    try { if (window.catalogOverlaysByCatalog && typeof window.catalogOverlaysByCatalog === 'object') window.catalogOverlaysByCatalog = {}; } catch (_) {}
+    try { if (window.catalogVisibilityByCatalog && typeof window.catalogVisibilityByCatalog === 'object') window.catalogVisibilityByCatalog = {}; } catch (_) {}
 
-    // Reset the global catalog data arrays
-    window.loadedCatalogs = [];
-    window.catalogData = [];
-    window.catalogDataForOverlay = [];
-    // Also clear any cached full catalog-with-flags data to avoid stale in-memory usage
-    window.catalogDataWithFlags = null;
-    window.catalogDataWithFlagsName = null;
+    // Reset globals used across UI modules
+    try { window.loadedCatalogs = []; } catch (_) {}
+    try { window.catalogData = []; } catch (_) {}
+    try { window.catalogDataForOverlay = []; } catch (_) {}
+    try { window.catalogDataWithFlags = null; } catch (_) {}
+    try { window.catalogDataWithFlagsName = null; } catch (_) {}
+    try { window.currentCatalogName = null; } catch (_) {}
+    try { window.activeCatalog = null; } catch (_) {}
+    try { activeCatalog = null; } catch (_) {}
+    // Clear per-catalog boolean filter settings (from catalog overlay controls)
+    try { if (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object') window.catalogBooleanFiltersByCatalog = {}; } catch (_) {}
+
+    // Clear visual overlays
+    try { if (typeof rebuildCombinedCatalogOverlay === 'function') rebuildCombinedCatalogOverlay(); } catch (_) {}
+    try { if (typeof clearCatalogOverlay === 'function') clearCatalogOverlay(); } catch (_) {}
+    try { if (typeof canvasClearCatalogOverlay === 'function') canvasClearCatalogOverlay(); } catch (_) {}
 
     // Clear the catalog selection dropdown in the UI
     const dropdown = document.getElementById('catalog-select');
@@ -4963,8 +4974,18 @@ function clearAllCatalogs() {
     // Also clear any peak finder specific UI if necessary
     // (This part is a placeholder in case we need it later)
     
+    // Hide SED / properties panes (best-effort)
+    try { if (typeof hideSed === 'function') hideSed(); } catch (_) {}
+    try { if (typeof hideProperties === 'function') hideProperties(); } catch (_) {}
+
+    // Remove catalog controls panel (best-effort)
+    try { if (typeof removeCatalogOverlayControls === 'function') removeCatalogOverlayControls(true); } catch (_) {}
+
     console.log("All catalogs cleared.");
 }
+
+// Expose so UI (catalog overlay controls / toolbar) can clear everything, not only the active catalog.
+try { window.clearAllCatalogs = clearAllCatalogs; } catch (_) {}
 
 // Add this debugging function to check styles
 function debugCatalogStyles() {
