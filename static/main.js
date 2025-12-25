@@ -1195,6 +1195,150 @@ function renderSegmentOverlayControls(info) {
 // ---------------- Catalog Overlay Controls (bottom-center, per active pane) ----------------
 let catalogOverlayControlsCollapsed = false;
 
+// ---------------- Catalog boolean-column filtering (per catalog) ----------------
+function __ensureCatalogBooleanFilterStore() {
+    try {
+        if (!window.catalogBooleanFiltersByCatalog || typeof window.catalogBooleanFiltersByCatalog !== 'object') {
+            window.catalogBooleanFiltersByCatalog = {};
+        }
+        return window.catalogBooleanFiltersByCatalog;
+    } catch (_) {
+        // If window is not writable for some reason, fall back to a local store
+        if (!__ensureCatalogBooleanFilterStore.__fallback) __ensureCatalogBooleanFilterStore.__fallback = {};
+        return __ensureCatalogBooleanFilterStore.__fallback;
+    }
+}
+
+function __ensureCatalogBooleanUiStateStore() {
+    try {
+        if (!window.__catalogBooleanFilterUiState || typeof window.__catalogBooleanFilterUiState !== 'object') {
+            window.__catalogBooleanFilterUiState = { openKey: null, colsCache: {} };
+        }
+        if (!window.__catalogBooleanFilterUiState.colsCache) window.__catalogBooleanFilterUiState.colsCache = {};
+        return window.__catalogBooleanFilterUiState;
+    } catch (_) {
+        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {} };
+        return __ensureCatalogBooleanUiStateStore.__fallback;
+    }
+}
+
+function __coerceBooleanLike(v) {
+    if (v == null) return null;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') {
+        if (v === 1) return true;
+        if (v === 0) return false;
+        return null;
+    }
+    if (typeof v === 'string') {
+        const s = v.trim().toUpperCase();
+        if (s === 'T' || s === 'TRUE' || s === 'YES' || s === 'Y' || s === '1') return true;
+        if (s === 'F' || s === 'FALSE' || s === 'NO' || s === 'N' || s === '0') return false;
+        return null;
+    }
+    return null;
+}
+
+function __detectBooleanColumnsForCatalog(catalogKey) {
+    try {
+        const key = String(catalogKey || '');
+        if (!key) return [];
+
+        // Prefer per-catalog overlay store (contains the original record fields).
+        let rows = null;
+        try {
+            if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) {
+                const arr = window.catalogOverlaysByCatalog[key];
+                if (Array.isArray(arr) && arr.length) rows = arr;
+            }
+        } catch (_) {}
+        // Fallback: scan combined overlay (visible catalogs only).
+        if (!rows) {
+            try {
+                const all = window.catalogDataForOverlay;
+                if (Array.isArray(all) && all.length) {
+                    rows = all.filter(r => r && (String(r.__catalogName || r.catalog_name || r.catalog || '') === key));
+                }
+            } catch (_) {}
+        }
+        if (!rows || !rows.length) return [];
+
+        // Keys we should ignore (common renderer/style fields)
+        const ignore = new Set([
+            'x', 'y', 'ra', 'dec', 'index', 'radius', 'radius_pixels', 'size_pixels', 'size_arcsec',
+            'opacity', 'color', 'fillColor', 'useTransparentFill', 'border_width', 'shape',
+            'catalog_name', '__catalogName', 'passesFilter', 'colorCodeColumn', 'colorCodeValue', 'colorMapName'
+        ]);
+
+        const maxRows = Math.min(250, rows.length);
+        const stats = new Map(); // col -> { seen, trueCount, falseCount, badCount }
+
+        for (let i = 0; i < maxRows; i++) {
+            const r = rows[i];
+            if (!r || typeof r !== 'object') continue;
+            const keys = Object.keys(r);
+            for (const k of keys) {
+                if (!k) continue;
+                if (ignore.has(k)) continue;
+                // Skip internal fields
+                if (k.startsWith('_')) continue;
+                const v = r[k];
+                if (v == null) continue;
+                const b = __coerceBooleanLike(v);
+                let st = stats.get(k);
+                if (!st) { st = { seen: 0, trueCount: 0, falseCount: 0, badCount: 0 }; stats.set(k, st); }
+                st.seen++;
+                if (b === true) st.trueCount++;
+                else if (b === false) st.falseCount++;
+                else st.badCount++;
+            }
+        }
+
+        const cols = [];
+        stats.forEach((st, col) => {
+            // Consider boolean-like if we saw enough values and none were "bad"
+            if (st.seen >= 3 && st.badCount === 0 && (st.trueCount + st.falseCount) >= 3) {
+                cols.push(col);
+            }
+        });
+        cols.sort((a, b) => a.localeCompare(b));
+        return cols;
+    } catch (_) {
+        return [];
+    }
+}
+
+function __getBooleanColumnsCached(catalogKey) {
+    try {
+        const key = String(catalogKey || '');
+        if (!key) return [];
+        const ui = __ensureCatalogBooleanUiStateStore();
+        const cache = ui.colsCache || {};
+        const cacheEntry = cache[key];
+        const now = Date.now();
+
+        // Try to use overlay length as a cheap invalidation key.
+        let n = null;
+        try {
+            const arr = window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key];
+            if (Array.isArray(arr)) n = arr.length;
+        } catch (_) {}
+
+        if (cacheEntry && Array.isArray(cacheEntry.cols)) {
+            const ageOk = (now - (cacheEntry.ts || 0)) < 15000;
+            const lenOk = (n == null) || (cacheEntry.n === n);
+            if (ageOk && lenOk) return cacheEntry.cols;
+        }
+
+        const cols = __detectBooleanColumnsForCatalog(key);
+        cache[key] = { cols, ts: now, n };
+        ui.colsCache = cache;
+        return cols;
+    } catch (_) {
+        return [];
+    }
+}
+
 function removeCatalogOverlayControls(force = false) {
     const hostDoc = getTopLevelDocument();
     const panel = hostDoc.getElementById('catalog-overlay-controls');
@@ -1435,6 +1579,17 @@ function renderCatalogOverlayControls() {
     Object.assign(rows.style, { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' });
 
     const cats = Array.isArray(loadedCats) ? loadedCats : [];
+    const boolStore = __ensureCatalogBooleanFilterStore();
+    const uiState = __ensureCatalogBooleanUiStateStore();
+    const openKey = uiState.openKey || null;
+    const countEnabledFilters = (key) => {
+        try {
+            const cfg = boolStore[key];
+            if (!cfg || typeof cfg !== 'object') return 0;
+            return Object.keys(cfg).filter((c) => c !== '__mode' && cfg[c] === true).length;
+        } catch (_) { return 0; }
+    };
+
     cats.slice(0, 8).forEach((c) => {
         const key = c.key || '';
         const short = String(key).split(/[/\\]/).pop() || key;
@@ -1458,6 +1613,8 @@ function renderCatalogOverlayControls() {
                 if (typeof window.setActiveCatalogForControls === 'function') {
                     window.setActiveCatalogForControls(key);
                     syncCatalogOverlayControls();
+                    // Re-render so boolean columns & title update immediately
+                    renderCatalogOverlayControls();
                 }
             } catch (_) {}
         });
@@ -1507,8 +1664,207 @@ function renderCatalogOverlayControls() {
         Object.assign(meta.style, { fontSize: '11px', color: '#94a3b8', flex: '0 0 auto' });
 
         left.append(radio, checkbox, label);
-        row.append(left, meta);
+
+        // Right side: count + filter button
+        const right = createEl('div');
+        Object.assign(right.style, { display: 'flex', alignItems: 'center', gap: '8px', flex: '0 0 auto' });
+
+        const filterCount = countEnabledFilters(key);
+        const filterBtn = createEl('button');
+        filterBtn.type = 'button';
+        filterBtn.title = 'Filter (boolean columns)';
+        filterBtn.textContent = filterCount > 0 ? `⏷ Filter · ${filterCount}` : '⏷ Filter';
+        Object.assign(filterBtn.style, {
+            border: 'none',
+            background: filterCount > 0 ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.06)',
+            color: filterCount > 0 ? '#67e8f9' : '#e5e7eb',
+            padding: '3px 10px',
+            borderRadius: '999px',
+            cursor: 'pointer',
+            fontSize: '11px',
+            transition: 'background 150ms ease, transform 150ms ease'
+        });
+        filterBtn.addEventListener('mouseenter', () => { filterBtn.style.transform = 'scale(1.02)'; });
+        filterBtn.addEventListener('mouseleave', () => { filterBtn.style.transform = 'scale(1)'; });
+        filterBtn.addEventListener('click', (ev) => {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+            try {
+                // Open/close this catalog's filter panel
+                uiState.openKey = (uiState.openKey === key) ? null : key;
+            } catch (_) {}
+            try { renderCatalogOverlayControls(); } catch (_) {}
+            // Ensure a redraw so filter changes show immediately if user opens/closes quickly
+            try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+        });
+
+        right.append(meta, filterBtn);
+        row.append(left, right);
         rows.appendChild(row);
+
+        // Expandable filter panel (animated)
+        const expanded = createEl('div');
+        const isOpen = (openKey && String(openKey) === String(key));
+        Object.assign(expanded.style, {
+            width: '100%',
+            marginTop: '2px',
+            padding: '0 8px',
+            overflow: 'hidden',
+            maxHeight: isOpen ? '240px' : '0px',
+            opacity: isOpen ? '1' : '0',
+            transition: 'max-height 220ms ease, opacity 180ms ease',
+        });
+
+        const inner = createEl('div');
+        Object.assign(inner.style, {
+            marginTop: '6px',
+            marginBottom: '6px',
+            padding: '8px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+        });
+
+        // Build content only when open (cheaper, and avoids repeated boolean-column scans)
+        if (isOpen) {
+            const cols = __getBooleanColumnsCached(key);
+            if (!boolStore[key] || typeof boolStore[key] !== 'object') boolStore[key] = { __mode: 'and' };
+            if (typeof boolStore[key].__mode !== 'string') boolStore[key].__mode = 'and';
+            const mode = (boolStore[key].__mode === 'or') ? 'or' : 'and';
+
+            const header = createEl('div');
+            Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' });
+
+            const hLeft = createEl('div');
+            hLeft.textContent = 'Boolean filters';
+            Object.assign(hLeft.style, { fontSize: '12px', color: '#cbd5e1', fontWeight: '600' });
+
+            const actions = createEl('div');
+            actions.style.display = 'flex';
+            actions.style.alignItems = 'center';
+            actions.style.gap = '8px';
+
+            const reset = createEl('button');
+            reset.type = 'button';
+            reset.textContent = 'Reset';
+            Object.assign(reset.style, {
+                border: 'none',
+                background: 'rgba(148,163,184,0.18)',
+                color: '#e5e7eb',
+                padding: '3px 10px',
+                borderRadius: '999px',
+                cursor: 'pointer',
+                fontSize: '11px'
+            });
+            reset.addEventListener('click', () => {
+                try {
+                    Object.keys(boolStore[key] || {}).forEach((col) => {
+                        if (col !== '__mode') boolStore[key][col] = false;
+                    });
+                } catch (_) {}
+                try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                try { renderCatalogOverlayControls(); } catch (_) {}
+            });
+
+            actions.append(reset);
+            header.append(hLeft, actions);
+            inner.appendChild(header);
+
+            const modeRow = createEl('div');
+            Object.assign(modeRow.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' });
+            const modeLabel = createEl('div');
+            modeLabel.textContent = 'Mode:';
+            Object.assign(modeLabel.style, { fontSize: '11px', color: '#94a3b8' });
+            const modeToggle = createEl('div');
+            Object.assign(modeToggle.style, { display: 'flex', gap: '6px' });
+
+            const makeModeBtn = (id, text) => {
+                const b = createEl('button');
+                b.type = 'button';
+                b.textContent = text;
+                const active = mode === id;
+                Object.assign(b.style, {
+                    border: 'none',
+                    background: active ? 'rgba(37,99,235,0.75)' : 'rgba(255,255,255,0.08)',
+                    color: '#fff',
+                    padding: '3px 10px',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    transition: 'background 150ms ease'
+                });
+                b.addEventListener('click', () => {
+                    boolStore[key].__mode = id;
+                    try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                    try { renderCatalogOverlayControls(); } catch (_) {}
+                });
+                return b;
+            };
+            modeToggle.append(makeModeBtn('and', 'AND'), makeModeBtn('or', 'OR'));
+            modeRow.append(modeLabel, modeToggle);
+            inner.appendChild(modeRow);
+
+            // Keep UI compact: no long hint text here (tooltip can be added later if needed).
+
+            if (!cols.length) {
+                const none = createEl('div');
+                none.textContent = 'No boolean columns detected in this catalog.';
+                Object.assign(none.style, { fontSize: '12px', color: '#e5e7eb', opacity: 0.9 });
+                inner.appendChild(none);
+            } else {
+                const grid = createEl('div');
+                Object.assign(grid.style, {
+                    width: '100%',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr',
+                    gap: '6px',
+                    maxHeight: '140px',
+                    overflowY: 'auto',
+                    paddingRight: '4px'
+                });
+                cols.slice(0, 30).forEach((col) => {
+                    const wrap2 = createEl('label');
+                    Object.assign(wrap2.style, {
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        minWidth: '0'
+                    });
+                    const cb = createEl('input');
+                    cb.type = 'checkbox';
+                    cb.checked = !!boolStore[key][col];
+                    cb.addEventListener('change', () => {
+                        boolStore[key][col] = !!cb.checked;
+                        try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                    });
+                    const text2 = createEl('span');
+                    text2.textContent = col;
+                    Object.assign(text2.style, {
+                        fontSize: '12px',
+                        color: '#e5e7eb',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                    });
+                    wrap2.append(cb, text2);
+                    grid.appendChild(wrap2);
+                });
+                if (cols.length > 30) {
+                    const more = createEl('div');
+                    more.textContent = `+${cols.length - 30} more`;
+                    Object.assign(more.style, { fontSize: '11px', color: '#94a3b8' });
+                    grid.appendChild(more);
+                }
+                inner.appendChild(grid);
+            }
+        }
+
+        expanded.appendChild(inner);
+        rows.appendChild(expanded);
     });
 
     if (cats.length > 8) {
@@ -1520,6 +1876,8 @@ function renderCatalogOverlayControls() {
 
     list.appendChild(rows);
     expandedContent.appendChild(list);
+
+    // Boolean filters UI moved into per-catalog expandable panels (via the Filter button next to the count).
 
     const setCollapsedState = (collapsed) => {
         catalogOverlayControlsCollapsed = collapsed;
@@ -2545,18 +2903,42 @@ function showNotification(message, duration = 1000, type = 'info') {
         }
     } catch (_) {}
 
-    if(duration>1500){
-        duration = 1500;
+    // Special-case loading semantics (used widely across the app):
+    // - showNotification(true, 'Loading xyz...') => show a STICKY loading toast until cleared/replaced
+    // - showNotification(false) => clear current toast(s)
+    //
+    // Many call sites pass the loading text in the 2nd argument position (historical API),
+    // so we accept a string `duration` as the loading message here.
+    const notificationContainerId = 'notification-container';
+    if (message === false) {
+        try {
+            const c = document.getElementById(notificationContainerId);
+            if (c) {
+                const existing = c.querySelectorAll('.notification');
+                existing.forEach(notif => {
+                    try { if (notif.dataset.timerId) clearTimeout(notif.dataset.timerId); } catch (_) {}
+                    try { notif.remove(); } catch (_) {}
+                });
+            }
+        } catch (_) {}
+        return null;
     }
-    // Convert message to string and handle special cases
-    if (message === true || message === false) {
-        message = 'Loading...';
+
+    const isLoading = (message === true);
+    let messageText = '';
+    let durationMs = duration;
+    if (isLoading) {
+        messageText = (typeof duration === 'string' && duration.trim()) ? duration.trim() : 'Loading...';
+        // Sticky by default while loading.
+        durationMs = (typeof duration === 'number' && isFinite(duration) && duration > 0) ? duration : 0;
     } else {
-        message = String(message || '');
-        if (message.trim() === '') {
-            message = 'Loading...';
-        }
+        messageText = String(message || '');
+        if (messageText.trim() === '') messageText = 'Loading...';
+        durationMs = (typeof duration === 'number' && isFinite(duration)) ? duration : 1000;
+        if (durationMs > 1500) durationMs = 1500;
     }
+    message = messageText;
+    duration = durationMs;
     
     // Rate limiting check
     if (!notificationRateLimit.canShow(message)) {
@@ -2566,21 +2948,33 @@ function showNotification(message, duration = 1000, type = 'info') {
     
     // console.log('Notification:', message);
     
-    // Create notification container if it doesn't exist
+    // Create notification container if it doesn't exist.
+    // NOTE: `static/index.html` includes an empty <div id="notification-container"></div>.
+    // If it already exists, we MUST still force the positioning styles; otherwise it behaves like
+    // a normal block element (full-width near the top), which is what you were seeing.
     let notificationContainer = document.getElementById('notification-container');
     if (!notificationContainer) {
         notificationContainer = document.createElement('div');
         notificationContainer.id = 'notification-container';
+        document.body.appendChild(notificationContainer);
+    }
+    // Idempotently enforce the container's placement/size (in case another script/CSS mutated it).
+    try {
         notificationContainer.style.position = 'fixed';
-        notificationContainer.style.bottom = '20px';
         notificationContainer.style.left = '20px';
+        notificationContainer.style.bottom = '20px';
+        notificationContainer.style.right = 'auto';
+        notificationContainer.style.top = 'auto';
         notificationContainer.style.width = '320px';
+        notificationContainer.style.maxWidth = 'calc(100vw - 40px)';
         notificationContainer.style.zIndex = '20000000000';
         notificationContainer.style.display = 'flex';
         notificationContainer.style.flexDirection = 'column';
+        notificationContainer.style.gap = '8px';
         notificationContainer.style.pointerEvents = 'none';
-        document.body.appendChild(notificationContainer);
-    }
+        notificationContainer.style.margin = '0';
+        notificationContainer.style.padding = '0';
+    } catch (_) {}
 
 
     // Clear all existing notifications before showing the new one
@@ -2634,7 +3028,8 @@ function showNotification(message, duration = 1000, type = 'info') {
     progressFill.style.left = '0';
     progressFill.style.width = '0%';
     progressFill.style.height = '4px';
-    progressFill.style.transition = `width ${duration}ms linear`;
+    // If duration is 0, this is a "sticky" (indeterminate) loading toast.
+    progressFill.style.transition = (typeof duration === 'number' && duration > 0) ? `width ${duration}ms linear` : 'none';
     
     // Set type-specific colors, gradients and icons
     let iconHtml = '';
@@ -2675,7 +3070,7 @@ function showNotification(message, duration = 1000, type = 'info') {
     progressFill.style.animation = 'shimmer 2s infinite';
     progressBackground.appendChild(progressFill);
     
-    // Add CSS animation for shimmer effect
+    // Add CSS animation for shimmer / indeterminate effect
     if (!document.getElementById('notification-styles')) {
         const style = document.createElement('style');
         style.id = 'notification-styles';
@@ -2683,6 +3078,11 @@ function showNotification(message, duration = 1000, type = 'info') {
             @keyframes shimmer {
                 0% { background-position: 200% 0; }
                 100% { background-position: -200% 0; }
+            }
+
+            @keyframes indeterminateBar {
+                0% { transform: translateX(-120%); }
+                100% { transform: translateX(320%); }
             }
             
             @keyframes bounce {
@@ -2787,13 +3187,23 @@ function showNotification(message, duration = 1000, type = 'info') {
         notification.style.opacity = '1';
     }, 50);
 
-    // Set timeout to remove notification
-    const timerId = setTimeout(() => {
-        removeNotification(notification);
-    }, duration);
-    
-    // Store the timer ID for potential early removal
-    notification.dataset.timerId = timerId;
+    // Configure progress bar + lifetime
+    let timerId = null;
+    if (typeof duration === 'number' && duration > 0) {
+        // Timed toast: fill the bar and auto-dismiss
+        setTimeout(() => { try { progressFill.style.width = '100%'; } catch (_) {} }, 80);
+        timerId = setTimeout(() => {
+            removeNotification(notification);
+        }, duration);
+        notification.dataset.timerId = String(timerId);
+    } else {
+        // Sticky toast: show an indeterminate bar, no auto-dismiss.
+        try {
+            progressFill.style.width = '35%';
+            progressFill.style.animation = 'indeterminateBar 1.15s ease-in-out infinite';
+        } catch (_) {}
+        notification.dataset.timerId = '';
+    }
     
     // Function to remove notification with animation
     function removeNotification(notif) {

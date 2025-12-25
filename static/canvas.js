@@ -894,6 +894,67 @@ function canvasUpdateOverlay() {
     const ctx = window.catalogCanvas.getContext('2d');
     const catalogData = window.catalogDataForOverlay;
 
+    // Per-catalog boolean filters (controlled by #catalog-overlay-controls in main.js)
+    const boolFilterStore = (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object')
+        ? window.catalogBooleanFiltersByCatalog
+        : {};
+    const coerceBool = (v) => {
+        if (v == null) return null;
+        if (typeof v === 'boolean') return v;
+        if (typeof v === 'number') {
+            if (v === 1) return true;
+            if (v === 0) return false;
+            return null;
+        }
+        if (typeof v === 'string') {
+            const s = v.trim().toUpperCase();
+            if (s === 'T' || s === 'TRUE' || s === 'YES' || s === 'Y' || s === '1') return true;
+            if (s === 'F' || s === 'FALSE' || s === 'NO' || s === 'N' || s === '0') return false;
+            return null;
+        }
+        return null;
+    };
+
+    // Normalize catalog keys so filters are truly per-catalog (prevents accidental sharing when
+    // records use different naming conventions like "foo.fits" vs "catalogs/foo.fits").
+    const normalizeCatalogKey = (raw) => {
+        try {
+            const s = String(raw || '').trim();
+            if (!s) return '';
+            if (s.startsWith('catalogs/')) return s;
+            const base = s.split('/').pop().split('\\').pop();
+            return base ? `catalogs/${base}` : s;
+        } catch (_) {
+            return String(raw || '');
+        }
+    };
+    const passesBooleanFilters = (source) => {
+        try {
+            const key = normalizeCatalogKey(source.__catalogName || source.catalog_name || source.catalogName || source.catalog || '');
+            if (!key) return true;
+            const cfg = boolFilterStore[key];
+            if (!cfg || typeof cfg !== 'object') return true;
+            const mode = (typeof cfg.__mode === 'string' && (cfg.__mode === 'or' || cfg.__mode === 'and')) ? cfg.__mode : 'and';
+            const cols = Object.keys(cfg).filter((c) => c !== '__mode' && cfg[c] === true);
+            if (!cols.length) return true;
+            if (mode === 'or') {
+                for (const col of cols) {
+                    const b = coerceBool(source[col]);
+                    if (b === true) return true;
+                }
+                return false;
+            }
+            // default AND
+            for (const col of cols) {
+                const b = coerceBool(source[col]);
+                if (b !== true) return false;
+            }
+            return true;
+        } catch (_) {
+            return true;
+        }
+    };
+
     // Clear canvas
     ctx.clearRect(0, 0, window.catalogCanvas.width, window.catalogCanvas.height);
 
@@ -905,6 +966,7 @@ function canvasUpdateOverlay() {
     // Treat (0,0) as "missing" and recompute from RA/Dec via current WCS when available.
     const visibleSources = catalogData.filter((source, index) => {
         if (!source) return false;
+        if (!passesBooleanFilters(source)) return false;
 
         // Prefer explicit image coords if finite
         let imgX = (Number.isFinite(source.x) ? source.x : null);
