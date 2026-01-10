@@ -3457,96 +3457,100 @@ async def get_fits_histogram(
         if not current_file:
             return JSONResponse(status_code=400, content={"error": "No FITS file currently loaded"})
 
-        # Try to use the session tile generator data (matches displayed image and orientation)
-        image_data_raw = None
-        height = width = None
-        if session_data is not None:
-            file_id = make_file_id(current_file, hdu_index)
-            session_generators = session_data.setdefault("active_tile_generators", {})
-            gen = session_generators.get(file_id)
-            if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
-                image_data_raw = gen.image_data
-                height, width = image_data_raw.shape[-2:]
+        # Compute the histogram off the event loop so concurrent tile/static requests stay responsive.
+        # NOTE: This function may touch FITS-backed arrays and can be slow on Ceph.
+        def _compute_hist_sync():
+            # Try to use the session tile generator data (matches displayed image and orientation)
+            image_data_raw = None
+            height = width = None
+            if session_data is not None:
+                file_id = make_file_id(current_file, hdu_index)
+                session_generators = session_data.setdefault("active_tile_generators", {})
+                gen = session_generators.get(file_id)
+                if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
+                    image_data_raw = gen.image_data
+                    try:
+                        height, width = image_data_raw.shape[-2:]
+                    except Exception:
+                        height = width = None
 
-        # Fallback: open file if no generator data present
-        if image_data_raw is None:
-            full_path = Path(current_file)
-            if not full_path.exists() and not str(full_path).startswith(str(FILES_DIRECTORY)):
-                full_path = Path(FILES_DIRECTORY) / current_file
-            if not full_path.exists():
-                return JSONResponse(status_code=404, content={"error": f"FITS file not found: {full_path}"})
+            # Fallback: open file if no generator data present
+            if image_data_raw is None:
+                full_path = Path(current_file)
+                if not full_path.exists() and not str(full_path).startswith(str(FILES_DIRECTORY)):
+                    full_path = Path(FILES_DIRECTORY) / current_file
+                if not full_path.exists():
+                    raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
 
-            with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
-                if hdu_index < 0 or hdu_index >= len(hdul):
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs."}
-                    )
-                hdu = hdul[hdu_index]
-                if hdu.data is None or hdu.data.ndim < 2:
-                    return JSONResponse(status_code=400, content={"error": "Selected HDU has no 2D image data."})
-                image_data_raw = hdu.data
-                if image_data_raw.ndim > 2:
-                    if image_data_raw.ndim == 3:
-                        image_data_raw = image_data_raw[0, :, :]
-                    elif image_data_raw.ndim == 4:
-                        image_data_raw = image_data_raw[0, 0, :, :]
-                    else:
-                        return JSONResponse(
-                            status_code=400,
-                            content={"error": f"Image data has {image_data_raw.ndim} dimensions; histogram supports 2D/3D/4D (first slice)."}
-                        )
-                height, width = image_data_raw.shape[-2:]
+                with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
+                    if hdu_index < 0 or hdu_index >= len(hdul):
+                        raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                    hdu = hdul[hdu_index]
+                    if hdu.data is None or hdu.data.ndim < 2:
+                        raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
+                    image_data_raw = hdu.data
+                    if image_data_raw.ndim > 2:
+                        if image_data_raw.ndim == 3:
+                            image_data_raw = image_data_raw[0, :, :]
+                        elif image_data_raw.ndim == 4:
+                            image_data_raw = image_data_raw[0, 0, :, :]
+                        else:
+                            raise HTTPException(status_code=400, detail=f"Image data has {image_data_raw.ndim} dimensions; histogram supports 2D/3D/4D (first slice).")
+                    height, width = image_data_raw.shape[-2:]
 
-        # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points.
-        # IMPORTANT (Ceph): avoid striding across the entire image; it causes many random reads.
-        # Instead sample a contiguous central window and stride within that window.
-        try:
-            h = int(image_data_raw.shape[-2])
-            w = int(image_data_raw.shape[-1])
-        except Exception:
-            h = int(height or 0)
-            w = int(width or 0)
+            # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points.
+            # IMPORTANT (Ceph): avoid striding across the entire image; it causes many random reads.
+            try:
+                h = int(image_data_raw.shape[-2])
+                w = int(image_data_raw.shape[-1])
+            except Exception:
+                h = int(height or 0)
+                w = int(width or 0)
 
-        total_points = int(getattr(image_data_raw, "size", (h * w) if (h and w) else 0) or 0)
+            total_points = int(getattr(image_data_raw, "size", (h * w) if (h and w) else 0) or 0)
+            use_central = ceph_mode or bool(os.getenv("HISTOGRAM_CENTRAL_ONLY", "").strip())
 
-        use_central = ceph_mode or bool(os.getenv("HISTOGRAM_CENTRAL_ONLY", "").strip())
-        if use_central and h > 0 and w > 0:
-            win = int(os.getenv("HISTOGRAM_CENTRAL_SIZE", "1024"))
-            win_h = min(h, win)
-            win_w = min(w, win)
-            cy = h // 2
-            cx = w // 2
-            y0 = max(0, cy - win_h // 2)
-            x0 = max(0, cx - win_w // 2)
-            y1 = y0 + win_h
-            x1 = x0 + win_w
-            window = image_data_raw[y0:y1, x0:x1]
-            # Downsample within the window if still too many points
-            win_points = int(getattr(window, "size", win_h * win_w) or (win_h * win_w))
-            if win_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
-                ratio = win_points / MAX_POINTS_FOR_FULL_HISTOGRAM
-                stride = max(1, int(np.sqrt(ratio)))
-                sampled = window[0:win_h:stride, 0:win_w:stride]
-                finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
-                sampled_flag = True
-                print(f"Histogram: Central-window sampling (win={win_h}x{win_w}, stride={stride}), ~{finite_vals.size} finite points. ceph_mode={ceph_mode}")
+            if use_central and h > 0 and w > 0:
+                win = int(os.getenv("HISTOGRAM_CENTRAL_SIZE", "1024"))
+                win_h = min(h, win)
+                win_w = min(w, win)
+                cy = h // 2
+                cx = w // 2
+                y0 = max(0, cy - win_h // 2)
+                x0 = max(0, cx - win_w // 2)
+                y1 = y0 + win_h
+                x1 = x0 + win_w
+                window = image_data_raw[y0:y1, x0:x1]
+                win_points = int(getattr(window, "size", win_h * win_w) or (win_h * win_w))
+                if win_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
+                    ratio = win_points / MAX_POINTS_FOR_FULL_HISTOGRAM
+                    stride = max(1, int(np.sqrt(ratio)))
+                    sampled = window[0:win_h:stride, 0:win_w:stride]
+                    finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
+                    sampled_flag = True
+                    print(f"Histogram: Central-window sampling (win={win_h}x{win_w}, stride={stride}), ~{finite_vals.size} finite points. ceph_mode={ceph_mode}")
+                else:
+                    finite_vals = window[np.isfinite(window)]
+                    sampled_flag = True
+                    print(f"Histogram: Central-window sampling (win={win_h}x{win_w}), {finite_vals.size} finite points. ceph_mode={ceph_mode}")
             else:
-                finite_vals = window[np.isfinite(window)]
-                sampled_flag = True
-                print(f"Histogram: Central-window sampling (win={win_h}x{win_w}), {finite_vals.size} finite points. ceph_mode={ceph_mode}")
-        else:
-            if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM and h > 0 and w > 0:
-                ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
-                stride = max(1, int(np.sqrt(ratio)))
-                sampled = image_data_raw[::stride, ::stride]
-                finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
-                sampled_flag = True
-                print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
-            else:
-                finite_vals = image_data_raw[np.isfinite(image_data_raw)]
-                sampled_flag = False
-                print(f"Histogram: Using all {finite_vals.size} finite points.")
+                if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM and h > 0 and w > 0:
+                    ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
+                    stride = max(1, int(np.sqrt(ratio)))
+                    sampled = image_data_raw[::stride, ::stride]
+                    finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
+                    sampled_flag = True
+                    print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
+                else:
+                    finite_vals = image_data_raw[np.isfinite(image_data_raw)]
+                    sampled_flag = False
+                    print(f"Histogram: Using all {finite_vals.size} finite points.")
+
+            # --- The rest of the function below expects: finite_vals, sampled_flag, width, height ---
+            return finite_vals, bool(sampled_flag), int(width or 0), int(height or 0)
+
+        loop = asyncio.get_running_loop()
+        finite_vals, sampled_flag, width, height = await loop.run_in_executor(app.state.thread_executor, _compute_hist_sync)
 
         if finite_vals.size == 0:
             # Respect provided range if any, else default
@@ -3671,15 +3675,17 @@ async def get_fits_header(
             pass
 
         # Fallback: open FITS in a Ceph-friendly way (header-only; avoid scaling/data touch)
-        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
-            if hdu_index < 0 or hdu_index >= len(hdul):
-                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        # Offload to worker thread so we don't block the event loop under load.
+        def _read_header_sync():
+            with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
+                if hdu_index < 0 or hdu_index >= len(hdul):
+                    raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+                header = hdul[hdu_index].header
+                return [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k]
 
-            header = hdul[hdu_index].header
-            # Convert header to a list of key-value pairs for easier frontend handling
-            header_list = [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k] # Ensure key is not empty
-
-            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
+        loop = asyncio.get_running_loop()
+        header_list = await loop.run_in_executor(app.state.thread_executor, _read_header_sync)
+        return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
 
     except FileNotFoundError:
          raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
@@ -5728,7 +5734,12 @@ async def get_fits_tile_information(request: Request):
         try:
             # Initialize generator using the shared executor
             loop = asyncio.get_running_loop()
-            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+            fits_sem = getattr(app.state, "fits_init_semaphore", None)
+            if fits_sem is None:
+                fits_sem = asyncio.Semaphore(2)
+                app.state.fits_init_semaphore = fits_sem
+            async with fits_sem:
+                tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
             # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
             try:
                 _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
@@ -5740,7 +5751,9 @@ async def get_fits_tile_information(request: Request):
 
     # Always return tile info (even if generator already existed)
     try:
-        info = tile_generator.get_tile_info()
+        # IMPORTANT: get_tile_info() can trigger dynamic range + data access; do not block the event loop.
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(app.state.thread_executor, tile_generator.get_tile_info)
         # Expose flip_y to frontend for WCS/overlay correctness
         try:
             info["flip_y"] = bool(getattr(tile_generator, "_flip_required", False))
@@ -5784,8 +5797,13 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
                 return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
             # Initialize generator and dynamic range using shared executor
             loop = asyncio.get_running_loop()
-            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
-            await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
+            fits_sem = getattr(app.state, "fits_init_semaphore", None)
+            if fits_sem is None:
+                fits_sem = asyncio.Semaphore(2)
+                app.state.fits_init_semaphore = fits_sem
+            async with fits_sem:
+                tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+                await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
             # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
             try:
                 _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
@@ -11559,7 +11577,8 @@ async def startup_event():
         else:
             if ceph_mode:
                 # Ceph: lower is usually faster overall (less thrash, fewer queued requests)
-                render_limit = max(2, min(6, cpu_count // 2 or 2))
+                # Keep very small by default; Ceph random I/O tends to collapse with higher concurrency.
+                render_limit = max(1, min(2, cpu_count // 4 or 1))
             else:
                 render_limit = max(4, min(32, cpu_count * 2))
     except Exception:
