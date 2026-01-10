@@ -99,10 +99,10 @@ logger = logging.getLogger(__name__) # Create a logger instance
 # -------------------------
 # Storage / Ceph detection
 # -------------------------
-def _detect_mount_fstype(path: str) -> str | None:
+def _detect_mount_info(path: str) -> tuple[str | None, str | None, str | None]:
     """
     Best-effort filesystem type detection for a path on Linux by parsing /proc/self/mounts.
-    Returns fstype like 'ceph', 'ext4', 'xfs', 'fuse.ceph', etc; None if unavailable.
+    Returns (fstype, source, mountpoint); items can be None if unavailable.
     """
     try:
         p = str(Path(path).resolve())
@@ -111,14 +111,16 @@ def _detect_mount_fstype(path: str) -> str | None:
     mounts = "/proc/self/mounts"
     try:
         if not os.path.exists(mounts):
-            return None
+            return None, None, None
         best_mp = ""
         best_fs = None
+        best_src = None
         with open(mounts, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) < 3:
                     continue
+                src = parts[0]
                 mp = parts[1]
                 fs = parts[2]
                 # Normalize mountpoint
@@ -130,20 +132,40 @@ def _detect_mount_fstype(path: str) -> str | None:
                 if p_cmp.startswith(mp_cmp) and len(mp_cmp) > len(best_mp):
                     best_mp = mp_cmp
                     best_fs = fs
-        return best_fs
+                    best_src = src
+        return best_fs, best_src, (best_mp[:-1] if best_mp.endswith("/") else best_mp) or None
     except Exception:
-        return None
+        return None, None, None
 
 
 def is_ceph_storage(path: str) -> bool:
     """
-    Return True if the given path appears to be on Ceph (kernel mount or ceph-fuse).
+    Return True if the given path appears to be on Ceph.
+    Covers:
+      - CephFS kernel mount (fstype contains 'ceph')
+      - ceph-fuse (fstype/source contains 'ceph')
+      - Ceph RBD block devices formatted as ext4/xfs (mount source like /dev/rbdX)
+    You can force-enable this with FORCE_CEPH_MODE=1.
     """
-    fs = _detect_mount_fstype(path)
-    if not fs:
-        return False
-    fs_l = str(fs).lower()
-    return ("ceph" in fs_l)
+    try:
+        if os.getenv("FORCE_CEPH_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+            return True
+    except Exception:
+        pass
+
+    fs, src, _mp = _detect_mount_info(path)
+    fs_l = str(fs).lower() if fs else ""
+    src_l = str(src).lower() if src else ""
+
+    # CephFS + ceph-fuse
+    if "ceph" in fs_l or "ceph" in src_l:
+        return True
+
+    # RBD (Ceph block device) often shows up as ext4/xfs but source is /dev/rbd*
+    if src_l.startswith("/dev/rbd") or "/rbd" in src_l:
+        return True
+
+    return False
 
 # Ensure INFO logs are visible in console and file unless overridden
 def _configure_logging():
@@ -11390,7 +11412,20 @@ async def startup_event():
         # Auto-detect Ceph-backed storage (best-effort). This is used to pick safer defaults that
         # reduce random I/O thrash and long-tail latency when OpenSeadragon requests many tiles.
         try:
-            ceph_mode = bool(is_ceph_storage(str(Path(FILES_DIRECTORY).resolve())))
+            # Check both the root and one level below (common layout: root is local, dataset is bind-mounted)
+            base = Path(FILES_DIRECTORY).resolve()
+            ceph_mode = bool(is_ceph_storage(str(base)))
+            if not ceph_mode:
+                try:
+                    # Probe a likely dataset directory if it exists
+                    for probe_name in ("PHANGS-HST", "PHANGS", "public", "data"):
+                        cand = base / probe_name
+                        if cand.exists():
+                            ceph_mode = bool(is_ceph_storage(str(cand)))
+                            if ceph_mode:
+                                break
+                except Exception:
+                    pass
         except Exception:
             ceph_mode = False
         max_workers_env = os.getenv("TILE_EXECUTOR_WORKERS")
@@ -11437,6 +11472,15 @@ async def startup_event():
             for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                 if os.getenv(_thr_var) in (None, ""):
                     os.environ[_thr_var] = "1"
+            # Also reduce default sampling windows unless operator set them.
+            # These directly affect "first-view" latency on slow storage.
+            try:
+                if os.getenv("OVERVIEW_CENTRAL_SIZE") in (None, ""):
+                    os.environ["OVERVIEW_CENTRAL_SIZE"] = "1024"
+                if os.getenv("DYN_RANGE_CENTRAL_SIZE") in (None, ""):
+                    os.environ["DYN_RANGE_CENTRAL_SIZE"] = "128"
+            except Exception:
+                pass
         else:
             for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                 if os.getenv(_thr_var) in (None, ""):
