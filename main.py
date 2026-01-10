@@ -96,6 +96,55 @@ mpl.rcParams['mathtext.rm'] = 'serif'
 
 logger = logging.getLogger(__name__) # Create a logger instance
 
+# -------------------------
+# Storage / Ceph detection
+# -------------------------
+def _detect_mount_fstype(path: str) -> str | None:
+    """
+    Best-effort filesystem type detection for a path on Linux by parsing /proc/self/mounts.
+    Returns fstype like 'ceph', 'ext4', 'xfs', 'fuse.ceph', etc; None if unavailable.
+    """
+    try:
+        p = str(Path(path).resolve())
+    except Exception:
+        p = str(path)
+    mounts = "/proc/self/mounts"
+    try:
+        if not os.path.exists(mounts):
+            return None
+        best_mp = ""
+        best_fs = None
+        with open(mounts, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp = parts[1]
+                fs = parts[2]
+                # Normalize mountpoint
+                if not mp.endswith("/"):
+                    mp_cmp = mp + "/"
+                else:
+                    mp_cmp = mp
+                p_cmp = p if p.endswith("/") else p + "/"
+                if p_cmp.startswith(mp_cmp) and len(mp_cmp) > len(best_mp):
+                    best_mp = mp_cmp
+                    best_fs = fs
+        return best_fs
+    except Exception:
+        return None
+
+
+def is_ceph_storage(path: str) -> bool:
+    """
+    Return True if the given path appears to be on Ceph (kernel mount or ceph-fuse).
+    """
+    fs = _detect_mount_fstype(path)
+    if not fs:
+        return False
+    fs_l = str(fs).lower()
+    return ("ceph" in fs_l)
+
 # Ensure INFO logs are visible in console and file unless overridden
 def _configure_logging():
     try:
@@ -3458,7 +3507,11 @@ async def get_fits_histogram(
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": f"Failed to generate histogram: {str(e)}"})
 @app.get("/fits-header/{filepath:path}")
-async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
+async def get_fits_header(
+    request: Request,
+    filepath: str,
+    hdu_index: int = Query(0, description="Index of the HDU to read the header from")
+):
     """Retrieve the header of a specific HDU from a FITS file."""
     try:
         # Construct the full path relative to the workspace or use absolute path
@@ -3473,7 +3526,35 @@ async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
 
-        with fits.open(full_path, memmap=False) as hdul:
+        # Try to reuse session-loaded header (avoids repeated Ceph opens under load).
+        try:
+            session = getattr(request.state, "session", None)
+            if session is not None:
+                session_data = session.data
+                current_file = session_data.get("current_fits_file")
+                current_hdu = int(session_data.get("current_hdu_index", 0))
+                # Compare resolved paths when possible
+                try:
+                    req_abs = str(full_path.resolve())
+                except Exception:
+                    req_abs = str(full_path)
+                try:
+                    cur_abs = str(Path(current_file).resolve()) if current_file else None
+                except Exception:
+                    cur_abs = str(current_file) if current_file else None
+                if cur_abs and req_abs == cur_abs and int(hdu_index) == int(current_hdu):
+                    file_id = make_file_id(cur_abs, current_hdu)
+                    session_generators = session_data.get("active_tile_generators", {}) or {}
+                    gen = session_generators.get(file_id)
+                    hdr = getattr(gen, "header", None) if gen is not None else None
+                    if hdr is not None:
+                        header_list = [{"key": k, "value": repr(v), "comment": hdr.comments[k]} for k, v in hdr.items() if k]
+                        return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
+        except Exception:
+            pass
+
+        # Fallback: open FITS in a Ceph-friendly way (header-only; avoid scaling/data touch)
+        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
             if hdu_index < 0 or hdu_index >= len(hdul):
                  raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
@@ -11305,22 +11386,36 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
-        # Scale CPU usage aggressively by default on Ceph-like servers
         cpu_count = os.cpu_count() or 4
+        # Auto-detect Ceph-backed storage (best-effort). This is used to pick safer defaults that
+        # reduce random I/O thrash and long-tail latency when OpenSeadragon requests many tiles.
+        try:
+            ceph_mode = bool(is_ceph_storage(str(Path(FILES_DIRECTORY).resolve())))
+        except Exception:
+            ceph_mode = False
         max_workers_env = os.getenv("TILE_EXECUTOR_WORKERS")
         if max_workers_env is not None and max_workers_env.strip() != "":
             max_workers = int(max_workers_env)
         else:
-            # Favor high thread count since numpy/PIL often release the GIL
-            max_workers = max(8, min(64, cpu_count * 5))
+            if ceph_mode:
+                # Ceph: keep concurrency moderate to avoid I/O contention; still enough to serve multiple clients.
+                max_workers = max(6, min(16, cpu_count * 2))
+            else:
+                # SSD/local: favor higher thread count since numpy/PIL often release the GIL
+                max_workers = max(8, min(64, cpu_count * 5))
     except Exception:
         max_workers = 4
+        ceph_mode = False
     try:
         render_limit_env = os.getenv("TILE_RENDER_CONCURRENCY")
         if render_limit_env is not None and render_limit_env.strip() != "":
             render_limit = int(render_limit_env)
         else:
-            render_limit = max(4, min(32, cpu_count * 2))
+            if ceph_mode:
+                # Ceph: lower is usually faster overall (less thrash, fewer queued requests)
+                render_limit = max(2, min(6, cpu_count // 2 or 2))
+            else:
+                render_limit = max(4, min(32, cpu_count * 2))
     except Exception:
         render_limit = 3
     try:
@@ -11328,22 +11423,31 @@ async def startup_event():
         if fits_limit_env is not None and fits_limit_env.strip() != "":
             fits_limit = int(fits_limit_env)
         else:
-            # Allow multiple concurrent header/data initializations
-            fits_limit = max(2, min(16, cpu_count))
+            if ceph_mode:
+                fits_limit = 1
+            else:
+                # Allow multiple concurrent header/data initializations
+                fits_limit = max(2, min(16, cpu_count))
     except Exception:
         fits_limit = 2
     try:
-        # Encourage multi-threaded math libs (only if not already set by operator)
-        for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-            if os.getenv(_thr_var) in (None, ""):
-                os.environ[_thr_var] = str(cpu_count)
+        # Ceph: prevent BLAS oversubscription (many threads * many requests = contention).
+        # Local SSD: keep default to CPU count unless operator overrides.
+        if ceph_mode:
+            for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                if os.getenv(_thr_var) in (None, ""):
+                    os.environ[_thr_var] = "1"
+        else:
+            for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                if os.getenv(_thr_var) in (None, ""):
+                    os.environ[_thr_var] = str(cpu_count)
         if not hasattr(app.state, "thread_executor") or app.state.thread_executor is None:
             app.state.thread_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tiles")
         if not hasattr(app.state, "tile_render_semaphore") or app.state.tile_render_semaphore is None:
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
         if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
             app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
-        print(f"[startup] CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
+        print(f"[startup] ceph_mode={ceph_mode} CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
         print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
     except Exception as _e:
         print(f"[startup] Failed to initialize executor/semaphore: {_e}")
