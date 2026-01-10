@@ -11,7 +11,6 @@ from multiprocessing import Process, Manager
 import numpy as np
 import io
 from astropy.io import fits
-from astropy.io.fits.hdu.compressed import CompImageHDU
 from astropy.wcs import WCS
 from astropy.table import Table
 from astropy.coordinates import SkyCoord
@@ -95,80 +94,6 @@ mpl.rcParams['mathtext.rm'] = 'serif'
 #Global parameters
 
 logger = logging.getLogger(__name__) # Create a logger instance
-
-# -------------------------
-# Storage / Ceph detection
-# -------------------------
-# One-line manual override (edit this file): set to "ceph", "local", or "auto"
-NELOURA_STORAGE_MODE_OVERRIDE = "ceph"
-
-def _detect_mount_info(path: str) -> tuple[str | None, str | None, str | None]:
-    """
-    Best-effort filesystem type detection for a path on Linux by parsing /proc/self/mounts.
-    Returns (fstype, source, mountpoint); items can be None if unavailable.
-    """
-    try:
-        p = str(Path(path).resolve())
-    except Exception:
-        p = str(path)
-    mounts = "/proc/self/mounts"
-    try:
-        if not os.path.exists(mounts):
-            return None, None, None
-        best_mp = ""
-        best_fs = None
-        best_src = None
-        with open(mounts, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) < 3:
-                    continue
-                src = parts[0]
-                mp = parts[1]
-                fs = parts[2]
-                # Normalize mountpoint
-                if not mp.endswith("/"):
-                    mp_cmp = mp + "/"
-                else:
-                    mp_cmp = mp
-                p_cmp = p if p.endswith("/") else p + "/"
-                if p_cmp.startswith(mp_cmp) and len(mp_cmp) > len(best_mp):
-                    best_mp = mp_cmp
-                    best_fs = fs
-                    best_src = src
-        return best_fs, best_src, (best_mp[:-1] if best_mp.endswith("/") else best_mp) or None
-    except Exception:
-        return None, None, None
-
-
-def is_ceph_storage(path: str) -> bool:
-    """
-    Return True if the given path appears to be on Ceph.
-    Covers:
-      - CephFS kernel mount (fstype contains 'ceph')
-      - ceph-fuse (fstype/source contains 'ceph')
-      - Ceph RBD block devices formatted as ext4/xfs (mount source like /dev/rbdX)
-    You can force-enable this with FORCE_CEPH_MODE=1.
-    """
-    try:
-        if os.getenv("FORCE_CEPH_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
-            return True
-    except Exception:
-        pass
-
-    fs, src, _mp = _detect_mount_info(path)
-    fs_l = str(fs).lower() if fs else ""
-    src_l = str(src).lower() if src else ""
-
-    # CephFS + ceph-fuse
-    if "ceph" in fs_l or "ceph" in src_l:
-        return True
-
-    # RBD (Ceph block device) often shows up as ext4/xfs but source is /dev/rbd*
-    if src_l.startswith("/dev/rbd") or "/rbd" in src_l:
-        return True
-
-    return False
 
 # Ensure INFO logs are visible in console and file unless overridden
 def _configure_logging():
@@ -1430,62 +1355,7 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/defaults",
     "/settings/me",
     "/settings/profiles",
-    "/debug/storage",
 })
-
-# Debug endpoint to inspect storage detection and runtime limits (no session required).
-@app.get("/debug/storage")
-async def debug_storage():
-    try:
-        base = Path(FILES_DIRECTORY).resolve()
-    except Exception:
-        base = Path(FILES_DIRECTORY)
-    fs, src, mp = _detect_mount_info(str(base))
-    try:
-        forced = os.getenv("FORCE_CEPH_MODE", "")
-    except Exception:
-        forced = ""
-    try:
-        mode_env = os.getenv("NELOURA_STORAGE_MODE", "")
-    except Exception:
-        mode_env = ""
-    try:
-        ceph = bool(is_ceph_storage(str(base)))
-    except Exception:
-        ceph = False
-    # Include current semaphores/executor sizes if present
-    out = {
-        "files_directory": str(base),
-        "mount_fstype": fs,
-        "mount_source": src,
-        "mount_point": mp,
-        "env": {
-            "NELOURA_STORAGE_MODE": mode_env,
-            "FORCE_CEPH_MODE": forced,
-            "TILE_EXECUTOR_WORKERS": os.getenv("TILE_EXECUTOR_WORKERS", ""),
-            "TILE_RENDER_CONCURRENCY": os.getenv("TILE_RENDER_CONCURRENCY", ""),
-            "FITS_INIT_CONCURRENCY": os.getenv("FITS_INIT_CONCURRENCY", ""),
-            "OMP_NUM_THREADS": os.getenv("OMP_NUM_THREADS", ""),
-            "OPENBLAS_NUM_THREADS": os.getenv("OPENBLAS_NUM_THREADS", ""),
-            "MKL_NUM_THREADS": os.getenv("MKL_NUM_THREADS", ""),
-            "NUMEXPR_NUM_THREADS": os.getenv("NUMEXPR_NUM_THREADS", ""),
-            "OVERVIEW_CENTRAL_SIZE": os.getenv("OVERVIEW_CENTRAL_SIZE", ""),
-            "DYN_RANGE_CENTRAL_SIZE": os.getenv("DYN_RANGE_CENTRAL_SIZE", ""),
-        },
-        "computed": {
-            "ceph_mode": ceph,
-        },
-    }
-    try:
-        exec_obj = getattr(app.state, "thread_executor", None)
-        out["runtime"] = {
-            "executor_max_workers": getattr(exec_obj, "_max_workers", None),
-            "tile_render_limit": getattr(getattr(app.state, "tile_render_semaphore", None), "_value", None),
-            "fits_init_limit": getattr(getattr(app.state, "fits_init_semaphore", None), "_value", None),
-        }
-    except Exception:
-        pass
-    return JSONResponse(out)
 
 # Serve simple static HTML pages from repo root (no session required).
 @app.get("/features.html", include_in_schema=False)
@@ -2457,9 +2327,6 @@ class SimpleTileGenerator:
         # Defer data access to first need
         self.image_data = None
         self._image_data_loaded = False
-        # If True, image_data is a FITS section-like object (e.g. CompImageHDU.section),
-        # so it supports slicing but may not expose .dtype/.shape like ndarray.
-        self._image_data_is_section = False
         if image_data is not None:
             self.image_data = image_data
             if getattr(self.image_data, "ndim", 0) > 2:
@@ -2501,17 +2368,6 @@ class SimpleTileGenerator:
         if self._image_data_loaded:
             return
         hdu = self._hdul[self.hdu_index]
-        # For COMPRESSED image HDUs, accessing hdu.data forces full decompression.
-        # Use section reads instead so we only decompress requested windows/tiles.
-        try:
-            if isinstance(hdu, CompImageHDU) and hasattr(hdu, "section"):
-                self.image_data = hdu.section
-                self._image_data_is_section = True
-                self._image_data_loaded = True
-                return
-        except Exception:
-            pass
-
         data = hdu.data
         if data is None:
             raise HTTPException(status_code=400, detail=f"No image data found in HDU {self.hdu_index}.")
@@ -2520,7 +2376,7 @@ class SimpleTileGenerator:
                 data = data[0, :, :]
             elif data.ndim == 4:
                 data = data[0, 0, :, :]
-        # Apply pending flip if required (safe here because data is ndarray/memmap)
+        # Apply pending flip if required
         if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
             try:
                 data = np.flipud(data)
@@ -2544,54 +2400,22 @@ class SimpleTileGenerator:
             except Exception:
                 pass
         self.image_data = data
-        try:
-            self.height, self.width = self.image_data.shape[-2:]
-        except Exception:
-            # Keep header-derived width/height
-            pass
+        self.height, self.width = self.image_data.shape[-2:]
         # Recompute max_level if width/height were unknown
         self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
         self._image_data_loaded = True
-
-    def _tile_dtype(self):
-        """Best-effort dtype for allocating temporary tiles even when using section reads."""
-        try:
-            dt = getattr(self.image_data, "dtype", None)
-            if dt is not None:
-                return dt
-        except Exception:
-            pass
-        # Fallback: infer from BITPIX when available, else float32
-        try:
-            bp = int(self.header.get("BITPIX", 0) or 0)
-            return {
-                8: np.uint8,
-                16: np.int16,
-                32: np.int32,
-                64: np.int64,
-                -32: np.float32,
-                -64: np.float64,
-            }.get(bp, np.float32)
-        except Exception:
-            return np.float32
-
-    def _maybe_flip_region(self, arr):
-        """Apply flip-y on a small region if required (avoids flipping full compressed images)."""
-        try:
-            if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
-                return np.flipud(arr)
-        except Exception:
-            pass
-        return arr
     
     def _calculate_initial_dynamic_range(self):
         """Calculates and sets the initial dynamic range (min/max) with Ceph-friendly access."""
         self._ensure_image_data_loaded()
         current_image_data = self.image_data
+        if not isinstance(current_image_data, np.ndarray) or current_image_data.size == 0:
+            self.min_value, self.max_value = 0.0, 1.0
+            return
 
         # Prefer a contiguous central window to minimize random reads on network storage
         if DYN_RANGE_STRATEGY == 'central':
-            h, w = int(self.height), int(self.width)
+            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
             win = int(DYN_RANGE_CENTRAL_SIZE)
             win_h = min(h, win)
             win_w = min(w, win)
@@ -2604,16 +2428,11 @@ class SimpleTileGenerator:
             sample = current_image_data[y0:y1, x0:x1]
         else:
             # Fallback to coarse strided sampling (still avoids full ravel on memmap)
-            h, w = int(self.height), int(self.width)
+            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
             target_points = max(1, int(os.getenv('MAX_SAMPLE_POINTS_FOR_DYN_RANGE', '200')))
             ratio = max(1.0, (h * w) / float(target_points))
             stride = max(1, int(np.sqrt(ratio)))
             sample = current_image_data[0:h:stride, 0:w:stride]
-
-        try:
-            sample = self._maybe_flip_region(sample)
-        except Exception:
-            pass
 
         sample = np.nan_to_num(sample, nan=0.0, posinf=0.0, neginf=0.0)
         if sample.size == 0:
@@ -2676,10 +2495,6 @@ class SimpleTileGenerator:
                 x0 = max(0, cx - win_w // 2)
                 x1 = x0 + win_w
                 window = self.image_data[y0:y1, x0:x1]
-                try:
-                    window = self._maybe_flip_region(window)
-                except Exception:
-                    pass
 
                 # Downsample the window to target_size using simple stride sampling (contiguous access)
                 stride_y = max(1, window.shape[0] // target_size)
@@ -2696,17 +2511,9 @@ class SimpleTileGenerator:
                     stride_y = max(1, int(self.height / overview_height))
                     stride_x = max(1, int(self.width / overview_width))
                     overview_data = self.image_data[0:self.height:stride_y, 0:self.width:stride_x]
-                    try:
-                        overview_data = self._maybe_flip_region(overview_data)
-                    except Exception:
-                        pass
                     overview_data = overview_data[:overview_height, :overview_width]
                 else:
                     overview_data = np.array(self.image_data)  # Small image, use as-is
-                    try:
-                        overview_data = self._maybe_flip_region(overview_data)
-                    except Exception:
-                        pass
             
             # Handle NaN and infinity values
             overview_data = np.nan_to_num(overview_data, nan=0, posinf=0, neginf=0)
@@ -2851,17 +2658,13 @@ class SimpleTileGenerator:
                     # This means the calculated slice has zero width or height,
                     # e.g., it's entirely off the image edge after clamping.
                     # print(f"Tile ({level},{x},{y}) resulted in empty slice after clamping.")
-                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self._tile_dtype())
+                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
                 else:
                     region_data = self.image_data[int_start_y:int_end_y, int_start_x:int_end_x]
-                    try:
-                        region_data = self._maybe_flip_region(region_data)
-                    except Exception:
-                        pass
 
                     if region_data.size == 0:
                         # print(f"Tile ({level},{x},{y}) extracted empty region_data.")
-                        tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self._tile_dtype())
+                        tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
                     elif scale < 1:  # Overzooming: upscale the extracted region_data
                         # order=1 for bilinear. preserve_range is important.
                         tile_data = resize(region_data,
@@ -2871,10 +2674,7 @@ class SimpleTileGenerator:
                                            anti_aliasing=False, # anti-aliasing not for upscaling or order < 2
                                            mode='constant', 
                                            cval=0)
-                        try:
-                            tile_data = tile_data.astype(self._tile_dtype())
-                        except Exception:
-                            pass
+                        tile_data = tile_data.astype(self.image_data.dtype)
                     elif region_data.shape[0] != self.tile_size or region_data.shape[1] != self.tile_size:
                         # Native resolution (scale=1) but tile is partial (at image edge)
                         # Pad to full tile_size
@@ -3108,12 +2908,6 @@ class SegmentTileGenerator:
     def _rgba_hex(self, rgba):
         return "#{:02X}{:02X}{:02X}".format(rgba[0], rgba[1], rgba[2])
 
-    def _maybe_flip_region(self, arr):
-        """No-op helper to keep parity with image generator patch.
-        Segment data is already flipped once in _ensure_image_data_loaded() when needed.
-        """
-        return arr
-
     def get_palette_preview(self, limit: int = 12):
         self._ensure_image_data_loaded()
         preview = []
@@ -3203,10 +2997,6 @@ class SegmentTileGenerator:
         y0, y1 = int(region_start_y), int(region_end_y)
         x0, x1 = int(region_start_x), int(region_end_x)
         sampled_region = self.image_data[y0:y1:stride, x0:x1:stride]
-        try:
-            sampled_region = self._maybe_flip_region(sampled_region)
-        except Exception:
-            pass
         if sampled_region.shape[0] < self.tile_size or sampled_region.shape[1] < self.tile_size:
             padded = np.zeros((self.tile_size, self.tile_size), dtype=sampled_region.dtype)
             padded[:sampled_region.shape[0], :sampled_region.shape[1]] = sampled_region
@@ -3442,7 +3232,6 @@ async def get_fits_histogram(
 ):
     """Generate histogram data for the current FITS file (session-aware, robust sampling, no all-zero bins)."""
     try:
-        ceph_mode = bool(getattr(app.state, "ceph_mode", False))
         # Prefer session-scoped state; fallback to global
         session = getattr(request.state, "session", None)
         session_data = session.data if session is not None else None
@@ -3457,100 +3246,60 @@ async def get_fits_histogram(
         if not current_file:
             return JSONResponse(status_code=400, content={"error": "No FITS file currently loaded"})
 
-        # Compute the histogram off the event loop so concurrent tile/static requests stay responsive.
-        # NOTE: This function may touch FITS-backed arrays and can be slow on Ceph.
-        def _compute_hist_sync():
-            # Try to use the session tile generator data (matches displayed image and orientation)
-            image_data_raw = None
-            height = width = None
-            if session_data is not None:
-                file_id = make_file_id(current_file, hdu_index)
-                session_generators = session_data.setdefault("active_tile_generators", {})
-                gen = session_generators.get(file_id)
-                if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
-                    image_data_raw = gen.image_data
-                    try:
-                        height, width = image_data_raw.shape[-2:]
-                    except Exception:
-                        height = width = None
+        # Try to use the session tile generator data (matches displayed image and orientation)
+        image_data_raw = None
+        height = width = None
+        if session_data is not None:
+            file_id = make_file_id(current_file, hdu_index)
+            session_generators = session_data.setdefault("active_tile_generators", {})
+            gen = session_generators.get(file_id)
+            if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
+                image_data_raw = gen.image_data
+                height, width = image_data_raw.shape[-2:]
 
-            # Fallback: open file if no generator data present
-            if image_data_raw is None:
-                full_path = Path(current_file)
-                if not full_path.exists() and not str(full_path).startswith(str(FILES_DIRECTORY)):
-                    full_path = Path(FILES_DIRECTORY) / current_file
-                if not full_path.exists():
-                    raise HTTPException(status_code=404, detail=f"FITS file not found: {full_path}")
+        # Fallback: open file if no generator data present
+        if image_data_raw is None:
+            full_path = Path(current_file)
+            if not full_path.exists() and not str(full_path).startswith(str(FILES_DIRECTORY)):
+                full_path = Path(FILES_DIRECTORY) / current_file
+            if not full_path.exists():
+                return JSONResponse(status_code=404, content={"error": f"FITS file not found: {full_path}"})
 
-                with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
-                    if hdu_index < 0 or hdu_index >= len(hdul):
-                        raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-                    hdu = hdul[hdu_index]
-                    if hdu.data is None or hdu.data.ndim < 2:
-                        raise HTTPException(status_code=400, detail="Selected HDU has no 2D image data.")
-                    image_data_raw = hdu.data
-                    if image_data_raw.ndim > 2:
-                        if image_data_raw.ndim == 3:
-                            image_data_raw = image_data_raw[0, :, :]
-                        elif image_data_raw.ndim == 4:
-                            image_data_raw = image_data_raw[0, 0, :, :]
-                        else:
-                            raise HTTPException(status_code=400, detail=f"Image data has {image_data_raw.ndim} dimensions; histogram supports 2D/3D/4D (first slice).")
-                    height, width = image_data_raw.shape[-2:]
+            with fits.open(full_path, memmap=True, lazy_load_hdus=True) as hdul:
+                if hdu_index < 0 or hdu_index >= len(hdul):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs."}
+                    )
+                hdu = hdul[hdu_index]
+                if hdu.data is None or hdu.data.ndim < 2:
+                    return JSONResponse(status_code=400, content={"error": "Selected HDU has no 2D image data."})
+                image_data_raw = hdu.data
+                if image_data_raw.ndim > 2:
+                    if image_data_raw.ndim == 3:
+                        image_data_raw = image_data_raw[0, :, :]
+                    elif image_data_raw.ndim == 4:
+                        image_data_raw = image_data_raw[0, 0, :, :]
+                    else:
+                        return JSONResponse(
+                            status_code=400,
+                            content={"error": f"Image data has {image_data_raw.ndim} dimensions; histogram supports 2D/3D/4D (first slice)."}
+                        )
+                height, width = image_data_raw.shape[-2:]
 
-            # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points.
-            # IMPORTANT (Ceph): avoid striding across the entire image; it causes many random reads.
-            try:
-                h = int(image_data_raw.shape[-2])
-                w = int(image_data_raw.shape[-1])
-            except Exception:
-                h = int(height or 0)
-                w = int(width or 0)
-
-            total_points = int(getattr(image_data_raw, "size", (h * w) if (h and w) else 0) or 0)
-            use_central = ceph_mode or bool(os.getenv("HISTOGRAM_CENTRAL_ONLY", "").strip())
-
-            if use_central and h > 0 and w > 0:
-                win = int(os.getenv("HISTOGRAM_CENTRAL_SIZE", "1024"))
-                win_h = min(h, win)
-                win_w = min(w, win)
-                cy = h // 2
-                cx = w // 2
-                y0 = max(0, cy - win_h // 2)
-                x0 = max(0, cx - win_w // 2)
-                y1 = y0 + win_h
-                x1 = x0 + win_w
-                window = image_data_raw[y0:y1, x0:x1]
-                win_points = int(getattr(window, "size", win_h * win_w) or (win_h * win_w))
-                if win_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
-                    ratio = win_points / MAX_POINTS_FOR_FULL_HISTOGRAM
-                    stride = max(1, int(np.sqrt(ratio)))
-                    sampled = window[0:win_h:stride, 0:win_w:stride]
-                    finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
-                    sampled_flag = True
-                    print(f"Histogram: Central-window sampling (win={win_h}x{win_w}, stride={stride}), ~{finite_vals.size} finite points. ceph_mode={ceph_mode}")
-                else:
-                    finite_vals = window[np.isfinite(window)]
-                    sampled_flag = True
-                    print(f"Histogram: Central-window sampling (win={win_h}x{win_w}), {finite_vals.size} finite points. ceph_mode={ceph_mode}")
-            else:
-                if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM and h > 0 and w > 0:
-                    ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
-                    stride = max(1, int(np.sqrt(ratio)))
-                    sampled = image_data_raw[::stride, ::stride]
-                    finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
-                    sampled_flag = True
-                    print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
-                else:
-                    finite_vals = image_data_raw[np.isfinite(image_data_raw)]
-                    sampled_flag = False
-                    print(f"Histogram: Using all {finite_vals.size} finite points.")
-
-            # --- The rest of the function below expects: finite_vals, sampled_flag, width, height ---
-            return finite_vals, bool(sampled_flag), int(width or 0), int(height or 0)
-
-        loop = asyncio.get_running_loop()
-        finite_vals, sampled_flag, width, height = await loop.run_in_executor(app.state.thread_executor, _compute_hist_sync)
+        # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points
+        total_points = int(image_data_raw.size)
+        if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
+            ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
+            stride = max(1, int(np.sqrt(ratio)))
+            sampled = image_data_raw[::stride, ::stride]
+            finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
+            sampled_flag = True
+            print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
+        else:
+            finite_vals = image_data_raw[np.isfinite(image_data_raw)]
+            sampled_flag = False
+            print(f"Histogram: Using all {finite_vals.size} finite points.")
 
         if finite_vals.size == 0:
             # Respect provided range if any, else default
@@ -3628,11 +3377,7 @@ async def get_fits_histogram(
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": f"Failed to generate histogram: {str(e)}"})
 @app.get("/fits-header/{filepath:path}")
-async def get_fits_header(
-    request: Request,
-    filepath: str,
-    hdu_index: int = Query(0, description="Index of the HDU to read the header from")
-):
+async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
     """Retrieve the header of a specific HDU from a FITS file."""
     try:
         # Construct the full path relative to the workspace or use absolute path
@@ -3647,45 +3392,15 @@ async def get_fits_header(
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
 
-        # Try to reuse session-loaded header (avoids repeated Ceph opens under load).
-        try:
-            session = getattr(request.state, "session", None)
-            if session is not None:
-                session_data = session.data
-                current_file = session_data.get("current_fits_file")
-                current_hdu = int(session_data.get("current_hdu_index", 0))
-                # Compare resolved paths when possible
-                try:
-                    req_abs = str(full_path.resolve())
-                except Exception:
-                    req_abs = str(full_path)
-                try:
-                    cur_abs = str(Path(current_file).resolve()) if current_file else None
-                except Exception:
-                    cur_abs = str(current_file) if current_file else None
-                if cur_abs and req_abs == cur_abs and int(hdu_index) == int(current_hdu):
-                    file_id = make_file_id(cur_abs, current_hdu)
-                    session_generators = session_data.get("active_tile_generators", {}) or {}
-                    gen = session_generators.get(file_id)
-                    hdr = getattr(gen, "header", None) if gen is not None else None
-                    if hdr is not None:
-                        header_list = [{"key": k, "value": repr(v), "comment": hdr.comments[k]} for k, v in hdr.items() if k]
-                        return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
-        except Exception:
-            pass
+        with fits.open(full_path, memmap=False) as hdul:
+            if hdu_index < 0 or hdu_index >= len(hdul):
+                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
-        # Fallback: open FITS in a Ceph-friendly way (header-only; avoid scaling/data touch)
-        # Offload to worker thread so we don't block the event loop under load.
-        def _read_header_sync():
-            with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True, ignore_missing_end=True) as hdul:
-                if hdu_index < 0 or hdu_index >= len(hdul):
-                    raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-                header = hdul[hdu_index].header
-                return [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k]
+            header = hdul[hdu_index].header
+            # Convert header to a list of key-value pairs for easier frontend handling
+            header_list = [{"key": k, "value": repr(v), "comment": header.comments[k]} for k, v in header.items() if k] # Ensure key is not empty
 
-        loop = asyncio.get_running_loop()
-        header_list = await loop.run_in_executor(app.state.thread_executor, _read_header_sync)
-        return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
+            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name})
 
     except FileNotFoundError:
          raise HTTPException(status_code=404, detail=f"FITS file not found at specified path: {filepath}")
@@ -3718,87 +3433,46 @@ async def get_fits_hdu_info(filepath: str):
         raise HTTPException(status_code=404, detail=f"FITS file not found at: {filepath}")
 
     try:
-        # IMPORTANT: keep this endpoint header-only. Touching hdu.data forces full I/O/decompression,
-        # which is extremely slow on Ceph and for compressed FITS.
-        with fits.open(
-            full_path,
-            memmap=True,
-            lazy_load_hdus=True,
-            do_not_scale_image_data=True,
-            ignore_missing_end=True,
-        ) as hdul:
+        with fits.open(full_path) as hdul:
             hdu_list = []
-
-            def _bitpix_to_dtype(bitpix_val):
-                try:
-                    bp = int(bitpix_val)
-                except Exception:
-                    return "Unknown"
-                return {
-                    8: "uint8",
-                    16: "int16",
-                    32: "int32",
-                    64: "int64",
-                    -32: "float32",
-                    -64: "float64",
-                }.get(bp, f"BITPIX={bp}")
-
-            # Determine "recommended" image HDU using ONLY header metadata.
+            # Determine which HDU is likely the main science image
             recommended_index = -1
-            max_pixels = -1
+            max_pixels = 0
+            
+            # First pass: find the best candidate for the "recommended" HDU
             for i, hdu in enumerate(hdul):
-                try:
-                    if not getattr(hdu, "is_image", False):
-                        continue
-                    naxis = int(hdu.header.get("NAXIS", 0) or 0)
-                    if naxis < 2:
-                        continue
-                    w = int(hdu.header.get("NAXIS1", 0) or 0)
-                    h = int(hdu.header.get("NAXIS2", 0) or 0)
-                    pixels = w * h
-                    if pixels > max_pixels:
-                        max_pixels = pixels
+                if hdu.is_image and hdu.data is not None and hdu.data.ndim >= 2:
+                    num_pixels = hdu.data.size
+                    if num_pixels > max_pixels:
+                        max_pixels = num_pixels
                         recommended_index = i
-                except Exception:
-                    continue
 
-            # Gather info for all HDUs (header-only)
+            # Second pass: gather info for all HDUs
             for i, hdu in enumerate(hdul):
+                # Basic info
                 info = {
                     "index": i,
-                    "name": getattr(hdu, "name", None) or hdu.header.get('EXTNAME', f'HDU {i}'),
-                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if getattr(hdu, "is_image", False) else "Table"),
+                    "name": hdu.name or hdu.header.get('EXTNAME', f'HDU {i}'),
+                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if hdu.is_image else "Table"),
                     "isRecommended": i == recommended_index
                 }
 
-                if getattr(hdu, "is_image", False):
-                    try:
-                        naxis = int(hdu.header.get("NAXIS", 0) or 0)
-                        if naxis >= 2:
-                            # FITS stores axes as NAXIS1=x, NAXIS2=y, NAXIS3=z, ...
-                            # but Astropy/Numpy shapes are typically reversed: (z, y, x).
-                            # The frontend expects astropy-style ordering (see static/main.js comment).
-                            dims_fits = [int(hdu.header.get(f"NAXIS{ax}", 0) or 0) for ax in range(1, naxis + 1)]
-                            info["dimensions"] = tuple(reversed(dims_fits))
-                        else:
-                            info["dimensions"] = None
-                    except Exception:
-                        info["dimensions"] = None
-
-                    info["dataType"] = _bitpix_to_dtype(hdu.header.get("BITPIX"))
+                # Add specific details based on HDU type
+                if hdu.is_image and hdu.data is not None:
+                    info["dimensions"] = hdu.shape
+                    info["dataType"] = str(hdu.data.dtype)
                     info["bunit"] = hdu.header.get('BUNIT', 'Unknown')
                     try:
                         wcs_info = WCS(hdu.header)
-                        info["hasWCS"] = bool(wcs_info.has_celestial)
+                        info["hasWCS"] = wcs_info.has_celestial
                     except Exception:
                         info["hasWCS"] = False
-
                 elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                    info["rows"] = int(hdu.header.get('NAXIS2', 0) or 0)
-                    info["columns"] = int(hdu.header.get('TFIELDS', 0) or 0)
+                    info["rows"] = hdu.header.get('NAXIS2', 0)
+                    info["columns"] = hdu.header.get('TFIELDS', 0)
 
                 hdu_list.append(info)
-
+                
             return JSONResponse(content={"hduList": hdu_list, "filename": full_path.name})
     except Exception as e:
         logger.error(f"Failed to read HDU info for {full_path}: {e}", exc_info=True)
@@ -5734,12 +5408,7 @@ async def get_fits_tile_information(request: Request):
         try:
             # Initialize generator using the shared executor
             loop = asyncio.get_running_loop()
-            fits_sem = getattr(app.state, "fits_init_semaphore", None)
-            if fits_sem is None:
-                fits_sem = asyncio.Semaphore(2)
-                app.state.fits_init_semaphore = fits_sem
-            async with fits_sem:
-                tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
             # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
             try:
                 _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
@@ -5751,9 +5420,7 @@ async def get_fits_tile_information(request: Request):
 
     # Always return tile info (even if generator already existed)
     try:
-        # IMPORTANT: get_tile_info() can trigger dynamic range + data access; do not block the event loop.
-        loop = asyncio.get_running_loop()
-        info = await loop.run_in_executor(app.state.thread_executor, tile_generator.get_tile_info)
+        info = tile_generator.get_tile_info()
         # Expose flip_y to frontend for WCS/overlay correctness
         try:
             info["flip_y"] = bool(getattr(tile_generator, "_flip_required", False))
@@ -5797,13 +5464,8 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
                 return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
             # Initialize generator and dynamic range using shared executor
             loop = asyncio.get_running_loop()
-            fits_sem = getattr(app.state, "fits_init_semaphore", None)
-            if fits_sem is None:
-                fits_sem = asyncio.Semaphore(2)
-                app.state.fits_init_semaphore = fits_sem
-            async with fits_sem:
-                tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
-                await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
+            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+            await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
             # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
             try:
                 _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
@@ -11521,66 +11183,22 @@ async def system_stats_sender(manager: ConnectionManager):
 async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
+        # Scale CPU usage aggressively by default on Ceph-like servers
         cpu_count = os.cpu_count() or 4
-        # Manual override (strongest signal):
-        #   NELOURA_STORAGE_MODE=ceph|local|auto
-        # Fallback:
-        #   FORCE_CEPH_MODE=1 or auto-detection
-        storage_mode_override = (str(NELOURA_STORAGE_MODE_OVERRIDE or "")).strip().lower()
-        storage_mode_env = (os.getenv("NELOURA_STORAGE_MODE", "") or "").strip().lower()
-        # Auto-detect Ceph-backed storage (best-effort). This is used to pick safer defaults that
-        # reduce random I/O thrash and long-tail latency when OpenSeadragon requests many tiles.
-        try:
-            # Check both the root and one level below (common layout: root is local, dataset is bind-mounted)
-            base = Path(FILES_DIRECTORY).resolve()
-            # Priority: code override > env override > auto-detect
-            if storage_mode_override in ("ceph", "true", "1", "yes", "on"):
-                ceph_mode = True
-            elif storage_mode_override in ("local", "false", "0", "no", "off"):
-                ceph_mode = False
-            elif storage_mode_env in ("ceph", "true", "1", "yes", "on"):
-                ceph_mode = True
-            elif storage_mode_env in ("local", "false", "0", "no", "off"):
-                ceph_mode = False
-            else:
-                ceph_mode = bool(is_ceph_storage(str(base)))
-            if not ceph_mode:
-                try:
-                    # Probe a likely dataset directory if it exists
-                    for probe_name in ("PHANGS-HST", "PHANGS", "public", "data"):
-                        cand = base / probe_name
-                        if cand.exists():
-                            ceph_mode = bool(is_ceph_storage(str(cand)))
-                            if ceph_mode:
-                                break
-                except Exception:
-                    pass
-        except Exception:
-            ceph_mode = False
         max_workers_env = os.getenv("TILE_EXECUTOR_WORKERS")
         if max_workers_env is not None and max_workers_env.strip() != "":
             max_workers = int(max_workers_env)
         else:
-            if ceph_mode:
-                # Ceph: keep concurrency moderate to avoid I/O contention; still enough to serve multiple clients.
-                max_workers = max(6, min(16, cpu_count * 2))
-            else:
-                # SSD/local: favor higher thread count since numpy/PIL often release the GIL
-                max_workers = max(8, min(64, cpu_count * 5))
+            # Favor high thread count since numpy/PIL often release the GIL
+            max_workers = max(8, min(64, cpu_count * 5))
     except Exception:
         max_workers = 4
-        ceph_mode = False
     try:
         render_limit_env = os.getenv("TILE_RENDER_CONCURRENCY")
         if render_limit_env is not None and render_limit_env.strip() != "":
             render_limit = int(render_limit_env)
         else:
-            if ceph_mode:
-                # Ceph: lower is usually faster overall (less thrash, fewer queued requests)
-                # Keep very small by default; Ceph random I/O tends to collapse with higher concurrency.
-                render_limit = max(1, min(2, cpu_count // 4 or 1))
-            else:
-                render_limit = max(4, min(32, cpu_count * 2))
+            render_limit = max(4, min(32, cpu_count * 2))
     except Exception:
         render_limit = 3
     try:
@@ -11588,46 +11206,23 @@ async def startup_event():
         if fits_limit_env is not None and fits_limit_env.strip() != "":
             fits_limit = int(fits_limit_env)
         else:
-            if ceph_mode:
-                fits_limit = 1
-            else:
-                # Allow multiple concurrent header/data initializations
-                fits_limit = max(2, min(16, cpu_count))
+            # Allow multiple concurrent header/data initializations
+            fits_limit = max(2, min(16, cpu_count))
     except Exception:
         fits_limit = 2
     try:
-        # Ceph: prevent BLAS oversubscription (many threads * many requests = contention).
-        # Local SSD: keep default to CPU count unless operator overrides.
-        if ceph_mode:
-            for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-                if os.getenv(_thr_var) in (None, ""):
-                    os.environ[_thr_var] = "1"
-            # Also reduce default sampling windows unless operator set them.
-            # These directly affect "first-view" latency on slow storage.
-            try:
-                if os.getenv("OVERVIEW_CENTRAL_SIZE") in (None, ""):
-                    os.environ["OVERVIEW_CENTRAL_SIZE"] = "1024"
-                if os.getenv("DYN_RANGE_CENTRAL_SIZE") in (None, ""):
-                    os.environ["DYN_RANGE_CENTRAL_SIZE"] = "128"
-            except Exception:
-                pass
-        else:
-            for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-                if os.getenv(_thr_var) in (None, ""):
-                    os.environ[_thr_var] = str(cpu_count)
+        # Encourage multi-threaded math libs (only if not already set by operator)
+        for _thr_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            if os.getenv(_thr_var) in (None, ""):
+                os.environ[_thr_var] = str(cpu_count)
         if not hasattr(app.state, "thread_executor") or app.state.thread_executor is None:
             app.state.thread_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tiles")
         if not hasattr(app.state, "tile_render_semaphore") or app.state.tile_render_semaphore is None:
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
         if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
             app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
-        print(f"[startup] storage_mode_override={storage_mode_override!r} storage_mode_env={storage_mode_env!r} FORCE_CEPH_MODE={os.getenv('FORCE_CEPH_MODE','')!r}")
-        print(f"[startup] ceph_mode={ceph_mode} CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
+        print(f"[startup] CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
         print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
-        try:
-            app.state.ceph_mode = bool(ceph_mode)
-        except Exception:
-            pass
     except Exception as _e:
         print(f"[startup] Failed to initialize executor/semaphore: {_e}")
 
