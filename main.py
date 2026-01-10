@@ -3442,6 +3442,7 @@ async def get_fits_histogram(
 ):
     """Generate histogram data for the current FITS file (session-aware, robust sampling, no all-zero bins)."""
     try:
+        ceph_mode = bool(getattr(app.state, "ceph_mode", False))
         # Prefer session-scoped state; fallback to global
         session = getattr(request.state, "session", None)
         session_data = session.data if session is not None else None
@@ -3497,19 +3498,55 @@ async def get_fits_histogram(
                         )
                 height, width = image_data_raw.shape[-2:]
 
-        # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points
-        total_points = int(image_data_raw.size)
-        if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
-            ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
-            stride = max(1, int(np.sqrt(ratio)))
-            sampled = image_data_raw[::stride, ::stride]
-            finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
-            sampled_flag = True
-            print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
+        # Robust sampling: keep at most MAX_POINTS_FOR_FULL_HISTOGRAM points.
+        # IMPORTANT (Ceph): avoid striding across the entire image; it causes many random reads.
+        # Instead sample a contiguous central window and stride within that window.
+        try:
+            h = int(image_data_raw.shape[-2])
+            w = int(image_data_raw.shape[-1])
+        except Exception:
+            h = int(height or 0)
+            w = int(width or 0)
+
+        total_points = int(getattr(image_data_raw, "size", (h * w) if (h and w) else 0) or 0)
+
+        use_central = ceph_mode or bool(os.getenv("HISTOGRAM_CENTRAL_ONLY", "").strip())
+        if use_central and h > 0 and w > 0:
+            win = int(os.getenv("HISTOGRAM_CENTRAL_SIZE", "1024"))
+            win_h = min(h, win)
+            win_w = min(w, win)
+            cy = h // 2
+            cx = w // 2
+            y0 = max(0, cy - win_h // 2)
+            x0 = max(0, cx - win_w // 2)
+            y1 = y0 + win_h
+            x1 = x0 + win_w
+            window = image_data_raw[y0:y1, x0:x1]
+            # Downsample within the window if still too many points
+            win_points = int(getattr(window, "size", win_h * win_w) or (win_h * win_w))
+            if win_points > MAX_POINTS_FOR_FULL_HISTOGRAM:
+                ratio = win_points / MAX_POINTS_FOR_FULL_HISTOGRAM
+                stride = max(1, int(np.sqrt(ratio)))
+                sampled = window[0:win_h:stride, 0:win_w:stride]
+                finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
+                sampled_flag = True
+                print(f"Histogram: Central-window sampling (win={win_h}x{win_w}, stride={stride}), ~{finite_vals.size} finite points. ceph_mode={ceph_mode}")
+            else:
+                finite_vals = window[np.isfinite(window)]
+                sampled_flag = True
+                print(f"Histogram: Central-window sampling (win={win_h}x{win_w}), {finite_vals.size} finite points. ceph_mode={ceph_mode}")
         else:
-            finite_vals = image_data_raw[np.isfinite(image_data_raw)]
-            sampled_flag = False
-            print(f"Histogram: Using all {finite_vals.size} finite points.")
+            if total_points > MAX_POINTS_FOR_FULL_HISTOGRAM and h > 0 and w > 0:
+                ratio = total_points / MAX_POINTS_FOR_FULL_HISTOGRAM
+                stride = max(1, int(np.sqrt(ratio)))
+                sampled = image_data_raw[::stride, ::stride]
+                finite_vals = sampled[np.isfinite(sampled)] if sampled.size > 0 else np.array([])
+                sampled_flag = True
+                print(f"Histogram: Strided sampling (stride={stride}) on {image_data_raw.shape}, ~{finite_vals.size} finite points.")
+            else:
+                finite_vals = image_data_raw[np.isfinite(image_data_raw)]
+                sampled_flag = False
+                print(f"Histogram: Using all {finite_vals.size} finite points.")
 
         if finite_vals.size == 0:
             # Respect provided range if any, else default
@@ -11568,6 +11605,10 @@ async def startup_event():
         print(f"[startup] storage_mode_override={storage_mode_override!r} storage_mode_env={storage_mode_env!r} FORCE_CEPH_MODE={os.getenv('FORCE_CEPH_MODE','')!r}")
         print(f"[startup] ceph_mode={ceph_mode} CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
         print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
+        try:
+            app.state.ceph_mode = bool(ceph_mode)
+        except Exception:
+            pass
     except Exception as _e:
         print(f"[startup] Failed to initialize executor/semaphore: {_e}")
 
