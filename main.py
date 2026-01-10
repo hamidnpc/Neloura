@@ -99,6 +99,9 @@ logger = logging.getLogger(__name__) # Create a logger instance
 # -------------------------
 # Storage / Ceph detection
 # -------------------------
+# One-line manual override (edit this file): set to "ceph", "local", or "auto"
+NELOURA_STORAGE_MODE_OVERRIDE = "ceph"
+
 def _detect_mount_info(path: str) -> tuple[str | None, str | None, str | None]:
     """
     Best-effort filesystem type detection for a path on Linux by parsing /proc/self/mounts.
@@ -1427,7 +1430,62 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/defaults",
     "/settings/me",
     "/settings/profiles",
+    "/debug/storage",
 })
+
+# Debug endpoint to inspect storage detection and runtime limits (no session required).
+@app.get("/debug/storage")
+async def debug_storage():
+    try:
+        base = Path(FILES_DIRECTORY).resolve()
+    except Exception:
+        base = Path(FILES_DIRECTORY)
+    fs, src, mp = _detect_mount_info(str(base))
+    try:
+        forced = os.getenv("FORCE_CEPH_MODE", "")
+    except Exception:
+        forced = ""
+    try:
+        mode_env = os.getenv("NELOURA_STORAGE_MODE", "")
+    except Exception:
+        mode_env = ""
+    try:
+        ceph = bool(is_ceph_storage(str(base)))
+    except Exception:
+        ceph = False
+    # Include current semaphores/executor sizes if present
+    out = {
+        "files_directory": str(base),
+        "mount_fstype": fs,
+        "mount_source": src,
+        "mount_point": mp,
+        "env": {
+            "NELOURA_STORAGE_MODE": mode_env,
+            "FORCE_CEPH_MODE": forced,
+            "TILE_EXECUTOR_WORKERS": os.getenv("TILE_EXECUTOR_WORKERS", ""),
+            "TILE_RENDER_CONCURRENCY": os.getenv("TILE_RENDER_CONCURRENCY", ""),
+            "FITS_INIT_CONCURRENCY": os.getenv("FITS_INIT_CONCURRENCY", ""),
+            "OMP_NUM_THREADS": os.getenv("OMP_NUM_THREADS", ""),
+            "OPENBLAS_NUM_THREADS": os.getenv("OPENBLAS_NUM_THREADS", ""),
+            "MKL_NUM_THREADS": os.getenv("MKL_NUM_THREADS", ""),
+            "NUMEXPR_NUM_THREADS": os.getenv("NUMEXPR_NUM_THREADS", ""),
+            "OVERVIEW_CENTRAL_SIZE": os.getenv("OVERVIEW_CENTRAL_SIZE", ""),
+            "DYN_RANGE_CENTRAL_SIZE": os.getenv("DYN_RANGE_CENTRAL_SIZE", ""),
+        },
+        "computed": {
+            "ceph_mode": ceph,
+        },
+    }
+    try:
+        exec_obj = getattr(app.state, "thread_executor", None)
+        out["runtime"] = {
+            "executor_max_workers": getattr(exec_obj, "_max_workers", None),
+            "tile_render_limit": getattr(getattr(app.state, "tile_render_semaphore", None), "_value", None),
+            "fits_init_limit": getattr(getattr(app.state, "fits_init_semaphore", None), "_value", None),
+        }
+    except Exception:
+        pass
+    return JSONResponse(out)
 
 # Serve simple static HTML pages from repo root (no session required).
 @app.get("/features.html", include_in_schema=False)
@@ -11409,12 +11467,28 @@ async def startup_event():
     # Initialize shared executor and tile render semaphore
     try:
         cpu_count = os.cpu_count() or 4
+        # Manual override (strongest signal):
+        #   NELOURA_STORAGE_MODE=ceph|local|auto
+        # Fallback:
+        #   FORCE_CEPH_MODE=1 or auto-detection
+        storage_mode_override = (str(NELOURA_STORAGE_MODE_OVERRIDE or "")).strip().lower()
+        storage_mode_env = (os.getenv("NELOURA_STORAGE_MODE", "") or "").strip().lower()
         # Auto-detect Ceph-backed storage (best-effort). This is used to pick safer defaults that
         # reduce random I/O thrash and long-tail latency when OpenSeadragon requests many tiles.
         try:
             # Check both the root and one level below (common layout: root is local, dataset is bind-mounted)
             base = Path(FILES_DIRECTORY).resolve()
-            ceph_mode = bool(is_ceph_storage(str(base)))
+            # Priority: code override > env override > auto-detect
+            if storage_mode_override in ("ceph", "true", "1", "yes", "on"):
+                ceph_mode = True
+            elif storage_mode_override in ("local", "false", "0", "no", "off"):
+                ceph_mode = False
+            elif storage_mode_env in ("ceph", "true", "1", "yes", "on"):
+                ceph_mode = True
+            elif storage_mode_env in ("local", "false", "0", "no", "off"):
+                ceph_mode = False
+            else:
+                ceph_mode = bool(is_ceph_storage(str(base)))
             if not ceph_mode:
                 try:
                     # Probe a likely dataset directory if it exists
@@ -11491,6 +11565,7 @@ async def startup_event():
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
         if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
             app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
+        print(f"[startup] storage_mode_override={storage_mode_override!r} storage_mode_env={storage_mode_env!r} FORCE_CEPH_MODE={os.getenv('FORCE_CEPH_MODE','')!r}")
         print(f"[startup] ceph_mode={ceph_mode} CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
         print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
     except Exception as _e:
