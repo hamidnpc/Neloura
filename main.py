@@ -11,6 +11,7 @@ from multiprocessing import Process, Manager
 import numpy as np
 import io
 from astropy.io import fits
+from astropy.io.fits.hdu.compressed import CompImageHDU
 from astropy.wcs import WCS
 from astropy.table import Table
 from astropy.coordinates import SkyCoord
@@ -2327,6 +2328,9 @@ class SimpleTileGenerator:
         # Defer data access to first need
         self.image_data = None
         self._image_data_loaded = False
+        # If True, image_data is a FITS section-like object (e.g. CompImageHDU.section),
+        # so it supports slicing but may not expose .dtype/.shape like ndarray.
+        self._image_data_is_section = False
         if image_data is not None:
             self.image_data = image_data
             if getattr(self.image_data, "ndim", 0) > 2:
@@ -2368,6 +2372,17 @@ class SimpleTileGenerator:
         if self._image_data_loaded:
             return
         hdu = self._hdul[self.hdu_index]
+        # For COMPRESSED image HDUs, accessing hdu.data forces full decompression.
+        # Use section reads instead so we only decompress requested windows/tiles.
+        try:
+            if isinstance(hdu, CompImageHDU) and hasattr(hdu, "section"):
+                self.image_data = hdu.section
+                self._image_data_is_section = True
+                self._image_data_loaded = True
+                return
+        except Exception:
+            pass
+
         data = hdu.data
         if data is None:
             raise HTTPException(status_code=400, detail=f"No image data found in HDU {self.hdu_index}.")
@@ -2376,7 +2391,7 @@ class SimpleTileGenerator:
                 data = data[0, :, :]
             elif data.ndim == 4:
                 data = data[0, 0, :, :]
-        # Apply pending flip if required
+        # Apply pending flip if required (safe here because data is ndarray/memmap)
         if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
             try:
                 data = np.flipud(data)
@@ -2400,22 +2415,54 @@ class SimpleTileGenerator:
             except Exception:
                 pass
         self.image_data = data
-        self.height, self.width = self.image_data.shape[-2:]
+        try:
+            self.height, self.width = self.image_data.shape[-2:]
+        except Exception:
+            # Keep header-derived width/height
+            pass
         # Recompute max_level if width/height were unknown
         self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
         self._image_data_loaded = True
+
+    def _tile_dtype(self):
+        """Best-effort dtype for allocating temporary tiles even when using section reads."""
+        try:
+            dt = getattr(self.image_data, "dtype", None)
+            if dt is not None:
+                return dt
+        except Exception:
+            pass
+        # Fallback: infer from BITPIX when available, else float32
+        try:
+            bp = int(self.header.get("BITPIX", 0) or 0)
+            return {
+                8: np.uint8,
+                16: np.int16,
+                32: np.int32,
+                64: np.int64,
+                -32: np.float32,
+                -64: np.float64,
+            }.get(bp, np.float32)
+        except Exception:
+            return np.float32
+
+    def _maybe_flip_region(self, arr):
+        """Apply flip-y on a small region if required (avoids flipping full compressed images)."""
+        try:
+            if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
+                return np.flipud(arr)
+        except Exception:
+            pass
+        return arr
     
     def _calculate_initial_dynamic_range(self):
         """Calculates and sets the initial dynamic range (min/max) with Ceph-friendly access."""
         self._ensure_image_data_loaded()
         current_image_data = self.image_data
-        if not isinstance(current_image_data, np.ndarray) or current_image_data.size == 0:
-            self.min_value, self.max_value = 0.0, 1.0
-            return
 
         # Prefer a contiguous central window to minimize random reads on network storage
         if DYN_RANGE_STRATEGY == 'central':
-            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
+            h, w = int(self.height), int(self.width)
             win = int(DYN_RANGE_CENTRAL_SIZE)
             win_h = min(h, win)
             win_w = min(w, win)
@@ -2428,11 +2475,16 @@ class SimpleTileGenerator:
             sample = current_image_data[y0:y1, x0:x1]
         else:
             # Fallback to coarse strided sampling (still avoids full ravel on memmap)
-            h, w = current_image_data.shape[-2], current_image_data.shape[-1]
+            h, w = int(self.height), int(self.width)
             target_points = max(1, int(os.getenv('MAX_SAMPLE_POINTS_FOR_DYN_RANGE', '200')))
             ratio = max(1.0, (h * w) / float(target_points))
             stride = max(1, int(np.sqrt(ratio)))
             sample = current_image_data[0:h:stride, 0:w:stride]
+
+        try:
+            sample = self._maybe_flip_region(sample)
+        except Exception:
+            pass
 
         sample = np.nan_to_num(sample, nan=0.0, posinf=0.0, neginf=0.0)
         if sample.size == 0:
@@ -2495,6 +2547,10 @@ class SimpleTileGenerator:
                 x0 = max(0, cx - win_w // 2)
                 x1 = x0 + win_w
                 window = self.image_data[y0:y1, x0:x1]
+                try:
+                    window = self._maybe_flip_region(window)
+                except Exception:
+                    pass
 
                 # Downsample the window to target_size using simple stride sampling (contiguous access)
                 stride_y = max(1, window.shape[0] // target_size)
@@ -2511,9 +2567,17 @@ class SimpleTileGenerator:
                     stride_y = max(1, int(self.height / overview_height))
                     stride_x = max(1, int(self.width / overview_width))
                     overview_data = self.image_data[0:self.height:stride_y, 0:self.width:stride_x]
+                    try:
+                        overview_data = self._maybe_flip_region(overview_data)
+                    except Exception:
+                        pass
                     overview_data = overview_data[:overview_height, :overview_width]
                 else:
                     overview_data = np.array(self.image_data)  # Small image, use as-is
+                    try:
+                        overview_data = self._maybe_flip_region(overview_data)
+                    except Exception:
+                        pass
             
             # Handle NaN and infinity values
             overview_data = np.nan_to_num(overview_data, nan=0, posinf=0, neginf=0)
@@ -2658,13 +2722,17 @@ class SimpleTileGenerator:
                     # This means the calculated slice has zero width or height,
                     # e.g., it's entirely off the image edge after clamping.
                     # print(f"Tile ({level},{x},{y}) resulted in empty slice after clamping.")
-                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+                    tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self._tile_dtype())
                 else:
                     region_data = self.image_data[int_start_y:int_end_y, int_start_x:int_end_x]
+                    try:
+                        region_data = self._maybe_flip_region(region_data)
+                    except Exception:
+                        pass
 
                     if region_data.size == 0:
                         # print(f"Tile ({level},{x},{y}) extracted empty region_data.")
-                        tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self.image_data.dtype)
+                        tile_data = np.zeros((self.tile_size, self.tile_size), dtype=self._tile_dtype())
                     elif scale < 1:  # Overzooming: upscale the extracted region_data
                         # order=1 for bilinear. preserve_range is important.
                         tile_data = resize(region_data,
@@ -2674,7 +2742,10 @@ class SimpleTileGenerator:
                                            anti_aliasing=False, # anti-aliasing not for upscaling or order < 2
                                            mode='constant', 
                                            cval=0)
-                        tile_data = tile_data.astype(self.image_data.dtype)
+                        try:
+                            tile_data = tile_data.astype(self._tile_dtype())
+                        except Exception:
+                            pass
                     elif region_data.shape[0] != self.tile_size or region_data.shape[1] != self.tile_size:
                         # Native resolution (scale=1) but tile is partial (at image edge)
                         # Pad to full tile_size
@@ -2908,6 +2979,12 @@ class SegmentTileGenerator:
     def _rgba_hex(self, rgba):
         return "#{:02X}{:02X}{:02X}".format(rgba[0], rgba[1], rgba[2])
 
+    def _maybe_flip_region(self, arr):
+        """No-op helper to keep parity with image generator patch.
+        Segment data is already flipped once in _ensure_image_data_loaded() when needed.
+        """
+        return arr
+
     def get_palette_preview(self, limit: int = 12):
         self._ensure_image_data_loaded()
         preview = []
@@ -2997,6 +3074,10 @@ class SegmentTileGenerator:
         y0, y1 = int(region_start_y), int(region_end_y)
         x0, x1 = int(region_start_x), int(region_end_x)
         sampled_region = self.image_data[y0:y1:stride, x0:x1:stride]
+        try:
+            sampled_region = self._maybe_flip_region(sampled_region)
+        except Exception:
+            pass
         if sampled_region.shape[0] < self.tile_size or sampled_region.shape[1] < self.tile_size:
             padded = np.zeros((self.tile_size, self.tile_size), dtype=sampled_region.dtype)
             padded[:sampled_region.shape[0], :sampled_region.shape[1]] = sampled_region
@@ -3433,46 +3514,87 @@ async def get_fits_hdu_info(filepath: str):
         raise HTTPException(status_code=404, detail=f"FITS file not found at: {filepath}")
 
     try:
-        with fits.open(full_path) as hdul:
+        # IMPORTANT: keep this endpoint header-only. Touching hdu.data forces full I/O/decompression,
+        # which is extremely slow on Ceph and for compressed FITS.
+        with fits.open(
+            full_path,
+            memmap=True,
+            lazy_load_hdus=True,
+            do_not_scale_image_data=True,
+            ignore_missing_end=True,
+        ) as hdul:
             hdu_list = []
-            # Determine which HDU is likely the main science image
-            recommended_index = -1
-            max_pixels = 0
-            
-            # First pass: find the best candidate for the "recommended" HDU
-            for i, hdu in enumerate(hdul):
-                if hdu.is_image and hdu.data is not None and hdu.data.ndim >= 2:
-                    num_pixels = hdu.data.size
-                    if num_pixels > max_pixels:
-                        max_pixels = num_pixels
-                        recommended_index = i
 
-            # Second pass: gather info for all HDUs
+            def _bitpix_to_dtype(bitpix_val):
+                try:
+                    bp = int(bitpix_val)
+                except Exception:
+                    return "Unknown"
+                return {
+                    8: "uint8",
+                    16: "int16",
+                    32: "int32",
+                    64: "int64",
+                    -32: "float32",
+                    -64: "float64",
+                }.get(bp, f"BITPIX={bp}")
+
+            # Determine "recommended" image HDU using ONLY header metadata.
+            recommended_index = -1
+            max_pixels = -1
             for i, hdu in enumerate(hdul):
-                # Basic info
+                try:
+                    if not getattr(hdu, "is_image", False):
+                        continue
+                    naxis = int(hdu.header.get("NAXIS", 0) or 0)
+                    if naxis < 2:
+                        continue
+                    w = int(hdu.header.get("NAXIS1", 0) or 0)
+                    h = int(hdu.header.get("NAXIS2", 0) or 0)
+                    pixels = w * h
+                    if pixels > max_pixels:
+                        max_pixels = pixels
+                        recommended_index = i
+                except Exception:
+                    continue
+
+            # Gather info for all HDUs (header-only)
+            for i, hdu in enumerate(hdul):
                 info = {
                     "index": i,
-                    "name": hdu.name or hdu.header.get('EXTNAME', f'HDU {i}'),
-                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if hdu.is_image else "Table"),
+                    "name": getattr(hdu, "name", None) or hdu.header.get('EXTNAME', f'HDU {i}'),
+                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if getattr(hdu, "is_image", False) else "Table"),
                     "isRecommended": i == recommended_index
                 }
 
-                # Add specific details based on HDU type
-                if hdu.is_image and hdu.data is not None:
-                    info["dimensions"] = hdu.shape
-                    info["dataType"] = str(hdu.data.dtype)
+                if getattr(hdu, "is_image", False):
+                    try:
+                        naxis = int(hdu.header.get("NAXIS", 0) or 0)
+                        if naxis >= 2:
+                            # FITS stores axes as NAXIS1=x, NAXIS2=y, NAXIS3=z, ...
+                            # but Astropy/Numpy shapes are typically reversed: (z, y, x).
+                            # The frontend expects astropy-style ordering (see static/main.js comment).
+                            dims_fits = [int(hdu.header.get(f"NAXIS{ax}", 0) or 0) for ax in range(1, naxis + 1)]
+                            info["dimensions"] = tuple(reversed(dims_fits))
+                        else:
+                            info["dimensions"] = None
+                    except Exception:
+                        info["dimensions"] = None
+
+                    info["dataType"] = _bitpix_to_dtype(hdu.header.get("BITPIX"))
                     info["bunit"] = hdu.header.get('BUNIT', 'Unknown')
                     try:
                         wcs_info = WCS(hdu.header)
-                        info["hasWCS"] = wcs_info.has_celestial
+                        info["hasWCS"] = bool(wcs_info.has_celestial)
                     except Exception:
                         info["hasWCS"] = False
+
                 elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                    info["rows"] = hdu.header.get('NAXIS2', 0)
-                    info["columns"] = hdu.header.get('TFIELDS', 0)
+                    info["rows"] = int(hdu.header.get('NAXIS2', 0) or 0)
+                    info["columns"] = int(hdu.header.get('TFIELDS', 0) or 0)
 
                 hdu_list.append(info)
-                
+
             return JSONResponse(content={"hduList": hdu_list, "filename": full_path.name})
     except Exception as e:
         logger.error(f"Failed to read HDU info for {full_path}: {e}", exc_info=True)
