@@ -281,6 +281,8 @@ PEAK_FINDER_DEFAULTS = {
     'pix_across_beam': 5.0, 'min_beams': 1.0, 'beams_to_search': 1.0,
     'delta_rms': 3.0, 'minval_rms': 2.0, 'edge_clip': 1
 }
+# Matching radius used by `/source-properties/` when locating the nearest row.
+# 1" proved too strict with small WCS/rounding differences between overlay clicks and table coords.
 SOURCE_PROPERTIES_SEARCH_RADIUS_ARCSEC = 1.0
 MAX_POINTS_FOR_FULL_HISTOGRAM = 1000
 FITS_HISTOGRAM_DEFAULT_BINS = 100
@@ -2244,6 +2246,166 @@ async def get_catalog_columns(catalog_name: str):
     except Exception as e:
         # Catch other potential errors (e.g., corrupted FITS file)
         raise HTTPException(status_code=500, detail=f"Error reading catalog columns for {catalog_name}: {str(e)}")
+
+
+@app.api_route("/catalog-column-values/", methods=["GET", "POST"])
+async def catalog_column_values(request: Request):
+    """
+    Return values for selected columns for specific row indices.
+
+    This is used by the frontend filter UI (boolean + Conditions) when the overlay records
+    do not carry all column values (to keep /catalog-binary fast).
+
+    Body JSON:
+      {
+        "catalog_name": "cata10_v4_final.fits" (or "catalogs/..." or "files/..."),
+        "row_indices": [0, 1, 2, ...],
+        "columns": ["colA", "colB", ...]
+      }
+    """
+    if request.method == "GET":
+        # Friendly response for accidental browser GETs.
+        # The frontend should POST JSON; GET is supported only for debugging.
+        raise HTTPException(status_code=405, detail="Use POST with JSON body (catalog_name, row_indices, columns)")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    catalog_name = (payload.get("catalog_name") or "").strip()
+    row_indices = payload.get("row_indices") or []
+    columns = payload.get("columns") or []
+
+    if not catalog_name:
+        raise HTTPException(status_code=400, detail="Missing catalog_name")
+    if not isinstance(row_indices, list) or not all(isinstance(i, (int, float)) for i in row_indices):
+        raise HTTPException(status_code=400, detail="row_indices must be a list of integers")
+    if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+        raise HTTPException(status_code=400, detail="columns must be a list of strings")
+
+    # Normalize ints and de-dup (preserve order)
+    try:
+        row_indices_int = []
+        seen = set()
+        for x in row_indices:
+            i = int(x)
+            if i in seen:
+                continue
+            seen.add(i)
+            row_indices_int.append(i)
+    except Exception:
+        raise HTTPException(status_code=400, detail="row_indices contains non-integer values")
+
+    # No hard limits: client may request any number of rows/columns.
+    # (Large requests may be slow and memory-heavy; the frontend can still chunk.)
+
+    catalogs_dir = Path(CATALOGS_DIRECTORY)
+    try:
+        # Reuse existing helper which resolves files/... and absolute paths.
+        table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
+        if table is None:
+            raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load catalog '{catalog_name}': {e}")
+
+    nrows = len(table)
+    valid_indices = [i for i in row_indices_int if 0 <= i < nrows]
+
+    # Only return columns that exist
+    # Case-insensitive match (FITS column names are case sensitive but users often type CO vs co)
+    lower_map = {str(c).lower(): str(c) for c in table.colnames}
+    cols_exist = []
+    for c in columns:
+        c2 = lower_map.get(str(c).lower())
+        if c2 and c2 not in cols_exist:
+            cols_exist.append(c2)
+
+    # Convert astropy/numpy/FITS scalar into JSON-safe Python value.
+    # NOTE: Do NOT rely on `_to_py` from other codepaths; this endpoint must be self-contained.
+    def _to_json_scalar(v):
+        try:
+            # Masked values (astropy MaskedColumn / numpy.ma)
+            try:
+                import numpy.ma as ma
+                if v is ma.masked:
+                    return None
+                # Some astropy elements have `.mask` attribute
+                if hasattr(v, "mask") and bool(getattr(v, "mask")):
+                    return None
+            except Exception:
+                pass
+
+            # numpy scalar -> python scalar
+            try:
+                if isinstance(v, np.generic):
+                    v = v.item()
+            except Exception:
+                pass
+
+            # bytes -> str
+            if isinstance(v, (bytes, bytearray)):
+                try:
+                    return v.decode("utf-8", errors="ignore")
+                except Exception:
+                    return None
+
+            # FITS-style boolean encodings
+            if isinstance(v, (str, np.str_)):
+                s = str(v).strip()
+                if not s:
+                    return ""
+                u = s.upper()
+                if u in ("T", "TRUE", "Y", "YES"):
+                    return True
+                if u in ("F", "FALSE", "N", "NO"):
+                    return False
+                return s
+
+            # Keep plain JSON types
+            if v is None or isinstance(v, (bool, int)):
+                return v
+
+            # floats: sanitize NaN/Inf
+            if isinstance(v, float):
+                return None if (np.isnan(v) or np.isinf(v)) else v
+
+            # numpy integers/floats
+            if isinstance(v, (np.integer,)):
+                return int(v)
+            if isinstance(v, (np.floating,)):
+                vf = float(v)
+                return None if (np.isnan(vf) or np.isinf(vf)) else vf
+
+            # Fallback: try existing sanitizer (handles dict/list/ndarray)
+            return _sanitize_json_value(v)
+        except Exception:
+            return None
+
+    # Build response as per-column arrays aligned with `valid_indices`
+    values = {}
+    for col in cols_exist:
+        out = []
+        try:
+            coldata = table[col]
+            for i in valid_indices:
+                try:
+                    v = _to_json_scalar(coldata[i])
+                    out.append(v)
+                except Exception:
+                    out.append(None)
+        except Exception:
+            out = [None for _ in valid_indices]
+        values[col] = out
+
+    return JSONResponse(content={
+        "catalog_name": catalog_name,
+        "row_indices": valid_indices,
+        "columns": cols_exist,
+        "values": values
+    })
 
 # NEW ENDPOINT: Save Catalog Column Mapping
 @app.post("/save-catalog-mapping/")
@@ -4384,12 +4546,17 @@ async def generate_sed_optimized(
 @app.get("/source-properties/")
 async def source_properties(
     request: Request,
-    ra: float,
-    dec: float,
     catalog_name: str,
+    ra: Optional[float] = Query(None),
+    dec: Optional[float] = Query(None),
+    row_index: Optional[int] = Query(None, description="Direct table row index (0-based) for exact retrieval"),
     ra_col: Optional[str] = Query(None, description="Override RA column name"),
     dec_col: Optional[str] = Query(None, description="Override DEC column name"),
-    size_col: Optional[str] = Query(None, description="Optional size/radius column name (unused here)")
+    size_col: Optional[str] = Query(None, description="Optional size/radius column name (unused here)"),
+    tolerance_arcsec: Optional[float] = Query(
+        None,
+        description="Optional tolerance derived from region size (arcsec). If provided, allows nearest match within this tolerance when exact RA/Dec match fails.",
+    ),
 ):
     """Per-session source properties; uses session-scoped catalog cache."""
     session = getattr(request.state, "session", None)
@@ -4423,6 +4590,77 @@ async def source_properties(
                 return JSONResponse(status_code=404, content={"error": f"Failed to load catalog '{catalog_name}' as Astropy Table."})
             session_catalogs[catalog_name] = catalog_table
             print(f"Cached Astropy Table for '{catalog_name}' in session.")
+
+        # If caller provides a direct row index, return that row's full properties (all columns).
+        # This is the fastest + most reliable way to show full properties after clicking a marker.
+        if row_index is not None:
+            try:
+                ri = int(row_index)
+            except Exception:
+                return JSONResponse(status_code=400, content={"error": "row_index must be an integer"})
+            if ri < 0 or ri >= len(catalog_table):
+                return JSONResponse(status_code=404, content={"error": f"row_index out of range (0..{len(catalog_table)-1})"})
+            closest_obj_row = catalog_table[ri]
+            obj_dict = {}
+            for col_name in catalog_table.colnames:
+                value = closest_obj_row[col_name]
+                processed_value = None
+                if isinstance(value, u.Quantity):
+                    num_val = value.value
+                    if hasattr(num_val, 'item'):
+                        processed_value = num_val.item()
+                    else:
+                        processed_value = num_val
+                    if isinstance(processed_value, float) and (np.isnan(processed_value) or np.isinf(processed_value)):
+                        processed_value = None
+                elif isinstance(value, Time):
+                    try:
+                        processed_value = value.isot
+                    except Exception:
+                        processed_value = str(value)
+                elif isinstance(value, SkyCoord):
+                    try:
+                        processed_value = f"RA:{value.ra.deg:.6f}, Dec:{value.dec.deg:.6f}"
+                    except Exception:
+                        processed_value = str(value)
+                elif isinstance(value, (np.floating, np.integer, np.complexfloating)):
+                    processed_value = None if (np.isnan(value) or np.isinf(value)) else value.item()
+                elif isinstance(value, np.bool_):
+                    processed_value = value.item()
+                elif isinstance(value, np.ndarray):
+                    if value.dtype.kind in 'fc':
+                        temp_list = []
+                        for x in value.flat:
+                            if np.isnan(x) or np.isinf(x):
+                                temp_list.append(None)
+                            elif hasattr(x, 'item'):
+                                temp_list.append(x.item())
+                            else:
+                                temp_list.append(x)
+                        processed_value = temp_list
+                    elif value.dtype.kind in ('S', 'U'):
+                        processed_value = [item.decode('utf-8', 'replace') if isinstance(item, bytes) else str(item) for item in value.tolist()]
+                    else:
+                        processed_value = value.tolist()
+                elif isinstance(value, bytes):
+                    try:
+                        processed_value = value.decode('utf-8', errors='replace')
+                    except Exception:
+                        processed_value = str(value)
+                elif isinstance(value, float):
+                    processed_value = None if (np.isnan(value) or np.isinf(value)) else value
+                elif isinstance(value, (str, int, bool, list, dict)) or value is None:
+                    processed_value = value
+                else:
+                    try:
+                        processed_value = str(value)
+                    except Exception as e_str_conv:
+                        processed_value = f"Error converting value: {e_str_conv}"
+                obj_dict[col_name] = processed_value
+            return JSONResponse(status_code=200, content={"properties": obj_dict, "row_index": ri})
+
+        if ra is None or dec is None:
+            return JSONResponse(status_code=400, content={"error": "ra and dec are required unless row_index is provided"})
 
         available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
 
@@ -4515,102 +4753,127 @@ async def source_properties(
                 return float('nan')
             return float('nan')
 
-        # Build or reuse a fast spatial index (KD-Tree on unit sphere) stored in session
+        # Exact match lookup (deterministic).
+        #
+        # Notes:
+        # - We normalize RA to [0, 360) so -175deg matches 185deg.
+        # - We match by rounding both catalog coords and query coords to a fixed precision.
+        #   This makes matching stable across float formatting / JS round-trips while still being deterministic.
+        MATCH_DECIMALS = 6  # degrees; ~0.36 arcsec
+
+        def _norm_ra_deg(x: float) -> float:
+            v = float(x)
+            if not np.isfinite(v):
+                return float('nan')
+            v = v % 360.0
+            if v < 0:
+                v += 360.0
+            return v
+
         try:
-            spatial_index = session_data.setdefault("catalog_spatial_index", {})
-            idx_entry = spatial_index.get(catalog_name)
-            need_rebuild = True
-            if idx_entry is not None:
-                # Reuse only if based on the same RA/DEC columns and table length matches
-                if (
-                    idx_entry.get("ra_col") == ra_col_name
-                    and idx_entry.get("dec_col") == dec_col_name
-                    and int(idx_entry.get("n_rows", -1)) == int(len(catalog_table))
-                ):
-                    need_rebuild = False
+            exact_index = session_data.setdefault("catalog_exact_index", {})
+            key = (catalog_name, ra_col_name, dec_col_name, int(len(catalog_table)), int(MATCH_DECIMALS))
+            idx_entry = exact_index.get(key)
+            if idx_entry is None:
+                ra_col_data = catalog_table[ra_col_name]
+                dec_col_data = catalog_table[dec_col_name]
+                table_ra = np.array([_norm_ra_deg(_normalize_coord_value(v, True, ra_col_name)) for v in ra_col_data], dtype=float)
+                table_dec = np.array([_normalize_coord_value(v, False, dec_col_name) for v in dec_col_data], dtype=float)
 
-            if need_rebuild:
-                # Normalize columns to degrees (vectorized)
-                try:
-                    ra_col_data = catalog_table[ra_col_name]
-                    dec_col_data = catalog_table[dec_col_name]
-                    table_ra_values = np.array([_normalize_coord_value(v, True, ra_col_name) for v in ra_col_data], dtype=float)
-                    table_dec_values = np.array([_normalize_coord_value(v, False, dec_col_name) for v in dec_col_data], dtype=float)
-                except Exception as e_norm:
-                    return JSONResponse(status_code=500, content={"error": f"Error processing RA/DEC columns for '{catalog_name}': {str(e_norm)}"})
+                lookup: dict[tuple[float, float], int] = {}
+                for i in range(int(len(catalog_table))):
+                    r = table_ra[i]
+                    d = table_dec[i]
+                    if not (np.isfinite(r) and np.isfinite(d)):
+                        continue
+                    k = (round(float(r), MATCH_DECIMALS), round(float(d), MATCH_DECIMALS))
+                    # keep first occurrence on duplicates
+                    if k not in lookup:
+                        lookup[k] = i
 
-                if not (np.isfinite(table_ra_values).any() and np.isfinite(table_dec_values).any()):
-                    return JSONResponse(status_code=400, content={"error": f"Catalog '{catalog_name}' RA/DEC columns could not be parsed to degrees."})
-
-                # Build unit vectors for KDTree
-                ra_rad = np.radians(table_ra_values)
-                dec_rad = np.radians(table_dec_values)
+                # Precompute unit vectors + optional KDTree for fast nearest lookup (used only when tolerance_arcsec is provided).
+                ra_rad = np.radians(table_ra)
+                dec_rad = np.radians(table_dec)
                 cosd = np.cos(dec_rad)
                 unit_xyz = np.column_stack((cosd * np.cos(ra_rad), cosd * np.sin(ra_rad), np.sin(dec_rad)))
-
                 try:
-                    from scipy.spatial import cKDTree  # local import to avoid top-level dependency
+                    from scipy.spatial import cKDTree
                     tree = cKDTree(unit_xyz)
                 except Exception:
                     tree = None
 
-                idx_entry = {
-                    "ra_col": ra_col_name,
-                    "dec_col": dec_col_name,
-                    "n_rows": int(len(catalog_table)),
-                    "ra_deg": table_ra_values,
-                    "dec_deg": table_dec_values,
-                    "unit_xyz": unit_xyz,
-                    "tree": tree,
-                }
-                spatial_index[catalog_name] = idx_entry
+                idx_entry = {"lookup": lookup, "ra_deg": table_ra, "dec_deg": table_dec, "unit_xyz": unit_xyz, "tree": tree}
+                exact_index[key] = idx_entry
 
-            # Query nearest neighbor
-            q_ra_deg = float(ra)
-            q_dec_deg = float(dec)
-            q_ra_rad = np.radians(q_ra_deg)
-            q_dec_rad = np.radians(q_dec_deg)
-            q_vec = np.array([
-                np.cos(q_dec_rad) * np.cos(q_ra_rad),
-                np.cos(q_dec_rad) * np.sin(q_ra_rad),
-                np.sin(q_dec_rad),
-            ])
+            q_ra = _norm_ra_deg(float(ra))
+            q_dec = float(dec)
+            q_key = (round(float(q_ra), MATCH_DECIMALS), round(float(q_dec), MATCH_DECIMALS))
+            matched_idx = idx_entry["lookup"].get(q_key)
+            if matched_idx is None:
+                # Optional tolerance-based fallback (ONLY if caller supplies tolerance_arcsec)
+                tol = float(tolerance_arcsec) if (tolerance_arcsec is not None and np.isfinite(tolerance_arcsec)) else None
+                if tol is None or not (tol > 0):
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": f"No exact RA/Dec match in catalog '{catalog_name}'.",
+                            "query_ra_deg_norm": q_ra,
+                            "query_dec_deg": q_dec,
+                            "match_decimals": MATCH_DECIMALS,
+                        },
+                    )
 
-            closest_idx = None
-            min_sep_deg = None
-            if idx_entry.get("tree") is not None:
-                # KDTree in 3D Euclidean; distance relates to angular separation: d = sqrt(2(1-cos theta))
-                d_euclid, i_nn = idx_entry["tree"].query(q_vec, k=1)
-                # Compute accurate angle via dot product
-                try:
-                    dot = float(np.clip(np.dot(q_vec, idx_entry["unit_xyz"][int(i_nn)]), -1.0, 1.0))
-                    theta_rad = float(np.arccos(dot))
-                except Exception:
-                    theta_rad = float(2.0)  # large
-                closest_idx = int(i_nn)
-                min_sep_deg = float(np.degrees(theta_rad))
-            else:
-                # Fallback: vectorized great-circle approx in degrees
-                table_ra_values = idx_entry["ra_deg"]
-                table_dec_values = idx_entry["dec_deg"]
-                ra_diff = np.abs(table_ra_values - q_ra_deg)
-                ra_diff = np.where(ra_diff > 180.0, 360.0 - ra_diff, ra_diff)
-                dec_diff = np.abs(table_dec_values - q_dec_deg)
-                distances = np.sqrt((ra_diff * np.cos(np.radians(q_dec_deg)))**2 + dec_diff**2)
-                if distances.size == 0:
-                    return JSONResponse(status_code=404, content={"error": f"No data in catalog '{catalog_name}'."})
-                closest_idx = int(np.argmin(distances))
-                min_sep_deg = float(distances[closest_idx])
+                q_ra_rad = np.radians(q_ra)
+                q_dec_rad = np.radians(q_dec)
+                q_vec = np.array([
+                    np.cos(q_dec_rad) * np.cos(q_ra_rad),
+                    np.cos(q_dec_rad) * np.sin(q_ra_rad),
+                    np.sin(q_dec_rad),
+                ])
 
-            # Threshold in degrees
-            if min_sep_deg is None:
-                return JSONResponse(status_code=404, content={"error": f"No object within threshold near RA={ra}, Dec={dec}."})
-            if min_sep_deg > float(SOURCE_PROPERTIES_SEARCH_RADIUS_ARCSEC) / 3600.0:
-                return JSONResponse(status_code=404, content={"error": f"No object within threshold near RA={ra}, Dec={dec}."})
+                min_sep_arcsec = None
+                nearest_idx = None
+                if idx_entry.get("tree") is not None:
+                    _, i_nn = idx_entry["tree"].query(q_vec, k=1)
+                    nearest_idx = int(i_nn)
+                    try:
+                        dot = float(np.clip(np.dot(q_vec, idx_entry["unit_xyz"][nearest_idx]), -1.0, 1.0))
+                        theta_rad = float(np.arccos(dot))
+                        min_sep_arcsec = float(np.degrees(theta_rad) * 3600.0)
+                    except Exception:
+                        min_sep_arcsec = None
+                else:
+                    # Fallback (approx) in arcsec
+                    ra_arr = idx_entry.get("ra_deg")
+                    dec_arr = idx_entry.get("dec_deg")
+                    if ra_arr is None or dec_arr is None:
+                        return JSONResponse(status_code=500, content={"error": "Exact index missing RA/Dec arrays."})
+                    ra_diff = np.abs(ra_arr - q_ra)
+                    ra_diff = np.where(ra_diff > 180.0, 360.0 - ra_diff, ra_diff)
+                    dec_diff = np.abs(dec_arr - q_dec)
+                    dist_deg = np.sqrt((ra_diff * np.cos(np.radians(q_dec)))**2 + dec_diff**2)
+                    if dist_deg.size:
+                        nearest_idx = int(np.argmin(dist_deg))
+                        min_sep_arcsec = float(dist_deg[nearest_idx] * 3600.0)
+
+                if nearest_idx is not None and min_sep_arcsec is not None and min_sep_arcsec <= tol:
+                    matched_idx = nearest_idx
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": f"No RA/Dec match within tolerance for catalog '{catalog_name}'.",
+                            "query_ra_deg_norm": q_ra,
+                            "query_dec_deg": q_dec,
+                            "match_decimals": MATCH_DECIMALS,
+                            "tolerance_arcsec": tol,
+                            "min_sep_arcsec": min_sep_arcsec,
+                        },
+                    )
         except Exception as e_idx:
-            return JSONResponse(status_code=500, content={"error": f"Index/query error: {str(e_idx)}"})
+            return JSONResponse(status_code=500, content={"error": f"Exact-match lookup error: {str(e_idx)}"})
 
-        closest_obj_row = catalog_table[closest_idx]
+        closest_obj_row = catalog_table[int(matched_idx)]
         obj_dict = {}
         for col_name in catalog_table.colnames:
             value = closest_obj_row[col_name]
@@ -7351,6 +7614,10 @@ async def get_fits_overview(request: Request, quality: int = 0, file_id: str = Q
         raise HTTPException(status_code=500, detail=f"Error serving overview for {file_id}: {str(e)}")
 
 
+
+
+
+
 @app.get("/fits/preview/")
 async def fits_preview(
     request: Request,
@@ -7647,6 +7914,9 @@ async def fits_preview(
         "X-FITS-PIXSCALE-Y-ARCSEC": pix_y_arcsec,
     }
     return Response(content=png, media_type="image/png", headers=headers)
+
+
+
 def detect_coordinate_columns(colnames):
     """Detect RA and DEC column names from a list of column names."""
     ra_candidates = ra_columns
@@ -8188,7 +8458,7 @@ async def catalog_binary_raw(
     request: Request,
     catalog_name: str,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
-    limit: int = Query(5000, ge=1, le=10000, description="Items per page"),
+    limit: int = Query(1e07, ge=1, le=1e08, description="Items per page"),
     columns: Optional[str] = Query(None, description="Comma-separated list of columns to include in metadata (optional)"),
     search: Optional[str] = Query(None, description="Search term for filtering (case-insensitive contains across columns)"),
     sort_by: Optional[str] = Query(None, description="Column to sort by (name)"),
@@ -8633,7 +8903,7 @@ async def catalog_binary(
     catalog_name: str,
     prevent_auto_load: bool = Query(False),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
-    limit: int = Query(5000, ge=1, le=10000, description="Items per page"),
+    limit: int = Query(1e07, ge=1, le=1e08, description="Items per page"),
     search: Optional[str] = Query(None, description="Search term for filtering"),
     sort_by: Optional[str] = Query(None, description="Column to sort by"),
     sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
@@ -8724,220 +8994,396 @@ async def catalog_binary(
         except Exception:
             pass
 
-        # Attach overrides onto request by adding to query params is messy; instead we pass through request
-        # and load_catalog_data will read overrides from request.query_params directly.
-        # Build full path for loader
-        full_path = (Path(str(catalogs_dir)) / catalog_name)
-        loop = asyncio.get_running_loop()
-        catalog_data = await loop.run_in_executor(
-            None,
-            lambda: load_catalog_data(str(full_path), request=request)
-        )
-        if not catalog_data:
-            logger.warning(f"/catalog-binary: No in-bounds objects for {catalog_name}; returning empty result")
-            catalog_data = []
-
-        # Convert to numpy arrays for efficient processing
-        # Define core numeric fields that will be sent as binary
-        numeric_fields = ['ra', 'dec', 'x_pixels', 'y_pixels', 'radius_pixels']
-        
-        # Prepare data arrays
-        num_items = len(catalog_data)
-        ra_array = np.zeros(num_items, dtype=np.float64)
-        dec_array = np.zeros(num_items, dtype=np.float64)
-        x_array = np.zeros(num_items, dtype=np.float32)
-        y_array = np.zeros(num_items, dtype=np.float32)
-        radius_array = np.zeros(num_items, dtype=np.float32)
-        
-        # Additional metadata for each object (stored as JSON strings)
-        metadata_list = []
-        
-        # Helpers to robustly normalize RA/DEC to degrees
-        def _parse_sexagesimal(s: str, is_ra: bool) -> float:
+        # FAST PATH (no caching): avoid building full per-row dicts for the entire catalog.
+        # The old code called `load_catalog_data()` which:
+        # - loops over ALL rows in Python
+        # - converts WCS for ALL rows
+        # - attaches ALL catalog columns to each row object
+        # Then later paginates. For large catalogs this is extremely slow.
+        #
+        # Here we keep the exact same binary response format, but we:
+        # - compute RA/Dec->pixel in vectorized numpy for all rows
+        # - filter in-bounds
+        # - only build per-row metadata JSON for the returned page rows (<= limit)
+        use_fast_path = (search is None and filters is None and (sort_by is None or sort_by in ('ra', 'dec')))
+        catalog_data = None  # only used by slow fallback
+        fast_result = None
+        if use_fast_path:
             try:
-                parts = str(s).strip().split(':')
-                if len(parts) < 2:
-                    return float('nan')
-                a0 = float(parts[0]); a1 = float(parts[1] or 0); a2 = float(parts[2] or 0)
-                sign = -1.0 if a0 < 0 else 1.0
-                a0 = abs(a0)
-                val = a0 + a1/60.0 + a2/3600.0
-                if is_ra:
-                    return sign * val * 15.0
-                return sign * val
-            except Exception:
-                return float('nan')
+                # Resolve session-scoped viewer state
+                session = getattr(request.state, "session", None)
+                session_data = session.data if session is not None else None
+                fits_file = (session_data.get("current_fits_file") if session_data else getattr(app.state, "current_fits_file", None))
+                hdu_index = int(session_data.get("current_hdu_index", 0) if session_data else getattr(app.state, "current_hdu_index", 0))
+                if not fits_file:
+                    fast_result = {"error": "No FITS file currently selected", "records": [], "total": 0, "pagination": (page, limit)}
+                else:
+                    # Build image WCS and dimensions without touching image data
+                    image_wcs = (session_data.get("current_wcs_object") if session_data else getattr(app.state, "current_wcs_object", None))
+                    image_height = None
+                    image_width = None
+                    flip_y = False
+                    with fits.open(fits_file) as hdul:
+                        if not (0 <= hdu_index < len(hdul)):
+                            hdu_index = 0
+                        image_hdu = hdul[hdu_index]
+                        # header-only image HDU test
+                        def _is_image_hdu(h) -> bool:
+                            try:
+                                hdr = getattr(h, 'header', None)
+                                if hdr is None:
+                                    return False
+                                naxis = int(hdr.get('NAXIS', 0) or 0)
+                                if naxis < 2:
+                                    return False
+                                n1 = hdr.get('NAXIS1', None)
+                                n2 = hdr.get('NAXIS2', None)
+                                return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
+                            except Exception:
+                                return False
+                        if not _is_image_hdu(image_hdu):
+                            image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
+                        if image_hdu is None:
+                            fast_result = {"error": "No image HDU found in current FITS file", "records": [], "total": 0, "pagination": (page, limit)}
+                        else:
+                            fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
+                            flip_y = bool(fy)
+                            image_height = int(image_hdu.header.get('NAXIS2', 0))
+                            image_width = int(image_hdu.header.get('NAXIS1', 0))
+                            if image_wcs is None:
+                                try:
+                                    wcs_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                                except Exception:
+                                    wcs_header = image_hdu.header
+                                image_wcs = WCS(wcs_header)
+                    try:
+                        if image_wcs is not None:
+                            if hasattr(image_wcs, 'celestial'):
+                                image_wcs = image_wcs.celestial
+                            else:
+                                image_wcs = image_wcs.sub(['celestial'])
+                    except Exception:
+                        pass
 
-        def _get_ci(d: dict, candidates) -> tuple:
-            if not isinstance(d, dict):
-                return (None, None)
-            lower_map = {k.lower(): k for k in d.keys()}
-            for c in candidates:
-                k = lower_map.get(c.lower())
-                if k is not None:
-                    return (k, d[k])
-            return (None, None)
+                    # Require numeric RA/Dec columns for fast path (otherwise fall back to slow path)
+                    if ra_col is None or dec_col is None:
+                        use_fast_path = False
+                    elif ra_col not in catalog_table.colnames or dec_col not in catalog_table.colnames:
+                        use_fast_path = False
+                    else:
+                        ra_col_data = catalog_table[ra_col]
+                        dec_col_data = catalog_table[dec_col]
+                        # Numeric-only fast path
+                        if ra_col_data.dtype.kind not in ('i', 'u', 'f') or dec_col_data.dtype.kind not in ('i', 'u', 'f'):
+                            use_fast_path = False
+                        else:
+                            ra_deg = np.array(ra_col_data, dtype=float)
+                            dec_deg = np.array(dec_col_data, dtype=float)
+                            # Convert negative RA to [0,360) for consistency (catalogs often 0..360)
+                            ra_deg = np.mod(ra_deg, 360.0)
+                            # Radius pixels
+                            if size_col and (size_col in catalog_table.colnames):
+                                try:
+                                    radius_px = np.array(catalog_table[size_col], dtype=float)
+                                    radius_px = np.where(np.isfinite(radius_px) & (radius_px > 0), radius_px, 5.0).astype(np.float32)
+                                except Exception:
+                                    radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
+                            else:
+                                radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
 
-        def _normalize_coord(val, is_ra: bool, col_name: str = None) -> float:
-            try:
-                # string sexagesimal
-                if isinstance(val, str):
-                    out = _parse_sexagesimal(val, is_ra)
-                    if np.isfinite(out):
-                        return out
-                    # try as float string
-                    fv = float(val)
-                    val = fv
-                # numeric
-                if isinstance(val, (int, float, np.number)):
-                    v = float(val)
-                    if not np.isfinite(v):
-                        return float('nan')
-                    # radians
-                    if abs(v) <= (2*np.pi + 1e-6):
-                        return v * (180.0/np.pi)
-                    # hours for RA
-                    if is_ra:
-                        name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name):
-                            return v * 15.0
-                    return v
-            except Exception:
-                return float('nan')
-            return float('nan')
+                            if image_wcs is None or not getattr(image_wcs, 'has_celestial', False) or not (image_width and image_height):
+                                use_fast_path = False
+                            else:
+                                x_pix, y_pix = image_wcs.all_world2pix(ra_deg, dec_deg, 0)
+                                x_pix = np.array(x_pix, dtype=float)
+                                y_pix = np.array(y_pix, dtype=float)
+                                if flip_y and image_height is not None:
+                                    y_pix = (float(image_height) - y_pix - 1.0)
+                                # In-bounds mask
+                                inb = (
+                                    np.isfinite(x_pix) & np.isfinite(y_pix) &
+                                    (x_pix >= 0.0) & (y_pix >= 0.0) &
+                                    (x_pix < float(image_width)) & (y_pix < float(image_height))
+                                )
+                                idx_all = np.nonzero(inb)[0]
+                                total_filtered = int(idx_all.size)
 
-        for i, item in enumerate(catalog_data):
-            # Start with direct fields if present
-            ra_val = item.get('ra', None)
-            dec_val = item.get('dec', None)
+                                # Optional sort by RA/Dec (numeric only)
+                                if sort_by == 'ra':
+                                    order = np.argsort(ra_deg[idx_all])
+                                    if sort_order == 'desc':
+                                        order = order[::-1]
+                                    idx_all = idx_all[order]
+                                elif sort_by == 'dec':
+                                    order = np.argsort(dec_deg[idx_all])
+                                    if sort_order == 'desc':
+                                        order = order[::-1]
+                                    idx_all = idx_all[order]
 
-            # If missing or zero/non-finite, try alternate column names from the same dict
-            if not isinstance(ra_val, (int, float)) or not np.isfinite(float(ra_val)) or float(ra_val) == 0.0:
-                k, v = _get_ci(item, RA_COLUMN_NAMES)
-                if k is not None:
-                    ra_val = _normalize_coord(v, True, k)
-            else:
-                ra_val = _normalize_coord(ra_val, True, 'ra')
-            if not isinstance(dec_val, (int, float)) or not np.isfinite(float(dec_val)) or float(dec_val) == 0.0:
-                k, v = _get_ci(item, DEC_COLUMN_NAMES)
-                if k is not None:
-                    dec_val = _normalize_coord(v, False, k)
-            else:
-                dec_val = _normalize_coord(dec_val, False, 'dec')
+                                start_idx = (page - 1) * limit
+                                end_idx = min(start_idx + limit, total_filtered)
+                                idx_page = idx_all[start_idx:end_idx]
 
-            ra_array[i] = float(ra_val) if np.isfinite(ra_val) else 0.0
-            dec_array[i] = float(dec_val) if np.isfinite(dec_val) else 0.0
+                                # Prepare header
+                                requested_cols = None
+                                if columns:
+                                    requested_cols = [c.strip() for c in columns.split(',') if c.strip()]
+                                colnames_for_meta = list(catalog_table.colnames if requested_cols is None else [c for c in requested_cols if c in catalog_table.colnames])
 
-            # Debug: log first few normalization results
-            if i < 3:
+                                # Build metadata only for returned page rows.
+                                # IMPORTANT: keep this minimal for speed. Full row properties are fetched on-demand
+                                # via `/source-properties/?row_index=...`.
+                                metadata_list = []
+                                for ridx in idx_page:
+                                    md = {"__row_index": int(ridx)}
+                                    # If caller explicitly requested columns, include only those values.
+                                    if columns:
+                                        for cname in colnames_for_meta:
+                                            try:
+                                                v = _to_py(catalog_table[cname][int(ridx)])
+                                                if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                                                    v = None
+                                                md[cname] = v
+                                            except Exception:
+                                                continue
+                                    metadata_list.append(md)
+
+                                fast_result = {
+                                    "idx_page": idx_page,
+                                    "total_filtered": total_filtered,
+                                    "pagination": {
+                                        "page": page,
+                                        "limit": limit,
+                                        "total_items": total_filtered,
+                                        "total_pages": (total_filtered + limit - 1) // limit,
+                                        "has_next": end_idx < total_filtered,
+                                        "has_prev": page > 1,
+                                    },
+                                    "ra_page": ra_deg[idx_page].astype(np.float64, copy=False),
+                                    "dec_page": dec_deg[idx_page].astype(np.float64, copy=False),
+                                    "x_page": (x_pix[idx_page] + 1.0).astype(np.float32, copy=False),
+                                    "y_page": (y_pix[idx_page] + 1.0).astype(np.float32, copy=False),
+                                    "r_page": radius_px[idx_page].astype(np.float32, copy=False),
+                                    "metadata_list": metadata_list,
+                                    "column_names": colnames_for_meta,
+                                }
+            except Exception as e_fast:
+                # Fallback to slow path on any error
                 try:
-                    logger.info(f"[catalog-binary] row {i} RA raw={item.get('ra', None)} DEC raw={item.get('dec', None)} -> RAdeg={ra_array[i]:.6f} DECdeg={dec_array[i]:.6f}")
+                    logger.warning(f"[catalog-binary] fast path failed, falling back. err={e_fast}")
                 except Exception:
                     pass
-            x_array[i] = item.get('x_pixels', 0.0)
-            y_array[i] = item.get('y_pixels', 0.0)
-            radius_array[i] = item.get('radius_pixels', 5.0)
-            
-            # Store other fields as metadata
-            metadata = {k: v for k, v in item.items() 
-                       if k not in numeric_fields}
-            metadata_list.append(metadata)
-        
-        # Apply filters if needed
-        mask = np.ones(num_items, dtype=bool)
-        
-        if search:
-            # Simple text search in metadata
-            search_lower = search.lower()
-            for i, meta in enumerate(metadata_list):
-                if not any(search_lower in str(v).lower() for v in meta.values()):
-                    mask[i] = False
-        
-        if filters:
-            # Apply advanced filters
-            try:
-                filter_dict = json.loads(filters)
-                # Apply filter logic here...
-            except json.JSONDecodeError:
-                pass
-        
-        # Apply mask
-        filtered_indices = np.where(mask)[0]
-        
-        # Apply sorting if requested
-        if sort_by:
-            if sort_by == 'ra':
-                sort_indices = np.argsort(ra_array[filtered_indices])
-            elif sort_by == 'dec':
-                sort_indices = np.argsort(dec_array[filtered_indices])
-            else:
-                # For other fields, need to sort based on metadata
-                sort_values = []
-                for idx in filtered_indices:
-                    val = metadata_list[idx].get(sort_by, 0)
-                    try:
-                        sort_values.append(float(val))
-                    except (ValueError, TypeError):
-                        sort_values.append(0)
-                sort_indices = np.argsort(sort_values)
-            
-            if sort_order == 'desc':
-                sort_indices = sort_indices[::-1]
-            
-            filtered_indices = filtered_indices[sort_indices]
-        
-        # Apply pagination
-        total_filtered = len(filtered_indices)
-        start_idx = (page - 1) * limit
-        end_idx = min(start_idx + limit, total_filtered)
-        page_indices = filtered_indices[start_idx:end_idx]
-        
-        # Prepare binary data
+                use_fast_path = False
+
+        if not use_fast_path:
+            # Slow fallback: keep legacy behavior for advanced search/filters or non-numeric RA/Dec columns.
+            full_path = (Path(str(catalogs_dir)) / catalog_name)
+            loop = asyncio.get_running_loop()
+            catalog_data = await loop.run_in_executor(
+                None,
+                lambda: load_catalog_data(str(full_path), request=request)
+            )
+            if not catalog_data:
+                logger.warning(f"/catalog-binary: No in-bounds objects for {catalog_name}; returning empty result")
+                catalog_data = []
+
+        # Prepare binary data (same on both paths)
         binary_buffer = BytesIO()
-        
-        # Create header with metadata
-        header = {
-            "version": 1,
-            "catalog_name": catalog_name,
-            "boolean_columns": boolean_columns,
-            "num_records": len(page_indices),
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total_items": total_filtered,
-                "total_pages": (total_filtered + limit - 1) // limit,
-                "has_next": end_idx < total_filtered,
-                "has_prev": page > 1
-            },
-            "field_info": {
-                "ra": {"dtype": "float64", "offset": 0},
-                "dec": {"dtype": "float64", "offset": 8},
-                "x_pixels": {"dtype": "float32", "offset": 16},
-                "y_pixels": {"dtype": "float32", "offset": 20},
-                "radius_pixels": {"dtype": "float32", "offset": 24},
-                "metadata": {"dtype": "json", "offset": 28}
-            },
-            "record_size": 28  # bytes for numeric data
-        }
-        
-        # Write header
-        header_json = json.dumps(header).encode('utf-8')
-        binary_buffer.write(struct.pack('<I', len(header_json)))  # 4 bytes for header length
-        binary_buffer.write(header_json)
-        
-        # Write binary data for each record
-        for idx in page_indices:
-            # Pack numeric data (28 bytes total)
-            binary_buffer.write(struct.pack('<d', float(ra_array[idx])))        # 8 bytes
-            binary_buffer.write(struct.pack('<d', float(dec_array[idx])))       # 8 bytes
-            binary_buffer.write(struct.pack('<f', x_array[idx]))         # 4 bytes
-            binary_buffer.write(struct.pack('<f', y_array[idx]))         # 4 bytes
-            binary_buffer.write(struct.pack('<f', radius_array[idx]))    # 4 bytes
-            
-            # Pack metadata as length-prefixed JSON
-            meta_json = json.dumps(metadata_list[idx]).encode('utf-8')
-            binary_buffer.write(struct.pack('<I', len(meta_json)))       # 4 bytes for length
-            binary_buffer.write(meta_json)
+
+        if use_fast_path and fast_result and 'ra_page' in fast_result:
+            ra_page = fast_result["ra_page"]
+            dec_page = fast_result["dec_page"]
+            x_page = fast_result["x_page"]
+            y_page = fast_result["y_page"]
+            r_page = fast_result["r_page"]
+            metadata_list = fast_result["metadata_list"]
+            pagination_obj = fast_result["pagination"]
+            colnames_for_meta = fast_result.get("column_names") or list(catalog_table.colnames)
+
+            header = {
+                "version": 1,
+                "catalog_name": catalog_name,
+                "boolean_columns": boolean_columns,
+                "num_records": int(len(ra_page)),
+                "pagination": pagination_obj,
+                "field_info": {
+                    "ra": {"dtype": "float64", "offset": 0},
+                    "dec": {"dtype": "float64", "offset": 8},
+                    "x_pixels": {"dtype": "float32", "offset": 16},
+                    "y_pixels": {"dtype": "float32", "offset": 20},
+                    "radius_pixels": {"dtype": "float32", "offset": 24},
+                    "metadata": {"dtype": "json", "offset": 28}
+                },
+                "record_size": 28,
+                "column_names": colnames_for_meta,
+            }
+            header_json = json.dumps(header).encode('utf-8')
+            binary_buffer.write(struct.pack('<I', len(header_json)))
+            binary_buffer.write(header_json)
+
+            for i in range(len(ra_page)):
+                binary_buffer.write(struct.pack('<d', float(ra_page[i])))
+                binary_buffer.write(struct.pack('<d', float(dec_page[i])))
+                binary_buffer.write(struct.pack('<f', float(x_page[i])))
+                binary_buffer.write(struct.pack('<f', float(y_page[i])))
+                binary_buffer.write(struct.pack('<f', float(r_page[i])))
+                meta_json = json.dumps(metadata_list[i], separators=(',', ':'), allow_nan=False).encode('utf-8')
+                binary_buffer.write(struct.pack('<I', len(meta_json)))
+                binary_buffer.write(meta_json)
+        else:
+            # Legacy slow path below (kept for search/filters/non-numeric coords)
+            # Convert to numpy arrays for efficient processing
+            numeric_fields = ['ra', 'dec', 'x_pixels', 'y_pixels', 'radius_pixels']
+            num_items = len(catalog_data)
+            ra_array = np.zeros(num_items, dtype=np.float64)
+            dec_array = np.zeros(num_items, dtype=np.float64)
+            x_array = np.zeros(num_items, dtype=np.float32)
+            y_array = np.zeros(num_items, dtype=np.float32)
+            radius_array = np.zeros(num_items, dtype=np.float32)
+            metadata_list = []
+
+            def _parse_sexagesimal(s: str, is_ra: bool) -> float:
+                try:
+                    parts = str(s).strip().split(':')
+                    if len(parts) < 2:
+                        return float('nan')
+                    a0 = float(parts[0]); a1 = float(parts[1] or 0); a2 = float(parts[2] or 0)
+                    sign = -1.0 if a0 < 0 else 1.0
+                    a0 = abs(a0)
+                    val = a0 + a1/60.0 + a2/3600.0
+                    if is_ra:
+                        return sign * val * 15.0
+                    return sign * val
+                except Exception:
+                    return float('nan')
+
+            def _get_ci(d: dict, candidates) -> tuple:
+                if not isinstance(d, dict):
+                    return (None, None)
+                lower_map = {k.lower(): k for k in d.keys()}
+                for c in candidates:
+                    k = lower_map.get(c.lower())
+                    if k is not None:
+                        return (k, d[k])
+                return (None, None)
+
+            def _normalize_coord(val, is_ra: bool, col_name: str = None) -> float:
+                try:
+                    if isinstance(val, str):
+                        out = _parse_sexagesimal(val, is_ra)
+                        if np.isfinite(out):
+                            return out
+                        val = float(val)
+                    if isinstance(val, (int, float, np.number)):
+                        v = float(val)
+                        if not np.isfinite(v):
+                            return float('nan')
+                        if abs(v) <= (2*np.pi + 1e-6):
+                            return v * (180.0/np.pi)
+                        if is_ra:
+                            name = (col_name or '').lower()
+                            if ('hms' in name) or ('hour' in name):
+                                return v * 15.0
+                        return v
+                except Exception:
+                    return float('nan')
+                return float('nan')
+
+            for i, item in enumerate(catalog_data):
+                ra_val = item.get('ra', None)
+                dec_val = item.get('dec', None)
+                if not isinstance(ra_val, (int, float)) or not np.isfinite(float(ra_val)) or float(ra_val) == 0.0:
+                    k, v = _get_ci(item, RA_COLUMN_NAMES)
+                    if k is not None:
+                        ra_val = _normalize_coord(v, True, k)
+                else:
+                    ra_val = _normalize_coord(ra_val, True, 'ra')
+                if not isinstance(dec_val, (int, float)) or not np.isfinite(float(dec_val)) or float(dec_val) == 0.0:
+                    k, v = _get_ci(item, DEC_COLUMN_NAMES)
+                    if k is not None:
+                        dec_val = _normalize_coord(v, False, k)
+                else:
+                    dec_val = _normalize_coord(dec_val, False, 'dec')
+
+                ra_array[i] = float(ra_val) if np.isfinite(ra_val) else 0.0
+                dec_array[i] = float(dec_val) if np.isfinite(dec_val) else 0.0
+                x_array[i] = item.get('x_pixels', 0.0)
+                y_array[i] = item.get('y_pixels', 0.0)
+                radius_array[i] = item.get('radius_pixels', 5.0)
+                metadata = {k: v for k, v in item.items() if k not in numeric_fields}
+                metadata_list.append(metadata)
+
+            mask = np.ones(num_items, dtype=bool)
+            if search:
+                search_lower = search.lower()
+                for i, meta in enumerate(metadata_list):
+                    if not any(search_lower in str(v).lower() for v in meta.values()):
+                        mask[i] = False
+            if filters:
+                try:
+                    _ = json.loads(filters)
+                except json.JSONDecodeError:
+                    pass
+            filtered_indices = np.where(mask)[0]
+            if sort_by:
+                if sort_by == 'ra':
+                    sort_indices = np.argsort(ra_array[filtered_indices])
+                elif sort_by == 'dec':
+                    sort_indices = np.argsort(dec_array[filtered_indices])
+                else:
+                    sort_values = []
+                    for idx in filtered_indices:
+                        val = metadata_list[idx].get(sort_by, 0)
+                        try:
+                            sort_values.append(float(val))
+                        except (ValueError, TypeError):
+                            sort_values.append(0)
+                    sort_indices = np.argsort(sort_values)
+                if sort_order == 'desc':
+                    sort_indices = sort_indices[::-1]
+                filtered_indices = filtered_indices[sort_indices]
+
+            total_filtered = len(filtered_indices)
+            start_idx = (page - 1) * limit
+            end_idx = min(start_idx + limit, total_filtered)
+            page_indices = filtered_indices[start_idx:end_idx]
+
+            header = {
+                "version": 1,
+                "catalog_name": catalog_name,
+                "boolean_columns": boolean_columns,
+                "num_records": len(page_indices),
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total_items": total_filtered,
+                    "total_pages": (total_filtered + limit - 1) // limit,
+                    "has_next": end_idx < total_filtered,
+                    "has_prev": page > 1
+                },
+                "field_info": {
+                    "ra": {"dtype": "float64", "offset": 0},
+                    "dec": {"dtype": "float64", "offset": 8},
+                    "x_pixels": {"dtype": "float32", "offset": 16},
+                    "y_pixels": {"dtype": "float32", "offset": 20},
+                    "radius_pixels": {"dtype": "float32", "offset": 24},
+                    "metadata": {"dtype": "json", "offset": 28}
+                },
+                "record_size": 28
+            }
+            header_json = json.dumps(header).encode('utf-8')
+            binary_buffer.write(struct.pack('<I', len(header_json)))
+            binary_buffer.write(header_json)
+
+            for idx in page_indices:
+                binary_buffer.write(struct.pack('<d', float(ra_array[idx])))
+                binary_buffer.write(struct.pack('<d', float(dec_array[idx])))
+                binary_buffer.write(struct.pack('<f', float(x_array[idx])))
+                binary_buffer.write(struct.pack('<f', float(y_array[idx])))
+                binary_buffer.write(struct.pack('<f', float(radius_array[idx])))
+                meta_json = json.dumps(metadata_list[idx]).encode('utf-8')
+                binary_buffer.write(struct.pack('<I', len(meta_json)))
+                binary_buffer.write(meta_json)
         
         # Get binary data
         binary_data = binary_buffer.getvalue()
@@ -8981,7 +9427,7 @@ async def catalog_with_flags(
     catalog_name: str, 
     prevent_auto_load: bool = Query(False),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
-    limit: int = Query(5000, ge=1, le=10000, description="Items per page"),
+    limit: int = Query(1e06, ge=1, le=1e07, description="Items per page"),
     search: Optional[str] = Query(None, description="Search term for filtering"),
     sort_by: Optional[str] = Query(None, description="Column to sort by"),
     sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
@@ -9818,12 +10264,26 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 if not (0 <= hdu_index < len(hdul)):
                     hdu_index = 0
 
+                # IMPORTANT PERFORMANCE NOTE:
+                # Avoid touching `hdu.data` here — for large FITS images it forces reading the full array
+                # from disk/network, which can take minutes. We only need header + NAXIS sizing.
+                def _is_image_hdu(h) -> bool:
+                    try:
+                        hdr = getattr(h, 'header', None)
+                        if hdr is None:
+                            return False
+                        naxis = int(hdr.get('NAXIS', 0) or 0)
+                        if naxis < 2:
+                            return False
+                        n1 = hdr.get('NAXIS1', None)
+                        n2 = hdr.get('NAXIS2', None)
+                        return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
+                    except Exception:
+                        return False
+
                 image_hdu = hdul[hdu_index]
-                if not (hasattr(image_hdu, 'data') and image_hdu.data is not None and image_hdu.data.ndim >= 2):
-                    image_hdu = next(
-                        (h for h in hdul if hasattr(h, 'data') and h.data is not None and len(getattr(h, 'shape', ())) >= 2),
-                        None
-                    )
+                if not _is_image_hdu(image_hdu):
+                    image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
                 if image_hdu is None:
                     print("No image HDU found in FITS file")
                     return []
@@ -9831,12 +10291,8 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
                 flip_y = bool(fy)
                 # IMPORTANT: vertical flip uses the number of rows (height)
-                if getattr(image_hdu, 'shape', None):
-                    image_height = int(image_hdu.shape[-2])
-                    image_width = int(image_hdu.shape[-1])
-                else:
-                    image_height = int(image_hdu.header.get('NAXIS2', 0))
-                    image_width = int(image_hdu.header.get('NAXIS1', 0))
+                image_height = int(image_hdu.header.get('NAXIS2', 0))
+                image_width = int(image_hdu.header.get('NAXIS1', 0))
 
                 if image_wcs is None:
                     try:
