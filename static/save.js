@@ -281,6 +281,33 @@
             const dy = (r.top - containerRect.top) * dpr;
             const dw = r.width * dpr;
             const dh = r.height * dpr;
+            // WebGL overlay canvas may export blank with preserveDrawingBuffer=false.
+            // If we have the renderer, readPixels from an offscreen FBO and draw it.
+            const isWebglOverlay = (() => {
+                try {
+                    if (c.classList && c.classList.contains('catalog-webgl-canvas')) return true;
+                    if (c.id && /webgl/i.test(c.id) && /catalog/i.test(c.id)) return true;
+                } catch (_) {}
+                return false;
+            })();
+            if (isWebglOverlay) {
+                try {
+                    const r0 = targetWin && targetWin.__catalogWebgl;
+                    if (r0 && typeof r0.renderToRgbaPixels === 'function') {
+                        const out = r0.renderToRgbaPixels();
+                        if (out && out.pixels && out.width && out.height) {
+                            const tmp = document.createElement('canvas');
+                            tmp.width = out.width;
+                            tmp.height = out.height;
+                            const tctx = tmp.getContext('2d', { willReadFrequently: true });
+                            const img = new ImageData(out.pixels, out.width, out.height);
+                            tctx.putImageData(img, 0, 0);
+                            ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, dx, dy, dw, dh);
+                            continue;
+                        }
+                    }
+                } catch (_) {}
+            }
             ctx.drawImage(c, 0, 0, c.width, c.height, dx, dy, dw, dh);
         }
     }
@@ -353,6 +380,35 @@
         const insets = Array.from(container.querySelectorAll('.region-zoom-inset[data-zoom-inset="true"]'));
         if (!insets.length) return;
 
+        async function waitForImgReady(img, timeoutMs = 1500) {
+            try {
+                if (!img) return false;
+                // If already loaded with dimensions, we're good.
+                if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) return true;
+                // Prefer decode() when available (doesn't require event wiring).
+                if (typeof img.decode === 'function') {
+                    const p = img.decode().then(() => true).catch(() => false);
+                    const t = new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs));
+                    return await Promise.race([p, t]);
+                }
+                // Fallback: wait for load/error events.
+                await new Promise((resolve) => {
+                    let done = false;
+                    const finish = () => { if (done) return; done = true; cleanup(); resolve(); };
+                    const cleanup = () => {
+                        try { img.removeEventListener('load', finish); } catch (_) {}
+                        try { img.removeEventListener('error', finish); } catch (_) {}
+                    };
+                    try { img.addEventListener('load', finish, { once: true }); } catch (_) {}
+                    try { img.addEventListener('error', finish, { once: true }); } catch (_) {}
+                    setTimeout(finish, timeoutMs);
+                });
+                return (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+            } catch (_) {
+                return false;
+            }
+        }
+
         for (const inset of insets) {
             try {
                 const r = inset.getBoundingClientRect();
@@ -379,28 +435,51 @@
                 roundedRectPath(ctx, dx, dy, dw, dh, rr);
                 ctx.clip();
 
-                // Draw inset image (from background-image url)
-                const imgDiv = inset.querySelector('[data-zoom-inset-img="true"]');
-                const url = imgDiv ? extractCssUrl(imgDiv.style.backgroundImage) : null;
-                if (url) {
-                    // Support blob/object URLs by fetching and creating an ImageBitmap
-                    const resp = await fetch(url, { cache: 'no-store' }).catch(() => null);
-                    if (resp && resp.ok) {
-                        const blob = await resp.blob();
-                        const bitmap = await createImageBitmap(blob);
-                        try {
-                            // "contain" behavior
-                            const iw = bitmap.width;
-                            const ih = bitmap.height;
-                            const scale = Math.min(dw / iw, dh / ih);
-                            const tw = iw * scale;
-                            const th = ih * scale;
-                            const ix = dx + (dw - tw) / 2;
-                            const iy = dy + (dh - th) / 2;
-                            ctx.drawImage(bitmap, 0, 0, iw, ih, ix, iy, tw, th);
-                        } finally {
-                            try { bitmap.close && bitmap.close(); } catch (_) {}
+                // Draw inset image.
+                // The zoom inset implementation uses <img> (preferred), but older builds used background-image.
+                const imgEl = inset.querySelector('[data-zoom-inset-img="true"]');
+                let bitmap = null;
+                try {
+                    if (imgEl && imgEl.tagName && imgEl.tagName.toLowerCase() === 'img') {
+                        const img = imgEl;
+                        const src = String(img.currentSrc || img.src || '').trim();
+                        if (src) {
+                            await waitForImgReady(img);
+                            // createImageBitmap(img) avoids fetch() issues with blob: URLs.
+                            bitmap = await createImageBitmap(img);
                         }
+                    } else if (imgEl) {
+                        const bgInline = extractCssUrl(imgEl.style && imgEl.style.backgroundImage);
+                        const bgComputed = (() => {
+                            try { return extractCssUrl(getComputedStyle(imgEl).backgroundImage); } catch (_) { return null; }
+                        })();
+                        const url = bgInline || bgComputed;
+                        if (url) {
+                            // Support blob/object URLs by fetching and creating an ImageBitmap
+                            const resp = await fetch(url, { cache: 'no-store' }).catch(() => null);
+                            if (resp && resp.ok) {
+                                const blob = await resp.blob();
+                                bitmap = await createImageBitmap(blob);
+                            }
+                        }
+                    }
+                } catch (_) {
+                    bitmap = null;
+                }
+
+                if (bitmap) {
+                    try {
+                        // "contain" behavior
+                        const iw = bitmap.width;
+                        const ih = bitmap.height;
+                        const scale = Math.min(dw / iw, dh / ih);
+                        const tw = iw * scale;
+                        const th = ih * scale;
+                        const ix = dx + (dw - tw) / 2;
+                        const iy = dy + (dh - th) / 2;
+                        ctx.drawImage(bitmap, 0, 0, iw, ih, ix, iy, tw, th);
+                    } finally {
+                        try { bitmap.close && bitmap.close(); } catch (_) {}
                     }
                 }
                 ctx.restore();
@@ -537,6 +616,23 @@
         const targetDoc = (() => { try { return targetWin.document; } catch (_) { return document; } })();
         const restore = hideForExport(targetDoc); // <— hide UI inside target doc
         try {
+          // Force a redraw so WebGL overlay is current before capture.
+          try {
+              if (targetWin && typeof targetWin.canvasUpdateOverlay === 'function') {
+                  targetWin.canvasUpdateOverlay({ mode: 'full' });
+              }
+          } catch (_) {}
+          // Wait a frame so the browser presents the latest WebGL draw.
+          await new Promise((resolve) => {
+              try {
+                  (targetWin.requestAnimationFrame || window.requestAnimationFrame)(() => {
+                      (targetWin.requestAnimationFrame || window.requestAnimationFrame)(resolve);
+                  });
+              } catch (_) {
+                  setTimeout(resolve, 32);
+              }
+          });
+
           const rect = container.getBoundingClientRect();
           const dpr = computeBestExportDpr(targetWin, container, rect);
           const outW = Math.max(1, Math.round(rect.width * dpr));

@@ -1196,6 +1196,18 @@ function renderSegmentOverlayControls(info) {
 let catalogOverlayControlsCollapsed = false;
 
 // ---------------- Catalog boolean-column filtering (per catalog) ----------------
+function __normalizeCatalogKey(raw) {
+    try {
+        const s = String(raw || '').trim();
+        if (!s) return '';
+        if (s.startsWith('catalogs/')) return s;
+        const base = s.split('/').pop().split('\\').pop();
+        return base ? `catalogs/${base}` : s;
+    } catch (_) {
+        return String(raw || '');
+    }
+}
+
 function __ensureCatalogBooleanFilterStore() {
     try {
         if (!window.catalogBooleanFiltersByCatalog || typeof window.catalogBooleanFiltersByCatalog !== 'object') {
@@ -1212,12 +1224,13 @@ function __ensureCatalogBooleanFilterStore() {
 function __ensureCatalogBooleanUiStateStore() {
     try {
         if (!window.__catalogBooleanFilterUiState || typeof window.__catalogBooleanFilterUiState !== 'object') {
-            window.__catalogBooleanFilterUiState = { openKey: null, colsCache: {} };
+            window.__catalogBooleanFilterUiState = { openKey: null, colsCache: {}, numColsCache: {} };
         }
         if (!window.__catalogBooleanFilterUiState.colsCache) window.__catalogBooleanFilterUiState.colsCache = {};
+        if (!window.__catalogBooleanFilterUiState.numColsCache) window.__catalogBooleanFilterUiState.numColsCache = {};
         return window.__catalogBooleanFilterUiState;
     } catch (_) {
-        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {} };
+        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {}, numColsCache: {} };
         return __ensureCatalogBooleanUiStateStore.__fallback;
     }
 }
@@ -1241,7 +1254,7 @@ function __coerceBooleanLike(v) {
 
 function __detectBooleanColumnsForCatalog(catalogKey) {
     try {
-        const key = String(catalogKey || '');
+        const key = __normalizeCatalogKey(String(catalogKey || ''));
         if (!key) return [];
 
         // Prefer per-catalog overlay store (contains the original record fields).
@@ -1330,12 +1343,382 @@ function __getBooleanColumnsCached(catalogKey) {
             if (ageOk && lenOk) return cacheEntry.cols;
         }
 
+        // Prefer backend-provided list per-catalog (from /catalog-binary header).
+        // This avoids needing boolean values to be embedded in each record.
+        try {
+            const metaBy = (window.catalogMetadataByCatalog && window.catalogMetadataByCatalog[key]) || null;
+            const meta = metaBy || window.catalogMetadata || null;
+            if (meta && Array.isArray(meta.boolean_columns) && meta.boolean_columns.length) {
+                const cols = meta.boolean_columns.map(String).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+                cache[key] = { cols, ts: now, n };
+                ui.colsCache = cache;
+                return cols;
+            }
+        } catch (_) {}
+
         const cols = __detectBooleanColumnsForCatalog(key);
         cache[key] = { cols, ts: now, n };
         ui.colsCache = cache;
         return cols;
     } catch (_) {
         return [];
+    }
+}
+
+// ---------------- Catalog numeric-condition filtering (per catalog) ----------------
+function __ensureCatalogConditionFilterStore() {
+    try {
+        if (!window.catalogConditionFiltersByCatalog || typeof window.catalogConditionFiltersByCatalog !== 'object') {
+            window.catalogConditionFiltersByCatalog = {};
+        }
+        return window.catalogConditionFiltersByCatalog;
+    } catch (_) {
+        if (!__ensureCatalogConditionFilterStore.__fallback) __ensureCatalogConditionFilterStore.__fallback = {};
+        return __ensureCatalogConditionFilterStore.__fallback;
+    }
+}
+
+function __detectNumericColumnsForCatalog(catalogKey) {
+    try {
+        const key = __normalizeCatalogKey(String(catalogKey || ''));
+        if (!key) return [];
+
+        // Prefer per-catalog overlay store (contains original record fields)
+        let rows = null;
+        try {
+            if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) {
+                const arr = window.catalogOverlaysByCatalog[key];
+                if (Array.isArray(arr) && arr.length) rows = arr;
+            }
+        } catch (_) {}
+        if (!rows) {
+            try {
+                const all = window.catalogDataForOverlay;
+                if (Array.isArray(all) && all.length) {
+                    rows = all.filter(r => r && (String(r.__catalogName || r.catalog_name || r.catalog || '') === key));
+                }
+            } catch (_) {}
+        }
+        if (!rows || !rows.length) return [];
+
+        const ignore = new Set([
+            'x', 'y', 'ra', 'dec', 'index', 'radius', 'radius_pixels', 'size_pixels', 'size_arcsec',
+            'opacity', 'color', 'fillColor', 'useTransparentFill', 'border_width', 'shape',
+            'catalog_name', '__catalogName', 'passesFilter', 'colorCodeColumn', 'colorCodeValue', 'colorMapName'
+        ]);
+
+        const maxRows = Math.min(300, rows.length);
+        const stats = new Map(); // col -> { seen, numeric, bad }
+
+        const coerceNum = (v) => {
+            if (v == null) return null;
+            if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+            if (typeof v === 'boolean') return null;
+            if (typeof v === 'string') {
+                const s = v.trim();
+                if (!s) return null;
+                const n = Number(s);
+                return Number.isFinite(n) ? n : null;
+            }
+            return null;
+        };
+
+        for (let i = 0; i < maxRows; i++) {
+            const r = rows[i];
+            if (!r || typeof r !== 'object') continue;
+            const keys = Object.keys(r);
+            for (const k of keys) {
+                if (!k) continue;
+                if (ignore.has(k)) continue;
+                if (k.startsWith('_')) continue;
+                const v = r[k];
+                if (v == null) continue;
+                let st = stats.get(k);
+                if (!st) { st = { seen: 0, numeric: 0, bad: 0 }; stats.set(k, st); }
+                st.seen++;
+                const n = coerceNum(v);
+                if (n == null) st.bad++;
+                else st.numeric++;
+            }
+        }
+
+        const cols = [];
+        stats.forEach((st, col) => {
+            if (st.seen < 5) return;
+            // Treat as numeric if most observed values were numeric
+            const ratio = st.numeric / Math.max(1, st.seen);
+            if (st.numeric >= 5 && ratio >= 0.8) cols.push(col);
+        });
+        cols.sort((a, b) => a.localeCompare(b));
+        return cols;
+    } catch (_) {
+        return [];
+    }
+}
+
+function __getNumericColumnsCached(catalogKey) {
+    try {
+        const key = String(catalogKey || '');
+        if (!key) return [];
+        const ui = __ensureCatalogBooleanUiStateStore();
+        const cache = ui.numColsCache || {};
+        const cacheEntry = cache[key];
+        const now = Date.now();
+
+        let n = null;
+        try {
+            const arr = window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key];
+            if (Array.isArray(arr)) n = arr.length;
+        } catch (_) {}
+
+        if (cacheEntry && Array.isArray(cacheEntry.cols)) {
+            const ageOk = (now - (cacheEntry.ts || 0)) < 15000;
+            const lenOk = (n == null) || (cacheEntry.n === n);
+            if (ageOk && lenOk) return cacheEntry.cols;
+        }
+
+        const cols = __detectNumericColumnsForCatalog(key);
+        cache[key] = { cols, ts: now, n };
+        ui.numColsCache = cache;
+        return cols;
+    } catch (_) {
+        return [];
+    }
+}
+
+// ---------------- Catalog column list (for Conditions UI) ----------------
+function __getAllCatalogColumnsCached(catalogKey) {
+    try {
+        const key = __normalizeCatalogKey(String(catalogKey || ''));
+        if (!key) return [];
+        const ui = __ensureCatalogBooleanUiStateStore();
+        const cache = ui.allColsCache || {};
+        const cacheEntry = cache[key];
+        const now = Date.now();
+
+        // Try to read from overlay objects (fast, includes dotted names).
+        try {
+            const arr = window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key];
+            if (Array.isArray(arr) && arr.length) {
+                for (let i = 0; i < Math.min(5, arr.length); i++) {
+                    const r = arr[i];
+                    if (r && Array.isArray(r.__catalog_columns) && r.__catalog_columns.length) {
+                        const cols = r.__catalog_columns.map(String).filter(Boolean);
+                        cols.sort((a, b) => a.localeCompare(b));
+                        cache[key] = { cols, ts: now, n: arr.length };
+                        ui.allColsCache = cache;
+                        return cols;
+                    }
+                }
+            }
+        } catch (_) {}
+
+        // Use cached backend response if fresh.
+        if (cacheEntry && Array.isArray(cacheEntry.cols)) {
+            const ageOk = (now - (cacheEntry.ts || 0)) < 60000;
+            if (ageOk) return cacheEntry.cols;
+        }
+
+        // Kick off async fetch once; UI will re-render when complete.
+        if (!cacheEntry || !cacheEntry.inflight) {
+            const inflight = (async () => {
+                try {
+                    const apiName = String(key || '').replace(/^catalogs\//, '');
+                    const resp = await apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(apiName)}`);
+                    const j = await resp.json();
+                    const cols = (j && Array.isArray(j.columns)) ? j.columns.map(String).filter(Boolean) : [];
+                    cols.sort((a, b) => a.localeCompare(b));
+                    cache[key] = { cols, ts: Date.now() };
+                    ui.allColsCache = cache;
+                } catch (_) {
+                    cache[key] = { cols: [], ts: Date.now() };
+                    ui.allColsCache = cache;
+                }
+                // Re-render controls to show populated columns
+                try { renderCatalogOverlayControls(); } catch (_) {}
+            })();
+            cache[key] = { cols: [], ts: now, inflight };
+            ui.allColsCache = cache;
+        }
+
+        return [];
+    } catch (_) {
+        return [];
+    }
+}
+
+// Fetch and attach column values to overlay objects (by __row_index).
+async function __ensureCatalogColumnsLoaded(catalogKey, columns) {
+    const key = __normalizeCatalogKey(String(catalogKey || ''));
+    const cols = Array.isArray(columns) ? columns.map(String).filter(Boolean) : [String(columns || '')].filter(Boolean);
+    if (!key || !cols.length) return;
+
+    // In multi-pane mode the overlay data may live in a different window (e.g. iframe).
+    // Try to find the window that owns the overlay objects for this catalog.
+    const hostWin = (() => {
+        try {
+            if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) return window;
+        } catch (_) {}
+        try {
+            if (window.top && window.top !== window && window.top.catalogOverlaysByCatalog && window.top.catalogOverlaysByCatalog[key]) return window.top;
+        } catch (_) {}
+        return window;
+    })();
+
+    // Track which columns we already loaded for this catalog (client-side only)
+    if (!hostWin.__catalogLoadedValueCols) hostWin.__catalogLoadedValueCols = {};
+    if (!hostWin.__catalogLoadedValueCols[key]) hostWin.__catalogLoadedValueCols[key] = {};
+
+    const need = cols.filter(c => !hostWin.__catalogLoadedValueCols[key][c]);
+    if (!need.length) return;
+
+    // Overlay store to update
+    const arr = (hostWin.catalogOverlaysByCatalog && hostWin.catalogOverlaysByCatalog[key]) ? hostWin.catalogOverlaysByCatalog[key] : null;
+    if (!Array.isArray(arr) || !arr.length) return;
+
+    // Debug helper (opt-in by setting window.__catalogFilterDebug = true in console)
+    const dbg = (() => { try { return !!(window.__catalogFilterDebug || hostWin.__catalogFilterDebug); } catch (_) { return false; } })();
+    const dbgPrefix = `[catalog-filters][ensureCols]`;
+    if (dbg) {
+        try {
+            console.debug(`${dbgPrefix} start`, {
+                catalogKey: key,
+                requested: cols,
+                need,
+                overlays: arr.length,
+                hostWin: (hostWin === window ? 'window' : (hostWin === window.top ? 'top' : 'other'))
+            });
+        } catch (_) {}
+    }
+
+    // Collect row indices from overlay objects
+    // Prefer __row_index (original FITS row). Fall back to sourceIndex/index if needed.
+    const rowIdxs = [];
+    const posByRow = new Map(); // row_index -> list of overlay positions
+    for (let i = 0; i < arr.length; i++) {
+        const r = arr[i];
+        let ri = r && r.__row_index;
+        if (!Number.isInteger(ri)) {
+            ri = (r && Number.isInteger(r.sourceIndex)) ? r.sourceIndex : (r && Number.isInteger(r.index) ? r.index : null);
+        }
+        if (!Number.isInteger(ri)) continue;
+        rowIdxs.push(ri);
+        if (!posByRow.has(ri)) posByRow.set(ri, []);
+        posByRow.get(ri).push(i);
+    }
+    if (!rowIdxs.length) return;
+
+    const apiName = String(key).replace(/^catalogs\//, '');
+    const CHUNK = 20000; // frontend chunk size; backend now has no hard limit
+    const received = new Set();
+    const assignedAnyByCol = Object.create(null);
+    const assignedNonNullByCol = Object.create(null);
+    for (const col of need) {
+        assignedAnyByCol[col] = 0;
+        assignedNonNullByCol[col] = 0;
+    }
+    for (let start = 0; start < rowIdxs.length; start += CHUNK) {
+        const chunkIdxs = rowIdxs.slice(start, start + CHUNK);
+        if (dbg) {
+            try {
+                console.debug(`${dbgPrefix} POST /catalog-column-values/`, {
+                    apiName,
+                    chunkStart: start,
+                    chunkSize: chunkIdxs.length,
+                    need
+                });
+            } catch (_) {}
+        }
+        const resp = await apiFetch('/catalog-column-values/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ catalog_name: apiName, row_indices: chunkIdxs, columns: need })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            throw new Error((data && (data.detail || data.error)) ? (data.detail || data.error) : `Failed to fetch column values (HTTP ${resp.status})`);
+        }
+
+        const outIdxs = Array.isArray(data.row_indices) ? data.row_indices : [];
+        const outCols = Array.isArray(data.columns) ? data.columns : [];
+        const values = (data && data.values && typeof data.values === 'object') ? data.values : {};
+        for (const c of outCols) received.add(String(c));
+
+        if (dbg) {
+            try {
+                console.debug(`${dbgPrefix} response`, {
+                    http: resp.status,
+                    outIdxs: outIdxs.length,
+                    outCols,
+                    valueKeys: Object.keys(values).slice(0, 40)
+                });
+            } catch (_) {}
+        }
+
+        // Build quick lookup: row_index -> offset in out arrays
+        const offsetByRow = new Map();
+        for (let i = 0; i < outIdxs.length; i++) offsetByRow.set(outIdxs[i], i);
+
+        // Build case-insensitive key map for `values` (backend may return different key case)
+        const valuesKeyByLower = new Map();
+        try {
+            for (const k of Object.keys(values)) valuesKeyByLower.set(String(k).toLowerCase(), k);
+        } catch (_) {}
+
+        for (const col of need) {
+            let valKey = null;
+            if (Array.isArray(values[col])) {
+                valKey = col;
+            } else {
+                const k2 = valuesKeyByLower.get(String(col).toLowerCase());
+                if (k2 && Array.isArray(values[k2])) valKey = k2;
+            }
+            const colArr = valKey ? values[valKey] : null;
+            if (!Array.isArray(colArr)) continue;
+
+            for (const ri of outIdxs) {
+                const off = offsetByRow.get(ri);
+                if (off == null) continue;
+                const v = colArr[off];
+                const positions = posByRow.get(ri);
+                if (!positions) continue;
+                for (const p of positions) {
+                    try { arr[p][col] = v; } catch (_) {}
+                }
+                assignedAnyByCol[col] = (assignedAnyByCol[col] || 0) + 1;
+                if (v !== null && typeof v !== 'undefined') {
+                    assignedNonNullByCol[col] = (assignedNonNullByCol[col] || 0) + 1;
+                }
+            }
+        }
+    }
+
+    // Only mark columns as loaded if the server actually returned them (prevents false "loaded" state).
+    for (const col of need) {
+        const ok = received.has(String(col)) || received.has(String(col).toLowerCase()) || Array.from(received).some(c => c.toLowerCase() === String(col).toLowerCase());
+        if (!ok) {
+            throw new Error(`Column not found in catalog: ${col}`);
+        }
+        const any = assignedAnyByCol[col] || 0;
+        const nonNull = assignedNonNullByCol[col] || 0;
+        if (dbg) {
+            try { console.debug(`${dbgPrefix} stats`, { col, assignedAny: any, assignedNonNull: nonNull }); } catch (_) {}
+        }
+        // If we couldn't assign anything, we definitely didn't load values.
+        if (any <= 0) {
+            throw new Error(`Failed to populate column values for: ${col} (no assignments)`);
+        }
+        // If all assigned values are null/undefined, treat as "not loaded" to avoid hiding everything.
+        if (nonNull <= 0) {
+            throw new Error(`Failed to populate column values for: ${col} (all values are null/undefined)`);
+        }
+        hostWin.__catalogLoadedValueCols[key][col] = true;
+    }
+
+    if (dbg) {
+        try {
+            console.debug(`${dbgPrefix} done`, { catalogKey: key, loaded: need.slice() });
+        } catch (_) {}
     }
 }
 
@@ -1499,8 +1882,50 @@ function renderCatalogOverlayControls() {
         color: '#f9fafb',
         fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
         minWidth: '260px',
-        pointerEvents: 'auto'
+        pointerEvents: 'auto',
+        // Prevent any child from causing horizontal scroll
+        overflowX: 'hidden',
+        boxSizing: 'border-box',
+        // Prevent the panel from growing beyond the viewport (so the close button is always reachable)
+        maxHeight: '82vh',
+        overflowY: 'hidden'
     });
+
+    // Ensure box-sizing is consistent inside the panel (prevents subtle width overflow from padding/borders)
+    try {
+        const styleId = 'catalog-overlay-controls-boxsizing';
+        if (!hostDoc.getElementById(styleId)) {
+            const st = createEl('style');
+            st.id = styleId;
+            st.textContent = `
+            #catalog-overlay-controls, #catalog-overlay-controls * { box-sizing: border-box; }
+            #catalog-overlay-controls { overflow-x: hidden; }
+            @keyframes catalog-btn-pulse {
+              0% { transform: scale(1); box-shadow: 0 0 0 rgba(34,211,238,0); }
+              45% { transform: scale(1.06); box-shadow: 0 0 0 4px rgba(34,211,238,0.15); }
+              100% { transform: scale(1); box-shadow: 0 0 0 rgba(34,211,238,0); }
+            }
+            @keyframes catalog-btn-shake {
+              0%, 100% { transform: translateX(0); }
+              25% { transform: translateX(-2px); }
+              75% { transform: translateX(2px); }
+            }
+            @keyframes catalog-x-pop {
+              0% { transform: scale(1); }
+              100% { transform: scale(0.9); }
+            }
+            @keyframes catalog-row-out {
+              0% { opacity: 1; transform: translateX(0); max-height: 40px; }
+              100% { opacity: 0; transform: translateX(6px); max-height: 0px; }
+            }
+            @keyframes catalog-cond-pop {
+              0% { opacity: 0; transform: translateY(-4px); }
+              100% { opacity: 1; transform: translateY(0); }
+            }
+            `;
+            hostDoc.head.appendChild(st);
+        }
+    } catch (_) {}
 
     // Header (similar to segment controls)
     const headerRow = createEl('div');
@@ -1509,7 +1934,12 @@ function renderCatalogOverlayControls() {
         width: '100%',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: '10px'
+        gap: '10px',
+        position: 'sticky',
+        top: '0',
+        zIndex: '3',
+        background: 'rgba(17,24,39,0.98)',
+        paddingBottom: '6px'
     });
     const titleLabel = createEl('span');
     const activeName = window.currentCatalogName || window.activeCatalog || '';
@@ -1544,6 +1974,22 @@ function renderCatalogOverlayControls() {
     headerRow.append(titleLabel, collapseBtn);
     panel.appendChild(headerRow);
 
+    // Live visible-source counter (fed by canvasUpdateOverlay -> window.__catalogOverlayRenderStats)
+    const statsRow = createEl('div');
+    statsRow.dataset.role = 'catalog-shown-summary';
+    Object.assign(statsRow.style, {
+        fontSize: '12px',
+        color: '#cbd5e1',
+        marginTop: '-6px',
+        position: 'sticky',
+        top: '34px',
+        zIndex: '2',
+        background: 'rgba(17,24,39,0.98)',
+        paddingBottom: '6px'
+    });
+    statsRow.textContent = 'Visible sources: —';
+    panel.appendChild(statsRow);
+
     const expandedContent = createEl('div');
     Object.assign(expandedContent.style, {
         display: 'flex',
@@ -1552,8 +1998,10 @@ function renderCatalogOverlayControls() {
         width: '100%',
         gap: '10px',
         transition: 'opacity 200ms ease, max-height 220ms ease',
-        overflow: 'visible',
-        maxHeight: '600px'
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        // Let this section scroll within the capped panel height
+        maxHeight: 'calc(82vh - 72px)'
     });
     panel.appendChild(expandedContent);
 
@@ -1580,13 +2028,18 @@ function renderCatalogOverlayControls() {
 
     const cats = Array.isArray(loadedCats) ? loadedCats : [];
     const boolStore = __ensureCatalogBooleanFilterStore();
+    const condStore = __ensureCatalogConditionFilterStore();
     const uiState = __ensureCatalogBooleanUiStateStore();
     const openKey = uiState.openKey || null;
     const countEnabledFilters = (key) => {
         try {
-            const cfg = boolStore[key];
+            const nk = __normalizeCatalogKey(key);
+            const cfg = boolStore[nk];
             if (!cfg || typeof cfg !== 'object') return 0;
-            return Object.keys(cfg).filter((c) => c !== '__mode' && cfg[c] === true).length;
+            const boolCount = Object.keys(cfg).filter((c) => c !== '__mode' && cfg[c] === true).length;
+            const cCfg = condStore[nk];
+            const condCount = (cCfg && typeof cCfg === 'object' && Array.isArray(cCfg.conditions)) ? cCfg.conditions.filter(Boolean).length : 0;
+            return boolCount + condCount;
         } catch (_) { return 0; }
     };
 
@@ -1670,19 +2123,26 @@ function renderCatalogOverlayControls() {
         Object.assign(right.style, { display: 'flex', alignItems: 'center', gap: '8px', flex: '0 0 auto' });
 
         const filterCount = countEnabledFilters(key);
+        const isFilterOpen = (openKey && String(openKey) === String(key));
         const filterBtn = createEl('button');
         filterBtn.type = 'button';
-        filterBtn.title = 'Filter (boolean columns)';
-        filterBtn.textContent = filterCount > 0 ? `⏷ Filter · ${filterCount}` : '⏷ Filter';
+        filterBtn.title = 'Filter (boolean + conditions)';
+        const chevron = isFilterOpen ? '⏶' : '⏷';
+        filterBtn.textContent = filterCount > 0 ? `${chevron} Filter · ${filterCount}` : `${chevron} Filter`;
         Object.assign(filterBtn.style, {
             border: 'none',
-            background: filterCount > 0 ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.06)',
-            color: filterCount > 0 ? '#67e8f9' : '#e5e7eb',
+            background: isFilterOpen
+                ? 'rgba(37,99,235,0.35)'
+                : (filterCount > 0 ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.06)'),
+            color: isFilterOpen
+                ? '#bfdbfe'
+                : (filterCount > 0 ? '#67e8f9' : '#e5e7eb'),
             padding: '3px 10px',
             borderRadius: '999px',
             cursor: 'pointer',
             fontSize: '11px',
-            transition: 'background 150ms ease, transform 150ms ease'
+            transition: 'background 150ms ease, transform 150ms ease, box-shadow 150ms ease',
+            boxShadow: isFilterOpen ? '0 0 0 1px rgba(147,197,253,0.45) inset' : 'none'
         });
         filterBtn.addEventListener('mouseenter', () => { filterBtn.style.transform = 'scale(1.02)'; });
         filterBtn.addEventListener('mouseleave', () => { filterBtn.style.transform = 'scale(1)'; });
@@ -1697,7 +2157,53 @@ function renderCatalogOverlayControls() {
             try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
         });
 
-        right.append(meta, filterBtn);
+        const removeBtn = createEl('button');
+        removeBtn.type = 'button';
+        removeBtn.title = 'Remove this catalog';
+        removeBtn.textContent = '×';
+        Object.assign(removeBtn.style, {
+            border: 'none',
+            background: 'rgba(239,68,68,0.18)',
+            color: '#fecaca',
+            width: '26px',
+            height: '26px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontSize: '16px',
+            lineHeight: '26px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+        });
+        removeBtn.addEventListener('click', (ev) => {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+            // Animate then remove
+            try {
+                if (removeBtn.animate) {
+                    removeBtn.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.9)' }, { transform: 'scale(1)' }], { duration: 160, easing: 'ease-out' });
+                }
+            } catch (_) {}
+            try {
+                row.style.overflow = 'hidden';
+                if (row.animate) {
+                    row.animate([{ opacity: 1, transform: 'translateX(0)', maxHeight: '40px' }, { opacity: 0, transform: 'translateX(8px)', maxHeight: '0px' }], { duration: 180, easing: 'ease-out' });
+                } else {
+                    row.style.animation = 'catalog-row-out 180ms ease-out forwards';
+                }
+            } catch (_) {}
+            setTimeout(() => {
+                try {
+                    if (typeof window.removeCatalogOverlayByKey === 'function') {
+                        window.removeCatalogOverlayByKey(key);
+                    } else if (typeof window.clearCatalog === 'function' && String(window.currentCatalogName || '') === String(key)) {
+                        window.clearCatalog();
+                    }
+                } catch (_) {}
+                try { renderCatalogOverlayControls(); } catch (_) {}
+            }, 180);
+        });
+
+        right.append(meta, filterBtn, removeBtn);
         row.append(left, right);
         rows.appendChild(row);
 
@@ -1709,7 +2215,8 @@ function renderCatalogOverlayControls() {
             marginTop: '2px',
             padding: '0 8px',
             overflow: 'hidden',
-            maxHeight: isOpen ? '240px' : '0px',
+            // Increased so "Conditions" rows don't get clipped; inner content will scroll if needed.
+            maxHeight: isOpen ? '760px' : '0px',
             opacity: isOpen ? '1' : '0',
             transition: 'max-height 220ms ease, opacity 180ms ease',
         });
@@ -1724,15 +2231,65 @@ function renderCatalogOverlayControls() {
             borderRadius: '10px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '8px'
+            gap: '8px',
+            // Allow long filter panels (many boolean cols + conditions) without hiding lower controls.
+            maxHeight: '620px',
+            overflowY: 'auto',
+            overflowX: 'hidden'
         });
 
         // Build content only when open (cheaper, and avoids repeated boolean-column scans)
         if (isOpen) {
-            const cols = __getBooleanColumnsCached(key);
-            if (!boolStore[key] || typeof boolStore[key] !== 'object') boolStore[key] = { __mode: 'and' };
-            if (typeof boolStore[key].__mode !== 'string') boolStore[key].__mode = 'and';
-            const mode = (boolStore[key].__mode === 'or') ? 'or' : 'and';
+            const normalizedKey = __normalizeCatalogKey(key);
+            const cols = __getBooleanColumnsCached(normalizedKey);
+            if (!boolStore[normalizedKey] || typeof boolStore[normalizedKey] !== 'object') boolStore[normalizedKey] = { __mode: 'and' };
+            if (typeof boolStore[normalizedKey].__mode !== 'string') boolStore[normalizedKey].__mode = 'and';
+            const mode = (boolStore[normalizedKey].__mode === 'or') ? 'or' : 'and';
+
+            if (!condStore[normalizedKey] || typeof condStore[normalizedKey] !== 'object') condStore[normalizedKey] = { __mode: 'and', conditions: [] };
+            if (!Array.isArray(condStore[normalizedKey].conditions)) condStore[normalizedKey].conditions = [];
+            const condMode = (condStore[normalizedKey].__mode === 'or') ? 'or' : 'and';
+            const lastAdded = (() => {
+                try { return uiState && uiState.lastAddedCondition ? uiState.lastAddedCondition : null; } catch (_) { return null; }
+            })();
+            const isLastAdded = (col, op, value) => {
+                try {
+                    if (!lastAdded) return false;
+                    if (lastAdded.key !== normalizedKey) return false;
+                    if (Date.now() - (lastAdded.ts || 0) > 1500) return false;
+                    const sig = `${String(col)}|${String(op)}|${Number(value)}`;
+                    return lastAdded.sig === sig;
+                } catch (_) { return false; }
+            };
+            const animateAddButton = (btn, kind = 'success') => {
+                if (!btn) return;
+                try {
+                    if (btn.animate) {
+                        if (kind === 'error') {
+                            btn.animate(
+                                [{ transform: 'translateX(0)' }, { transform: 'translateX(-2px)' }, { transform: 'translateX(2px)' }, { transform: 'translateX(0)' }],
+                                { duration: 220, easing: 'ease-out' }
+                            );
+                        } else {
+                            btn.animate(
+                                [{ transform: 'scale(1)', boxShadow: '0 0 0 rgba(34,211,238,0)' },
+                                 { transform: 'scale(1.06)', boxShadow: '0 0 0 4px rgba(34,211,238,0.15)' },
+                                 { transform: 'scale(1)', boxShadow: '0 0 0 rgba(34,211,238,0)' }],
+                                { duration: 240, easing: 'ease-out' }
+                            );
+                        }
+                        return;
+                    }
+                } catch (_) {}
+                try {
+                    btn.style.animation = 'none';
+                    void btn.offsetHeight;
+                    btn.style.animation = (kind === 'error')
+                        ? 'catalog-btn-shake 220ms ease-out'
+                        : 'catalog-btn-pulse 240ms ease-out';
+                    setTimeout(() => { try { btn.style.animation = ''; } catch (_) {} }, 260);
+                } catch (_) {}
+            };
 
             const header = createEl('div');
             Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' });
@@ -1760,9 +2317,14 @@ function renderCatalogOverlayControls() {
             });
             reset.addEventListener('click', () => {
                 try {
-                    Object.keys(boolStore[key] || {}).forEach((col) => {
-                        if (col !== '__mode') boolStore[key][col] = false;
+                    Object.keys(boolStore[normalizedKey] || {}).forEach((col) => {
+                        if (col !== '__mode') boolStore[normalizedKey][col] = false;
                     });
+                } catch (_) {}
+                try {
+                    if (condStore[normalizedKey] && Array.isArray(condStore[normalizedKey].conditions)) {
+                        condStore[normalizedKey].conditions = [];
+                    }
                 } catch (_) {}
                 try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
                 try { renderCatalogOverlayControls(); } catch (_) {}
@@ -1796,7 +2358,7 @@ function renderCatalogOverlayControls() {
                     transition: 'background 150ms ease'
                 });
                 b.addEventListener('click', () => {
-                    boolStore[key].__mode = id;
+                    boolStore[normalizedKey].__mode = id;
                     try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
                     try { renderCatalogOverlayControls(); } catch (_) {}
                 });
@@ -1836,10 +2398,32 @@ function renderCatalogOverlayControls() {
                     });
                     const cb = createEl('input');
                     cb.type = 'checkbox';
-                    cb.checked = !!boolStore[key][col];
+                    cb.checked = !!boolStore[normalizedKey][col];
                     cb.addEventListener('change', () => {
-                        boolStore[key][col] = !!cb.checked;
-                        try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                        (async () => {
+                            try {
+                                try {
+                                    const dbg = !!(window.__catalogFilterDebug || window.top?.__catalogFilterDebug);
+                                    if (dbg) {
+                                        console.debug('[catalog-filters][bool] change', { catalog: normalizedKey, col, checked: cb.checked });
+                                    }
+                                } catch (_) {}
+                                // Ensure the boolean column values exist on overlay objects before filtering.
+                                if (cb.checked) {
+                                    await __ensureCatalogColumnsLoaded(normalizedKey, [col]);
+                                }
+                            } catch (err) {
+                                console.warn('[catalog-overlay-controls] Failed to load boolean column values:', err);
+                                // Don't apply a filter that would hide everything if we couldn't load values.
+                                try { cb.checked = false; } catch (_) {}
+                                try { boolStore[normalizedKey][col] = false; } catch (_) {}
+                                try { if (typeof window.showNotification === 'function') window.showNotification(String(err?.message || err), 4000, 'error'); } catch (_) {}
+                                try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                                return;
+                            }
+                            boolStore[normalizedKey][col] = !!cb.checked;
+                            try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                        })();
                     });
                     const text2 = createEl('span');
                     text2.textContent = col;
@@ -1861,6 +2445,388 @@ function renderCatalogOverlayControls() {
                 }
                 inner.appendChild(grid);
             }
+
+            // Numeric condition filters
+            const numericHeader = createEl('div');
+            Object.assign(numericHeader.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginTop: '6px' });
+            const numericTitle = createEl('div');
+            numericTitle.textContent = 'Conditions';
+            Object.assign(numericTitle.style, { fontSize: '12px', color: '#cbd5e1', fontWeight: '600' });
+            const numericReset = createEl('button');
+            numericReset.type = 'button';
+            numericReset.textContent = 'Clear';
+            Object.assign(numericReset.style, {
+                border: 'none',
+                background: 'rgba(148,163,184,0.18)',
+                color: '#e5e7eb',
+                padding: '3px 10px',
+                borderRadius: '999px',
+                cursor: 'pointer',
+                fontSize: '11px'
+            });
+            numericReset.addEventListener('click', () => {
+                try { condStore[normalizedKey].conditions = []; } catch (_) {}
+                try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                try { renderCatalogOverlayControls(); } catch (_) {}
+            });
+            numericHeader.append(numericTitle, numericReset);
+            inner.appendChild(numericHeader);
+
+            const condModeRow = createEl('div');
+            Object.assign(condModeRow.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' });
+            const condModeLabel = createEl('div');
+            condModeLabel.textContent = 'Mode:';
+            Object.assign(condModeLabel.style, { fontSize: '11px', color: '#94a3b8' });
+            const condModeToggle = createEl('div');
+            Object.assign(condModeToggle.style, { display: 'flex', gap: '6px' });
+            const makeCondModeBtn = (id, text) => {
+                const b = createEl('button');
+                b.type = 'button';
+                b.textContent = text;
+                const active = condMode === id;
+                Object.assign(b.style, {
+                    border: 'none',
+                    background: active ? 'rgba(37,99,235,0.75)' : 'rgba(255,255,255,0.08)',
+                    color: '#fff',
+                    padding: '3px 10px',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    transition: 'background 150ms ease'
+                });
+                b.addEventListener('click', () => {
+                    condStore[normalizedKey].__mode = id;
+                    try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                    try { renderCatalogOverlayControls(); } catch (_) {}
+                });
+                return b;
+            };
+            condModeToggle.append(makeCondModeBtn('and', 'AND'), makeCondModeBtn('or', 'OR'));
+            condModeRow.append(condModeLabel, condModeToggle);
+            inner.appendChild(condModeRow);
+
+            const allCols = __getAllCatalogColumnsCached(normalizedKey);
+            const numericCols = __getNumericColumnsCached(normalizedKey);
+            const colsForDropdown = allCols.length ? allCols : numericCols;
+
+            if (!colsForDropdown.length) {
+                const noneNum = createEl('div');
+                noneNum.textContent = 'Loading columns… If this takes long, you can still enter a column name manually below.';
+                Object.assign(noneNum.style, { fontSize: '12px', color: '#e5e7eb', opacity: 0.9 });
+                inner.appendChild(noneNum);
+
+                // Manual condition row fallback (always available) - keep on one row
+                const addRow = createEl('div');
+                Object.assign(addRow.style, {
+                    width: '100%',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 72px 96px auto',
+                    gap: '6px',
+                    alignItems: 'center',
+                    overflowX: 'hidden'
+                });
+
+                const colInput = createEl('input');
+                colInput.type = 'text';
+                colInput.placeholder = 'Column name…';
+                Object.assign(colInput.style, {
+                    minWidth: '0',
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 8px',
+                    fontSize: '12px'
+                });
+
+                const opSel = createEl('select');
+                Object.assign(opSel.style, {
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 6px',
+                    fontSize: '12px'
+                });
+                ['>', '>=', '<', '<=', '==', '!='].forEach((op) => {
+                    const o = createEl('option');
+                    o.value = op;
+                    o.textContent = op;
+                    opSel.appendChild(o);
+                });
+                opSel.value = '>';
+
+                const valInput = createEl('input');
+                valInput.type = 'number';
+                valInput.step = 'any';
+                valInput.placeholder = 'Value';
+                Object.assign(valInput.style, {
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 8px',
+                    fontSize: '12px'
+                });
+
+                const addBtn = createEl('button');
+                addBtn.type = 'button';
+                addBtn.textContent = 'Add';
+                Object.assign(addBtn.style, {
+                    border: 'none',
+                    background: 'rgba(34,211,238,0.18)',
+                    color: '#67e8f9',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    whiteSpace: 'nowrap'
+                });
+
+                const msg = createEl('div');
+                Object.assign(msg.style, { fontSize: '11px', color: '#fca5a5', minHeight: '14px' });
+
+                const tryAddManual = () => {
+                    msg.textContent = '';
+                    const col = String(colInput.value || '').trim();
+                    const op = String(opSel.value || '').trim();
+                    const raw = valInput.value;
+                    const value = Number(raw);
+                    if (!col) { msg.textContent = 'Enter a column name.'; animateAddButton(addBtn, 'error'); return; }
+                    if (!Number.isFinite(value)) { msg.textContent = 'Enter a numeric value.'; animateAddButton(addBtn, 'error'); return; }
+                    const entry = { col, op, value };
+                    const arr = condStore[normalizedKey].conditions || [];
+                    const exists = arr.some((c) => c && c.col === entry.col && c.op === entry.op && Number(c.value) === entry.value);
+                    if (!exists) arr.push(entry);
+                    condStore[normalizedKey].conditions = arr;
+                    try { uiState.lastAddedCondition = { key: normalizedKey, sig: `${entry.col}|${entry.op}|${Number(entry.value)}`, ts: Date.now() }; } catch (_) {}
+                    animateAddButton(addBtn, 'success');
+                    try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                    try { renderCatalogOverlayControls(); } catch (_) {}
+                };
+                addBtn.addEventListener('click', tryAddManual);
+                valInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryAddManual(); });
+
+                addRow.append(colInput, opSel, valInput, addBtn);
+                inner.appendChild(addRow);
+                inner.appendChild(msg);
+            } else {
+                const addRow = createEl('div');
+                Object.assign(addRow.style, {
+                    width: '100%',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 72px 96px auto',
+                    gap: '6px',
+                    alignItems: 'center',
+                    overflowX: 'hidden'
+                });
+
+                const colSel = createEl('select');
+                Object.assign(colSel.style, {
+                    minWidth: '0',
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 8px',
+                    fontSize: '12px'
+                });
+                const placeholderOpt = createEl('option');
+                placeholderOpt.value = '';
+                placeholderOpt.textContent = 'Column…';
+                colSel.appendChild(placeholderOpt);
+                colsForDropdown.forEach((cname) => {
+                    const o = createEl('option');
+                    o.value = cname;
+                    o.textContent = cname;
+                    colSel.appendChild(o);
+                });
+
+                const opSel = createEl('select');
+                Object.assign(opSel.style, {
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 6px',
+                    fontSize: '12px'
+                });
+                ['>', '>=', '<', '<=', '==', '!='].forEach((op) => {
+                    const o = createEl('option');
+                    o.value = op;
+                    o.textContent = op;
+                    opSel.appendChild(o);
+                });
+                opSel.value = '>';
+
+                const valInput = createEl('input');
+                valInput.type = 'number';
+                valInput.step = 'any';
+                valInput.placeholder = 'Value';
+                Object.assign(valInput.style, {
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '8px',
+                    padding: '6px 8px',
+                    fontSize: '12px'
+                });
+
+                const addBtn = createEl('button');
+                addBtn.type = 'button';
+                addBtn.textContent = 'Add';
+                Object.assign(addBtn.style, {
+                    border: 'none',
+                    background: 'rgba(34,211,238,0.18)',
+                    color: '#67e8f9',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    whiteSpace: 'nowrap'
+                });
+
+                const msg = createEl('div');
+                Object.assign(msg.style, { fontSize: '11px', color: '#fca5a5', minHeight: '14px' });
+
+                const tryAdd = () => {
+                    msg.textContent = '';
+                    const col = String(colSel.value || '').trim();
+                    const op = String(opSel.value || '').trim();
+                    const raw = valInput.value;
+                    const value = Number(raw);
+                    if (!col) { msg.textContent = 'Pick a column.'; animateAddButton(addBtn, 'error'); return; }
+                    if (!Number.isFinite(value)) { msg.textContent = 'Enter a numeric value.'; animateAddButton(addBtn, 'error'); return; }
+                    (async () => {
+                        try {
+                            // Ensure the numeric column values exist on overlay objects before filtering.
+                            await __ensureCatalogColumnsLoaded(normalizedKey, [col]);
+                        } catch (err) {
+                            console.warn('[catalog-overlay-controls] Failed to load condition column values:', err);
+                            msg.textContent = String(err?.message || err || 'Failed to load column values');
+                            animateAddButton(addBtn, 'error');
+                            try { if (typeof window.showNotification === 'function') window.showNotification(msg.textContent, 4500, 'error'); } catch (_) {}
+                            return;
+                        }
+                        const entry = { col, op, value };
+                        const arr = condStore[normalizedKey].conditions || [];
+                        const exists = arr.some((c) => c && c.col === entry.col && c.op === entry.op && Number(c.value) === entry.value);
+                        if (!exists) arr.push(entry);
+                        condStore[normalizedKey].conditions = arr;
+                        try { uiState.lastAddedCondition = { key: normalizedKey, sig: `${entry.col}|${entry.op}|${Number(entry.value)}`, ts: Date.now() }; } catch (_) {}
+                        animateAddButton(addBtn, 'success');
+                        try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                        try { renderCatalogOverlayControls(); } catch (_) {}
+                    })();
+                };
+                addBtn.addEventListener('click', tryAdd);
+                valInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') tryAdd();
+                });
+
+                addRow.append(colSel, opSel, valInput, addBtn);
+                inner.appendChild(addRow);
+                inner.appendChild(msg);
+
+                const listWrap = createEl('div');
+                Object.assign(listWrap.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    width: '100%',
+                    maxHeight: '220px',
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    paddingRight: '4px'
+                });
+                const conds = Array.isArray(condStore[normalizedKey].conditions) ? condStore[normalizedKey].conditions.filter(Boolean) : [];
+                if (!conds.length) {
+                    const none2 = createEl('div');
+                    none2.textContent = 'No conditions set.';
+                    Object.assign(none2.style, { fontSize: '12px', color: '#e5e7eb', opacity: 0.85 });
+                    listWrap.appendChild(none2);
+                } else {
+                    conds.slice(0, 10).forEach((c, idx) => {
+                        const row = createEl('div');
+                        Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' });
+                        try {
+                            if (isLastAdded(c.col, c.op, c.value)) {
+                                row.style.animation = 'catalog-cond-pop 260ms ease-out';
+                                row.dataset.role = 'catalog-cond-last';
+                            }
+                        } catch (_) {}
+                        const t = createEl('div');
+                        t.textContent = `${c.col} ${c.op} ${c.value}`;
+                        Object.assign(t.style, { fontSize: '12px', color: '#e5e7eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                        const rm = createEl('button');
+                        rm.type = 'button';
+                        rm.textContent = '×';
+                        Object.assign(rm.style, {
+                            border: 'none',
+                            background: 'rgba(239,68,68,0.18)',
+                            color: '#fecaca',
+                            width: '24px',
+                            height: '24px',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            lineHeight: '24px'
+                        });
+                        rm.addEventListener('click', () => {
+                            // Animate row removal before re-rendering
+                            try {
+                                rm.style.animation = 'none';
+                                void rm.offsetHeight;
+                                rm.style.animation = 'catalog-x-pop 160ms ease-out';
+                            } catch (_) {}
+                            try {
+                                row.style.overflow = 'hidden';
+                                if (row.animate) {
+                                    row.animate(
+                                        [{ opacity: 1, transform: 'translateX(0)', maxHeight: '40px' }, { opacity: 0, transform: 'translateX(6px)', maxHeight: '0px' }],
+                                        { duration: 180, easing: 'ease-out' }
+                                    );
+                                } else {
+                                    row.style.animation = 'catalog-row-out 180ms ease-out forwards';
+                                }
+                            } catch (_) {}
+                            setTimeout(() => {
+                                try {
+                                    const arr = Array.isArray(condStore[normalizedKey].conditions) ? condStore[normalizedKey].conditions : [];
+                                    const next = arr.filter((_, i2) => i2 !== idx);
+                                    condStore[normalizedKey].conditions = next;
+                                } catch (_) {}
+                                try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                                try { renderCatalogOverlayControls(); } catch (_) {}
+                            }, 180);
+                        });
+                        row.append(t, rm);
+                        listWrap.appendChild(row);
+                    });
+                    if (conds.length > 10) {
+                        const more = createEl('div');
+                        more.textContent = `+${conds.length - 10} more`;
+                        Object.assign(more.style, { fontSize: '11px', color: '#94a3b8' });
+                        listWrap.appendChild(more);
+                    }
+                }
+                inner.appendChild(listWrap);
+                // After adding a condition, auto-scroll the list so the new item is visible.
+                try {
+                    if (lastAdded && lastAdded.key === normalizedKey) {
+                        setTimeout(() => {
+                            try {
+                                const elLast = inner.querySelector('[data-role="catalog-cond-last"]');
+                                if (elLast && typeof elLast.scrollIntoView === 'function') {
+                                    elLast.scrollIntoView({ block: 'nearest' });
+                                }
+                            } catch (_) {}
+                        }, 0);
+                    }
+                } catch (_) {}
+            }
         }
 
         expanded.appendChild(inner);
@@ -1876,6 +2842,109 @@ function renderCatalogOverlayControls() {
 
     list.appendChild(rows);
     expandedContent.appendChild(list);
+
+    // Cross-match UI (only when 2+ catalogs are loaded)
+    try {
+        const catsLoaded = Array.isArray(loadedCats) ? loadedCats : [];
+        if (catsLoaded.length >= 2) {
+            const cfg = (() => {
+                try {
+                    if (!window.catalogCrossMatchConfig || typeof window.catalogCrossMatchConfig !== 'object') {
+                        window.catalogCrossMatchConfig = { enabled: false, radius_arcsec: 1.0 };
+                    }
+                    if (typeof window.catalogCrossMatchConfig.enabled !== 'boolean') window.catalogCrossMatchConfig.enabled = false;
+                    const r = Number(window.catalogCrossMatchConfig.radius_arcsec);
+                    if (!Number.isFinite(r) || r <= 0) window.catalogCrossMatchConfig.radius_arcsec = 1.0;
+                    return window.catalogCrossMatchConfig;
+                } catch (_) {
+                    return { enabled: false, radius_arcsec: 1.0 };
+                }
+            })();
+
+            const xmWrap = createEl('div');
+            Object.assign(xmWrap.style, {
+                width: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '10px 10px',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '10px'
+            });
+
+            const xmTitle = createEl('div');
+            xmTitle.textContent = 'Cross-match catalogs (common sources)';
+            Object.assign(xmTitle.style, { fontSize: '12px', color: '#cbd5e1', fontWeight: '600' });
+            xmWrap.appendChild(xmTitle);
+
+            const row1 = createEl('div');
+            Object.assign(row1.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' });
+
+            const left = createEl('label');
+            Object.assign(left.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' });
+            const toggle = createEl('input');
+            toggle.type = 'checkbox';
+            toggle.checked = !!cfg.enabled;
+            const toggleText = createEl('span');
+            toggleText.textContent = 'Only show sources matched in ALL loaded catalogs';
+            Object.assign(toggleText.style, { fontSize: '12px', color: '#e5e7eb' });
+            left.append(toggle, toggleText);
+
+            const right = createEl('div');
+            Object.assign(right.style, { display: 'flex', alignItems: 'center', gap: '6px' });
+            const sepLabel = createEl('span');
+            sepLabel.textContent = 'sep';
+            Object.assign(sepLabel.style, { fontSize: '11px', color: '#94a3b8' });
+            const sepInput = createEl('input');
+            sepInput.type = 'number';
+            sepInput.step = '0.1';
+            sepInput.min = '0';
+            sepInput.value = String(cfg.radius_arcsec ?? 1.0);
+            sepInput.disabled = !cfg.enabled;
+            Object.assign(sepInput.style, {
+                width: '86px',
+                background: 'rgba(255,255,255,0.06)',
+                color: '#e5e7eb',
+                border: '1px solid rgba(255,255,255,0.10)',
+                borderRadius: '8px',
+                padding: '6px 8px',
+                fontSize: '12px'
+            });
+            const unit = createEl('span');
+            unit.textContent = 'arcsec';
+            Object.assign(unit.style, { fontSize: '11px', color: '#94a3b8' });
+            right.append(sepLabel, sepInput, unit);
+
+            row1.append(left, right);
+            xmWrap.appendChild(row1);
+
+            const hint = createEl('div');
+            hint.textContent = 'Matches are computed on RA/Dec';
+            Object.assign(hint.style, { fontSize: '11px', color: '#94a3b8' });
+            xmWrap.appendChild(hint);
+
+            const applyCfg = () => {
+                try {
+                    const enabled = !!toggle.checked;
+                    const r = Number(sepInput.value);
+                    window.catalogCrossMatchConfig = window.catalogCrossMatchConfig || {};
+                    window.catalogCrossMatchConfig.enabled = enabled;
+                    if (Number.isFinite(r) && r > 0) window.catalogCrossMatchConfig.radius_arcsec = r;
+                    sepInput.disabled = !enabled;
+                } catch (_) {}
+                try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+                try { hostDoc.defaultView.__updateCatalogOverlayShownCounts && hostDoc.defaultView.__updateCatalogOverlayShownCounts(); } catch (_) {}
+            };
+            toggle.addEventListener('change', applyCfg);
+            sepInput.addEventListener('input', () => {
+                // don't spam; but quick redraw feels fine
+                applyCfg();
+            });
+
+            expandedContent.appendChild(xmWrap);
+        }
+    } catch (_) {}
 
     // Boolean filters UI moved into per-catalog expandable panels (via the Filter button next to the count).
 
@@ -1909,6 +2978,20 @@ function renderCatalogOverlayControls() {
     };
 
     collapseBtn.addEventListener('click', () => {
+        // Small click animation on the header X/➕ button
+        try {
+            if (collapseBtn.animate) {
+                collapseBtn.animate(
+                    [{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1)' }],
+                    { duration: 160, easing: 'ease-out' }
+                );
+            } else {
+                collapseBtn.style.animation = 'none';
+                void collapseBtn.offsetHeight;
+                collapseBtn.style.animation = 'catalog-x-pop 160ms ease-out';
+                setTimeout(() => { try { collapseBtn.style.animation = ''; } catch (_) {} }, 190);
+            }
+        } catch (_) {}
         setCollapsedState(!catalogOverlayControlsCollapsed);
     });
 
@@ -2144,6 +3227,31 @@ function renderCatalogOverlayControls() {
 
     setCollapsedState(!!catalogOverlayControlsCollapsed);
     syncCatalogOverlayControls();
+
+    // Keep visible-source count updated; also run once after each render so "Visible sources: —" doesn't stick.
+    try {
+        const updateNow = hostDoc.defaultView.__updateCatalogOverlayShownCounts || (() => {
+            try {
+                const p = hostDoc.getElementById('catalog-overlay-controls');
+                if (!p) return;
+                const stats = hostDoc.defaultView.__catalogOverlayRenderStats || window.__catalogOverlayRenderStats || null;
+                const total = stats && typeof stats.totalShown === 'number' ? stats.totalShown : null;
+                const summary = p.querySelector('[data-role="catalog-shown-summary"]');
+                if (summary) summary.textContent = (total == null) ? 'Visible sources: —' : `Visible sources: ${total}`;
+            } catch (_) {}
+        });
+        hostDoc.defaultView.__updateCatalogOverlayShownCounts = updateNow;
+        if (!hostDoc.defaultView.__catalogRenderStatsListenerInstalled) {
+            hostDoc.defaultView.__catalogRenderStatsListenerInstalled = true;
+            hostDoc.addEventListener('catalog:renderstats', () => {
+                try { hostDoc.defaultView.__updateCatalogOverlayShownCounts(); } catch (_) {}
+            });
+        }
+        // Run once after each render
+        setTimeout(() => {
+            try { hostDoc.defaultView.__updateCatalogOverlayShownCounts(); } catch (_) {}
+        }, 0);
+    } catch (_) {}
 }
 
 function formatSegmentAlignmentSummary(info) {

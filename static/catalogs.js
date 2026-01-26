@@ -1000,9 +1000,60 @@ function rebuildCombinedCatalogOverlay() {
         if (!(k in window.catalogVisibilityByCatalog)) window.catalogVisibilityByCatalog[k] = true;
         if (window.catalogVisibilityByCatalog[k] === false) return;
         const arr = window.catalogOverlaysByCatalog[k];
-        if (Array.isArray(arr)) combined.push(...arr);
+        if (Array.isArray(arr) && arr.length) {
+            // Avoid `push(...arr)` which can throw for very large arrays ("too many arguments"/call stack).
+            for (let i = 0; i < arr.length; i += 1) combined.push(arr[i]);
+        }
     });
+    // IMPORTANT: make overlay indices globally unique across catalogs.
+    // Many click paths use `sourceIndex` / `__overlay_index` to look up the clicked object in
+    // `window.catalogDataForOverlay`. If per-catalog indices (like `index: 0..N`) are reused,
+    // clicks will fetch a valid-but-wrong row from a different catalog.
+    for (let i = 0; i < combined.length; i++) {
+        const obj = combined[i];
+        if (!obj || typeof obj !== 'object') continue;
+        try { obj.__overlay_index = i; } catch (_) {}
+        try { obj.sourceIndex = i; } catch (_) {}
+        // Keep `index` as-is (some UIs display it), but provide a stable global index above.
+    }
     window.catalogDataForOverlay = combined;
+
+    // Build a simple spatial grid index in image-pixel space.
+    // This speeds up drawing and hit-testing for very large catalogs by letting the renderer
+    // iterate only sources inside (or near) the current viewport.
+    try {
+        // For extremely large catalogs, building a full JS Map-based spatial index can freeze the UI
+        // and consume a lot of memory. We skip it and let the renderer rely on sampling/preview mode.
+        if (combined.length > 250000) {
+            window.__catalogSpatialGrid = null;
+            try { if (window.top && window.top !== window) window.top.__catalogSpatialGrid = null; } catch (_) {}
+            throw new Error('skip-grid');
+        }
+        const cellSize = 256; // image pixels; trade-off between bucket size and overhead
+        const cells = new Map(); // "cx,cy" -> array of overlay indices
+        const addToCell = (idx, x, y) => {
+            const cx = Math.floor(x / cellSize);
+            const cy = Math.floor(y / cellSize);
+            const key = `${cx},${cy}`;
+            const arr = cells.get(key);
+            if (arr) arr.push(idx);
+            else cells.set(key, [idx]);
+        };
+        for (let i = 0; i < combined.length; i++) {
+            const s = combined[i];
+            if (!s || typeof s !== 'object') continue;
+            let x = Number.isFinite(s.x) ? s.x : (Number.isFinite(s.x_pixels) ? s.x_pixels : NaN);
+            let y = Number.isFinite(s.y) ? s.y : (Number.isFinite(s.y_pixels) ? s.y_pixels : NaN);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            if (x === 0 && y === 0) continue;
+            addToCell(i, x, y);
+            try { s.__gridKey = `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`; } catch (_) {}
+        }
+        window.__catalogSpatialGrid = { cellSize, cells };
+        try { if (window.top && window.top !== window) window.top.__catalogSpatialGrid = window.__catalogSpatialGrid; } catch (_) {}
+    } catch (_) {
+        try { window.__catalogSpatialGrid = null; } catch (_) {}
+    }
     try {
         if (typeof canvasUpdateOverlay === 'function' && window.catalogCanvas) {
             canvasUpdateOverlay();
@@ -1087,10 +1138,68 @@ function setActiveCatalogForControls(catalogKeyOrName) {
     } catch (_) {}
 }
 
+// Remove a specific catalog overlay by key (used by catalog-overlay-controls list).
+function removeCatalogOverlayByKey(catalogKeyOrName) {
+    try {
+        _ensureCatalogOverlayStore();
+        const key = _catalogKey(catalogKeyOrName);
+        if (!key) return;
+
+        // Remove overlay data
+        try {
+            if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) {
+                delete window.catalogOverlaysByCatalog[key];
+            }
+        } catch (_) {}
+
+        // Remove visibility state
+        try {
+            if (window.catalogVisibilityByCatalog && typeof window.catalogVisibilityByCatalog === 'object') {
+                delete window.catalogVisibilityByCatalog[key];
+            }
+        } catch (_) {}
+
+        // Clear per-catalog filter state so reload starts clean
+        try {
+            if (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object') {
+                delete window.catalogBooleanFiltersByCatalog[key];
+            }
+        } catch (_) {}
+        try {
+            if (window.catalogConditionFiltersByCatalog && typeof window.catalogConditionFiltersByCatalog === 'object') {
+                delete window.catalogConditionFiltersByCatalog[key];
+            }
+        } catch (_) {}
+
+        // If this was the active catalog, clear active pointers
+        try {
+            if (String(activeCatalog || '') === String(key)) activeCatalog = null;
+        } catch (_) {}
+        try {
+            if (String(window.currentCatalogName || '') === String(key)) window.currentCatalogName = null;
+        } catch (_) {}
+        try {
+            if (String(window.activeCatalog || '') === String(key)) window.activeCatalog = null;
+        } catch (_) {}
+
+        // Rebuild combined overlay (may still contain other catalogs)
+        try { rebuildCombinedCatalogOverlay(); } catch (_) {}
+
+        // If nothing left, clear canvas fully and remove controls panel
+        try {
+            if (!Object.keys(window.catalogOverlaysByCatalog || {}).length) {
+                try { clearCatalogOverlay(); } catch (_) {}
+                try { if (typeof removeCatalogOverlayControls === 'function') removeCatalogOverlayControls(true); } catch (_) {}
+            }
+        } catch (_) {}
+    } catch (_) {}
+}
+
 try {
     window.getLoadedCatalogOverlays = getLoadedCatalogOverlays;
     window.setCatalogOverlayVisible = setCatalogOverlayVisible;
     window.setActiveCatalogForControls = setActiveCatalogForControls;
+    window.removeCatalogOverlayByKey = removeCatalogOverlayByKey;
 } catch (_) {}
 
 // Clear the active catalog
@@ -1103,6 +1212,17 @@ function clearCatalog() {
         if (window.catalogOverlaysByCatalog && window.catalogOverlaysByCatalog[key]) {
             delete window.catalogOverlaysByCatalog[key];
         }
+        // Also clear per-catalog filter state so reload starts clean
+        try {
+            if (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object') {
+                delete window.catalogBooleanFiltersByCatalog[key];
+            }
+        } catch (_) {}
+        try {
+            if (window.catalogConditionFiltersByCatalog && typeof window.catalogConditionFiltersByCatalog === 'object') {
+                delete window.catalogConditionFiltersByCatalog[key];
+            }
+        } catch (_) {}
     } catch (_) {}
     activeCatalog = null;
     
@@ -1135,6 +1255,8 @@ function clearCatalog() {
     
     // Remove any shared catalog controls
     try { removeCatalogOverlayControls(true); } catch (_) {}
+    // Reset cross-match config (no memory after unload)
+    try { if (window.catalogCrossMatchConfig) window.catalogCrossMatchConfig = { enabled: false, radius_arcsec: 1.0 }; } catch (_) {}
 }
 
 
@@ -1926,6 +2048,118 @@ function getRecordValue(record, column) {
     return undefined;
 }
 
+function coerceScalarValue(raw) {
+    // Some catalogs embed column values as objects like {value: 1.23} or {v: 1.23}.
+    // Color-coding needs a primitive (number/string) to compute min/max or categories.
+    try {
+        if (raw === undefined || raw === null) return raw;
+        if (typeof raw === 'number' || typeof raw === 'string' || typeof raw === 'boolean') return raw;
+        if (Array.isArray(raw)) {
+            if (raw.length === 0) return undefined;
+            if (raw.length === 1) return coerceScalarValue(raw[0]);
+            return raw;
+        }
+        if (typeof raw === 'object') {
+            const keys = ['value', 'val', 'v', 'num', 'n', 'scalar', 'raw', 'x', 'y'];
+            for (const k of keys) {
+                if (Object.prototype.hasOwnProperty.call(raw, k)) {
+                    const inner = coerceScalarValue(raw[k]);
+                    if (inner !== undefined && inner !== null && inner !== '') return inner;
+                }
+            }
+            if (Object.prototype.hasOwnProperty.call(raw, 'data')) {
+                const inner = coerceScalarValue(raw.data);
+                if (inner !== undefined && inner !== null && inner !== '') return inner;
+            }
+        }
+        return raw;
+    } catch (_) {
+        return raw;
+    }
+}
+
+async function __attachColumnValuesToRawRecords(catalogApiName, records, columns) {
+    const cols = Array.isArray(columns) ? columns.map(String).filter(Boolean) : [String(columns || '')].filter(Boolean);
+    if (!catalogApiName || !Array.isArray(records) || !records.length || !cols.length) return;
+
+    // Only fetch columns that are missing from the raw record payload.
+    const missingCols = cols.filter((c) => {
+        try { return (getRecordValue(records[0], c) === undefined); } catch (_) { return true; }
+    });
+    if (!missingCols.length) return;
+
+    const rowIdxs = [];
+    const posByRow = new Map(); // row_index -> list of record positions
+    for (let i = 0; i < records.length; i += 1) {
+        const r = records[i];
+        if (!r) continue;
+        let ri = r.__row_index;
+        if (!Number.isInteger(ri)) ri = i;
+        rowIdxs.push(ri);
+        if (!posByRow.has(ri)) posByRow.set(ri, []);
+        posByRow.get(ri).push(i);
+    }
+    if (!rowIdxs.length) return;
+
+    const CHUNK = 20000;
+    const received = new Set();
+    for (let start = 0; start < rowIdxs.length; start += CHUNK) {
+        const chunkIdxs = rowIdxs.slice(start, start + CHUNK);
+        const resp = await apiFetch('/catalog-column-values/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ catalog_name: catalogApiName, row_indices: chunkIdxs, columns: missingCols })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            throw new Error((data && (data.detail || data.error)) ? (data.detail || data.error) : `Failed to fetch column values (HTTP ${resp.status})`);
+        }
+
+        const outIdxs = Array.isArray(data.row_indices) ? data.row_indices : [];
+        const outCols = Array.isArray(data.columns) ? data.columns : [];
+        const values = (data && data.values && typeof data.values === 'object') ? data.values : {};
+        for (const c of outCols) received.add(String(c));
+
+        const offsetByRow = new Map();
+        for (let i = 0; i < outIdxs.length; i++) offsetByRow.set(outIdxs[i], i);
+
+        const valuesKeyByLower = new Map();
+        try { for (const k of Object.keys(values)) valuesKeyByLower.set(String(k).toLowerCase(), k); } catch (_) {}
+
+        for (const col of missingCols) {
+            let valKey = null;
+            if (Array.isArray(values[col])) {
+                valKey = col;
+            } else {
+                const k2 = valuesKeyByLower.get(String(col).toLowerCase());
+                if (k2 && Array.isArray(values[k2])) valKey = k2;
+            }
+            const colArr = valKey ? values[valKey] : null;
+            if (!Array.isArray(colArr)) continue;
+
+            for (const ri of outIdxs) {
+                const off = offsetByRow.get(ri);
+                if (off == null) continue;
+                const v = colArr[off];
+                const positions = posByRow.get(ri);
+                if (!positions) continue;
+                for (const p of positions) {
+                    try { records[p][col] = v; } catch (_) {}
+                    try {
+                        if (!records[p].__catalog_columns || typeof records[p].__catalog_columns !== 'object') records[p].__catalog_columns = {};
+                        records[p].__catalog_columns[col] = v;
+                    } catch (_) {}
+                }
+            }
+        }
+    }
+
+    for (const col of missingCols) {
+        const ok = received.has(String(col)) || Array.from(received).some(c => c.toLowerCase() === String(col).toLowerCase());
+        if (!ok) throw new Error(`Column not found in catalog: ${col}`);
+    }
+}
+
 function buildColorCoder(records, column, colorMapName) {
     if (!Array.isArray(records) || !column) return null;
     const mapDef = getColorMapDefinition(colorMapName);
@@ -1951,7 +2185,7 @@ function buildColorCoder(records, column, colorMapName) {
     const categoryIndex = new Map();
     records.forEach((rec) => {
         if (!rec) return;
-        const raw = getRecordValue(rec, column);
+        const raw = coerceScalarValue(getRecordValue(rec, column));
         if (raw === undefined || raw === null || raw === '') return;
         const num = Number(raw);
         if (typeof raw === 'number' || (isFinite(num) && raw !== '')) {
@@ -2204,12 +2438,17 @@ function applyStylesToRegions(catalogName, styles) {
 
     // Update the style object for the catalog
     const previousStyles = { ...window.catalogData[catalogIndex].style };
-    window.catalogData[catalogIndex].style = {
+    const nextStyle = {
         ...window.catalogData[catalogIndex].style, // Preserve any existing styles
-        ...styles,
-        colorCodeColumn: styles.colorCodeColumn || null,
-        colorMapName: styles.colorMapName || null
+        ...styles
     };
+    // Preserve color-coding configuration unless caller explicitly changed it.
+    try {
+        const hasOwn = (obj, k) => Object.prototype.hasOwnProperty.call(obj || {}, k);
+        if (!hasOwn(styles, 'colorCodeColumn')) nextStyle.colorCodeColumn = previousStyles.colorCodeColumn || null;
+        if (!hasOwn(styles, 'colorMapName')) nextStyle.colorMapName = previousStyles.colorMapName || null;
+    } catch (_) {}
+    window.catalogData[catalogIndex].style = nextStyle;
     
     console.log('Previous styles:', previousStyles);
     console.log('New styles applied:', styles);
@@ -2226,8 +2465,13 @@ function applyStylesToRegions(catalogName, styles) {
         borderWidth: styles.borderWidth || window.regionStyles?.borderWidth || 2,
         opacity: styles.opacity || window.regionStyles?.opacity || 0.8,
         shape: resolvedShape,
-        colorCodeColumn: styles.colorCodeColumn || null,
-        colorMapName: styles.colorMapName || window.regionStyles?.colorMapName || REGION_COLOR_MAPS[0].value
+        // Preserve color-coding config unless explicitly changed.
+        colorCodeColumn: (Object.prototype.hasOwnProperty.call(styles || {}, 'colorCodeColumn'))
+            ? (styles.colorCodeColumn || null)
+            : (window.regionStyles?.colorCodeColumn || null),
+        colorMapName: (Object.prototype.hasOwnProperty.call(styles || {}, 'colorMapName'))
+            ? (styles.colorMapName || null)
+            : (window.regionStyles?.colorMapName || REGION_COLOR_MAPS[0].value)
     };
     
     console.log('Updated global regionStyles:', window.regionStyles);
@@ -2257,7 +2501,9 @@ function applyStylesToRegions(catalogName, styles) {
                 if (colorHex) {
                     const opacityVal = styles.opacity || obj.opacity || 0.8;
                     obj.color = colorHex;
-                    obj.fillColor = hexToRgba(colorHex, Math.max(0.15, Math.min(0.9, opacityVal * 0.6)));
+                    // Keep fill alpha independent of opacity so the opacity slider behaves linearly.
+                    // Renderer will apply `obj.opacity` as the overall alpha multiplier.
+                    obj.fillColor = hexToRgba(colorHex, 0.3);
                     obj.opacity = opacityVal;
                     obj.useTransparentFill = false;
                     colorApplied = true;
@@ -2425,11 +2671,52 @@ function setCatalogOverlayOpacity(opacity) {
         return;
     }
     const clamped = Math.max(0, Math.min(1, numeric));
-    const baseStyles = getEffectiveRegionStylesForOverlay();
     // IMPORTANT:
+    // The opacity slider must NOT reset color / borderWidth / etc.
+    // So we preserve the current effective styles as base and only override opacity.
+    const baseStyles = (() => {
+        try {
+            if (Array.isArray(window.catalogData) && window.catalogData.length) {
+                const key = _catalogKey(name);
+                const idx = window.catalogData.findIndex(c => c && _catalogKey(c.name) === key);
+                if (idx >= 0 && window.catalogData[idx] && window.catalogData[idx].style) return window.catalogData[idx].style;
+            }
+        } catch (_) {}
+        try {
+            if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+        } catch (_) {}
+        try {
+            const arr = window.catalogDataForOverlay;
+            if (Array.isArray(arr) && arr.length) {
+                const key = _catalogKey(name);
+                const o = arr.find(x => x && x.__catalogName && _catalogKey(x.__catalogName) === key) || arr[0];
+                if (o) {
+                    return {
+                        borderColor: o.color,
+                        backgroundColor: (o.useTransparentFill ? 'transparent' : (o.fillColor || 'transparent')),
+                        borderWidth: o.border_width,
+                        opacity: o.opacity,
+                        colorCodeColumn: o.colorCodeColumn || null,
+                        colorMapName: o.colorMapName || null
+                    };
+                }
+            }
+        } catch (_) {}
+        return getEffectiveRegionStylesForOverlay() || {};
+    })();
+
     // - Do not pass `shape` here (opacity slider should not change shape).
     // - Do not pass any radius/size fields here (opacity slider should not change marker size).
-    const merged = { ...baseStyles, opacity: clamped };
+    // - But DO pass current borderColor/borderWidth/background so applyStylesToRegions won't fall back to defaults.
+    const merged = {
+        borderColor: baseStyles.borderColor,
+        backgroundColor: baseStyles.backgroundColor,
+        borderWidth: baseStyles.borderWidth,
+        // Preserve color-coding config if present (do not clear on opacity-only changes)
+        colorCodeColumn: baseStyles.colorCodeColumn,
+        colorMapName: baseStyles.colorMapName,
+        opacity: clamped
+    };
     try {
         delete merged.shape;
         delete merged.radius;
@@ -3025,6 +3312,16 @@ function loadCatalogBinary(catalogName, styles = null) {
             throw new Error('No catalog data found or invalid format.');
         }
         
+        // If color-coding needs a column not included in the binary payload,
+        // fetch it via /catalog-column-values/ and attach to raw records before styling.
+        try {
+            if (styles && styles.colorCodeColumn) {
+                await __attachColumnValuesToRawRecords(catalogNameForApi, catalogData.records, [styles.colorCodeColumn]);
+            }
+        } catch (e) {
+            console.warn('[loadCatalogBinary] Failed to fetch color-code column values; color coding may be disabled.', e);
+        }
+
         // Store the complete catalog data and build styled overlay entries
         window.catalogDataWithFlags = catalogData.records;
         _ensureCatalogOverlayStore();
@@ -3035,8 +3332,20 @@ function loadCatalogBinary(catalogName, styles = null) {
         console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:',
                     window.catalogOverlaysByCatalog[key]?.[0]);
         
-        // Store metadata
-        window.catalogMetadata = catalogData.header;
+        // Store metadata (global + per-catalog)
+        try {
+            window.catalogMetadata = catalogData.header;
+            window.catalogMetadataByCatalog = window.catalogMetadataByCatalog || {};
+            window.catalogMetadataByCatalog[key] = catalogData.header;
+            // Multi-pane: also publish to top window so catalog-overlay-controls can see it.
+            try {
+                if (window.top && window.top !== window) {
+                    window.top.catalogMetadata = catalogData.header;
+                    window.top.catalogMetadataByCatalog = window.top.catalogMetadataByCatalog || {};
+                    window.top.catalogMetadataByCatalog[key] = catalogData.header;
+                }
+            } catch (_) {}
+        } catch (_) {}
         
         // Wait for viewer to be ready and add overlay
         function safeAddOverlay() {
@@ -3274,6 +3583,15 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
         
         // Parse the complete buffer
         const catalogData = parseBinaryCatalog(fullBuffer);
+        // Attach color-coding columns if needed (binary payload may omit them)
+        try {
+            if (styles && styles.colorCodeColumn) {
+                const apiName = String(catalogName || '').replace(/^catalogs\//, '').split('/').pop().split('\\').pop();
+                await __attachColumnValuesToRawRecords(apiName, catalogData.records, [styles.colorCodeColumn]);
+            }
+        } catch (e) {
+            console.warn('[loadCatalogBinaryStream] Failed to fetch color-code column values; color coding may be disabled.', e);
+        }
         
         // Process and display as before
         window.catalogDataWithFlags = catalogData.records;
@@ -3281,7 +3599,18 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
         const key = _catalogKey(catalogName);
         window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData.records, styles, key);
         rebuildCombinedCatalogOverlay();
-        window.catalogMetadata = catalogData.header;
+        try {
+            window.catalogMetadata = catalogData.header;
+            window.catalogMetadataByCatalog = window.catalogMetadataByCatalog || {};
+            window.catalogMetadataByCatalog[key] = catalogData.header;
+            try {
+                if (window.top && window.top !== window) {
+                    window.top.catalogMetadata = catalogData.header;
+                    window.top.catalogMetadataByCatalog = window.top.catalogMetadataByCatalog || {};
+                    window.top.catalogMetadataByCatalog[key] = catalogData.header;
+                }
+            } catch (_) {}
+        } catch (_) {}
         
         // Add overlay when viewer is ready
         await waitForViewerAndAddOverlay();
@@ -3299,6 +3628,68 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
 
 // Helper function to prepare overlay data with styles
 function prepareCatalogOverlayData(records, styles, catalogKey = null) {
+    // Huge catalogs: avoid cloning 900k objects with `{...obj}` (slow + memory heavy).
+    // Instead, build lightweight overlay records containing only what the renderer needs.
+    const HUGE_CATALOG_N = 250000;
+    if (Array.isArray(records) && records.length > HUGE_CATALOG_N) {
+        const out = new Array(records.length);
+        const styleOpacity = styles && typeof styles.opacity === 'number' ? styles.opacity : 0.8;
+        const fallbackRs = getEffectiveRegionStylesForOverlay();
+        const resolvedShape = normalizeShape((styles && styles.shape) || fallbackRs.shape);
+        const stroke = (styles && styles.borderColor) ? styles.borderColor : '#FF0000';
+        const fill = (styles && styles.backgroundColor && styles.backgroundColor !== 'transparent')
+            ? styles.backgroundColor
+            : 'rgba(255, 0, 0, 0.3)';
+        const borderW = (styles && styles.borderWidth) ? styles.borderWidth : 2;
+        const radiusPx = (styles && typeof styles.radius === 'number' && isFinite(styles.radius) && styles.radius > 0)
+            ? styles.radius
+            : 5;
+        const transparentFill = !(styles && styles.backgroundColor && styles.backgroundColor !== 'transparent');
+        const colorCoder = (styles && styles.colorCodeColumn)
+            ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName)
+            : null;
+
+        for (let i = 0; i < records.length; i += 1) {
+            const r = records[i] || {};
+            let sStroke = stroke;
+            let sFill = fill;
+            let sTransparent = transparentFill;
+            if (colorCoder && styles && styles.colorCodeColumn) {
+                const valueForColorRaw = getRecordValue(r, styles.colorCodeColumn);
+                const valueForColor = coerceScalarValue(valueForColorRaw);
+                const colorHex = colorCoder(valueForColor);
+                if (colorHex) {
+                    sStroke = colorHex;
+                    sFill = hexToRgba(colorHex, 0.3);
+                    sTransparent = false;
+                }
+            }
+            out[i] = {
+                // minimal coords
+                ra: r.ra,
+                dec: r.dec,
+                x_pixels: r.x_pixels,
+                y_pixels: r.y_pixels,
+                x: r.x,
+                y: r.y,
+                radius_pixels: radiusPx,
+                __row_index: r.__row_index,
+                // bookkeeping
+                index: i,
+                passesFilter: true,
+                __catalogName: catalogKey || null,
+                // style
+                color: sStroke,
+                fillColor: sFill,
+                border_width: borderW,
+                opacity: styleOpacity,
+                useTransparentFill: sTransparent,
+                shape: resolvedShape
+            };
+        }
+        return out;
+    }
+
     // Derive arcsec/pixel from current WCS if available
     let arcsecPerPixel = null;
     try {
@@ -3352,11 +3743,14 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
         if (styles) {
             let colorApplied = false;
             if (colorCoder) {
-                const valueForColor = getRecordValue(obj, styles.colorCodeColumn);
+                const valueForColorRaw = getRecordValue(obj, styles.colorCodeColumn);
+                const valueForColor = coerceScalarValue(valueForColorRaw);
                 const colorHex = colorCoder(valueForColor);
                 if (colorHex) {
                     styledObj.color = colorHex;
-                    styledObj.fillColor = hexToRgba(colorHex, Math.max(0.15, Math.min(0.9, styleOpacity * 0.6)));
+                    // Keep fill alpha independent of opacity so the opacity slider behaves linearly.
+                    // Renderer will apply `styledObj.opacity` as the overall alpha multiplier.
+                    styledObj.fillColor = hexToRgba(colorHex, 0.3);
                     styledObj.border_width = styles.borderWidth || 2;
                     styledObj.opacity = styleOpacity;
                     styledObj.useTransparentFill = false;
@@ -3368,7 +3762,8 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                         try {
                             console.log('[Overlay] sample color', {
                                 index,
-                                value: obj[styles.colorCodeColumn],
+                                value: valueForColorRaw,
+                                scalar: valueForColor,
                                 color: styledObj.color
                             });
                         } catch (_) {}
@@ -4951,6 +5346,10 @@ function clearAllCatalogs() {
     try { activeCatalog = null; } catch (_) {}
     // Clear per-catalog boolean filter settings (from catalog overlay controls)
     try { if (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object') window.catalogBooleanFiltersByCatalog = {}; } catch (_) {}
+    // Clear per-catalog condition filter settings (from catalog overlay controls)
+    try { if (window.catalogConditionFiltersByCatalog && typeof window.catalogConditionFiltersByCatalog === 'object') window.catalogConditionFiltersByCatalog = {}; } catch (_) {}
+    // Reset cross-match config (no memory after unload)
+    try { if (window.catalogCrossMatchConfig) window.catalogCrossMatchConfig = { enabled: false, radius_arcsec: 1.0 }; } catch (_) {}
 
     // Clear visual overlays
     try { if (typeof rebuildCombinedCatalogOverlay === 'function') rebuildCombinedCatalogOverlay(); } catch (_) {}

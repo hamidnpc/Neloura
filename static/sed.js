@@ -583,7 +583,7 @@ function filterProperties() {
     // For now, headers always remain visible.
 }
 
-function showProperties(ra, dec, catalogName) {
+function showProperties(ra, dec, catalogName, radiusPixels, prefetchedProperties) {
     // Create properties container if it doesn't exist
     createPropertiesContainer();
     
@@ -605,43 +605,142 @@ function showProperties(ra, dec, catalogName) {
     
     propertiesContent.innerHTML = '<div style="text-align: center; padding: 20px; color: white;">Loading properties...</div>';
 
+    // Always derive catalog from the clicked object when available.
+    // When multiple catalogs are loaded, `__row_index` values overlap across catalogs,
+    // so using the wrong catalog_name will return a valid-but-wrong row.
+    const effectiveCatalogName = (() => {
+        try {
+            const raw =
+                (prefetchedProperties && typeof prefetchedProperties === 'object'
+                    ? (prefetchedProperties.__catalogName || prefetchedProperties.catalog_name || prefetchedProperties.catalogName || prefetchedProperties.catalog)
+                    : null) ||
+                catalogName ||
+                '';
+            const s = String(raw || '').trim();
+            // Strip UI prefix/path; backend expects the FITS filename for catalogs.
+            const noPrefix = s.replace(/^catalogs\//, '');
+            const base = noPrefix.split('/').pop().split('\\').pop();
+            return base || s || String(catalogName || '');
+        } catch (_) {
+            return String(catalogName || '');
+        }
+    })();
+
     // Resolve overrides from last-applied styles if available
-    const overrides = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[catalogName] || window.catalogOverridesByCatalog[(catalogName||'').toString().split('/').pop()])) || {};
-    const qp = new URLSearchParams({ ra: String(ra), dec: String(dec), catalog_name: catalogName });
-    if (overrides.ra_col) qp.set('ra_col', overrides.ra_col);
-    if (overrides.dec_col) qp.set('dec_col', overrides.dec_col);
-    // Fetch properties from the server with overrides
-    apiFetch(`/source-properties/?${qp.toString()}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to load properties');
+    const overrides = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[effectiveCatalogName] || window.catalogOverridesByCatalog[(effectiveCatalogName||'').toString().split('/').pop()])) || {};
+
+    // If we have a stable row index from /catalog-binary, always use it to fetch full row properties.
+    // This avoids showing overlay/style keys and guarantees we can display *all* FITS columns.
+    let baseQp = null;
+    try {
+        const ri = prefetchedProperties && typeof prefetchedProperties === 'object' ? prefetchedProperties.__row_index : null;
+        if (Number.isInteger(ri) && ri >= 0) {
+            baseQp = new URLSearchParams({ catalog_name: String(effectiveCatalogName), row_index: String(ri) });
+            // Keep column overrides in case the server uses them for loading/compat
+            if (overrides.ra_col) baseQp.set('ra_col', overrides.ra_col);
+            if (overrides.dec_col) baseQp.set('dec_col', overrides.dec_col);
+        }
+    } catch (_) {}
+
+    // Fallback: RA/Dec lookup (only when row_index isn't available)
+    if (!baseQp) {
+        baseQp = new URLSearchParams({ ra: String(ra), dec: String(dec), catalog_name: String(effectiveCatalogName) });
+        if (overrides.ra_col) baseQp.set('ra_col', overrides.ra_col);
+        if (overrides.dec_col) baseQp.set('dec_col', overrides.dec_col);
+    }
+
+    // If a marker/region radius was provided, convert it to an on-sky tolerance (arcsec)
+    // using current FITS WCS pixel scale. Only applies to RA/Dec fallback mode.
+    const getArcsecPerPixel = () => {
+        try {
+            const w = window?.fitsData?.wcs;
+            if (!w) return null;
+            const cd11 = Number(w.CD1_1 ?? w.cd11 ?? w.CDELT1 ?? w.cdelt1 ?? 0);
+            const cd12 = Number(w.CD1_2 ?? w.cd12 ?? 0);
+            const cd21 = Number(w.CD2_1 ?? w.cd21 ?? 0);
+            const cd22 = Number(w.CD2_2 ?? w.cd22 ?? w.CDELT2 ?? w.cdelt2 ?? 0);
+            const scaleXDeg = Math.sqrt(cd11*cd11 + cd21*cd21);
+            const scaleYDeg = Math.sqrt(cd12*cd12 + cd22*cd22);
+            const asp = 3600 * (isFinite(scaleXDeg) && isFinite(scaleYDeg) && scaleXDeg>0 && scaleYDeg>0
+                ? (scaleXDeg + scaleYDeg) / 2
+                : (isFinite(scaleXDeg) && scaleXDeg>0 ? scaleXDeg : (isFinite(scaleYDeg) && scaleYDeg>0 ? scaleYDeg : 0.0)));
+            return (asp > 0) ? asp : null;
+        } catch (_) { return null; }
+    };
+    try {
+        const rp = Number(radiusPixels);
+        if (Number.isFinite(rp) && rp > 0) {
+            const asp = getArcsecPerPixel();
+            if (asp && asp > 0) {
+                // Only meaningful when matching by RA/Dec.
+                if (!baseQp.has('row_index')) {
+                    baseQp.set('tolerance_arcsec', String(rp * asp));
+                }
             }
-            return response.json();
-        })
-        .then(data => {
-            console.log("Properties data:", data);
-            
-            if (data.error) {
-                propertiesContent.innerHTML = `<div style="color: #ff6b6b; padding: 10px;">Error: ${data.error}</div>`;
-                return;
-            }
+        }
+    } catch (_) {}
+
+    const fetchProps = async () => {
+        const qp = new URLSearchParams(baseQp);
+        try {
+            // High-signal debug for multi-catalog issues
+            console.log('[showProperties] request', {
+                catalogNamePassed: catalogName,
+                catalogNameEffective: effectiveCatalogName,
+                row_index: qp.get('row_index'),
+                ra: qp.get('ra'),
+                dec: qp.get('dec')
+            });
+        } catch (_) {}
+        const response = await apiFetch(`/source-properties/?${qp.toString()}`);
+        let data = null;
+        try { data = await response.json(); } catch (_) { data = null; }
+        if (!response.ok) {
+            const msg = (data && data.error) ? data.error : `Failed to load properties (HTTP ${response.status})`;
+            return { error: msg, __httpStatus: response.status, ...(data && typeof data === 'object' ? data : {}) };
+        }
+        return data;
+    };
+
+    (async () => {
+        // Exact lookup only (no search / radius retries)
+        let data = await fetchProps();
+
+        console.log("Properties data:", data);
+
+        if (data && data.error) {
+            propertiesContent.innerHTML = `<div style="color: #ff6b6b; padding: 10px;">${data.error}</div>`;
+            return;
+        }
+        if (!data) {
+            propertiesContent.innerHTML = `<div style="color: #ff6b6b; padding: 10px;">Failed to load properties (empty response)</div>`;
+            return;
+        }
             
             // Store the data globally so the save function can access it
             window.currentPropertiesData = {
                 ra: ra,
                 dec: dec,
-                catalogName: catalogName,
+                catalogName: effectiveCatalogName,
                 properties: data.properties || {}
             };
-            
-            // Add save button to the header after data is loaded
-            addSaveButtonToPropertiesHeader();
-            
-            // Format properties
-            let html = '';
-            
-            // Get properties from the response
-            const properties = data.properties || {};
+
+        // Render the properties UI using the loaded response
+        renderFromData(data);
+    })().catch(err => {
+        console.error('Error loading properties:', err);
+        propertiesContent.innerHTML = `<div style="color: #ff6b6b; padding: 10px;">Error loading properties: ${String(err && err.message ? err.message : err)}</div>`;
+    });
+
+    function renderFromData(data) {
+        // Add save button to the header after data is loaded
+        addSaveButtonToPropertiesHeader();
+        
+        // Format properties
+        let html = '';
+        
+        // Get properties from the response
+        const properties = (data && data.properties) ? data.properties : {};
             
             // Find RA/DEC columns
             let raValue = ra;
@@ -857,11 +956,7 @@ function showProperties(ra, dec, catalogName) {
             
             propertiesContent.innerHTML = html;
             filterProperties(); // Apply filter initially (e.g. if search input had text from previous view)
-        })
-        .catch(error => {
-            console.error('Error loading properties:', error);
-            propertiesContent.innerHTML = `<div style="color: #ff6b6b; padding: 10px;">Error loading properties: ${error.message}</div>`;
-        });
+    }
 }
 
 // Function to add save button to properties header
@@ -1067,4 +1162,17 @@ function hideProperties() {
             propertiesContainer.style.display = 'none';
         }, 300);
     }
+
+    // When closing Source Properties, clear the selected catalog highlight.
+    try {
+        window.currentHighlightedSourceIndex = -1;
+    } catch (_) {}
+    try {
+        // Multi-pane: overlay may live in a different window.
+        const w = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+        try { w.currentHighlightedSourceIndex = -1; } catch (_) {}
+        if (w && typeof w.canvasUpdateOverlay === 'function') {
+            try { w.canvasUpdateOverlay({ mode: 'full' }); } catch (_) { try { w.canvasUpdateOverlay(); } catch (_) {} }
+        }
+    } catch (_) {}
 }

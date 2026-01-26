@@ -241,13 +241,21 @@ function generateHistogram() {
                     // Add a small delay to prevent overwhelming the server
                     setTimeout(() => {
                         apiFetch(`/source-properties/?ra=${obj.ra}&dec=${obj.dec}&catalog_name=${catalogToUse}`)
-                            .then(response => {
-                                if (!response.ok) {
-                                    throw new Error(`Failed to load properties for object ${index}`);
+                            .then(async (response) => {
+                                if (response.status === 404) {
+                                    // No match within radius; skip quietly for histogram bootstrap.
+                                    return null;
                                 }
-                                return response.json();
+                                if (!response.ok) {
+                                    throw new Error(`Failed to load properties for object ${index} (HTTP ${response.status})`);
+                                }
+                                return await response.json();
                             })
                             .then(data => {
+                                if (!data) {
+                                    resolve(null);
+                                    return;
+                                }
                                 if (data.error) {
                                     throw new Error(data.error);
                                 }

@@ -2,22 +2,35 @@
 
 // Utility functions for throttling and debouncing
 function throttle(func, wait) {
-    // let lastCall = 0;
-    // return function(...args) {
-    //     const now = Date.now();
-    //     if (now - lastCall >= wait) {
-    //         lastCall = now;
-    //         return func.apply(this, args);
-    //     }
-    // };
+    let lastCall = 0;
+    let trailingTimer = null;
+    return function (...args) {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const elapsed = now - lastCall;
+        const invoke = () => {
+            lastCall = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            trailingTimer = null;
+            return func.apply(this, args);
+        };
+        if (elapsed >= wait) {
+            if (trailingTimer) {
+                clearTimeout(trailingTimer);
+                trailingTimer = null;
+            }
+            return invoke();
+        }
+        if (!trailingTimer) {
+            trailingTimer = setTimeout(invoke, Math.max(0, wait - elapsed));
+        }
+    };
 }
 
 function debounce(func, wait) {
-    // let timeout;
-    // return function(...args) {
-    //     clearTimeout(timeout);
-    //     timeout = setTimeout(() => func.apply(this, args), wait);
-    // };
+    let timeout = null;
+    return function (...args) {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
 }
 
 
@@ -51,6 +64,132 @@ function verifyCanvasPopupMethods() {
 
 // Track the currently highlighted source index globally
 window.currentHighlightedSourceIndex = -1;
+
+// Keep the overlay canvas aligned with the OpenSeadragon container in both CSS pixels and DPR.
+// If the browser scales the canvas backing store, markers can drift slightly during pan/zoom,
+// especially when zoomed out.
+function __syncCatalogCanvasDprSize() {
+    try {
+        const canvas = window.catalogCanvas;
+        if (!canvas) return;
+        const viewerElement = document.getElementById('openseadragon');
+        if (!viewerElement) return;
+        const cssW = Math.max(1, viewerElement.clientWidth || 1);
+        const cssH = Math.max(1, viewerElement.clientHeight || 1);
+        const dpr = Math.max(1, (window.devicePixelRatio || 1));
+        const wantW = Math.max(1, Math.round(cssW * dpr));
+        const wantH = Math.max(1, Math.round(cssH * dpr));
+        if (canvas.width !== wantW || canvas.height !== wantH || canvas.__nelouraDpr !== dpr) {
+            canvas.width = wantW;
+            canvas.height = wantH;
+            canvas.__nelouraDpr = dpr;
+        }
+        const ctx = canvas.getContext('2d');
+        // Draw in CSS pixels; scale backing store by DPR.
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } catch (_) {}
+}
+
+// NOTE: We intentionally do NOT translate the overlay container during pan.
+// That approach can easily over/under-shoot and amplify drift. Instead we redraw
+// in a very fast "preview" mode during interaction.
+
+// Ensure overlay handlers are always bound to the *current* OpenSeadragon viewer instance.
+// Dynamic-range/histogram changes may recreate/re-open the viewer and replace `window.viewer` / `window.tiledViewer`.
+// If our handlers are still attached to the old viewer, the overlay won't redraw during pan/zoom
+// and will look like it "slides" in the opposite direction.
+function __ensureCatalogOverlayHandlersBound() {
+    try {
+        if (!window.catalogCanvas || !window.catalogOverlayContainer) return;
+        const v = window.viewer || window.tiledViewer;
+        if (!v || typeof v.addHandler !== 'function') return;
+        if (window.__catalogOverlayBoundViewer === v) return;
+
+        const H = window.__catalogOverlayViewerHandlers || (window.__catalogOverlayViewerHandlers = {});
+
+        // Remove from old viewer if possible
+        try {
+            const old = window.__catalogOverlayBoundViewer;
+            if (old && typeof old.removeHandler === 'function') {
+                if (H.onOpen) old.removeHandler('open', H.onOpen);
+                if (H.onAnimation) old.removeHandler('animation', H.onAnimation);
+                if (H.onAnimationFinish) old.removeHandler('animation-finish', H.onAnimationFinish);
+                if (H.onPan) old.removeHandler('pan', H.onPan);
+                if (H.onZoom) old.removeHandler('zoom', H.onZoom);
+                if (H.onPress) old.removeHandler('canvas-press', H.onPress);
+                if (H.onDrag) old.removeHandler('canvas-drag', H.onDrag);
+                if (H.onRelease) old.removeHandler('canvas-release', H.onRelease);
+            }
+        } catch (_) {}
+
+        // Coalesced redraw function (shared across handlers)
+        H.__rafPending = false;
+        H.requestUpdate = H.requestUpdate || ((mode = 'preview') => {
+            try { window.__catalogRenderMode = mode; } catch (_) {}
+            if (H.__rafPending) return;
+            H.__rafPending = true;
+            requestAnimationFrame(() => {
+                H.__rafPending = false;
+                try { canvasUpdateOverlay({ mode }); } catch (_) {}
+            });
+        });
+
+        H.onOpen = H.onOpen || (() => H.requestUpdate('full'));
+        H.onAnimation = H.onAnimation || (() => H.requestUpdate('preview'));
+        H.onAnimationFinish = H.onAnimationFinish || (() => { try { window.__catalogRenderMode = 'full'; } catch (_) {} try { canvasUpdateOverlay({ mode: 'full' }); } catch (_) {} });
+        // Pan: just request a preview redraw (coalesced via rAF in requestUpdate)
+        H.onPan = H.onPan || (() => H.requestUpdate('preview'));
+        H.__debouncedZoom = H.__debouncedZoom || debounce(() => {
+            try { window.__catalogRenderMode = 'full'; } catch (_) {}
+            try { canvasUpdateOverlay({ mode: 'full' }); } catch (_) {}
+        }, 40);
+        H.onZoom = H.onZoom || (() => { H.requestUpdate('preview'); H.__debouncedZoom(); });
+
+        // Drag/click handlers for popup (rebind to new viewer)
+        H.__dragStartPos = null;
+        H.__isDragging = false;
+        H.onPress = H.onPress || ((event) => {
+            try {
+                H.__dragStartPos = { x: event.position.x, y: event.position.y };
+                H.__isDragging = false;
+            } catch (_) {}
+        });
+        H.onDrag = H.onDrag || ((event) => {
+            try {
+                const p = H.__dragStartPos;
+                if (!p) return;
+                const dx = event.position.x - p.x;
+                const dy = event.position.y - p.y;
+                if (Math.sqrt(dx * dx + dy * dy) > 5) H.__isDragging = true;
+            } catch (_) {}
+        });
+        H.onRelease = H.onRelease || ((event) => {
+            try {
+                if (!H.__dragStartPos) return;
+                if (!H.__isDragging) {
+                    const viewerElement = document.getElementById('openseadragon');
+                    const rect = viewerElement.getBoundingClientRect();
+                    const clickEvent = { clientX: event.position.x + rect.left, clientY: event.position.y + rect.top };
+                    canvasHandleClick_forCanvasPopup(clickEvent);
+                }
+            } catch (_) {}
+            H.__dragStartPos = null;
+            H.__isDragging = false;
+        });
+
+        // Bind to current viewer
+        v.addHandler('open', H.onOpen);
+        v.addHandler('animation', H.onAnimation);
+        try { v.addHandler('animation-finish', H.onAnimationFinish); } catch (_) {}
+        v.addHandler('pan', H.onPan);
+        v.addHandler('zoom', H.onZoom);
+        try { v.addHandler('canvas-press', H.onPress); } catch (_) {}
+        try { v.addHandler('canvas-drag', H.onDrag); } catch (_) {}
+        try { v.addHandler('canvas-release', H.onRelease); } catch (_) {}
+
+        window.__catalogOverlayBoundViewer = v;
+    } catch (_) {}
+}
 
 // When WCS becomes available (common right after adding a new panel), redraw catalog overlay so
 // sources that were loaded with placeholder pixel coords (0,0) get reprojected via RA/Dec.
@@ -580,8 +719,25 @@ window.canvasPopup = {
                     sedButton.addEventListener('click', (e) => {
                         e.stopPropagation();
                         
-                        // Get the current catalog name
-                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        // Use the clicked source's catalog (NOT the globally selected/last-loaded catalog).
+                        const catalogName = (() => {
+                            try {
+                                const raw =
+                                    this.content?.__catalogName ||
+                                    this.content?.catalog_name ||
+                                    this.content?.catalogName ||
+                                    this.content?.catalog ||
+                                    window.currentCatalogName ||
+                                    window.activeCatalog ||
+                                    '';
+                                const s = String(raw || '').trim();
+                                const noPrefix = s.replace(/^catalogs\//, '');
+                                const base = noPrefix.split('/').pop().split('\\').pop();
+                                return base || s || 'catalog';
+                            } catch (_) {
+                                return window.currentCatalogName || window.activeCatalog || 'catalog';
+                            }
+                        })();
                         
 
                                                 // Get galaxy name (robust)
@@ -606,8 +762,12 @@ window.canvasPopup = {
                         
                         console.log('[canvasPopup] Show SED button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForSed);
                         
-                        // Show SED with galaxy name
-                        if (typeof window.showSed === 'function') {
+                        // Show SED with galaxy name.
+                        // In multi-panel (iframe) mode, call the top window so it renders full-width.
+                        const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+                        if (hostWin && typeof hostWin.showSed === 'function') {
+                            hostWin.showSed(this.content.ra, this.content.dec, catalogName, galaxyNameForSed);
+                        } else if (typeof window.showSed === 'function') {
                             window.showSed(this.content.ra, this.content.dec, catalogName, galaxyNameForSed);
                         } else {
                             console.error('showSed function not found');
@@ -619,12 +779,29 @@ window.canvasPopup = {
                     propertiesButton.addEventListener('click', (e) => {
                         e.stopPropagation();
                         
-                        // Get the current catalog name
-                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        // Use the clicked source's catalog (NOT the globally selected/last-loaded catalog).
+                        const catalogName = (() => {
+                            try {
+                                const raw =
+                                    this.content?.__catalogName ||
+                                    this.content?.catalog_name ||
+                                    this.content?.catalogName ||
+                                    this.content?.catalog ||
+                                    window.currentCatalogName ||
+                                    window.activeCatalog ||
+                                    '';
+                                const s = String(raw || '').trim();
+                                const noPrefix = s.replace(/^catalogs\//, '');
+                                const base = noPrefix.split('/').pop().split('\\').pop();
+                                return base || s || 'catalog';
+                            } catch (_) {
+                                return window.currentCatalogName || window.activeCatalog || 'catalog';
+                            }
+                        })();
                         
                         // Show properties
                         if (typeof window.showProperties === 'function') {
-                            window.showProperties(this.content.ra, this.content.dec, catalogName);
+                            window.showProperties(this.content.ra, this.content.dec, catalogName, this.content.radius_pixels, this.content);
                         } else {
                             console.error('showProperties function not found');
                         }
@@ -636,7 +813,15 @@ window.canvasPopup = {
                         e.stopPropagation();
                         
                         // Get the current catalog name with multiple fallbacks
-                        let catalogName = window.currentCatalogName || window.activeCatalog || "UnknownCatalog";
+                        let catalogName =
+                            (this.content && (this.content.__catalogName || this.content.catalog_name || this.content.catalogName || this.content.catalog)) ||
+                            window.currentCatalogName ||
+                            window.activeCatalog ||
+                            "UnknownCatalog";
+                        try {
+                            const s = String(catalogName || '').trim().replace(/^catalogs\//, '');
+                            catalogName = s.split('/').pop().split('\\').pop() || s || catalogName;
+                        } catch (_) {}
                         
                         // Additional fallbacks for catalog name
                         if (!catalogName || catalogName === "undefined") {
@@ -679,8 +864,12 @@ window.canvasPopup = {
                             return;
                         }
                         
-                        // Show RGB panels
-                        if (typeof fetchRgbCutouts === 'function') {
+                        // Show RGB panels.
+                        // In multi-panel (iframe) mode, call the top window so it renders full-width.
+                        const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+                        if (hostWin && typeof hostWin.fetchRgbCutouts === 'function') {
+                            hostWin.fetchRgbCutouts(this.content.ra, this.content.dec, catalogName, galaxyNameForRgb);
+                        } else if (typeof fetchRgbCutouts === 'function') {
                             fetchRgbCutouts(this.content.ra, this.content.dec, catalogName, galaxyNameForRgb);
                         } else {
                             console.error('fetchRgbCutouts function not found. Ensure it is defined in main.js and the script is loaded.');
@@ -880,23 +1069,41 @@ function canvasHighlightSource(selectedIndex) {
     window.currentHighlightedSourceIndex = selectedIndex;
     
     // Force redraw with highlight
-    canvasUpdateOverlay();
+    canvasUpdateOverlay({ mode: 'full' });
 }
 
-
-function canvasUpdateOverlay() {
+function canvasUpdateOverlay(opts = null) {
     // console.log('info:::::',msource.x, source.y, source.radius_pixels);
     const activeOsViewer = window.viewer || window.tiledViewer;
     if (!activeOsViewer || !window.catalogCanvas || !window.catalogDataForOverlay) {
         return;
     }
 
+    __syncCatalogCanvasDprSize();
     const ctx = window.catalogCanvas.getContext('2d');
     const catalogData = window.catalogDataForOverlay;
+    const renderMode = (opts && opts.mode) ? String(opts.mode) : String(window.__catalogRenderMode || 'full');
+    const isPreview = (renderMode === 'preview');
+    // Full redraw should reset any pan-translation so positions are correct.
+    if (!isPreview) {
+        try {
+            if (window.catalogOverlayContainer) {
+                window.catalogOverlayContainer.style.transform = '';
+                const st = __getOverlayPanState();
+                const origin = __computeViewerOriginScreen(activeOsViewer);
+                st.baseOrigin = origin || st.baseOrigin;
+            }
+        } catch (_) {}
+    }
 
-    // Per-catalog boolean filters (controlled by #catalog-overlay-controls in main.js)
-    const boolFilterStore = (window.catalogBooleanFiltersByCatalog && typeof window.catalogBooleanFiltersByCatalog === 'object')
-        ? window.catalogBooleanFiltersByCatalog
+    // Per-catalog boolean/condition filters (controlled by #catalog-overlay-controls in main.js).
+    // In multi-pane mode the controls can live in `window.top`, while the canvas overlay runs in an iframe.
+    // Always prefer the top window's stores so filtering works reliably.
+    const rootWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+
+    // Per-catalog boolean filters
+    const boolFilterStore = (rootWin.catalogBooleanFiltersByCatalog && typeof rootWin.catalogBooleanFiltersByCatalog === 'object')
+        ? rootWin.catalogBooleanFiltersByCatalog
         : {};
     const coerceBool = (v) => {
         if (v == null) return null;
@@ -934,11 +1141,32 @@ function canvasUpdateOverlay() {
             if (!key) return true;
             const cfg = boolFilterStore[key];
             if (!cfg || typeof cfg !== 'object') return true;
+            const loadedCols = (rootWin.__catalogLoadedValueCols && rootWin.__catalogLoadedValueCols[key]) ? rootWin.__catalogLoadedValueCols[key] : null;
             const mode = (typeof cfg.__mode === 'string' && (cfg.__mode === 'or' || cfg.__mode === 'and')) ? cfg.__mode : 'and';
             const cols = Object.keys(cfg).filter((c) => c !== '__mode' && cfg[c] === true);
             if (!cols.length) return true;
+            // Optional debug: set `window.__catalogFilterDebug = true`
+            try {
+                const dbg = !!(rootWin.__catalogFilterDebug || window.__catalogFilterDebug);
+                if (dbg && !passesBooleanFilters.__loggedOnce) {
+                    passesBooleanFilters.__loggedOnce = true;
+                    const sampleCol = cols[0];
+                    const v = source ? source[sampleCol] : undefined;
+                    console.debug('[catalog-filters][canvas][bool] sample', {
+                        catalog: key,
+                        mode,
+                        enabledCols: cols.slice(0, 10),
+                        sampleCol,
+                        sampleValue: v,
+                        sampleType: (v === null ? 'null' : typeof v),
+                        loadedFlag: loadedCols ? loadedCols[sampleCol] : undefined
+                    });
+                }
+            } catch (_) {}
             if (mode === 'or') {
                 for (const col of cols) {
+                    // If values for this column are not loaded yet, don't hide everything.
+                    if ((typeof source[col] === 'undefined') || (loadedCols && !loadedCols[col] && source[col] == null)) return true;
                     const b = coerceBool(source[col]);
                     if (b === true) return true;
                 }
@@ -946,6 +1174,7 @@ function canvasUpdateOverlay() {
             }
             // default AND
             for (const col of cols) {
+                if ((typeof source[col] === 'undefined') || (loadedCols && !loadedCols[col] && source[col] == null)) return true;
                 const b = coerceBool(source[col]);
                 if (b !== true) return false;
             }
@@ -955,8 +1184,547 @@ function canvasUpdateOverlay() {
         }
     };
 
-    // Clear canvas
-    ctx.clearRect(0, 0, window.catalogCanvas.width, window.catalogCanvas.height);
+    // Per-catalog numeric conditions (controlled by #catalog-overlay-controls in main.js)
+    const condFilterStore = (rootWin.catalogConditionFiltersByCatalog && typeof rootWin.catalogConditionFiltersByCatalog === 'object')
+        ? rootWin.catalogConditionFiltersByCatalog
+        : {};
+    const coerceNum = (v) => {
+        if (v == null) return null;
+        if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+        if (typeof v === 'boolean') return null;
+        if (typeof v === 'string') {
+            const s = v.trim();
+            if (!s) return null;
+            const n = Number(s);
+            return Number.isFinite(n) ? n : null;
+        }
+        return null;
+    };
+    const cmp = (a, op, b) => {
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+        switch (op) {
+            case '>': return a > b;
+            case '>=': return a >= b;
+            case '<': return a < b;
+            case '<=': return a <= b;
+            case '!=': return Math.abs(a - b) > 1e-9;
+            case '==': return Math.abs(a - b) <= 1e-9;
+            default: return false;
+        }
+    };
+    const passesConditionFilters = (source) => {
+        try {
+            const key = normalizeCatalogKey(source.__catalogName || source.catalog_name || source.catalogName || source.catalog || '');
+            if (!key) return true;
+            const cfg = condFilterStore[key];
+            if (!cfg) return true;
+            const loadedCols = (rootWin.__catalogLoadedValueCols && rootWin.__catalogLoadedValueCols[key]) ? rootWin.__catalogLoadedValueCols[key] : null;
+            const mode = (cfg && typeof cfg === 'object' && typeof cfg.__mode === 'string' && (cfg.__mode === 'or' || cfg.__mode === 'and'))
+                ? cfg.__mode
+                : 'and';
+            const conds = (cfg && typeof cfg === 'object' && Array.isArray(cfg.conditions))
+                ? cfg.conditions.filter(Boolean)
+                : (Array.isArray(cfg) ? cfg.filter(Boolean) : []);
+            if (!conds.length) return true;
+
+            const evalOne = (c) => {
+                const col = c && (c.col || c.column || c.field);
+                const op = c && (c.op || c.operator);
+                const value = c && (typeof c.value !== 'undefined' ? c.value : c.v);
+                if (!col || !op) return true;
+                // If the column values are not loaded yet, do not filter out everything.
+                if ((typeof source[col] === 'undefined') || (loadedCols && !loadedCols[col] && source[col] == null)) return true;
+                const a = coerceNum(source[col]);
+                const b = coerceNum(value);
+                return cmp(a, String(op), b);
+            };
+
+            if (mode === 'or') {
+                for (const c of conds) {
+                    if (evalOne(c)) return true;
+                }
+                return false;
+            }
+            // default AND
+            for (const c of conds) {
+                if (!evalOne(c)) return false;
+            }
+            return true;
+        } catch (_) {
+            return true;
+        }
+    };
+
+    // Cross-match filter (controlled by #catalog-overlay-controls in main.js)
+    const crossCfg = (() => {
+        try {
+            const cfg = window.catalogCrossMatchConfig;
+            if (!cfg || typeof cfg !== 'object') return { enabled: false, radius_arcsec: 1.0 };
+            const enabled = !!cfg.enabled;
+            const r = Number(cfg.radius_arcsec);
+            return { enabled, radius_arcsec: (Number.isFinite(r) && r > 0) ? r : 1.0 };
+        } catch (_) {
+            return { enabled: false, radius_arcsec: 1.0 };
+        }
+    })();
+
+    const computeCrossMatchedIndexSet = () => {
+        try {
+            if (!crossCfg.enabled) return null;
+            const sepArcsec = crossCfg.radius_arcsec;
+            if (!Number.isFinite(sepArcsec) || sepArcsec <= 0) return null;
+            const sepDeg = sepArcsec / 3600.0;
+
+            // Build candidate list (after boolean + condition filters) and group by catalog key
+            const points = []; // { idx, cat, ra, dec }
+            const byCat = new Map(); // cat -> array of point indices in `points`
+            for (let i = 0; i < catalogData.length; i += 1) {
+                const s = catalogData[i];
+                if (!s) continue;
+                if (!passesBooleanFilters(s)) continue;
+                if (!passesConditionFilters(s)) continue;
+                if (!Number.isFinite(s.ra) || !Number.isFinite(s.dec)) continue;
+                const cat = normalizeCatalogKey(s.__catalogName || s.catalog_name || s.catalogName || s.catalog || '');
+                if (!cat) continue;
+                let ra = Number(s.ra);
+                if (Number.isFinite(ra)) ra = ((ra % 360) + 360) % 360;
+                const dec = Number(s.dec);
+                const p = { idx: i, cat, ra, dec };
+                const pIndex = points.length;
+                points.push(p);
+                if (!byCat.has(cat)) byCat.set(cat, []);
+                byCat.get(cat).push(pIndex);
+            }
+            const cats = Array.from(byCat.keys());
+            if (cats.length < 2) return null;
+
+            // Bin-based neighbor search for speed (global bins across all cats)
+            const step = Math.max(sepDeg, 1e-6);
+            const raBins = Math.ceil(360 / step);
+            const binKey = (ra, dec) => {
+                const bx = Math.floor(ra / step);
+                const by = Math.floor((dec + 90) / step);
+                return `${bx}:${by}`;
+            };
+            const bins = new Map(); // cell -> array of point indices
+            for (let pi = 0; pi < points.length; pi += 1) {
+                const p = points[pi];
+                const k = binKey(p.ra, p.dec);
+                const arr = bins.get(k);
+                if (arr) arr.push(pi);
+                else bins.set(k, [pi]);
+            }
+
+            const degToRad = Math.PI / 180;
+            const maxRad = (sepArcsec / 3600.0) * degToRad;
+            const maxRad2 = maxRad * maxRad;
+
+            // small-angle squared separation in radians (good for arcsec-level matching)
+            const sep2 = (ra1, dec1, ra2, dec2) => {
+                let dra = (ra2 - ra1) * degToRad;
+                // wrap dra to [-pi, pi]
+                if (dra > Math.PI) dra -= 2 * Math.PI;
+                if (dra < -Math.PI) dra += 2 * Math.PI;
+                const ddec = (dec2 - dec1) * degToRad;
+                const decm = ((dec1 + dec2) * 0.5) * degToRad;
+                const x = dra * Math.cos(decm);
+                const y = ddec;
+                return x * x + y * y;
+            };
+
+            // Union-find across all points; connect edges between different catalogs within sep.
+            const parent = new Array(points.length);
+            const rank = new Array(points.length).fill(0);
+            for (let i = 0; i < points.length; i += 1) parent[i] = i;
+            const find = (x) => {
+                while (parent[x] !== x) {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                return x;
+            };
+            const union = (a, b) => {
+                let ra = find(a);
+                let rb = find(b);
+                if (ra === rb) return;
+                if (rank[ra] < rank[rb]) { const t = ra; ra = rb; rb = t; }
+                parent[rb] = ra;
+                if (rank[ra] === rank[rb]) rank[ra] += 1;
+            };
+
+            // For each point, check neighbor bins and union with close points from other catalogs
+            for (let pi = 0; pi < points.length; pi += 1) {
+                const p = points[pi];
+                const bx = Math.floor(p.ra / step);
+                const by = Math.floor((p.dec + 90) / step);
+                for (let dx = -1; dx <= 1; dx += 1) {
+                    let nbx = bx + dx;
+                    if (nbx < 0) nbx += raBins;
+                    if (nbx >= raBins) nbx -= raBins;
+                    for (let dy = -1; dy <= 1; dy += 1) {
+                        const nby = by + dy;
+                        const key = `${nbx}:${nby}`;
+                        const cand = bins.get(key);
+                        if (!cand) continue;
+                        for (const qi of cand) {
+                            if (qi <= pi) continue; // avoid double work
+                            const q = points[qi];
+                            if (q.cat === p.cat) continue; // only cross-catalog edges
+                            if (sep2(p.ra, p.dec, q.ra, q.dec) <= maxRad2) {
+                                union(pi, qi);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Collect components and require the component to include ALL loaded catalogs (AND semantics).
+            const need = new Set(cats);
+            const catMaskByRoot = new Map(); // root -> Set(cats)
+            const membersByRoot = new Map(); // root -> array of points indices
+            for (let pi = 0; pi < points.length; pi += 1) {
+                const r = find(pi);
+                let s = catMaskByRoot.get(r);
+                if (!s) { s = new Set(); catMaskByRoot.set(r, s); }
+                s.add(points[pi].cat);
+                const m = membersByRoot.get(r);
+                if (m) m.push(pi);
+                else membersByRoot.set(r, [pi]);
+            }
+
+            const matched = new Set(); // indices in catalogData that are part of full cross-match components
+            for (const [root, setCats] of catMaskByRoot.entries()) {
+                // must include every catalog
+                if (setCats.size !== need.size) continue;
+                let ok = true;
+                for (const c of need) { if (!setCats.has(c)) { ok = false; break; } }
+                if (!ok) continue;
+                const members = membersByRoot.get(root) || [];
+                for (const pi of members) matched.add(points[pi].idx);
+            }
+            return matched;
+        } catch (_) {
+            return null;
+        }
+    };
+
+    // -------------------------------------------------------------
+    // Filter stats cache (so "Visible sources" doesn't change with zoom/pan)
+    // -------------------------------------------------------------
+    const buildFilterSignature = () => {
+        try {
+            const b = {};
+            for (const k of Object.keys(boolFilterStore || {})) {
+                const cfg = boolFilterStore[k];
+                if (!cfg || typeof cfg !== 'object') continue;
+                const mode = (cfg.__mode === 'or' || cfg.__mode === 'and') ? cfg.__mode : 'and';
+                const cols = Object.keys(cfg).filter(c => c !== '__mode' && cfg[c] === true).sort();
+                if (cols.length) b[k] = { mode, cols };
+            }
+            const c = {};
+            for (const k of Object.keys(condFilterStore || {})) {
+                const cfg = condFilterStore[k];
+                if (!cfg) continue;
+                const mode = (cfg && typeof cfg === 'object' && (cfg.__mode === 'or' || cfg.__mode === 'and')) ? cfg.__mode : 'and';
+                const conds = (cfg && typeof cfg === 'object' && Array.isArray(cfg.conditions)) ? cfg.conditions : (Array.isArray(cfg) ? cfg : []);
+                const norm = (conds || []).filter(Boolean).map(x => ({
+                    col: x && (x.col || x.column || x.field),
+                    op: x && (x.op || x.operator),
+                    value: (x && (typeof x.value !== 'undefined' ? x.value : x.v))
+                }));
+                if (norm.length) c[k] = { mode, conds: norm };
+            }
+            const x = { enabled: !!crossCfg.enabled, radius_arcsec: Number(crossCfg.radius_arcsec || 0) };
+            return JSON.stringify({ b, c, x, n: (catalogData && catalogData.length) || 0 });
+        } catch (_) {
+            return String((catalogData && catalogData.length) || 0);
+        }
+    };
+
+    const cacheHost = (() => { try { return rootWin || window; } catch (_) { return window; } })();
+    const sig = buildFilterSignature();
+    const prevCache = (cacheHost.__catalogOverlayFilterStatsCache && typeof cacheHost.__catalogOverlayFilterStatsCache === 'object')
+        ? cacheHost.__catalogOverlayFilterStatsCache
+        : null;
+
+    let crossMatchedIndexSet = null;
+    let filteredTotal = null;
+    let filteredByCatalog = null;
+    if (prevCache && prevCache.sig === sig) {
+        crossMatchedIndexSet = prevCache.crossMatchedIndexSet || null;
+        filteredTotal = (typeof prevCache.filteredTotal === 'number') ? prevCache.filteredTotal : null;
+        filteredByCatalog = (prevCache.filteredByCatalog && typeof prevCache.filteredByCatalog === 'object') ? prevCache.filteredByCatalog : null;
+    } else {
+        // Recompute expensive parts only when filters change.
+        // For huge catalogs, avoid scanning all rows unless filters are actually enabled.
+        let hasBool = false;
+        try {
+            for (const k of Object.keys(boolFilterStore || {})) {
+                const cfg = boolFilterStore[k];
+                if (!cfg || typeof cfg !== 'object') continue;
+                for (const c of Object.keys(cfg)) {
+                    if (c !== '__mode' && cfg[c] === true) { hasBool = true; break; }
+                }
+                if (hasBool) break;
+            }
+        } catch (_) {}
+        let hasCond = false;
+        try {
+            for (const k of Object.keys(condFilterStore || {})) {
+                const cfg = condFilterStore[k];
+                const conds = (cfg && typeof cfg === 'object' && Array.isArray(cfg.conditions)) ? cfg.conditions : (Array.isArray(cfg) ? cfg : []);
+                if (conds && conds.length) { hasCond = true; break; }
+            }
+        } catch (_) {}
+
+        const huge = (catalogData && catalogData.length > 250000);
+        if (huge && !hasBool && !hasCond && !crossCfg.enabled) {
+            // No filters => total is just number of rows. Avoid O(N) scan.
+            crossMatchedIndexSet = null;
+            filteredTotal = catalogData.length;
+            filteredByCatalog = {};
+            try { cacheHost.__catalogOverlayFilterStatsCache = { sig, crossMatchedIndexSet, filteredTotal, filteredByCatalog }; } catch (_) {}
+        } else {
+            crossMatchedIndexSet = computeCrossMatchedIndexSet();
+            const byCatalog = {};
+            let total = 0;
+            for (let i = 0; i < catalogData.length; i += 1) {
+                const s = catalogData[i];
+                if (!s) continue;
+                if (!passesBooleanFilters(s)) continue;
+                if (!passesConditionFilters(s)) continue;
+                if (crossMatchedIndexSet && !crossMatchedIndexSet.has(i)) continue;
+                total += 1;
+                const k = normalizeCatalogKey(s && (s.__catalogName || s.catalog_name || s.catalogName || s.catalog || ''));
+                if (k) byCatalog[k] = (byCatalog[k] || 0) + 1;
+            }
+            filteredTotal = total;
+            filteredByCatalog = byCatalog;
+            try { cacheHost.__catalogOverlayFilterStatsCache = { sig, crossMatchedIndexSet, filteredTotal, filteredByCatalog }; } catch (_) {}
+        }
+    }
+
+    // -------------------------------------------------------------
+    // WebGL rendering path: keep filter stats working + apply filters/styles on GPU.
+    // -------------------------------------------------------------
+    try {
+        const r = window.__catalogWebgl;
+        if (r && typeof r.draw === 'function') {
+            // Viewer can be replaced (e.g. dynamic range); keep renderer synced.
+            try { r.viewer = activeOsViewer; } catch (_) {}
+
+            // If the overlay data array was replaced, rebuild GPU buffers.
+            try {
+                if (r.__catalogDataRef !== catalogData || r.count !== ((catalogData && catalogData.length) || 0)) {
+                    r.__catalogDataRef = catalogData;
+                    if (typeof r.setData === 'function') r.setData(catalogData);
+                    // Force re-apply visibility mask next pass
+                    r.__filterSig = null;
+                }
+            } catch (_) {}
+
+            // Publish render stats (so controls update even though we skip 2D loops)
+            try {
+                const stats = {
+                    totalShown: (typeof filteredTotal === 'number') ? filteredTotal : ((catalogData && catalogData.length) || 0),
+                    byCatalog: filteredByCatalog || {}
+                };
+                window.__catalogOverlayRenderStats = stats;
+                try { if (window.top && window.top !== window) window.top.__catalogOverlayRenderStats = stats; } catch (_) {}
+                try {
+                    document.dispatchEvent(new CustomEvent('catalog:renderstats', { detail: stats }));
+                    try {
+                        if (window.top && window.top.document && window.top.document !== document) {
+                            window.top.document.dispatchEvent(new CustomEvent('catalog:renderstats', { detail: stats }));
+                        }
+                    } catch (_) {}
+                } catch (_) {}
+            } catch (_) {}
+
+            // Update per-catalog style textures (so multi-catalog colors/borders work)
+            try {
+                if (typeof r.updateStyleTexturesFromOverlayData === 'function') r.updateStyleTexturesFromOverlayData(catalogData);
+            } catch (_) {}
+
+            // Apply filters by updating a visibility mask only when filters change.
+            try {
+                if (r.__filterSig !== sig) {
+                    const n = (catalogData && catalogData.length) || 0;
+                    const mask = new Uint8Array(n);
+                    for (let i = 0; i < n; i += 1) {
+                        const s = catalogData[i];
+                        if (!s) continue;
+                        if (!passesBooleanFilters(s)) continue;
+                        if (!passesConditionFilters(s)) continue;
+                        if (crossMatchedIndexSet && !crossMatchedIndexSet.has(i)) continue;
+                        // Visibility mask for WebGL uses normalized UNSIGNED_BYTE: 255 => 1.0
+                        mask[i] = 255;
+                    }
+                    if (typeof r.setVisibilityMask === 'function') r.setVisibilityMask(mask);
+                    r.__filterSig = sig;
+                }
+            } catch (_) {}
+
+            if (!r.__loggedActive) {
+                r.__loggedActive = true;
+                console.log('[WebGL] Active: drawing via GPU. count=', r.count);
+            }
+            r.draw();
+
+            // Draw selection highlight (yellow border) on the 2D canvas on top of WebGL.
+            try {
+                const hi = window.currentHighlightedSourceIndex;
+                const src = (Number.isInteger(hi) && hi >= 0 && catalogData && hi < catalogData.length) ? catalogData[hi] : null;
+                const canvas2d = window.catalogCanvas;
+                if (src && canvas2d) {
+                    const ctx2 = canvas2d.getContext('2d');
+                    const viewerElement = document.getElementById('openseadragon');
+                    const wCss = viewerElement ? viewerElement.clientWidth : canvas2d.width;
+                    const hCss = viewerElement ? viewerElement.clientHeight : canvas2d.height;
+                    // Always clear 2D overlay first (otherwise the last highlight can "stick" after deselect).
+                    // Clear in CSS pixels; DPR already handled by __syncCatalogCanvasDprSize()
+                    try { ctx2.clearRect(0, 0, wCss, hCss); } catch (_) { try { ctx2.clearRect(0, 0, canvas2d.width, canvas2d.height); } catch (_) {} }
+
+                    const tiledImage = activeOsViewer.world && activeOsViewer.world.getItemAt && activeOsViewer.world.getItemAt(0);
+                    const hasTiledImageMethod = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function';
+                    if (hasTiledImageMethod) {
+                        const imgX = Number.isFinite(src.x) ? src.x : (Number.isFinite(src.x_pixels) ? src.x_pixels : null);
+                        const imgY = Number.isFinite(src.y) ? src.y : (Number.isFinite(src.y_pixels) ? src.y_pixels : null);
+                        if (Number.isFinite(imgX) && Number.isFinite(imgY)) {
+                            const imagePoint = new OpenSeadragon.Point(imgX, imgY);
+                            const viewportPoint = tiledImage.imageToViewportCoordinates(imagePoint);
+                            const center = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+
+                            const radiusInImageCoords = Number.isFinite(src.radius_pixels) ? src.radius_pixels : 5;
+                            const sourceCenter = new OpenSeadragon.Point(imgX, imgY);
+                            const sourceEdge = new OpenSeadragon.Point(imgX + radiusInImageCoords, imgY);
+                            const viewportCenter = tiledImage.imageToViewportCoordinates(sourceCenter);
+                            const viewportEdge = tiledImage.imageToViewportCoordinates(sourceEdge);
+                            const screenCenter = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportCenter);
+                            const screenEdge = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportEdge);
+                            const dx = screenEdge.x - screenCenter.x;
+                            const dy = screenEdge.y - screenCenter.y;
+                            const radius = Math.sqrt(dx * dx + dy * dy);
+
+                            ctx2.globalAlpha = 1.0;
+                            ctx2.strokeStyle = 'yellow';
+                            ctx2.lineWidth = 3;
+                            ctx2.beginPath();
+                            // Match the underlying marker shape so selection doesn't look like it "turns into a circle".
+                            const rs = (() => {
+                                if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+                                try {
+                                    const topRs = window.top && window.top.regionStyles;
+                                    if (topRs && typeof topRs === 'object') return topRs;
+                                } catch (_) {}
+                                return {};
+                            })();
+                            const shapeType = (src && src.shape) ? String(src.shape).toLowerCase() : (rs.shape ? String(rs.shape).toLowerCase() : 'circle');
+                            if (shapeType === 'hexagon') {
+                                // Flat-top regular hexagon (matches WebGL shader)
+                                const sides = 6;
+                                const angleOffset = 0; // 0 => vertex on +X axis
+                                for (let s = 0; s < sides; s++) {
+                                    const ang = angleOffset + (s * 2 * Math.PI) / sides;
+                                    const px = center.x + radius * Math.cos(ang);
+                                    const py = center.y + radius * Math.sin(ang);
+                                    if (s === 0) ctx2.moveTo(px, py);
+                                    else ctx2.lineTo(px, py);
+                                }
+                                ctx2.closePath();
+                            } else if (shapeType === 'square' || shapeType === 'rectangle' || shapeType === 'rect' || shapeType === 'box') {
+                                ctx2.rect(center.x - radius, center.y - radius, radius * 2, radius * 2);
+                            } else {
+                                ctx2.arc(center.x, center.y, radius, 0, 2 * Math.PI, false);
+                            }
+                            ctx2.stroke();
+                        }
+                    }
+                } else if (canvas2d) {
+                    // No selection: still clear the highlight layer so it returns to default.
+                    const ctx2 = canvas2d.getContext('2d');
+                    const viewerElement = document.getElementById('openseadragon');
+                    const wCss = viewerElement ? viewerElement.clientWidth : canvas2d.width;
+                    const hCss = viewerElement ? viewerElement.clientHeight : canvas2d.height;
+                    try { ctx2.clearRect(0, 0, wCss, hCss); } catch (_) { try { ctx2.clearRect(0, 0, canvas2d.width, canvas2d.height); } catch (_) {} }
+                }
+            } catch (_) {}
+            return;
+        }
+    } catch (_) {}
+
+    // For large catalogs, restrict work to the current viewport using the spatial grid built in catalogs.js.
+    const candidateIndices = (() => {
+        try {
+            const grid = (rootWin.__catalogSpatialGrid || window.__catalogSpatialGrid);
+            if (!grid || !grid.cells || typeof grid.cellSize !== 'number') return null;
+            const active = activeOsViewer;
+            const tiledImage = active.world && active.world.getItemAt && active.world.getItemAt(0);
+            if (!tiledImage || typeof tiledImage.viewportToImageRectangle !== 'function') return null;
+
+            const vb = active.viewport.getBounds(true); // viewport coordinates
+            const imgRect = tiledImage.viewportToImageRectangle(vb); // image pixels
+            if (!imgRect) return null;
+            const pad = 64; // expand a bit to avoid edge pop-in
+            const minX = Math.max(0, imgRect.x - pad);
+            const minY = Math.max(0, imgRect.y - pad);
+            const maxX = imgRect.x + imgRect.width + pad;
+            const maxY = imgRect.y + imgRect.height + pad;
+
+            const cs = grid.cellSize;
+            const minCx = Math.floor(minX / cs);
+            const maxCx = Math.floor(maxX / cs);
+            const minCy = Math.floor(minY / cs);
+            const maxCy = Math.floor(maxY / cs);
+            const out = [];
+            for (let cx = minCx; cx <= maxCx; cx++) {
+                for (let cy = minCy; cy <= maxCy; cy++) {
+                    const arr = grid.cells.get(`${cx},${cy}`);
+                    if (arr && arr.length) {
+                        // Avoid `push(...arr)` which can throw for very large buckets.
+                        for (let i = 0; i < arr.length; i += 1) out.push(arr[i]);
+                    }
+                }
+            }
+            return out.length ? out : null;
+        } catch (_) {
+            return null;
+        }
+    })();
+
+    // If we compute missing pixel coordinates for a source, also insert/update it in the spatial grid
+    // so it won't “jump” (pop in/out) when we later rely on viewport-based candidate selection.
+    const maybeUpdateSpatialGrid = (idx, x, y) => {
+        try {
+            const grid = (rootWin.__catalogSpatialGrid || window.__catalogSpatialGrid);
+            if (!grid || !grid.cells || typeof grid.cellSize !== 'number') return;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            if (x === 0 && y === 0) return;
+            const cs = grid.cellSize;
+            const cx = Math.floor(x / cs);
+            const cy = Math.floor(y / cs);
+            const key = `${cx},${cy}`;
+            const s = catalogData[idx];
+            if (s && typeof s === 'object') {
+                // If already placed in same cell, skip
+                if (s.__gridKey === key) return;
+                s.__gridKey = key;
+            }
+            const arr = grid.cells.get(key);
+            if (arr) arr.push(idx);
+            else grid.cells.set(key, [idx]);
+        } catch (_) {}
+    };
+
+    // Clear canvas (in CSS pixels; ctx transform already applies DPR)
+    try {
+        const viewerElement = document.getElementById('openseadragon');
+        const w = viewerElement ? viewerElement.clientWidth : window.catalogCanvas.width;
+        const h = viewerElement ? viewerElement.clientHeight : window.catalogCanvas.height;
+        ctx.clearRect(0, 0, w, h);
+    } catch (_) {
+        ctx.clearRect(0, 0, window.catalogCanvas.width, window.catalogCanvas.height);
+    }
 
     // Reset source map
     window.catalogSourceMap = [];
@@ -964,9 +1732,16 @@ function canvasUpdateOverlay() {
     // Resolve image coordinates for each source (handle RC maps / missing x,y).
     // Important: some loaders (e.g. /catalog-binary-raw) can return x_pixels=y_pixels=0 for all rows.
     // Treat (0,0) as "missing" and recompute from RA/Dec via current WCS when available.
-    const visibleSources = catalogData.filter((source, index) => {
-        if (!source) return false;
-        if (!passesBooleanFilters(source)) return false;
+    const visibleSources = [];
+    let iter = Array.isArray(candidateIndices) ? candidateIndices : null;
+    const huge = (catalogData && catalogData.length > 250000);
+    const MAX_DRAW = huge ? 50000 : (isPreview ? 30000 : 120000);
+    const addIfVisible = (source, index) => {
+        if (!source) return;
+        if (!passesBooleanFilters(source)) return;
+        if (!passesConditionFilters(source)) return;
+        if (crossMatchedIndexSet && !crossMatchedIndexSet.has(index)) return;
+        if (visibleSources.length >= MAX_DRAW) return;
 
         // Prefer explicit image coords if finite
         let imgX = (Number.isFinite(source.x) ? source.x : null);
@@ -1006,19 +1781,70 @@ function canvasUpdateOverlay() {
             } catch (_) {}
         }
 
-        if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) return false;
+        if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) return;
 
         // Persist resolved coordinates so renderer can use them
         source.x = imgX;
         source.y = imgY;
+        // Keep spatial grid consistent when coords were missing at build time
+        try { maybeUpdateSpatialGrid(index, imgX, imgY); } catch (_) {}
 
         // Ensure the source has an index property
         if (typeof source.index === 'undefined') {
             source.index = index;
         }
+        visibleSources.push(source);
+    };
 
-        return true;
-    });
+    if (iter) {
+        // Cap candidates to keep FPS high for huge catalogs (even in full mode when zoomed out).
+        if (iter.length > MAX_DRAW) {
+            const step = Math.ceil(iter.length / MAX_DRAW);
+            const sampled = [];
+            for (let k = 0; k < iter.length; k += step) sampled.push(iter[k]);
+            iter = sampled;
+        }
+        // De-dup cell hits
+        const seen = new Set();
+        for (const idx of iter) {
+            const i = Number(idx);
+            if (!Number.isInteger(i) || i < 0 || i >= catalogData.length) continue;
+            if (seen.has(i)) continue;
+            seen.add(i);
+            addIfVisible(catalogData[i], i);
+            if (visibleSources.length >= MAX_DRAW) break;
+        }
+    } else {
+        // Full scan is expensive; sample for huge catalogs even in full mode.
+        const target = Math.min(MAX_DRAW, catalogData.length);
+        const step = (catalogData.length > target) ? Math.ceil(catalogData.length / target) : 1;
+        for (let i = 0; i < catalogData.length; i += 1) {
+            if (step > 1 && (i % step) !== 0) continue;
+            addIfVisible(catalogData[i], i);
+            if (visibleSources.length >= MAX_DRAW) break;
+        }
+    }
+
+    // Publish render stats (used by #catalog-overlay-controls to show "Visible sources: N").
+    // IMPORTANT: `totalShown` must be filter-based only (not viewport-based), so it doesn't change on pan/zoom.
+    try {
+        const stats = {
+            totalShown: (typeof filteredTotal === 'number') ? filteredTotal : visibleSources.length,
+            byCatalog: filteredByCatalog || {}
+        };
+        window.__catalogOverlayRenderStats = stats;
+        try { if (window.top && window.top !== window) window.top.__catalogOverlayRenderStats = stats; } catch (_) {}
+        try {
+            // Dispatch on this document
+            document.dispatchEvent(new CustomEvent('catalog:renderstats', { detail: stats }));
+            // Also dispatch on top-level document (panel lives there in multi-pane mode)
+            try {
+                if (window.top && window.top.document && window.top.document !== document) {
+                    window.top.document.dispatchEvent(new CustomEvent('catalog:renderstats', { detail: stats }));
+                }
+            } catch (_) {}
+        } catch (_) {}
+    } catch (_) {}
 
     // Draw each source with its individual style
     // Get base TiledImage (index 0) for accurate coordinate conversion (fixes multi-image warning)
@@ -1043,6 +1869,10 @@ function canvasUpdateOverlay() {
         return;
     }
     
+    // When there are many points, draw a cheaper representation to keep interaction smooth.
+    // (Drawing arcs/strokes for tens of thousands of points will lock up the UI.)
+    const previewFastDraw = (isPreview && visibleSources.length > 4000) || (visibleSources.length > 20000);
+
     visibleSources.forEach((source, visibleIndex) => {
         const imagePoint = new OpenSeadragon.Point(source.x, source.y);
         // Use TiledImage for image->viewport, then viewport->viewerElement
@@ -1087,17 +1917,30 @@ function canvasUpdateOverlay() {
         const radius = Math.sqrt(dx * dx + dy * dy);
         
         // Store source position for click detection with proper index
+        const overlayIdx = (Number.isInteger(source.__overlay_index) ? source.__overlay_index : (Number.isInteger(source.sourceIndex) ? source.sourceIndex : source.index));
         window.catalogSourceMap.push({ 
             x: center.x, 
             y: center.y, 
             radius: radius, 
-            sourceIndex: source.index,
+            // Must be global across multiple loaded catalogs
+            sourceIndex: overlayIdx,
             imageX: source.x,
             imageY: source.y,
             ra: source.ra,
             dec: source.dec,
             radius_pixels: source.radius_pixels
         });
+
+        if (previewFastDraw) {
+            // Fast preview: draw tiny squares (no stroke) – much faster than arcs.
+            const a = (typeof source.opacity === 'number') ? source.opacity : 0.8;
+            ctx.globalAlpha = Math.max(0, Math.min(1, a));
+            ctx.fillStyle = source.color || '#FF8C00';
+            // 2x2 pixel marker
+            ctx.fillRect(center.x - 1, center.y - 1, 2, 2);
+            ctx.globalAlpha = 1.0;
+            return;
+        }
 
         // Apply the source's individual styling
         ctx.globalAlpha = source.opacity || 0.7;
@@ -1151,7 +1994,7 @@ function canvasUpdateOverlay() {
         ctx.stroke();
 
         // Add highlight effect for selected source
-        if (source.index === window.currentHighlightedSourceIndex) {
+        if (overlayIdx === window.currentHighlightedSourceIndex) {
             ctx.globalAlpha = 1.0;
             ctx.strokeStyle = 'yellow';
             ctx.lineWidth = 3;
@@ -1272,74 +2115,20 @@ function canvasHandleClick_forCanvasPopup(event) {
 window.canvasPopup.hide = function() {
     // Set active state to false
     this.active = false;
-    
-    // Debug log to track hide method calls
-    console.log("canvasPopup hide method called");
-    
     // Reset highlighted source
-    if (typeof window.currentHighlightedSourceIndex !== 'undefined') {
-        window.currentHighlightedSourceIndex = -1;
-    }
-    
+    try { window.currentHighlightedSourceIndex = -1; } catch (_) {}
     // Reset dragging state
     this.isDragging = false;
-    
-    // Hide the DOM element - with extra error checking
+    // Hide the DOM element (do NOT remove from DOM; removing can cause flicker/races with duplicate handlers)
     try {
-        if (this.domElement) {
-            console.log("Hiding DOM element", this.domElement);
-            this.domElement.style.display = 'none';
-            
-            // Additional attempt in case the style property is being overridden
-            this.domElement.setAttribute('style', this.domElement.getAttribute('style') + '; display: none !important;');
-            
-            // Add a class that might be used for styling
-            this.domElement.classList.add('hidden');
-        } else {
-            console.log("No DOM element found to hide");
-            
-            // Try finding the element by ID as a fallback
-            const popupElement = document.getElementById('canvas-dom-popup');
-            if (popupElement) {
-                console.log("Found popup element by ID, hiding it");
-                popupElement.style.display = 'none';
-                popupElement.setAttribute('style', popupElement.getAttribute('style') + '; display: none !important;');
-                popupElement.classList.add('hidden');
-            } else {
-                console.log("Could not find popup element by ID either");
-            }
+        const el = this.domElement || document.getElementById('canvas-dom-popup');
+        if (el) {
+            el.style.display = 'none';
+            try { el.classList.add('hidden'); } catch (_) {}
         }
-    } catch (e) {
-        console.error("Error hiding DOM element:", e);
-    }
-    
-    // Try another approach - remove the element entirely and recreate it later
-    try {
-        const popup = document.getElementById('canvas-dom-popup');
-        if (popup && popup.parentNode) {
-            console.log("Removing popup element from DOM");
-            popup.parentNode.removeChild(popup);
-            this.domElement = null;  // Force recreation next time
-        }
-    } catch (e) {
-        console.error("Error removing popup from DOM:", e);
-    }
-    
-    // Redraw canvas
-    if (typeof canvasUpdateOverlay === 'function') {
-        try {
-            console.log("Calling canvasUpdateOverlay");
-            canvasUpdateOverlay();
-        } catch (e) {
-            console.error("Error calling canvasUpdateOverlay:", e);
-        }
-    } else {
-        console.log("canvasUpdateOverlay function not found");
-    }
-    
-    console.log("Popup hide method completed");
-    
-    // Return this for chaining
+    } catch (_) {}
+    // Redraw overlay (keeps highlight in sync)
+    try { if (typeof canvasUpdateOverlay === 'function') canvasUpdateOverlay(); } catch (_) {}
     return this;
 };
 
@@ -1497,8 +2286,24 @@ function connectPopupToSedFunctions() {
                         console.log("Properties link clicked in canvas popup");
                         const sourceObj = window.catalogDataForOverlay[window.canvasPopup.sourceIndex];
                         
-                        // Get the current catalog name
-                        const catalogName = window.currentCatalogName || "catalog";
+                        // Use the clicked source's catalog (NOT the globally selected/last-loaded catalog).
+                        const catalogName = (() => {
+                            try {
+                                const raw =
+                                    sourceObj?.__catalogName ||
+                                    sourceObj?.catalog_name ||
+                                    sourceObj?.catalogName ||
+                                    sourceObj?.catalog ||
+                                    window.currentCatalogName ||
+                                    "catalog";
+                                const s = String(raw || '').trim();
+                                const noPrefix = s.replace(/^catalogs\//, '');
+                                const base = noPrefix.split('/').pop().split('\\').pop();
+                                return base || s || "catalog";
+                            } catch (_) {
+                                return window.currentCatalogName || "catalog";
+                            }
+                        })();
                         
                         // Call the showProperties function with the source coordinates
                         if (typeof window.showProperties === 'function') {
@@ -1510,7 +2315,7 @@ function connectPopupToSedFunctions() {
                                     window.catalogOverridesByCatalog[apiName] = { ...window.catalogOverridesByCatalog[apiName], ...ov };
                                 }
                             } catch(_) {}
-                            window.showProperties(sourceObj.ra, sourceObj.dec, catalogName);
+                            window.showProperties(sourceObj.ra, sourceObj.dec, catalogName, sourceObj.radius_pixels, sourceObj);
                         }
                     }
                 }
@@ -1672,7 +2477,35 @@ function canvasHandleClick_forCanvasPopup(event) { // RENAMED. THIS WAS THE CURR
         }
     }
     
-    // Find closest source to the click point
+    // WebGL picking fast path
+    try {
+        const viewerElement = document.getElementById('openseadragon');
+        const rect = viewerElement.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const clickY = event.clientY - rect.top;
+        if (window.__catalogWebgl && typeof window.__catalogWebgl.pick === 'function') {
+            // Pass client coords so WebGL picking can reliably map to its canvas rect.
+            const idx = window.__catalogWebgl.pick(event.clientX, event.clientY);
+            if (Number.isInteger(idx) && idx >= 0 && idx < window.catalogDataForOverlay.length) {
+                const sourceObj = window.catalogDataForOverlay[idx];
+                const merged = { ...(sourceObj || {}), screenX: clickX, screenY: clickY };
+                // Ensure popup has image coords even if overlay objects only have x_pixels/y_pixels
+                try {
+                    if (!Number.isFinite(merged.x) && Number.isFinite(merged.x_pixels)) merged.x = merged.x_pixels;
+                    if (!Number.isFinite(merged.y) && Number.isFinite(merged.y_pixels)) merged.y = merged.y_pixels;
+                    if (!Number.isFinite(merged.imageX) && Number.isFinite(merged.x)) merged.imageX = merged.x;
+                    if (!Number.isFinite(merged.imageY) && Number.isFinite(merged.y)) merged.imageY = merged.y;
+                } catch (_) {}
+                try { canvasHighlightSource(idx); } catch (_) {}
+                try {
+                    window.canvasPopup.show(idx, clickX, clickY, merged);
+                } catch (_) {}
+                return;
+            }
+        }
+    } catch (_) {}
+
+    // Find closest source to the click point (2D fallback)
     let closestSource = null;
     let closestDistance = Infinity;
     const hitRadius = 10; // Increased click radius
@@ -1891,7 +2724,17 @@ function canvasAddCatalogOverlay(catalogData) {
     container.style.height = '100%';
     container.style.pointerEvents = 'none'; // Container doesn't block events
     
-    // Create canvas element
+    // Create a dedicated WebGL canvas (keeps 2D canvas free for highlights/popup UI).
+    const webglCanvas = document.createElement('canvas');
+    webglCanvas.className = 'catalog-webgl-canvas';
+    webglCanvas.style.position = 'absolute';
+    webglCanvas.style.top = '0';
+    webglCanvas.style.left = '0';
+    webglCanvas.style.width = '100%';
+    webglCanvas.style.height = '100%';
+    webglCanvas.style.pointerEvents = 'none';
+
+    // Create 2D canvas element (fallback renderer + highlight layer)
     const canvas = document.createElement('canvas');
     canvas.className = 'catalog-canvas';
     canvas.style.position = 'absolute';
@@ -1903,10 +2746,28 @@ function canvasAddCatalogOverlay(catalogData) {
     
     // Set canvas size
     const viewerElement = document.getElementById('openseadragon');
-    canvas.width = viewerElement.clientWidth;
-    canvas.height = viewerElement.clientHeight;
+    // Ensure the overlay container is positioned relative to the viewer element.
+    // If #openseadragon is `position: static` (default), absolutely-positioned overlays will be
+    // laid out relative to the page, causing a constant screen-space offset.
+    try {
+        const cs = window.getComputedStyle ? window.getComputedStyle(viewerElement) : null;
+        const pos = cs ? cs.position : (viewerElement && viewerElement.style ? viewerElement.style.position : '');
+        if (!pos || pos === 'static') {
+            viewerElement.style.position = 'relative';
+        }
+    } catch (_) {}
+    const __dpr = Math.max(1, (window.devicePixelRatio || 1));
+    const __w = Math.max(1, Math.round((viewerElement.clientWidth || 1) * __dpr));
+    const __h = Math.max(1, Math.round((viewerElement.clientHeight || 1) * __dpr));
+    canvas.width = __w;
+    canvas.height = __h;
+    canvas.__nelouraDpr = __dpr;
+    webglCanvas.width = __w;
+    webglCanvas.height = __h;
+    webglCanvas.__nelouraDpr = __dpr;
     
-    // Add canvas to container
+    // Add canvases to container (WebGL below, 2D on top)
+    container.appendChild(webglCanvas);
     container.appendChild(canvas);
     
     // Add container to viewer
@@ -1915,61 +2776,53 @@ function canvasAddCatalogOverlay(catalogData) {
     // Store references
     window.catalogOverlayContainer = container;
     window.catalogCanvas = canvas;
+    window.catalogWebglCanvas = webglCanvas;
     window.catalogSourceMap = [];
-    
-    // Track if a drag is in progress
-    let isDragging = false;
-    let dragStartPos = null;
-    
-    // Set up the click handler directly on the viewer
-    activeOsViewer.addHandler('canvas-press', function(event) {
-        // Store the starting position for drag detection
-        dragStartPos = {
-            x: event.position.x,
-            y: event.position.y
-        };
-        isDragging = false;
-    });
-    
-    activeOsViewer.addHandler('canvas-drag', function(event) {
-        if (!dragStartPos) return;
-        
-        // Check if we've moved far enough to consider this a drag
-        const dx = event.position.x - dragStartPos.x;
-        const dy = event.position.y - dragStartPos.y;
-        const distance = Math.sqrt(dx*dx + dy*dy);
-        
-        if (distance > 5) {
-            isDragging = true;
+    __syncCatalogCanvasDprSize();
+
+    // Initialize WebGL renderer for ALL catalogs (fallback to 2D if WebGL unavailable).
+    try {
+        console.log('[WebGL] init attempt. CatalogWebGLRenderer=', typeof window.CatalogWebGLRenderer, 'dataLen=', (window.catalogDataForOverlay ? window.catalogDataForOverlay.length : 0));
+        if (!window.CatalogWebGLRenderer) {
+            console.warn('[WebGL] catalog_webgl.js not loaded (CatalogWebGLRenderer missing) — using 2D');
+        } else {
+            const r = new window.CatalogWebGLRenderer(webglCanvas, activeOsViewer);
+            r.setData(window.catalogDataForOverlay);
+            window.__catalogWebgl = r;
+            console.log('[WebGL] Catalog renderer enabled. maxPointSize=', r.maxPointSize, 'count=', r.count, 'webgl2=', !!r.webgl2);
+
+            // Clear the 2D canvas so we don't display old CPU-drawn points.
+            try {
+                const ctx2 = canvas.getContext('2d');
+                if (ctx2) {
+                    ctx2.clearRect(0, 0, (viewerElement.clientWidth || 1), (viewerElement.clientHeight || 1));
+                }
+            } catch (_) {}
         }
-    });
-    
-    activeOsViewer.addHandler('canvas-release', function(event) {
-        if (!dragStartPos) return;
-        
-        // Only handle as a click if it wasn't a drag
-        if (!isDragging) {
-            // Create a synthetic event object with the necessary properties
-            const viewerElement = document.getElementById('openseadragon');
-            const rect = viewerElement.getBoundingClientRect();
-            const clickEvent = {
-                clientX: event.position.x + rect.left,
-                clientY: event.position.y + rect.top
-            };
-            
-            canvasHandleClick_forCanvasPopup(clickEvent); // MODIFIED to call the correct handler
+    } catch (e) {
+        window.__catalogWebgl = null;
+        console.warn('[WebGL] Init failed, falling back to 2D canvas:', e);
+    }
+
+    // Ensure handlers are bound to the current viewer (and keep them bound if viewer is replaced).
+    __ensureCatalogOverlayHandlersBound();
+    try {
+        if (!window.__catalogOverlayRebindTimer) {
+            window.__catalogOverlayRebindTimer = setInterval(() => {
+                try { __ensureCatalogOverlayHandlersBound(); } catch (_) {}
+            }, 500);
         }
-        
-        dragStartPos = null;
-        isDragging = false;
-    });
+    } catch (_) {}
+    
+    // NOTE: Click/drag + pan/zoom handlers are managed by __ensureCatalogOverlayHandlersBound()
+    // so they survive viewer re-inits (e.g., histogram/dynamic range changes).
+    // Avoid attaching duplicate handlers here.
     
     // Add resize handler
     window.addEventListener('resize', function() {
         if (window.catalogCanvas) {
-            window.catalogCanvas.width = viewerElement.clientWidth;
-            window.catalogCanvas.height = viewerElement.clientHeight;
-            canvasUpdateOverlay(); // Redraw after resize
+            __syncCatalogCanvasDprSize();
+            canvasUpdateOverlay({ mode: 'preview' }); // Redraw after resize
         }
     });
     
@@ -1979,19 +2832,8 @@ function canvasAddCatalogOverlay(catalogData) {
     // Initial update
     canvasUpdateOverlay();
     
-    // Add event handlers
-    activeOsViewer.addHandler('animation', canvasUpdateOverlay);
-    activeOsViewer.addHandler('open', canvasUpdateOverlay);
-    
-    const throttledUpdate = throttle(function() {
-        canvasUpdateOverlay();
-    }, 100);
-    activeOsViewer.addHandler('pan', throttledUpdate);
-    
-    const debouncedZoomUpdate = debounce(function() {
-        canvasUpdateOverlay();
-    }, 50);
-    activeOsViewer.addHandler('zoom', debouncedZoomUpdate);
+    // Viewer handlers are bound/rebound via `__ensureCatalogOverlayHandlersBound()` so they survive
+    // viewer re-inits (e.g., histogram/dynamic range changes). Do not attach a second set here.
     
     // Initial render - ensure overlay is drawn immediately with correct coordinates
     // Use a small delay to ensure canvas is fully set up and viewer viewport is ready
@@ -2042,9 +2884,19 @@ function canvasClearCatalogOverlay() {
     
     // Clear references
     window.catalogCanvas = null;
+    window.catalogWebglCanvas = null;
     window.catalogSourceMap = null;
     window.catalogDataForOverlay = null;
     window.currentHighlightedSourceIndex = -1;
+    window.__catalogWebgl = null;
+
+    // Stop rebind timer
+    try {
+        if (window.__catalogOverlayRebindTimer) {
+            clearInterval(window.__catalogOverlayRebindTimer);
+            window.__catalogOverlayRebindTimer = null;
+        }
+    } catch (_) {}
     
     // --- Clear scatter plot highlight ---
     if (window.highlightedScatterCircle) {
@@ -2610,15 +3462,23 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
     Object.assign(body.style, { position: 'relative', width: '100%', height: '100%', background: '#000' });
     el.appendChild(body);
 
-    const img = document.createElement('div');
+    // Use <img> instead of background-image so we can force crisp pixel rendering.
+    const img = document.createElement('img');
     img.dataset.zoomInsetImg = 'true';
+    img.alt = 'Zoom inset preview';
     Object.assign(img.style, {
         position: 'absolute',
         inset: '0',
-        backgroundSize: 'contain',
-        backgroundRepeat: 'no-repeat',
-        backgroundPosition: 'center'
+        width: '100%',
+        height: '100%',
+        objectFit: 'contain',
+        // Critical: prevent browser smoothing so pixels stay sharp
+        imageRendering: 'pixelated'
     });
+    // Some browsers use vendor-specific values
+    try { img.style.imageRendering = 'pixelated'; } catch (_) {}
+    try { img.style.setProperty('image-rendering', 'pixelated'); } catch (_) {}
+    try { img.style.setProperty('image-rendering', 'crisp-edges'); } catch (_) {}
     body.appendChild(img);
 
     const spinner = document.createElement('div');
@@ -2641,7 +3501,17 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
     if (!document.getElementById('region-inset-style')) {
         const st = document.createElement('style');
         st.id = 'region-inset-style';
-        st.textContent = `@keyframes regionInsetSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`;
+        st.textContent = `
+        @keyframes regionInsetSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+        /* Ensure crisp pixel scaling inside zoom insets */
+        .region-zoom-inset img[data-zoom-inset-img="true"],
+        .region-zoom-inset img[data-zoominsetimg="true"],
+        .region-zoom-inset img[data-zoomInsetImg="true"],
+        .region-zoom-inset img[data-zoomInsetImg] {
+          image-rendering: pixelated;
+          image-rendering: crisp-edges;
+        }
+        `;
         document.head.appendChild(st);
     }
 
@@ -3264,10 +4134,14 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
             const r = z.el.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
             const base = Math.max(260, Math.max(r.width || 0, r.height || 0));
-            maxDim = Math.round(base * dpr * 2);
-            maxDim = Math.max(768, Math.min(2048, maxDim));
+            // Request very high resolution so the inset can show true pixels when zoomed/scaled.
+            // (The backend will still downsample only if needed.)
+            maxDim = Math.round(base * dpr * 4);
+            maxDim = Math.max(1024, Math.min(4096, maxDim));
         } catch (_) {}
         params.set('max_dim', String(maxDim));
+        // For "show me the pixels", force nearest downsampling and disable browser smoothing (see CSS below).
+        params.set('downsample', 'nearest');
         params.set('v', String(v));
         if (z.display.min != null && z.display.max != null) {
             params.set('min_value', String(z.display.min));
@@ -3281,7 +4155,14 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
         const blob = await resp.blob();
         const objUrl = URL.createObjectURL(blob);
         z.objectUrl = objUrl;
-            z.img.style.backgroundImage = `url("${objUrl}")`;
+            // Use <img> for better control over image-rendering / smoothing.
+            try {
+                if (z.img && z.img.tagName && z.img.tagName.toLowerCase() === 'img') {
+                    z.img.src = objUrl;
+                } else {
+                    z.img.style.backgroundImage = `url("${objUrl}")`;
+                }
+            } catch (_) {}
         } finally {
             z.spinner.style.display = 'none';
         }
@@ -4095,22 +4976,36 @@ function getWorldCoordinatesFromImage(x, y) {
         }
     }
     const header = window.fitsData && window.fitsData.wcs;
-    if (header && typeof window.parseWCS === 'function') {
+    if (header) {
+        // Prefer header-based direct converter which supports SIN as well as TAN (implemented in main.js)
         try {
-            if (regionWorldCache.header !== header) {
-                const parsedHeader = window.parseWCS(header);
-                regionWorldCache.header = header;
-                regionWorldCache.wcs = parsedHeader && parsedHeader.hasWCS ? parsedHeader : null;
-            }
-            const fallback = regionWorldCache.wcs;
-            if (fallback && fallback.hasWCS && typeof fallback.pixelsToWorld === 'function') {
-                const world = fallback.pixelsToWorld(x, yForWorld);
+            if (typeof pixelsToWorldFromHeader === 'function') {
+                const world = pixelsToWorldFromHeader(header, x, yForWorld);
                 if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
                     return world;
                 }
             }
         } catch (err) {
-            console.warn('[regions] pixelsToWorld fallback failed', err);
+            console.warn('[regions] pixelsToWorldFromHeader failed', err);
+        }
+        // Legacy fallback (TAN-only parseWCS)
+        if (typeof window.parseWCS === 'function') {
+            try {
+                if (regionWorldCache.header !== header) {
+                    const parsedHeader = window.parseWCS(header);
+                    regionWorldCache.header = header;
+                    regionWorldCache.wcs = parsedHeader && parsedHeader.hasWCS ? parsedHeader : null;
+                }
+                const fallback = regionWorldCache.wcs;
+                if (fallback && fallback.hasWCS && typeof fallback.pixelsToWorld === 'function') {
+                    const world = fallback.pixelsToWorld(x, yForWorld);
+                    if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
+                        return world;
+                    }
+                }
+            } catch (err) {
+                console.warn('[regions] pixelsToWorld fallback failed', err);
+            }
         }
     }
     return null;
@@ -4237,13 +5132,13 @@ function showSimpleRegionPopup(content, anchor) {
                     <span style="color:#aaa;">Position (image x, y):</span> ${x}, ${y}
                 </div>
             `;
-            if (ra !== 'N/A' && dec !== 'N/A') {
-                html += `
-                    <div style="margin-bottom:8px;">
-                        <span style="color:#aaa;">Coordinates (RA, Dec):</span> ${ra}°, ${dec}°
-                    </div>
-                `;
-            }
+            // Always show RA/Dec row. Some maps (e.g. RA---SIN/DEC--SIN) may need header/backend fallback.
+            html += `
+                <div style="margin-bottom:8px;">
+                    <span style="color:#aaa;">Coordinates (RA, Dec):</span>
+                    <span id="simple-region-radec-value">${(ra !== 'N/A' && dec !== 'N/A') ? `${ra}°, ${dec}°` : 'Calculating…'}</span>
+                </div>
+            `;
             if (typeof content.radius_pixels === 'number') {
                 const radius = content.radius_pixels.toFixed(2);
                 html += `
@@ -4350,10 +5245,44 @@ function showSimpleRegionPopup(content, anchor) {
                     }
                 }
 
+                // If RA/Dec are missing, resolve them and update the displayed row.
+                try {
+                    const raDecEl = box.querySelector('#simple-region-radec-value');
+                    if (raDecEl && (!Number.isFinite(content.ra) || !Number.isFinite(content.dec))) {
+                        ensureRegionWorldCoords().then((ok) => {
+                            if (!ok) return;
+                            try {
+                                const el2 = box.querySelector('#simple-region-radec-value');
+                                if (el2 && Number.isFinite(content.ra) && Number.isFinite(content.dec)) {
+                                    el2.textContent = `${Number(content.ra).toFixed(6)}°, ${Number(content.dec).toFixed(6)}°`;
+                                }
+                            } catch (_) {}
+                        });
+                    }
+                } catch (_) {}
+
                 if (sedButton) {
                     sedButton.onclick = (e) => {
                         e.stopPropagation();
-                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        // Use the clicked region/source's catalog (NOT the globally selected/last-loaded catalog).
+                        const catalogName = (() => {
+                            try {
+                                const raw =
+                                    content?.__catalogName ||
+                                    content?.catalog_name ||
+                                    content?.catalogName ||
+                                    content?.catalog ||
+                                    window.currentCatalogName ||
+                                    window.activeCatalog ||
+                                    '';
+                                const s = String(raw || '').trim();
+                                const noPrefix = s.replace(/^catalogs\//, '');
+                                const base = noPrefix.split('/').pop().split('\\').pop();
+                                return base || s || 'catalog';
+                            } catch (_) {
+                                return window.currentCatalogName || window.activeCatalog || 'catalog';
+                            }
+                        })();
                         const getGalaxyFrom = (obj) => {
                             if (!obj) return null;
                             const candidates = [obj.galaxy_name, obj.PHANGS_GALAXY, obj.NAME, obj.name, obj.galaxy];
@@ -4370,7 +5299,10 @@ function showSimpleRegionPopup(content, anchor) {
                             (typeof window.galaxyNameFromSearch === 'string' && window.galaxyNameFromSearch.trim()) ||
                             galaxyName;
 
-                        if (typeof window.showSed === 'function') {
+                        const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+                        if (hostWin && typeof hostWin.showSed === 'function') {
+                            hostWin.showSed(content.ra, content.dec, catalogName, galaxyNameForSed || 'UnknownGalaxy');
+                        } else if (typeof window.showSed === 'function') {
                             window.showSed(content.ra, content.dec, catalogName, galaxyNameForSed || 'UnknownGalaxy');
                         }
                     };
@@ -4379,9 +5311,27 @@ function showSimpleRegionPopup(content, anchor) {
                 if (propertiesButton) {
                     propertiesButton.onclick = (e) => {
                         e.stopPropagation();
-                        const catalogName = window.currentCatalogName || window.activeCatalog;
+                        // Use the clicked region/source's catalog (NOT the globally selected/last-loaded catalog).
+                        const catalogName = (() => {
+                            try {
+                                const raw =
+                                    content?.__catalogName ||
+                                    content?.catalog_name ||
+                                    content?.catalogName ||
+                                    content?.catalog ||
+                                    window.currentCatalogName ||
+                                    window.activeCatalog ||
+                                    '';
+                                const s = String(raw || '').trim();
+                                const noPrefix = s.replace(/^catalogs\//, '');
+                                const base = noPrefix.split('/').pop().split('\\').pop();
+                                return base || s || 'catalog';
+                            } catch (_) {
+                                return window.currentCatalogName || window.activeCatalog || 'catalog';
+                            }
+                        })();
                         if (typeof window.showProperties === 'function') {
-                            window.showProperties(content.ra, content.dec, catalogName);
+                            window.showProperties(content.ra, content.dec, catalogName, content.radius_pixels, content);
                         }
                     };
                 }
@@ -4389,7 +5339,15 @@ function showSimpleRegionPopup(content, anchor) {
                 if (rgbButton) {
                     rgbButton.onclick = async (e) => {
                         e.stopPropagation();
-                        let catalogName = window.currentCatalogName || window.activeCatalog || 'UnknownCatalog';
+                        let catalogName =
+                            (content && (content.__catalogName || content.catalog_name || content.catalogName || content.catalog)) ||
+                            window.currentCatalogName ||
+                            window.activeCatalog ||
+                            'UnknownCatalog';
+                        try {
+                            const s = String(catalogName || '').trim().replace(/^catalogs\//, '');
+                            catalogName = s.split('/').pop().split('\\').pop() || s || catalogName;
+                        } catch (_) {}
                         if (!catalogName || catalogName === 'undefined') {
                             if (content.catalogName) catalogName = content.catalogName;
                             else if (content.catalog) catalogName = content.catalog;
@@ -4420,7 +5378,10 @@ function showSimpleRegionPopup(content, anchor) {
                                 return;
                             }
                         }
-                        if (typeof fetchRgbCutouts === 'function') {
+                        const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+                        if (hostWin && typeof hostWin.fetchRgbCutouts === 'function') {
+                            hostWin.fetchRgbCutouts(content.ra, content.dec, catalogName, galaxyNameForRgb);
+                        } else if (typeof fetchRgbCutouts === 'function') {
                             fetchRgbCutouts(content.ra, content.dec, catalogName, galaxyNameForRgb);
                         }
                     };
