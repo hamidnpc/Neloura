@@ -1097,9 +1097,10 @@ function canvasUpdateOverlay(opts = null) {
     }
 
     // Per-catalog boolean/condition filters (controlled by #catalog-overlay-controls in main.js).
-    // In multi-pane mode the controls can live in `window.top`, while the canvas overlay runs in an iframe.
-    // Always prefer the top window's stores so filtering works reliably.
-    const rootWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
+    // IMPORTANT: In multi-panel mode, each pane has its own overlay + filters.
+    // Filters must be per-pane (not shared via window.top), otherwise toggling a filter in one pane
+    // will affect the other pane and also break value-loading (one pane thinks columns are loaded).
+    const rootWin = window;
 
     // Per-catalog boolean filters
     const boolFilterStore = (rootWin.catalogBooleanFiltersByCatalog && typeof rootWin.catalogBooleanFiltersByCatalog === 'object')

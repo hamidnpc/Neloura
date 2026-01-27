@@ -1196,6 +1196,13 @@ function renderSegmentOverlayControls(info) {
 let catalogOverlayControlsCollapsed = false;
 
 // ---------------- Catalog boolean-column filtering (per catalog) ----------------
+function __catalogFilterRootWin() {
+    // Filters must be PER-PANE. Do not store them on `window.top`, otherwise
+    // changing a filter in one pane affects the other pane (and can prevent
+    // the other pane from fetching needed column values).
+    return window;
+}
+
 function __normalizeCatalogKey(raw) {
     try {
         const s = String(raw || '').trim();
@@ -1210,10 +1217,13 @@ function __normalizeCatalogKey(raw) {
 
 function __ensureCatalogBooleanFilterStore() {
     try {
-        if (!window.catalogBooleanFiltersByCatalog || typeof window.catalogBooleanFiltersByCatalog !== 'object') {
-            window.catalogBooleanFiltersByCatalog = {};
+        // IMPORTANT: In multi-panel mode, the renderer lives in an iframe but reads filter stores
+        // from `window.top` (see `canvas.js`). Store filters on the root window so they apply.
+        const rootWin = __catalogFilterRootWin();
+        if (!rootWin.catalogBooleanFiltersByCatalog || typeof rootWin.catalogBooleanFiltersByCatalog !== 'object') {
+            rootWin.catalogBooleanFiltersByCatalog = {};
         }
-        return window.catalogBooleanFiltersByCatalog;
+        return rootWin.catalogBooleanFiltersByCatalog;
     } catch (_) {
         // If window is not writable for some reason, fall back to a local store
         if (!__ensureCatalogBooleanFilterStore.__fallback) __ensureCatalogBooleanFilterStore.__fallback = {};
@@ -1223,14 +1233,17 @@ function __ensureCatalogBooleanFilterStore() {
 
 function __ensureCatalogBooleanUiStateStore() {
     try {
-        if (!window.__catalogBooleanFilterUiState || typeof window.__catalogBooleanFilterUiState !== 'object') {
-            window.__catalogBooleanFilterUiState = { openKey: null, colsCache: {}, numColsCache: {} };
+        // UI state must also live on the root window so controls and renderer stay in sync
+        const rootWin = __catalogFilterRootWin();
+        if (!rootWin.__catalogBooleanFilterUiState || typeof rootWin.__catalogBooleanFilterUiState !== 'object') {
+            rootWin.__catalogBooleanFilterUiState = { openKey: null, colsCache: {}, numColsCache: {} };
         }
-        if (!window.__catalogBooleanFilterUiState.colsCache) window.__catalogBooleanFilterUiState.colsCache = {};
-        if (!window.__catalogBooleanFilterUiState.numColsCache) window.__catalogBooleanFilterUiState.numColsCache = {};
-        return window.__catalogBooleanFilterUiState;
+        if (!rootWin.__catalogBooleanFilterUiState.colsCache) rootWin.__catalogBooleanFilterUiState.colsCache = {};
+        if (!rootWin.__catalogBooleanFilterUiState.numColsCache) rootWin.__catalogBooleanFilterUiState.numColsCache = {};
+        if (!rootWin.__catalogBooleanFilterUiState.allColsCache) rootWin.__catalogBooleanFilterUiState.allColsCache = {};
+        return rootWin.__catalogBooleanFilterUiState;
     } catch (_) {
-        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {}, numColsCache: {} };
+        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {}, numColsCache: {}, allColsCache: {} };
         return __ensureCatalogBooleanUiStateStore.__fallback;
     }
 }
@@ -1368,10 +1381,11 @@ function __getBooleanColumnsCached(catalogKey) {
 // ---------------- Catalog numeric-condition filtering (per catalog) ----------------
 function __ensureCatalogConditionFilterStore() {
     try {
-        if (!window.catalogConditionFiltersByCatalog || typeof window.catalogConditionFiltersByCatalog !== 'object') {
-            window.catalogConditionFiltersByCatalog = {};
+        const rootWin = __catalogFilterRootWin();
+        if (!rootWin.catalogConditionFiltersByCatalog || typeof rootWin.catalogConditionFiltersByCatalog !== 'object') {
+            rootWin.catalogConditionFiltersByCatalog = {};
         }
-        return window.catalogConditionFiltersByCatalog;
+        return rootWin.catalogConditionFiltersByCatalog;
     } catch (_) {
         if (!__ensureCatalogConditionFilterStore.__fallback) __ensureCatalogConditionFilterStore.__fallback = {};
         return __ensureCatalogConditionFilterStore.__fallback;
@@ -1553,6 +1567,9 @@ async function __ensureCatalogColumnsLoaded(catalogKey, columns) {
     const cols = Array.isArray(columns) ? columns.map(String).filter(Boolean) : [String(columns || '')].filter(Boolean);
     if (!key || !cols.length) return;
 
+    // Root window holds the "loaded columns" flags because `canvas.js` reads it from there.
+    const rootWin = __catalogFilterRootWin();
+
     // In multi-pane mode the overlay data may live in a different window (e.g. iframe).
     // Try to find the window that owns the overlay objects for this catalog.
     const hostWin = (() => {
@@ -1566,10 +1583,10 @@ async function __ensureCatalogColumnsLoaded(catalogKey, columns) {
     })();
 
     // Track which columns we already loaded for this catalog (client-side only)
-    if (!hostWin.__catalogLoadedValueCols) hostWin.__catalogLoadedValueCols = {};
-    if (!hostWin.__catalogLoadedValueCols[key]) hostWin.__catalogLoadedValueCols[key] = {};
+    if (!rootWin.__catalogLoadedValueCols) rootWin.__catalogLoadedValueCols = {};
+    if (!rootWin.__catalogLoadedValueCols[key]) rootWin.__catalogLoadedValueCols[key] = {};
 
-    const need = cols.filter(c => !hostWin.__catalogLoadedValueCols[key][c]);
+    const need = cols.filter(c => !rootWin.__catalogLoadedValueCols[key][c]);
     if (!need.length) return;
 
     // Overlay store to update
@@ -1712,7 +1729,7 @@ async function __ensureCatalogColumnsLoaded(catalogKey, columns) {
         if (nonNull <= 0) {
             throw new Error(`Failed to populate column values for: ${col} (all values are null/undefined)`);
         }
-        hostWin.__catalogLoadedValueCols[key][col] = true;
+        rootWin.__catalogLoadedValueCols[key][col] = true;
     }
 
     if (dbg) {
