@@ -714,9 +714,61 @@ window.canvasPopup = {
                 const rgbButton = document.getElementById('show-rgb-btn');
                 const cutoutRegionButton = document.getElementById('cutout-region-btn');
                 const deleteRegionButton = document.getElementById('delete-region-btn');
+
+                // For some FITS (notably certain radio maps), catalog RA/Dec can be expressed in a
+                // different longitude convention (e.g. negative RA) and/or a different frame than
+                // what the current map WCS uses. To ensure RGB/SED are generated for the *clicked*
+                // location on the currently displayed map, resolve RA/Dec from the map WCS using
+                // the clicked pixel coordinates when available.
+                const __isFiniteNum = (v) => (typeof v === 'number' && Number.isFinite(v));
+                async function __resolvePopupWorldCoordsFromCurrentMap() {
+                    try {
+                        const c = this && this.content ? this.content : null;
+                        if (!c) return null;
+
+                        const x = __isFiniteNum(c.imageX) ? Math.round(c.imageX)
+                            : (__isFiniteNum(c.x_pixels) ? Math.round(c.x_pixels)
+                                : (__isFiniteNum(c.x) ? Math.round(c.x) : null));
+                        const y = __isFiniteNum(c.imageY) ? Math.round(c.imageY)
+                            : (__isFiniteNum(c.y_pixels) ? Math.round(c.y_pixels)
+                                : (__isFiniteNum(c.y) ? Math.round(c.y) : null));
+
+                        if (!__isFiniteNum(x) || !__isFiniteNum(y)) return null;
+
+                        const fitsPath = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || null;
+                        const hduIndex = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+                        if (!fitsPath) return null;
+
+                        // Ensure session header exists (same pattern used elsewhere)
+                        if (!window.__sid) {
+                            const sessionRes = await fetch('/session/start');
+                            const sessionJson = await sessionRes.json().catch(() => null);
+                            if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+                        }
+                        const headers = {};
+                        if (window.__sid) headers['X-Session-ID'] = window.__sid;
+
+                        const url =
+                            `/pixel-to-world/?x=${encodeURIComponent(x)}&y=${encodeURIComponent(y)}` +
+                            `&origin=top` +
+                            `&filepath=${encodeURIComponent(fitsPath)}` +
+                            `&hdu=${encodeURIComponent(hduIndex)}` +
+                            `&_t=${Date.now()}`;
+
+                        const resp = await fetch(url, { headers, cache: 'no-store' });
+                        if (!resp.ok) return null;
+                        const data = await resp.json().catch(() => null);
+                        if (data && __isFiniteNum(data.ra) && __isFiniteNum(data.dec)) {
+                            return { ra: data.ra, dec: data.dec };
+                        }
+                        return null;
+                    } catch (_) {
+                        return null;
+                    }
+                }
                 
                 if (sedButton) {
-                    sedButton.addEventListener('click', (e) => {
+                    sedButton.addEventListener('click', async (e) => {
                         e.stopPropagation();
                         
                         // Use the clicked source's catalog (NOT the globally selected/last-loaded catalog).
@@ -760,15 +812,24 @@ window.canvasPopup = {
                             "UnknownGalaxy";
                             
                         
-                        console.log('[canvasPopup] Show SED button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForSed);
+                        // Prefer WCS-derived coords for the clicked pixel on the current map when possible.
+                        let ra = this.content && __isFiniteNum(this.content.ra) ? this.content.ra : null;
+                        let dec = this.content && __isFiniteNum(this.content.dec) ? this.content.dec : null;
+                        const wcsCoords = await __resolvePopupWorldCoordsFromCurrentMap.call(this);
+                        if (wcsCoords && __isFiniteNum(wcsCoords.ra) && __isFiniteNum(wcsCoords.dec)) {
+                            ra = wcsCoords.ra;
+                            dec = wcsCoords.dec;
+                        }
+
+                        console.log('[canvasPopup] Show SED button clicked for RA:', ra, 'DEC:', dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForSed);
                         
                         // Show SED with galaxy name.
                         // In multi-panel (iframe) mode, call the top window so it renders full-width.
                         const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
                         if (hostWin && typeof hostWin.showSed === 'function') {
-                            hostWin.showSed(this.content.ra, this.content.dec, catalogName, galaxyNameForSed);
+                            hostWin.showSed(ra, dec, catalogName, galaxyNameForSed);
                         } else if (typeof window.showSed === 'function') {
-                            window.showSed(this.content.ra, this.content.dec, catalogName, galaxyNameForSed);
+                            window.showSed(ra, dec, catalogName, galaxyNameForSed);
                         } else {
                             console.error('showSed function not found');
                         }
@@ -809,7 +870,7 @@ window.canvasPopup = {
                 }
                 
                 if (rgbButton) {
-                    rgbButton.addEventListener('click', (e) => {
+                    rgbButton.addEventListener('click', async (e) => {
                         e.stopPropagation();
                         
                         // Get the current catalog name with multiple fallbacks
@@ -854,12 +915,21 @@ window.canvasPopup = {
                             galaxyNameForRgb = window.galaxyNameFromSearch.trim();
                         }
                         
-                        console.log('[canvasPopup] Show RGB button clicked for RA:', this.content.ra, 'DEC:', this.content.dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForRgb);
+                        // Prefer WCS-derived coords for the clicked pixel on the current map when possible.
+                        let ra = this.content && __isFiniteNum(this.content.ra) ? this.content.ra : null;
+                        let dec = this.content && __isFiniteNum(this.content.dec) ? this.content.dec : null;
+                        const wcsCoords = await __resolvePopupWorldCoordsFromCurrentMap.call(this);
+                        if (wcsCoords && __isFiniteNum(wcsCoords.ra) && __isFiniteNum(wcsCoords.dec)) {
+                            ra = wcsCoords.ra;
+                            dec = wcsCoords.dec;
+                        }
+
+                        console.log('[canvasPopup] Show RGB button clicked for RA:', ra, 'DEC:', dec, 'Catalog:', catalogName, 'Galaxy:', galaxyNameForRgb);
                         console.log('[canvasPopup] Content object:', this.content);
                         console.log('[canvasPopup] Available global variables - currentCatalogName:', window.currentCatalogName, 'activeCatalog:', window.activeCatalog);
                         
                         // Validate required parameters before calling fetchRgbCutouts
-                        if (!this.content.ra || !this.content.dec) {
+                        if (!__isFiniteNum(ra) || !__isFiniteNum(dec)) {
                             console.error('[canvasPopup] Missing RA or Dec coordinates');
                             return;
                         }
@@ -868,9 +938,9 @@ window.canvasPopup = {
                         // In multi-panel (iframe) mode, call the top window so it renders full-width.
                         const hostWin = (() => { try { return (window.top && window.top !== window) ? window.top : window; } catch (_) { return window; } })();
                         if (hostWin && typeof hostWin.fetchRgbCutouts === 'function') {
-                            hostWin.fetchRgbCutouts(this.content.ra, this.content.dec, catalogName, galaxyNameForRgb);
+                            hostWin.fetchRgbCutouts(ra, dec, catalogName, galaxyNameForRgb);
                         } else if (typeof fetchRgbCutouts === 'function') {
-                            fetchRgbCutouts(this.content.ra, this.content.dec, catalogName, galaxyNameForRgb);
+                            fetchRgbCutouts(ra, dec, catalogName, galaxyNameForRgb);
                         } else {
                             console.error('fetchRgbCutouts function not found. Ensure it is defined in main.js and the script is loaded.');
                         }
