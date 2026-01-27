@@ -3730,6 +3730,7 @@ def resolve_sed_norm_mode_for_filter(filter_name: str, default_group: str | None
         return SED_NORM_MODE
 @app.get("/generate-sed/")
 async def generate_sed_optimized(
+    request: Request,
     ra: float,
     dec: float,
     catalog_name: str,
@@ -4251,6 +4252,35 @@ async def generate_sed_optimized(
                     print(f"[SED] File search timed out after {FIND_FILES_TIMEOUT}s; proceeding with partial matches.")
                 except Exception:
                     pass
+
+        # If we still don't know the galaxy (common for uploaded catalogs), infer it from the currently loaded FITS file.
+        try:
+            if (not target_galaxy_name) or (str(target_galaxy_name).strip().lower() in ("unknown", "unknowngalaxy", str(SED_DEFAULT_GALAXY_NAME).strip().lower())):
+                fits_path = ""
+                try:
+                    session = getattr(request.state, "session", None)
+                    fits_path = (session.data.get("current_fits_file") if session is not None else "") or ""
+                except Exception:
+                    fits_path = ""
+                if fits_path:
+                    import re as _re
+                    from pathlib import Path as _Path
+                    base_name2 = _Path(str(fits_path)).name.lower()
+                    parent_name2 = _Path(str(fits_path)).parent.name.lower()
+                    for candidate_name in [parent_name2, base_name2]:
+                        m2 = _re.search(r"(?<![a-z0-9])(ngc|ic|m|ugc|eso|pgc|arp)\s*0*(\d+)[a-z]*?(?=[^a-z0-9]|$)", candidate_name, _re.IGNORECASE)
+                        if m2:
+                            prefix, digits = m2.group(1).lower(), m2.group(2)
+                            if prefix in ['ngc', 'ic']:
+                                target_galaxy_name = f"{prefix.upper()}{digits.zfill(4)}"
+                            elif prefix == 'm':
+                                target_galaxy_name = f"M{digits}"
+                            else:
+                                target_galaxy_name = f"{prefix.upper()}{digits}"
+                            print(f"[SED] Galaxy inferred from current FITS path: {target_galaxy_name}")
+                            break
+        except Exception:
+            pass
 
         if target_galaxy_name and target_galaxy_name != SED_DEFAULT_GALAXY_NAME:
             print(f"Files found for galaxy '{target_galaxy_name}': {len(file_matches)} filters")
@@ -11032,13 +11062,21 @@ def _find_and_extract_cutout_via_glob(
         print(f"Cutout [{display_filter_name}]: No FITS file found using identifiers {filter_identifiers} in {base_search_path}{excluded_info}")
         return None, None
 
-    fits_file_path = matching_files[0] if RGB_USE_FIRST_MATCH else matching_files[-1]
-    print(f"Cutout [{display_filter_name}]: Using FITS file {fits_file_path}")
+    # When galaxy_name is unknown, many FITS files across different galaxies can match a filter identifier.
+    # Previously we picked the "first match" and returned immediately on NoOverlap, which causes all channels
+    # to fail if that first file belongs to a different galaxy. Instead, try multiple candidates until one overlaps.
+    candidates = matching_files if RGB_USE_FIRST_MATCH else list(reversed(matching_files))
+    max_try = min(len(candidates), int(os.getenv("RGB_CUTOUT_MAX_CANDIDATES", "40")))
 
-    try:
-        with fits.open(fits_file_path) as hdul:
-            for hdu_idx, hdu in enumerate(hdul):
-                if hdu.data is not None and hasattr(hdu.data, 'shape') and len(hdu.data.shape) >= 2:
+    for idx_file, fits_file_path in enumerate(candidates[:max_try]):
+        print(f"Cutout [{display_filter_name}]: Trying FITS file {fits_file_path} ({idx_file+1}/{max_try})")
+        try:
+            with fits.open(fits_file_path) as hdul:
+                any_image_hdu = False
+                for hdu_idx, hdu in enumerate(hdul):
+                    if hdu.data is None or not hasattr(hdu.data, 'shape') or len(hdu.data.shape) < 2:
+                        continue
+                    any_image_hdu = True
                     try:
                         header = hdu.header.copy()
                         if any(tag.upper() in display_filter_name.upper() for tag in RGB_WCS_PREP_FILTERS):
@@ -11046,7 +11084,6 @@ def _find_and_extract_cutout_via_glob(
 
                         wcs = WCS(header)
                         if RGB_SKIP_NON_CELESTIAL_WCS and not wcs.has_celestial:
-                            print(f"Cutout [{display_filter_name}]: WCS for {fits_file_path} (HDU {hdu_idx}) lacks celestial. Skipping HDU.")
                             continue
 
                         image_data_full = hdu.data
@@ -11055,7 +11092,6 @@ def _find_and_extract_cutout_via_glob(
                         elif image_data_full.ndim == 4:
                             image_data_full = image_data_full[0, 0, :, :]
                         elif image_data_full.ndim != 2:
-                            print(f"Cutout [{display_filter_name}]: HDU {hdu_idx} has unsupported {image_data_full.ndim} dimensions. Skipping HDU.")
                             continue
 
                         if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
@@ -11063,15 +11099,13 @@ def _find_and_extract_cutout_via_glob(
                             return None, None
 
                         target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
-                        # Pre-validate that target transforms to finite pixel coords for this WCS
                         try:
                             px, py = wcs.world_to_pixel(target_coord)
                             if not (np.isfinite(px) and np.isfinite(py)):
-                                print(f"Cutout [{display_filter_name}]: world->pixel produced non-finite ({px}, {py}); skipping HDU {hdu_idx}")
                                 continue
-                        except Exception as _w2p_e:
-                            print(f"Cutout [{display_filter_name}]: world->pixel failed for HDU {hdu_idx}: {_w2p_e}")
+                        except Exception:
                             continue
+
                         try:
                             cutout_obj = Cutout2D(
                                 image_data_full,
@@ -11082,43 +11116,31 @@ def _find_and_extract_cutout_via_glob(
                                 fill_value=RGB_CUTOUT_FILL_VALUE
                             )
                         except NoOverlapError:
-                            print(f"Cutout [{display_filter_name}]: Target position (RA={ra:.4f}, Dec={dec:.4f}) is outside image coverage area")
-                            return None, None
+                            # Try next HDU or next file candidate.
+                            continue
 
                         cutout_data = cutout_obj.data.copy()
                         cutout_wcs_header = cutout_obj.wcs.to_header()
                         cutout_wcs_header['NAXIS1'] = cutout_data.shape[1]
                         cutout_wcs_header['NAXIS2'] = cutout_data.shape[0]
                         cutout_wcs_header['NAXIS'] = 2
-                        print(f"Cutout [{display_filter_name}]: Successfully extracted from HDU {hdu_idx}, shape {cutout_data.shape}")
+                        print(f"Cutout [{display_filter_name}]: Success using {fits_file_path} (HDU {hdu_idx}), shape {cutout_data.shape}")
                         return cutout_data, cutout_wcs_header
-
-                    except NoOverlapError:
-                        print(f"Cutout [{display_filter_name}]: Target position (RA={ra:.4f}, Dec={dec:.4f}) is outside image coverage area")
-                        return None, None
-                    except Exception as wcs_cutout_e:
-                        print(f"Cutout [{display_filter_name}]: Error processing HDU {hdu_idx} in {fits_file_path}: {wcs_cutout_e}")
-                        if not isinstance(wcs_cutout_e, NoOverlapError):
-                            import traceback
-                            print(f"Traceback for HDU processing error [{display_filter_name}]:")
-                            traceback.print_exc()
+                    except Exception:
+                        # Keep trying other HDUs and files
                         continue
 
-            print(f"Cutout [{display_filter_name}]: No suitable HDU found in {fits_file_path}")
-            return None, None
+                if not any_image_hdu:
+                    continue
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
 
-    except FileNotFoundError:
-        print(f"Cutout [{display_filter_name}]: FITS file {fits_file_path} not found.")
-        return None, None
-    except Exception as e:
-        print(f"Cutout [{display_filter_name}]: Error opening or processing FITS file {fits_file_path}: {e}")
-        if not isinstance(e, NoOverlapError):
-            import traceback
-            print(f"Traceback for FITS file processing error [{display_filter_name}]:")
-            traceback.print_exc()
-        return None, None
+    print(f"Cutout [{display_filter_name}]: No overlapping FITS found after trying {max_try} candidate files")
+    return None, None
 @app.get("/generate-rgb-cutouts/")
-async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_name: str = Query("UnknownGalaxy")):
+async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_name: str, galaxy_name: str = Query("UnknownGalaxy")):
     """
     Generates a 1x4 panel of RGB and H-alpha cutouts for a given RA/Dec.
     Uses recursive file search and restricts to files for the provided galaxy_name when available.
@@ -11130,11 +11152,31 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
     print('galaxy name provided: ',galaxy_name)
     target_galaxy_name = galaxy_name
 
-    # Try to get galaxy name from catalog (unchanged)
+    # Try to get galaxy name from catalog (works best when catalog includes a galaxy column).
     try:
         catalog_table = loaded_catalogs.get(catalog_name)
         if catalog_table is None:
             print(f"RGB Cutouts: Catalog '{catalog_name}' not in cache. Loading.")
+            # Resolve uploaded catalogs too (frontend typically passes basename like "upload_foo.fits")
+            base_dir = Path(".").resolve()
+            catalogs_dir = Path(CATALOGS_DIRECTORY)
+            try:
+                name = str(catalog_name).strip()
+                direct = base_dir / name
+                in_catalogs = base_dir / CATALOGS_DIRECTORY / name
+                in_files = base_dir / FILES_DIRECTORY / name
+                in_uploads = base_dir / UPLOADS_DIRECTORY / name
+                if direct.is_file():
+                    catalogs_dir = base_dir
+                elif in_catalogs.is_file():
+                    catalogs_dir = base_dir / CATALOGS_DIRECTORY
+                elif in_uploads.is_file():
+                    catalogs_dir = base_dir / UPLOADS_DIRECTORY
+                elif in_files.is_file():
+                    catalogs_dir = base_dir / FILES_DIRECTORY
+            except Exception:
+                catalogs_dir = Path(CATALOGS_DIRECTORY)
+
             catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
             if catalog_table is not None:
                 loaded_catalogs[catalog_name] = catalog_table
@@ -11186,10 +11228,38 @@ async def generate_rgb_cutouts(ra: float, dec: float, catalog_name: str, galaxy_
     except Exception as e:
         print(f"RGB Cutouts: Error loading/processing catalog '{catalog_name}': {e}")
 
-# Final fallback: try to parse galaxy name from the catalog_name filename if still unknown/invalid
+    # Final fallback: try to infer galaxy name from:
+    #  1) current FITS file in-session (best for uploaded catalogs without a galaxy column)
+    #  2) catalog filename
     print('catalog name:', catalog_name)
     print('target_galaxy_name:', target_galaxy_name)
     try:
+        if (target_galaxy_name=='UnknownGalaxy'):
+            # 1) Infer from currently loaded image path
+            try:
+                session = getattr(request.state, "session", None)
+                session_data = session.data if session is not None else {}
+                fits_path = session_data.get("current_fits_file") or ""
+                if fits_path:
+                    base_name2 = Path(str(fits_path)).name.lower()
+                    parent_name2 = Path(str(fits_path)).parent.name.lower()
+                    # Prefer parent directory token like "ngc0628"
+                    for candidate_name in [parent_name2, base_name2]:
+                        m2 = re.search(r"(?<![a-z0-9])(ngc|ic|m|ugc|eso|pgc|arp)\s*0*(\d+)[a-z]*?(?=[^a-z0-9]|$)", candidate_name, re.IGNORECASE)
+                        if m2:
+                            prefix, digits = m2.group(1).lower(), m2.group(2)
+                            if prefix in ['ngc', 'ic']:
+                                target_galaxy_name = f"{prefix.upper()}{digits.zfill(4)}"
+                            elif prefix == 'm':
+                                target_galaxy_name = f"M{digits}"
+                            else:
+                                target_galaxy_name = f"{prefix.upper()}{digits}"
+                            print(f"RGB Cutouts: Galaxy inferred from current FITS path: {target_galaxy_name}")
+                            break
+            except Exception:
+                pass
+
+        # 2) If still unknown, parse from catalog filename
         if (target_galaxy_name=='UnknownGalaxy'):
             from pathlib import Path
             base_name = Path(str(catalog_name)).name.lower()
