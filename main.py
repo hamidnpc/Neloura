@@ -3746,9 +3746,11 @@ async def generate_sed_optimized(
             return JSONResponse(status_code=400, content={"error": "Invalid RA/Dec coordinates"})
 
         # RA can be represented as e.g. 184.7172 or -175.2828 (same direction modulo 360).
-        # Normalize to [0, 360) so comparisons and matching are stable.
+        # Normalize by adding 360 when RA is negative, then wrap to [0, 360).
         try:
             ra = float(ra)
+            if ra < 0:
+                ra = ra + 360.0
             ra = ra % 360.0
         except Exception:
             pass
@@ -11177,9 +11179,12 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
     target_galaxy_name = galaxy_name
 
     # RA can be represented as e.g. 184.7172 or -175.2828 (same direction modulo 360).
-    # Normalize to [0, 360) so nearest-row matching is stable.
+    # Normalize by adding 360 when RA is negative, then wrap to [0, 360).
     try:
-        ra = float(ra) % 360.0
+        ra = float(ra)
+        if ra < 0:
+            ra = ra + 360.0
+        ra = ra % 360.0
     except Exception:
         pass
 
