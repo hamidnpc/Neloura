@@ -3745,6 +3745,14 @@ async def generate_sed_optimized(
         if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
             return JSONResponse(status_code=400, content={"error": "Invalid RA/Dec coordinates"})
 
+        # RA can be represented as e.g. 184.7172 or -175.2828 (same direction modulo 360).
+        # Normalize to [0, 360) so comparisons and matching are stable.
+        try:
+            ra = float(ra)
+            ra = ra % 360.0
+        except Exception:
+            pass
+
         print(f"[[DEBUG]] generate_sed_optimized CALLED. ra: {ra} dec: {dec} catalog_name: {catalog_name} (ignoring JS galaxy_name)")
 
         # 1) Load catalog (support catalogs/, files/, files/uploads/)
@@ -3868,13 +3876,29 @@ async def generate_sed_optimized(
         except Exception as e_norm:
             return JSONResponse(status_code=500, content={"error": f"Error processing RA/DEC columns: {str(e_norm)}"})
 
-        # Compute great-circle approximation in degrees with RA wrap
-        ra_diff = np.abs(ra_vals_deg - ra)
-        ra_diff = np.where(ra_diff > 180.0, 360.0 - ra_diff, ra_diff)
-        dec_diff = np.abs(dec_vals_deg - dec)
-        distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + dec_diff**2)
-        closest_idx = int(np.argmin(distances))
-        if float(distances[closest_idx]) > SED_COORDINATE_TOLERANCE:
+        # Wrap catalog RAs too so -175 and 185 compare correctly.
+        try:
+            ra_vals_deg = np.where(np.isfinite(ra_vals_deg), np.mod(ra_vals_deg, 360.0), ra_vals_deg)
+        except Exception:
+            pass
+
+        # Compute angular separation on the sphere (robust for wrap-around and near poles).
+        try:
+            catalog_coords = SkyCoord(ra=ra_vals_deg * u.deg, dec=dec_vals_deg * u.deg, frame='icrs')
+            search_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame='icrs')
+            separations = search_coord.separation(catalog_coords).deg
+            closest_idx = int(np.nanargmin(separations))
+            closest_sep_deg = float(separations[closest_idx])
+        except Exception:
+            # Fallback: planar approximation with RA wrap
+            ra_diff = np.abs(ra_vals_deg - ra)
+            ra_diff = np.where(ra_diff > 180.0, 360.0 - ra_diff, ra_diff)
+            dec_diff = np.abs(dec_vals_deg - dec)
+            distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + dec_diff**2)
+            closest_idx = int(np.nanargmin(distances))
+            closest_sep_deg = float(distances[closest_idx])
+
+        if closest_sep_deg > SED_COORDINATE_TOLERANCE:
             return JSONResponse(status_code=404, content={"error": "No object found near specified coordinates"})
         closest_obj = catalog_table[closest_idx]
         available_cols = set(catalog_table.colnames)
@@ -11152,6 +11176,13 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
     print('galaxy name provided: ',galaxy_name)
     target_galaxy_name = galaxy_name
 
+    # RA can be represented as e.g. 184.7172 or -175.2828 (same direction modulo 360).
+    # Normalize to [0, 360) so nearest-row matching is stable.
+    try:
+        ra = float(ra) % 360.0
+    except Exception:
+        pass
+
     # Try to get galaxy name from catalog (works best when catalog includes a galaxy column).
     try:
         catalog_table = loaded_catalogs.get(catalog_name)
@@ -11193,16 +11224,35 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
                     dec_col = available_cols_lower[potential_dec_name]; break
             if ra_col and dec_col:
                 try:
-                    table_ra = catalog_table[ra_col].astype(float)
-                    table_dec = catalog_table[dec_col].astype(float)
-                    ra_diff = table_ra - ra
-                    ra_diff = np.where(ra_diff > 180, ra_diff - 360, ra_diff)
-                    ra_diff = np.where(ra_diff < -180, ra_diff + 360, ra_diff)
-                    distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + (table_dec - dec)**2)
-                    if len(distances) > 0:
-                        closest_idx = np.argmin(distances)
-                        if distances[closest_idx] < ((CUTOUT_SIZE_ARCSEC / RGB_COORDINATE_TOLERANCE_FACTOR) / 3600.0):
-                            closest_obj = catalog_table[closest_idx]
+                    table_ra = np.asarray(catalog_table[ra_col].astype(float), dtype=float)
+                    table_dec = np.asarray(catalog_table[dec_col].astype(float), dtype=float)
+                    # Wrap catalog RA too so [-180,180] catalogs compare correctly to [0,360) inputs.
+                    try:
+                        table_ra = np.where(np.isfinite(table_ra), np.mod(table_ra, 360.0), table_ra)
+                    except Exception:
+                        pass
+
+                    closest_idx = None
+                    closest_sep_deg = None
+                    try:
+                        catalog_coords = SkyCoord(ra=table_ra * u.deg, dec=table_dec * u.deg, frame='icrs')
+                        search_coord = SkyCoord(ra=ra * u.deg, dec=float(dec) * u.deg, frame='icrs')
+                        separations = search_coord.separation(catalog_coords).deg
+                        closest_idx = int(np.nanargmin(separations))
+                        closest_sep_deg = float(separations[closest_idx])
+                    except Exception:
+                        # Fallback: planar approximation with RA wrap
+                        ra_diff = table_ra - ra
+                        ra_diff = np.where(ra_diff > 180, ra_diff - 360, ra_diff)
+                        ra_diff = np.where(ra_diff < -180, ra_diff + 360, ra_diff)
+                        distances = np.sqrt((ra_diff * np.cos(np.radians(dec)))**2 + (table_dec - dec)**2)
+                        closest_idx = int(np.nanargmin(distances)) if len(distances) else None
+                        closest_sep_deg = float(distances[closest_idx]) if closest_idx is not None else None
+
+                    if closest_idx is not None and closest_sep_deg is not None:
+                        tol_deg = ((CUTOUT_SIZE_ARCSEC / RGB_COORDINATE_TOLERANCE_FACTOR) / 3600.0)
+                        if closest_sep_deg < tol_deg:
+                            closest_obj = catalog_table[int(closest_idx)]
                             print(RGB_GALAXY_COLUMN_NAMES)
                             for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
                                 try:
