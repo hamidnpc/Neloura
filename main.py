@@ -1914,7 +1914,8 @@ async def load_catalog_endpoint(request: Request, catalog_name: str):
             size_q = qp.get('size_col') or qp.get('resolution_col')
             if not ra_q or not dec_q:
                 try:
-                    tbl = get_astropy_table_from_catalog(catalog_name, Path(CATALOGS_DIRECTORY))
+                    # Use the resolved catalog path (may live under files/uploads/).
+                    tbl = get_astropy_table_from_catalog(catalog_path, Path(CATALOGS_DIRECTORY))
                     if tbl is not None:
                         ra_guess, dec_guess = detect_coordinate_columns(tbl.colnames)
                         if ra_guess and dec_guess:
@@ -2300,9 +2301,33 @@ async def catalog_column_values(request: Request):
     # No hard limits: client may request any number of rows/columns.
     # (Large requests may be slow and memory-heavy; the frontend can still chunk.)
 
+    # IMPORTANT: catalogs can come from:
+    # - `catalogs/`
+    # - `files/`
+    # - `files/uploads/` (user uploads)
+    # This endpoint must resolve uploads the same way as `/catalog-binary` and `/catalog-columns`,
+    # otherwise overlay boolean/condition filtering breaks for uploaded catalogs.
     catalogs_dir = Path(CATALOGS_DIRECTORY)
     try:
-        # Reuse existing helper which resolves files/... and absolute paths.
+        base_dir = Path(".").resolve()
+        name = str(catalog_name).strip()
+        direct = base_dir / name
+        in_catalogs = base_dir / CATALOGS_DIRECTORY / name
+        in_files = base_dir / FILES_DIRECTORY / name
+        in_uploads = base_dir / UPLOADS_DIRECTORY / name
+        if direct.is_file():
+            catalogs_dir = base_dir
+        elif in_catalogs.is_file():
+            catalogs_dir = base_dir / CATALOGS_DIRECTORY
+        elif in_uploads.is_file():
+            catalogs_dir = base_dir / UPLOADS_DIRECTORY
+        elif in_files.is_file():
+            catalogs_dir = base_dir / FILES_DIRECTORY
+    except Exception:
+        pass
+
+    try:
+        # Reuse existing helper which also resolves `files/...` and absolute paths.
         table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
         if table is None:
             raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
