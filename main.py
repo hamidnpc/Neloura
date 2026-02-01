@@ -3,7 +3,7 @@ import os
 import threading
 import time
 from fastapi import FastAPI, Response, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import uuid
@@ -18,6 +18,7 @@ from astropy.coordinates import search_around_sky
 
 import astropy.units as u
 import json
+from urllib.parse import quote
 from pathlib import Path
 import struct
 import base64
@@ -1292,6 +1293,16 @@ class PerSessionMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
+        # Allow pretty "open file" routes without requiring a session.
+        # These routes only redirect to "/" and the frontend will bootstrap a session via /session/start.
+        if path.startswith("/open/") or path.startswith("/imager/"):
+            return await call_next(request)
+
+        # Allow file-browser search helper routes without requiring a session.
+        # These routes only redirect to "/" and the frontend will bootstrap a session via /session/start.
+        if path == "/search" or path.startswith("/search/") or path == "/open-files-search":
+            return await call_next(request)
+
         # Allow exact allow-listed paths
         if path in self.allow_paths:
             # Try to attach a session context if provided; otherwise create a transient one
@@ -1342,6 +1353,8 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/", 
     "/favicon.ico", 
     "/features.html",
+    "/search",
+    "/open-files-search",
     "/session/start",
     "/mast/resolve",
     "/mast/search",
@@ -1487,9 +1500,113 @@ async def get_app_log(request: Request, lines: int = 1000):
 catalog_cache = {}
 
 # Serve static HTML page for OpenSeadragon
+@app.get("/open/{filepath:path}")
+@app.get("/imager/{filepath:path}")  # backward-compatible alias
+async def open_fits_viewer(filepath: str, request: Request, hdu: int | None = Query(default=None)):
+    """
+    Pretty route for opening a FITS directly in the viewer.
+
+    Example:
+      /open/PHANGS-JWST/ngc4254_miri_lv3_f2100w_i2d_anchor.fits?hdu=1
+
+    Redirects to the canonical query-param form used by the frontend:
+      /?file=<...>&hdu=<...>
+    """
+    # Basic traversal protection; actual file access is still validated by /load-file and other endpoints.
+    safe = (filepath or "").replace("\\", "/").lstrip("/")
+    if not safe or "\x00" in safe:
+        raise HTTPException(status_code=400, detail="Invalid filepath")
+    parts = [p for p in safe.split("/") if p]
+    if any(p == ".." for p in parts):
+        raise HTTPException(status_code=400, detail="Invalid filepath")
+
+    # Preserve query params (catalog overlay, panes, etc), but always override `file`
+    # and normalize/validate `hdu` if provided.
+    params: dict[str, str] = {}
+    try:
+        for k, v in request.query_params.multi_items():
+            if not k:
+                continue
+            # Don't carry through any pre-existing file; we set it explicitly.
+            if k == "file":
+                continue
+            # hdu comes from the function argument (validated below)
+            if k == "hdu":
+                continue
+            params[str(k)] = str(v)
+    except Exception:
+        params = {}
+
+    params["file"] = safe
+    if hdu is not None:
+        try:
+            params["hdu"] = str(int(hdu))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid hdu")
+
+    qs = "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in params.items()])
+    return RedirectResponse(url=f"/?{qs}", status_code=307)
+
+@app.get("/search")
+@app.get("/open-files-search")  # backward-compatible alias
+async def open_files_search(
+    request: Request,
+    q: str = Query("", description="Text to fill into the in-app file browser search box"),
+):
+    """
+    Open Neloura and pre-fill the file browser search input (#files-search-input).
+
+    Example:
+      /search?q=ngc0628
+
+    Redirects to:
+      /?files_search=<q>
+    """
+    return _redirect_to_files_search(request, q)
+
+
+@app.get("/search/{q:path}")
+async def open_files_search_path(request: Request, q: str):
+    """
+    Path-parameter variant of /search:
+
+      /search/ngc0628
+
+    Redirects to:
+      /?files_search=ngc0628
+    """
+    return _redirect_to_files_search(request, q)
+
+
+def _redirect_to_files_search(request: Request, q: str):
+    params: dict[str, str] = {}
+    try:
+        for k, v in request.query_params.multi_items():
+            if not k:
+                continue
+            if k in ("files_search", "q"):
+                continue
+            params[str(k)] = str(v)
+    except Exception:
+        params = {}
+
+    params["files_search"] = str(q or "")
+    qs = "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in params.items()])
+    return RedirectResponse(url=f"/?{qs}", status_code=307)
+
 @app.get("/")
 async def home():
-    return FileResponse(f"{STATIC_DIRECTORY}/index.html")
+    # Prevent browsers/proxies from caching HTML; the HTML controls JS/CSS cache-busting via ?v=...
+    # If index.html is cached, clients may keep running old JS even after deploys.
+    return FileResponse(
+        f"{STATIC_DIRECTORY}/index.html",
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -5884,14 +6001,29 @@ async def list_files_for_frontend(path: str = "", search: str = Query(None)):
         
         items = []
 
-        if search:
-            # Recursive search if a search term is provided
-            for entry in current_dir.rglob(f'*{search}*'):
-                if any(part.startswith('.') for part in entry.parts):
+        if search and str(search).strip():
+            # Recursive, case-insensitive search (matches name/path regardless of upper/lower case)
+            needle = str(search).strip().casefold()
+            for entry in current_dir.rglob('*'):
+                try:
+                    if any(part.startswith('.') for part in entry.parts):
+                        continue
+                except Exception:
+                    pass
+
+                try:
+                    rel_path = str(entry.relative_to(base_dir))
+                except Exception:
+                    continue
+
+                # Match is intentionally against the *name* only (not full path),
+                # so searching "3627" won't return unrelated files that just live
+                # under a directory named "...3627...".
+                hay = f"{entry.name}".casefold()
+                if needle not in hay:
                     continue
 
                 if entry.is_dir():
-                    rel_path = str(entry.relative_to(base_dir))
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
@@ -5899,7 +6031,6 @@ async def list_files_for_frontend(path: str = "", search: str = Query(None)):
                         "modified": entry.stat().st_mtime
                     })
                 elif entry.is_file() and entry.suffix.lower() in ['.fits', '.fit']:
-                    rel_path = str(entry.relative_to(base_dir))
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
@@ -8994,6 +9125,7 @@ async def catalog_binary(
     ra_col: Optional[str] = Query(None, description="Override RA column name"),
     dec_col: Optional[str] = Query(None, description="Override DEC column name"),
     size_col: Optional[str] = Query(None, description="Override size/radius column name"),
+    size_unit: Optional[str] = Query(None, description="Optional unit for size_col (pixels|arcsec|deg|rad). If omitted, uses FITS column unit when available; otherwise assumes pixels (except common angular columns like bmaj/bmin/fwhm)."),
 ):
     """
     Return catalog data in binary format for faster transfer.
@@ -9162,10 +9294,58 @@ async def catalog_binary(
                             dec_deg = np.array(dec_col_data, dtype=float)
                             # Convert negative RA to [0,360) for consistency (catalogs often 0..360)
                             ra_deg = np.mod(ra_deg, 360.0)
-                            # Radius pixels
+                            # Radius pixels (supports size_col in angular units via image WCS pixel scale)
+                            arcsec_per_pixel = None
+                            try:
+                                if image_wcs is not None and getattr(image_wcs, "has_celestial", False):
+                                    arcsec_per_pixel = float(_compute_arcsec_per_pixel(image_wcs))
+                                    if not np.isfinite(arcsec_per_pixel) or arcsec_per_pixel <= 0:
+                                        arcsec_per_pixel = None
+                            except Exception:
+                                arcsec_per_pixel = None
                             if size_col and (size_col in catalog_table.colnames):
                                 try:
-                                    radius_px = np.array(catalog_table[size_col], dtype=float)
+                                    raw_size = np.array(catalog_table[size_col], dtype=float)
+
+                                    # Decide size unit
+                                    inferred_unit = (size_unit or "").strip().lower()
+                                    if inferred_unit in ("pix", "pixel", "pixels", "px"):
+                                        size_arcsec = None
+                                    elif inferred_unit in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\""):
+                                        size_arcsec = raw_size
+                                    elif inferred_unit in ("deg", "degree", "degrees"):
+                                        size_arcsec = raw_size * 3600.0
+                                    elif inferred_unit in ("rad", "radian", "radians"):
+                                        size_arcsec = raw_size * (180.0 / np.pi) * 3600.0
+                                    else:
+                                        # Try FITS/astropy column unit first
+                                        size_arcsec = None
+                                        try:
+                                            from astropy import units as u
+                                            col_unit = getattr(catalog_table[size_col], "unit", None)
+                                            if col_unit is not None and str(col_unit).strip() != "":
+                                                unit_obj = u.Unit(str(col_unit))
+                                                if unit_obj.is_equivalent(u.arcsec):
+                                                    size_arcsec = (raw_size * unit_obj).to_value(u.arcsec)
+                                                elif unit_obj.is_equivalent(u.deg):
+                                                    size_arcsec = (raw_size * unit_obj).to_value(u.deg) * 3600.0
+                                                elif unit_obj.is_equivalent(u.rad):
+                                                    size_arcsec = (raw_size * unit_obj).to_value(u.rad) * (180.0 / np.pi) * 3600.0
+                                        except Exception:
+                                            size_arcsec = None
+
+                                        # Heuristic fallback for common angular columns when unit is missing
+                                        if size_arcsec is None:
+                                            if (size_col or "").strip().lower() in (
+                                                "bmaj", "bmin", "fwhm", "major", "minor", "maj", "min"
+                                            ):
+                                                size_arcsec = raw_size
+
+                                    if size_arcsec is not None and arcsec_per_pixel is not None:
+                                        radius_px = np.array(size_arcsec, dtype=float) / max(arcsec_per_pixel, 1e-12)
+                                    else:
+                                        radius_px = raw_size
+
                                     radius_px = np.where(np.isfinite(radius_px) & (radius_px > 0), radius_px, 5.0).astype(np.float32)
                                 except Exception:
                                     radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
@@ -10396,8 +10576,19 @@ def load_catalog_data(catalog_path_str, request: Request = None):
             print(f"WCS/init error: {e}")
             image_wcs = None
 
+        # Pixel scale for converting angular radii -> pixels (if needed)
+        arcsec_per_pixel = None
+        try:
+            if image_wcs is not None and getattr(image_wcs, "has_celestial", False):
+                arcsec_per_pixel = float(_compute_arcsec_per_pixel(image_wcs))
+                if not np.isfinite(arcsec_per_pixel) or arcsec_per_pixel <= 0:
+                    arcsec_per_pixel = None
+        except Exception:
+            arcsec_per_pixel = None
+
         # Column mapping must come from explicit overrides only
         ra_col = dec_col = resolution_col = color_col = None
+        size_unit = None
 
         # Allow one-shot override via query params or headers (highest precedence)
         try:
@@ -10406,6 +10597,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 ra_override = qp.get('ra_col')
                 dec_override = qp.get('dec_col')
                 res_override = qp.get('size_col') or qp.get('resolution_col')
+                unit_override = qp.get('size_unit')
                 color_override = qp.get('color_col')
                 if ra_override:
                     ra_col = ra_override
@@ -10413,6 +10605,8 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     dec_col = dec_override
                 if res_override:
                     resolution_col = res_override
+                if unit_override:
+                    size_unit = unit_override
                 if color_override:
                     color_col = color_override
             # Header-based fallback (in case query params were stripped by caller)
@@ -10421,6 +10615,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 ra_hdr = hdr.get('x-ra-col')
                 dec_hdr = hdr.get('x-dec-col')
                 res_hdr = hdr.get('x-size-col') or hdr.get('x-resolution-col')
+                unit_hdr = hdr.get('x-size-unit')
                 color_hdr = hdr.get('x-color-col')
                 if ra_hdr and not ra_col:
                     ra_col = ra_hdr
@@ -10428,6 +10623,8 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     dec_col = dec_hdr
                 if res_hdr and not resolution_col:
                     resolution_col = res_hdr
+                if unit_hdr and not size_unit:
+                    size_unit = unit_hdr
                 if color_hdr and not color_col:
                     color_col = color_hdr
             # Ultimate fallback: inspect ASGI raw headers (bytes)
@@ -10447,6 +10644,8 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                             dec_col = v
                         elif not resolution_col and (k == 'x-size-col' or k == 'x-resolution-col') and v:
                             resolution_col = v
+                        elif not size_unit and k == 'x-size-unit' and v:
+                            size_unit = v
                         elif not color_col and k == 'x-color-col' and v:
                             color_col = v
                 except Exception:
@@ -10725,7 +10924,29 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                         res_source = r if resolution_col in rows_column_names else full_row
                         rv = float(_to_py(res_source[resolution_col]))
                         if np.isfinite(rv) and rv > 0:
-                            obj['radius_pixels'] = rv
+                            # Support angular radius columns (e.g., bmaj in arcsec) by converting using image WCS scale
+                            unit_txt = (size_unit or "").strip().lower()
+                            treat_as_angular = False
+                            if unit_txt in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\"", "deg", "degree", "degrees", "rad", "radian", "radians"):
+                                treat_as_angular = True
+                            elif unit_txt in ("pix", "pixel", "pixels", "px"):
+                                treat_as_angular = False
+                            else:
+                                # Heuristic fallback for missing units
+                                if (resolution_col or "").strip().lower() in ("bmaj", "bmin", "fwhm", "major", "minor", "maj", "min"):
+                                    treat_as_angular = True
+
+                            if treat_as_angular and arcsec_per_pixel is not None:
+                                if unit_txt in ("deg", "degree", "degrees"):
+                                    rv_arcsec = rv * 3600.0
+                                elif unit_txt in ("rad", "radian", "radians"):
+                                    rv_arcsec = rv * (180.0 / np.pi) * 3600.0
+                                else:
+                                    # default angular unit is arcsec
+                                    rv_arcsec = rv
+                                obj['radius_pixels'] = float(rv_arcsec) / max(float(arcsec_per_pixel), 1e-12)
+                            else:
+                                obj['radius_pixels'] = rv
                     except Exception:
                         pass
                 catalog_data.append(obj)
