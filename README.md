@@ -1,41 +1,41 @@
-# Neloura 
+# Neloura
 <img src="static/logo/logo.png" alt="Neloura Logo" width="200"/>
 
 **A modern, web-based astronomical image analysis and visualization platform.  
 Check the server-based app [here](https://neloura.com)**
 
-Neloura is a comprehensive tool for astronomical data analysis, specializing in FITS image processing, catalog management, and multi-wavelength visualization. Built with Python FastAPI backend and a sophisticated vanilla JavaScript frontend, it provides an intuitive web interface for exploring astronomical datasets with professional-grade analysis capabilities.
+Neloura is a comprehensive tool for astronomical data analysis, specializing in FITS image processing, catalog management, and multi-wavelength visualization. Built with a Python FastAPI backend and a sophisticated vanilla JavaScript frontend, it provides an intuitive web interface for exploring astronomical datasets with professional-grade analysis capabilities.
 
-The platform features a clean, responsive design with integrated code execution, real-time progress monitoring, and advanced visualization tools - all accessible through any modern web browser without requiring local software installation.
+The platform features a clean, responsive design with integrated code execution, real-time progress monitoring, and advanced visualization tools—all accessible through any modern web browser without requiring local software installation.
 
 
-##  Key Features
+## Key Features
 
-###  Advanced FITS Image Processing
+### Advanced FITS Image Processing
 - **High-performance tile-based rendering** for large astronomical images
 - **Real-time image scaling** with multiple stretch functions (linear, logarithmic, sqrt, power, asinh)
 - **Dynamic range adjustment** with percentile-based scaling
 - **Multi-HDU support** with automatic HDU detection and selection
 
-###  Comprehensive Catalog Management
+### Comprehensive Catalog Management
 - **Advanced filtering and search** with TopCat-like functionality
 - **Column mapping system** for flexible data integration
 - **Spatial queries** including cone search and coordinate matching
 - **Real-time catalog overlay** on astronomical images
 
-###  Multi-wavelength Visualization
+### Multi-wavelength Visualization
 - **RGB composite generation** for HST, JWST NIRCam, and MIRI data
-- **Spectral Energy Distribution (SED) plotting** 
+- **Spectral Energy Distribution (SED) plotting**
 - **Automated cutout extraction** from multi-instrument datasets
 - **Publication-ready figure generation**
 
-###  Source Detection & Analysis
+### Source Detection & Analysis
 - **Automated peak finding** with configurable parameters
 - **Source property extraction** and photometry
 - **Cross-matching between catalogs and images**
 - **Artificial source injection** for completeness testing
 
-###  Modern Web Interface
+### Modern Web Interface
 - **Professional toolbar** with zoom controls and dropdown menus
 - **Integrated code execution** with CodeMirror syntax highlighting (Python)
 - **Real-time progress monitoring** with progress indicators
@@ -43,7 +43,7 @@ The platform features a clean, responsive design with integrated code execution,
 - **Responsive catalog management** with dynamic content loading
 - **Modal dialogs** for FITS header inspection and data analysis
 - **WebSocket communication** for live updates and notifications
-- **No installation required** - runs entirely in web browsers
+- **No installation required** — runs entirely in the browser
 
 ## Getting Started
 
@@ -86,11 +86,14 @@ Neloura is a web app, but many actions are driven by HTTP endpoints. This sectio
 Pretty route (redirects to `/?file=...`):
 
 - `GET /open/<path-to-fits>?hdu=<index>`
-- Alias: `GET /imager/<path-to-fits>?hdu=<index>`
 
-Example:
+Local example:
 
 - `http://localhost:8000/open/PHANGS-JWST/ngc4254_miri_lv3_f2100w_i2d_anchor.fits?hdu=1`
+
+Or try it on `neloura.com`:
+
+- `https://neloura.com/open/PHANGS-JWST/ngc4254_miri_lv3_f2100w_i2d_anchor.fits?hdu=1`
 
 ### Search files in the in-app file browser (deep link)
 
@@ -102,9 +105,13 @@ Examples:
 
 - `http://localhost:8000/search/ngc0628`
 
+Or on `neloura.com`:
+
+- `https://neloura.com/search/ngc0628`
+
 ### Load a catalog overlay (via `catalog=` deep link)
 
-The easiest way to load a catalog in the UI is to open the main app (`/`) with query parameters:
+The easiest way to load a catalog in the UI is to open the app (either `/open/...` or `/`) with query parameters:
 
 - `catalog=<catalog_name>`: catalog file name (usually under `catalogs/`)
 - `ra_col=<col>` / `dec_col=<col>`: RA/Dec columns in the catalog
@@ -113,20 +120,21 @@ The easiest way to load a catalog in the UI is to open the main app (`/`) with q
 
 Example (image + catalog in one link):
 
-- `http://localhost:8000/?file=ngc0628%2Fngc0628_miri_lv3_f2100w_i2d_anchor.fits&hdu=1&catalog=cata21_v4_final.fits&ra_col=ra&dec_col=dec&size_col=bmaj&size_unit=arcsec`
+- `http://localhost:8000/open/PHANGS-JWST/ngc0628_miri_lv3_f2100w_i2d_anchor.fits?hdu=1&catalog=21um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=bmaj&size_unit=arcsec`
 
-- `http://localhost:8000/?file=ngc0628%2Fngc0628_miri_lv3_f2100w_i2d_anchor.fits&hdu=1&catalog=cata21_v4_final.fits&ra_col=ra&dec_col=dec&size_col=5&size_unit=px`
+- `http://localhost:8000/open/PHANGS-JWST/ngc0628_miri_lv3_f2100w_i2d_anchor.fits?hdu=1&catalog=21um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=5&size_unit=px`
 
+Or on `neloura.com`:
 
-Notes:
-- `size_col` is interpreted as **pixels** by default, but common angular columns like `bmaj/bmin/fwhm` are converted using the current image WCS scale.
+- `https://neloura.com/open/PHANGS-JWST/ngc0628_miri_lv3_f2100w_i2d_anchor.fits?hdu=1&catalog=21um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=bmaj&size_unit=arcsec`
+- `https://neloura.com/open/PHANGS-HST/hlsp_phangs-hst_hst_wfc3-uvis_ngc1385_f814w_v1_exp-drc-sci.fits?hdu=0&catalog=10um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=0.06&size_unit=arcsec`
 
 ### Quick Start Guide
 
 1. **Load a FITS image**: Use the file browser to select and load your astronomical image
 2. **Upload catalogs**: Drag and drop FITS catalogs or CSV files with source coordinates
-4. **Generate visualizations**: Create RGB composites or SED plots for selected objects
-5. **Export results**: Download generated plots and analysis results
+3. **Generate visualizations**: Create RGB composites or SED plots for selected objects
+4. **Export results**: Download generated plots and analysis results
 
 ```
 neloura/
@@ -162,7 +170,7 @@ neloura/
 └── images/                # Generated plot outputs
 ```
 
-##  Project Structure
+## Project Structure
 
 ### Backend
 - **FastAPI** - High-performance Python web framework
@@ -199,6 +207,12 @@ SED_FIGURE_SIZE_INCHES = (18, 14)
 ### Admin mode (`NELOURA_ADMIN`)
 
 Neloura has an **admin mode** intended for trusted/local deployments. Enable it by setting the environment variable `NELOURA_ADMIN=true` when starting the server.
+
+Example:
+
+```bash
+NELOURA_ADMIN=true python main.py
+```
 
 
 When **admin mode** is enabled, Neloura unlocks privileged endpoints, including:
