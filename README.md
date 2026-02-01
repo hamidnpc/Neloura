@@ -127,7 +127,7 @@ Example (image + catalog in one link):
 Or on `neloura.com`:
 
 - `https://neloura.com/open/PHANGS-JWST/ngc0628_miri_lv3_f2100w_i2d_anchor.fits?hdu=1&catalog=21um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=bmaj&size_unit=arcsec`
-- `https://neloura.com/open/PHANGS-HST/hlsp_phangs-hst_hst_wfc3-uvis_ngc1385_f814w_v1_exp-drc-sci.fits?hdu=0&catalog=10um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=0.06&size_unit=arcsec`
+- `https://neloura.com/open/PHANGS-HST/hlsp_phangs-hst_hst_wfc3-uvis_ngc1385_f814w_v1_exp-drc-sci.fits?hdu=0&catalog=10um_catalog_hassani_et_al_jan_2026.fits&ra_col=ra&dec_col=dec&size_col=0.36&size_unit=arcsec`
 
 ### Quick Start Guide
 
