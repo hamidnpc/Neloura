@@ -4199,6 +4199,14 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
         const v = Date.now();
         const params = new URLSearchParams();
         params.set('filepath', z.filepathRel || filepathRel);
+        // IMPORTANT: <img> / direct URL loads cannot send headers.
+        // Even though we fetch with X-Session-ID, also include sid in the query so:
+        // - the backend session middleware can authenticate image-style requests
+        // - opening the preview URL in a new tab still works
+        try {
+            const sid = window.__nelouraSid || window.__sid || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('sid') : null);
+            if (sid && String(sid).trim() !== '') params.set('sid', String(sid));
+        } catch (_) {}
         // Higher-quality preview for zoom insets (dynamic, capped)
         let maxDim = 1024;
         try {
