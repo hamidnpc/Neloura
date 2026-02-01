@@ -7836,7 +7836,7 @@ async def fits_preview(
     filepath: str = Query(..., description="FITS filepath relative to server files directory"),
     hdu: int | None = Query(None, description="Optional HDU index; if omitted, first image-like HDU is used"),
     slice_index: int | None = Query(None, ge=0, description="Optional cube slice/channel (0-based); defaults to 0 for cubes"),
-    max_dim: int = Query(384, ge=64, le=2048, description="Max preview dimension (keeps aspect ratio)"),
+    max_dim: int = Query(384, ge=64, le=4096, description="Max preview dimension (keeps aspect ratio)"),
     min_value: float | None = Query(None, description="Optional display min (overrides session for this preview only)"),
     max_value: float | None = Query(None, description="Optional display max (overrides session for this preview only)"),
     color_map: str | None = Query(None, description="Optional colormap (overrides session for this preview only)"),
@@ -9349,6 +9349,17 @@ async def catalog_binary(
                                     radius_px = np.where(np.isfinite(radius_px) & (radius_px > 0), radius_px, 5.0).astype(np.float32)
                                 except Exception:
                                     radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
+                            elif size_col:
+                                # Support constant radii passed as `size_col=10` (common deep-link use)
+                                # when the catalog does not have a column literally named "10".
+                                try:
+                                    const_r = float(str(size_col).strip())
+                                    if np.isfinite(const_r) and const_r > 0:
+                                        radius_px = np.full(len(catalog_table), const_r, dtype=np.float32)
+                                    else:
+                                        radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
+                                except Exception:
+                                    radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
                             else:
                                 radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
 
@@ -10589,6 +10600,7 @@ def load_catalog_data(catalog_path_str, request: Request = None):
         # Column mapping must come from explicit overrides only
         ra_col = dec_col = resolution_col = color_col = None
         size_unit = None
+        constant_radius_pixels: float | None = None
 
         # Allow one-shot override via query params or headers (highest precedence)
         try:
@@ -10604,7 +10616,16 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 if dec_override:
                     dec_col = dec_override
                 if res_override:
-                    resolution_col = res_override
+                    # Support constant radii passed as size_col=10 (instead of a column name)
+                    try:
+                        const_r = float(str(res_override).strip())
+                        if np.isfinite(const_r) and const_r > 0:
+                            constant_radius_pixels = const_r
+                            resolution_col = None
+                        else:
+                            resolution_col = res_override
+                    except Exception:
+                        resolution_col = res_override
                 if unit_override:
                     size_unit = unit_override
                 if color_override:
@@ -10621,8 +10642,16 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     ra_col = ra_hdr
                 if dec_hdr and not dec_col:
                     dec_col = dec_hdr
-                if res_hdr and not resolution_col:
-                    resolution_col = res_hdr
+                if res_hdr and not resolution_col and constant_radius_pixels is None:
+                    try:
+                        const_r = float(str(res_hdr).strip())
+                        if np.isfinite(const_r) and const_r > 0:
+                            constant_radius_pixels = const_r
+                            resolution_col = None
+                        else:
+                            resolution_col = res_hdr
+                    except Exception:
+                        resolution_col = res_hdr
                 if unit_hdr and not size_unit:
                     size_unit = unit_hdr
                 if color_hdr and not color_col:
@@ -10642,8 +10671,16 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                             ra_col = v
                         elif not dec_col and k == 'x-dec-col' and v:
                             dec_col = v
-                        elif not resolution_col and (k == 'x-size-col' or k == 'x-resolution-col') and v:
-                            resolution_col = v
+                        elif not resolution_col and constant_radius_pixels is None and (k == 'x-size-col' or k == 'x-resolution-col') and v:
+                            try:
+                                const_r = float(str(v).strip())
+                                if np.isfinite(const_r) and const_r > 0:
+                                    constant_radius_pixels = const_r
+                                    resolution_col = None
+                                else:
+                                    resolution_col = v
+                            except Exception:
+                                resolution_col = v
                         elif not size_unit and k == 'x-size-unit' and v:
                             size_unit = v
                         elif not color_col and k == 'x-color-col' and v:
@@ -10910,6 +10947,12 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                 if not (np.isfinite(ra) and np.isfinite(dec)):
                     continue
                 obj = {'ra': ra, 'dec': dec, 'x': 0.0, 'y': 0.0, 'radius_pixels': 5.0}
+                if constant_radius_pixels is not None:
+                    try:
+                        if np.isfinite(constant_radius_pixels) and float(constant_radius_pixels) > 0:
+                            obj['radius_pixels'] = float(constant_radius_pixels)
+                    except Exception:
+                        pass
                 if galaxy_col_name:
                     try:
                         galaxy_source = r if galaxy_col_name in rows_column_names else full_row
