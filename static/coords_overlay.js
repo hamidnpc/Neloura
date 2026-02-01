@@ -25,19 +25,55 @@
     } catch (_) { return window.__forcedSid || null; }
   }
   async function ensureSession() {
+    // Single-flight session bootstrap shared with other scripts in this tab.
     try {
       const forced = __paneSid();
-      if (forced) return forced;
-      let sid = sessionStorage.getItem('sid');
-      if (!sid) {
-        const r = await fetch('/session/start');
+      if (forced) {
+        try { window.__nelouraSid = forced; } catch (_) {}
+        return forced;
+      }
+
+      try {
+        if (window.__nelouraSid) return window.__nelouraSid;
+      } catch (_) {}
+
+      let sid = null;
+      try { sid = sessionStorage.getItem('sid'); } catch (_) {}
+      if (sid) {
+        try { window.__nelouraSid = sid; } catch (_) {}
+        return sid;
+      }
+
+      try {
+        if (window.__nelouraSessionPromise) {
+          const s = await window.__nelouraSessionPromise;
+          if (s) {
+            try { sessionStorage.setItem('sid', s); } catch (_) {}
+            try { window.__nelouraSid = s; } catch (_) {}
+          }
+          return s;
+        }
+      } catch (_) {}
+
+      const starter = (async () => {
+        const r = await fetch('/session/start', { credentials: 'same-origin' });
         if (!r.ok) throw new Error('Failed to start session');
         const j = await r.json();
-        sid = j.session_id;
-        sessionStorage.setItem('sid', sid);
+        return j && j.session_id ? j.session_id : null;
+      })();
+
+      try { window.__nelouraSessionPromise = starter; } catch (_) {}
+
+      sid = await starter;
+      if (sid) {
+        try { sessionStorage.setItem('sid', sid); } catch (_) {}
+        try { window.__nelouraSid = sid; } catch (_) {}
       }
       return sid;
-    } catch (e) { return null; }
+    } catch (e) {
+      try { window.__nelouraSessionPromise = null; } catch (_) {}
+      return null;
+    }
   }
 
   async function apiFetch(url, options = {}) {

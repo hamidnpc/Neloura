@@ -6,19 +6,60 @@ function __paneSid() {
     } catch (_) { return window.__forcedSid || null; }
 }
 async function ensureSession() {
+    // Single-flight session bootstrap across all scripts in this tab.
+    // Prevents racing /session/start calls that can cause mismatched SIDs between
+    // `/load-file/...` and `/fits-binary/...` on the first page load.
     try {
         const forced = __paneSid();
-        if (forced) return forced;
-        let sid = sessionStorage.getItem('sid');
-        if (!sid) {
-            const r = await fetch('/session/start');
+        if (forced) {
+            try { window.__nelouraSid = forced; } catch (_) {}
+            return forced;
+        }
+
+        try {
+            if (window.__nelouraSid) return window.__nelouraSid;
+        } catch (_) {}
+
+        let sid = null;
+        try { sid = sessionStorage.getItem('sid'); } catch (_) {}
+        if (sid) {
+            try { window.__nelouraSid = sid; } catch (_) {}
+            return sid;
+        }
+
+        // If another module is already starting a session, await it.
+        try {
+            if (window.__nelouraSessionPromise) {
+                const s = await window.__nelouraSessionPromise;
+                if (s) {
+                    try { sessionStorage.setItem('sid', s); } catch (_) {}
+                    try { window.__nelouraSid = s; } catch (_) {}
+                }
+                return s;
+            }
+        } catch (_) {}
+
+        // Start a new session exactly once.
+        const starter = (async () => {
+            const r = await fetch('/session/start', { credentials: 'same-origin' });
             if (!r.ok) throw new Error('Failed to start session');
             const j = await r.json();
-            sid = j.session_id;
-            sessionStorage.setItem('sid', sid);
+            return j && j.session_id ? j.session_id : null;
+        })();
+
+        try { window.__nelouraSessionPromise = starter; } catch (_) {}
+
+        sid = await starter;
+        if (sid) {
+            try { sessionStorage.setItem('sid', sid); } catch (_) {}
+            try { window.__nelouraSid = sid; } catch (_) {}
         }
         return sid;
-    } catch (e) { console.warn('Session init failed', e); return null; }
+    } catch (e) {
+        try { window.__nelouraSessionPromise = null; } catch (_) {}
+        console.warn('Session init failed', e);
+        return null;
+    }
 }
 
 // Abort/timeout helpers for long-running fetches (e.g., /fits-binary)
@@ -3577,6 +3618,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const isTop = (window.self === window.top);
         const disabled = !!window.__DISABLE_AUTO_FILE_BROWSER;
         if (isTop && !disabled) {
+            // Deep-link: fill the file browser search box from URL (?files_search=...)
+            let filesSearch = null;
+            try {
+                const sp = new URLSearchParams(window.location.search || '');
+                filesSearch = sp.get('files_search') || sp.get('file_search') || null;
+            } catch (_) { filesSearch = null; }
+            if (filesSearch != null && String(filesSearch).trim() !== '') {
+                try { window.__FILE_BROWSER_AUTO_OPENED = true; } catch (_) {}
+                // Ensure the file browser is visible, then load search results (which also fills the input).
+                setTimeout(() => {
+                    try {
+                        if (typeof window.showFileBrowser === 'function') window.showFileBrowser();
+                        if (typeof window.loadFilesList === 'function') window.loadFilesList('', String(filesSearch));
+                    } catch (_) {}
+                    // Focus the input once it exists.
+                    setTimeout(() => {
+                        try {
+                            const el = document.getElementById('files-search-input');
+                            if (el) {
+                                el.focus();
+                                try { el.select(); } catch (_) {}
+                            }
+                        } catch (_) {}
+                    }, 250);
+                }, 50);
+                return;
+            }
+
             // Auto-open the in-app file browser once on startup (requested UX).
             // Keep it best-effort and avoid fighting multi-panel/pane iframes.
             const shouldAutoOpen = (typeof window.__AUTO_OPEN_FILE_BROWSER === 'undefined')
@@ -3585,7 +3654,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (shouldAutoOpen) {
                 // Only auto-open if we don't already have a file loaded.
-                const hasFile = !!(window.currentFitsFile || window.currentFilePath);
+                // IMPORTANT: when deep-linking via `/open/...` we arrive at `/?file=...`
+                // but `window.currentFitsFile` may not be set yet at DOMContentLoaded.
+                // In that case we should NOT auto-open the browser, because it flashes open.
+                let deepLinkedFile = null;
+                try {
+                    const sp = new URLSearchParams(window.location.search || '');
+                    deepLinkedFile = sp.get('file');
+                } catch (_) { deepLinkedFile = null; }
+                const hasFile = !!(window.currentFitsFile || window.currentFilePath || (deepLinkedFile && String(deepLinkedFile).trim() !== ''));
                 // Only open once per page load.
                 if (!hasFile && !window.__FILE_BROWSER_AUTO_OPENED) {
                     window.__FILE_BROWSER_AUTO_OPENED = true;
@@ -3596,6 +3673,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         } catch (_) {}
                     }, 250);
+                }
+                // If we are deep-linked, ensure the browser is closed if something else opened it.
+                if (hasFile) {
+                    try { if (typeof window.hideFileBrowser === 'function') window.hideFileBrowser(); } catch (_) {}
                 }
             }
         }

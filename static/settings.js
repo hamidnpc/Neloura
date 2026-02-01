@@ -8,17 +8,63 @@
         } catch(_) { return window.__forcedSid || null; }
     }
     async function ensureSession() {
+        // Single-flight session bootstrap shared with other scripts in this tab.
         try {
             const forced = __paneSid();
-            if (forced) { window.__sid = forced; return window.__sid; }
-            if (window.__sid) return window.__sid;
+            if (forced) {
+                window.__sid = forced;
+                try { window.__nelouraSid = forced; } catch (_) {}
+                try { sessionStorage.setItem('sid', forced); } catch (_) {}
+                return forced;
+            }
+            if (window.__nelouraSid) {
+                window.__sid = window.__nelouraSid;
+                return window.__nelouraSid;
+            }
         } catch(_){}
+
         try {
+            const existing = sessionStorage.getItem('sid');
+            if (existing) {
+                window.__sid = existing;
+                try { window.__nelouraSid = existing; } catch (_) {}
+                return existing;
+            }
+        } catch(_) {}
+
+        try {
+            if (window.__nelouraSessionPromise) {
+                const s = await window.__nelouraSessionPromise;
+                if (s) {
+                    window.__sid = s;
+                    try { window.__nelouraSid = s; } catch (_) {}
+                    try { sessionStorage.setItem('sid', s); } catch (_) {}
+                }
+                return s;
+            }
+        } catch(_) {}
+
+        const starter = (async () => {
             const r = await fetch('/session/start', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('Failed to start session');
             const j = await r.json();
-            window.__sid = j.session_id;
-            return window.__sid;
-        } catch(_) { return null; }
+            return j && j.session_id ? j.session_id : null;
+        })();
+
+        try { window.__nelouraSessionPromise = starter; } catch (_) {}
+
+        try {
+            const sid = await starter;
+            if (sid) {
+                window.__sid = sid;
+                try { window.__nelouraSid = sid; } catch (_) {}
+                try { sessionStorage.setItem('sid', sid); } catch (_) {}
+            }
+            return sid;
+        } catch (_) {
+            try { window.__nelouraSessionPromise = null; } catch (_) {}
+            return null;
+        }
     }
 
     function authHeaders() {

@@ -3790,27 +3790,68 @@ function openSegmentsFileBrowser() {
 window.openSegmentsFileBrowser = openSegmentsFileBrowser;
 
 async function ensureSession() {
+    // Single-flight session bootstrap across all scripts in this tab.
+    // Prevents racing /session/start calls that can cause mismatched SIDs between
+    // `/load-file/...` and `/fits-binary/...` on the first page load.
     try {
         // Prefer pane-specific SID from URL or pre-set global
         let forced = null;
         try {
             if (typeof window !== 'undefined') {
-                forced = (window.__forcedSid) || (new URLSearchParams(window.location.search).get('sid')) || (new URLSearchParams(window.location.search).get('pane_sid'));
+                forced = (window.__forcedSid)
+                    || (new URLSearchParams(window.location.search).get('sid'))
+                    || (new URLSearchParams(window.location.search).get('pane_sid'));
             }
         } catch(_) {}
         if (forced) {
+            try { window.__nelouraSid = forced; } catch (_) {}
             return forced;
         }
-        let sid = sessionStorage.getItem('sid');
-        if (!sid) {
-            const r = await fetch('/session/start');
+
+        try {
+            if (window.__nelouraSid) return window.__nelouraSid;
+        } catch (_) {}
+
+        let sid = null;
+        try { sid = sessionStorage.getItem('sid'); } catch (_) {}
+        if (sid) {
+            try { window.__nelouraSid = sid; } catch (_) {}
+            return sid;
+        }
+
+        // If another module is already starting a session, await it.
+        try {
+            if (window.__nelouraSessionPromise) {
+                const s = await window.__nelouraSessionPromise;
+                if (s) {
+                    try { sessionStorage.setItem('sid', s); } catch (_) {}
+                    try { window.__nelouraSid = s; } catch (_) {}
+                }
+                return s;
+            }
+        } catch (_) {}
+
+        // Start a new session exactly once.
+        const starter = (async () => {
+            const r = await fetch('/session/start', { credentials: 'same-origin' });
             if (!r.ok) throw new Error('Failed to start session');
             const j = await r.json();
-            sid = j.session_id;
-            sessionStorage.setItem('sid', sid);
+            return j && j.session_id ? j.session_id : null;
+        })();
+
+        try { window.__nelouraSessionPromise = starter; } catch (_) {}
+
+        sid = await starter;
+        if (sid) {
+            try { sessionStorage.setItem('sid', sid); } catch (_) {}
+            try { window.__nelouraSid = sid; } catch (_) {}
         }
         return sid;
-    } catch (e) { console.warn('Session init failed', e); return null; }
+    } catch (e) {
+        try { window.__nelouraSessionPromise = null; } catch (_) {}
+        console.warn('Session init failed', e);
+        return null;
+    }
 }
 
 
@@ -3857,6 +3898,10 @@ document.addEventListener("DOMContentLoaded", async function () {
     
     // Load FITS data directly
     loadFitsData();
+
+    // If a deep-linked catalog is provided (?catalog=...), apply it once the viewer is ready.
+    // (No-op if no catalog params are present.)
+    try { __applyCatalogDeepLinkIfPresent(); } catch (_) {}
     
     // Add keyboard shortcuts
     document.addEventListener("keydown", function (event) {
@@ -8073,9 +8118,150 @@ function loadFitsData() {
     if (progressContainer) {
         progressContainer.style.display = 'none';
     }
-    
-    // Instead of loading a specific file, show welcome screen
+
+    // Hide welcome UI if we're about to auto-load a file.
+    const hideWelcomeUi = () => {
+        try {
+            // Most of the welcome UI uses these classes
+            document.querySelectorAll('.welcome-screen, .welcome-pointer').forEach((el) => {
+                try { el.remove(); } catch (_) { try { el.style.display = 'none'; } catch (_) {} }
+            });
+            // Legacy/id-based fallback (some older code paths referenced this)
+            const legacy = document.getElementById('welcome-screen');
+            if (legacy) {
+                try { legacy.remove(); } catch (_) { try { legacy.style.display = 'none'; } catch (_) {} }
+            }
+        } catch (_) {}
+    };
+
+    // Auto-open FITS from URL params, if provided.
+    // Canonical form: /?file=<filepath>[&hdu=<int>]
+    try {
+        const sp = new URLSearchParams(window.location.search || '');
+        const fileParam = sp.get('file');
+        const hduParam = sp.get('hdu');
+        if (fileParam && String(fileParam).trim() !== '') {
+            const filepath = String(fileParam).trim();
+            // When deep-linking via `/open/...` (redirects to `/?file=...`), do not auto-open
+            // the in-app file browser. It can flash open before the file finishes loading.
+            try { window.__DISABLE_AUTO_FILE_BROWSER = true; } catch (_) {}
+            try { if (typeof window.hideFileBrowser === 'function') window.hideFileBrowser(); } catch (_) {}
+            try { setTimeout(() => { try { window.hideFileBrowser && window.hideFileBrowser(); } catch (_) {} }, 0); } catch (_) {}
+            hideWelcomeUi();
+            // If a specific HDU is given, open directly; otherwise, show HDU picker if needed.
+            if (hduParam !== null && String(hduParam).trim() !== '') {
+                const hduIdx = parseInt(String(hduParam), 10);
+                if (Number.isFinite(hduIdx)) {
+                    selectHdu(hduIdx, filepath);
+                    // Catalog deep-link (if present) will be applied after the viewer opens.
+                    return;
+                }
+            }
+            loadFitsFileWithHduSelection(filepath);
+            // Catalog deep-link (if present) will be applied after the viewer opens.
+            return;
+        }
+    } catch (_) {}
+
+    // No URL-specified file: show welcome screen
     createWelcomeScreen();
+}
+
+// -------------------------
+// Deep-link catalog overlay
+// -------------------------
+function __parseCatalogDeepLink() {
+    try {
+        const sp = new URLSearchParams(window.location.search || '');
+        const catalog = sp.get('catalog');
+        if (!catalog || String(catalog).trim() === '') return null;
+
+        const spec = {
+            name: String(catalog).trim(),
+            // column mappings
+            ra_col: sp.get('ra_col') ? String(sp.get('ra_col')).trim() : null,
+            dec_col: sp.get('dec_col') ? String(sp.get('dec_col')).trim() : null,
+            size_col: sp.get('size_col') ? String(sp.get('size_col')).trim() : null,
+            color_col: sp.get('color_col') ? String(sp.get('color_col')).trim() : null,
+            // basic style (optional)
+            border_color: sp.get('border_color') ? String(sp.get('border_color')).trim() : null,
+            fill_color: sp.get('fill_color') ? String(sp.get('fill_color')).trim() : null,
+            opacity: sp.get('opacity') != null ? Number(sp.get('opacity')) : null,
+            border_width: sp.get('border_width') != null ? Number(sp.get('border_width')) : null,
+            color_map: sp.get('color_map') ? String(sp.get('color_map')).trim() : (sp.get('color_map_name') ? String(sp.get('color_map_name')).trim() : null)
+        };
+
+        return spec;
+    } catch (_) {
+        return null;
+    }
+}
+
+function __applyCatalogDeepLinkIfPresent() {
+    const spec = __parseCatalogDeepLink();
+    if (!spec) return;
+
+    // Only attempt once per page load.
+    if (window.__deepLinkCatalogApplied) return;
+
+    const tryApply = () => {
+        try {
+            const loader = window.loadCatalog; // catalogs.js sets window.loadCatalog = loadCatalogBinary
+            const viewerReady = !!(window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen());
+            if (typeof loader !== 'function' || !viewerReady) return false;
+
+            // Persist raw overrides so downstream (SED/RGB/properties) can respect the selected columns.
+            try {
+                if (!window.catalogOverridesByCatalog) window.catalogOverridesByCatalog = {};
+                const key = spec.name;
+                const apiKey = key.split('/').pop().split('\\').pop();
+                const overrides = {};
+                if (spec.ra_col) overrides.ra_col = spec.ra_col;
+                if (spec.dec_col) overrides.dec_col = spec.dec_col;
+                if (spec.size_col) overrides.size_col = spec.size_col;
+                if (spec.color_col) overrides.color_col = spec.color_col;
+                window.catalogOverridesByCatalog[key] = { ...(window.catalogOverridesByCatalog[key] || {}), ...overrides };
+                if (apiKey) window.catalogOverridesByCatalog[apiKey] = { ...(window.catalogOverridesByCatalog[apiKey] || {}), ...overrides };
+            } catch (_) {}
+
+            // Build styles object to pass to loader (preferred path).
+            const styles = {};
+            if (spec.ra_col) styles.raColumn = spec.ra_col;
+            if (spec.dec_col) styles.decColumn = spec.dec_col;
+            if (spec.size_col) styles.sizeColumn = spec.size_col;
+            if (spec.color_col) styles.colorCodeColumn = spec.color_col;
+            if (spec.color_map) styles.colorMapName = spec.color_map;
+            if (spec.border_color) styles.borderColor = spec.border_color;
+            if (spec.fill_color) styles.backgroundColor = spec.fill_color;
+            if (Number.isFinite(spec.opacity)) styles.opacity = spec.opacity;
+            if (Number.isFinite(spec.border_width)) styles.borderWidth = spec.border_width;
+
+            window.__deepLinkCatalogApplied = true;
+            loader(spec.name, Object.keys(styles).length ? styles : null);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    // Try now, otherwise wait until the viewer opens.
+    if (tryApply()) return;
+    try {
+        const onOpen = () => {
+            try {
+                if (tryApply()) {
+                    document.removeEventListener('viewer:open', onOpen);
+                }
+            } catch (_) {}
+        };
+        document.addEventListener('viewer:open', onOpen);
+        // Also poll briefly in case viewer:open fired before we attached.
+        let attempts = 0;
+        const t = setInterval(() => {
+            attempts++;
+            if (tryApply() || attempts > 60) clearInterval(t);
+        }, 250);
+    } catch (_) {}
 }
 
 
@@ -9227,7 +9413,8 @@ async function selectHdu(hduIndex, filepath) {
     // The key change is here: We call /load-file which now returns the tileInfo.
     // This single call prepares the backend session and gives the frontend everything it needs.
     try {
-        const response = await apiFetch(`/load-file/${filepath}?hdu=${hduIndex}`);
+        const safePath = encodeURI(String(filepath || '').replace(/^\/+/, ''));
+        const response = await apiFetch(`/load-file/${safePath}?hdu=${encodeURIComponent(hduIndex)}`);
         
         if (!response.ok) {
             const errorData = await response.json();
