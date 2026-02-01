@@ -77,6 +77,50 @@ The platform features a clean, responsive design with integrated code execution,
 5. **Access the interface**
    Open your browser to `http://localhost:8000`
 
+## API & Deep Links (Practical Guide)
+
+Neloura is a web app, but many actions are driven by HTTP endpoints. This section documents the **most useful URLs** for automation and sharing links.
+
+### Open a FITS directly in the viewer
+
+Pretty route (redirects to `/?file=...`):
+
+- `GET /open/<path-to-fits>?hdu=<index>`
+- Alias: `GET /imager/<path-to-fits>?hdu=<index>`
+
+Example:
+
+- `http://localhost:8000/open/PHANGS-JWST/ngc4254_miri_lv3_f2100w_i2d_anchor.fits?hdu=1`
+
+### Search files in the in-app file browser (deep link)
+
+This fills the file browser search box (`#files-search-input`) and lists matching files.
+
+- `GET /search/<text>` (path form)
+
+Examples:
+
+- `http://localhost:8000/search/ngc0628`
+
+### Load a catalog overlay (via `catalog=` deep link)
+
+The easiest way to load a catalog in the UI is to open the main app (`/`) with query parameters:
+
+- `catalog=<catalog_name>`: catalog file name (usually under `catalogs/`)
+- `ra_col=<col>` / `dec_col=<col>`: RA/Dec columns in the catalog
+- `size_col=<col>`: optional size/radius column (e.g. `bmaj`)
+- `size_unit=px|arcsec` (optional): force units for `size_col`
+
+Example (image + catalog in one link):
+
+- `http://localhost:8000/?file=ngc0628%2Fngc0628_miri_lv3_f2100w_i2d_anchor.fits&hdu=1&catalog=cata21_v4_final.fits&ra_col=ra&dec_col=dec&size_col=bmaj&size_unit=arcsec`
+
+- `http://localhost:8000/?file=ngc0628%2Fngc0628_miri_lv3_f2100w_i2d_anchor.fits&hdu=1&catalog=cata21_v4_final.fits&ra_col=ra&dec_col=dec&size_col=5&size_unit=px`
+
+
+Notes:
+- `size_col` is interpreted as **pixels** by default, but common angular columns like `bmaj/bmin/fwhm` are converted using the current image WCS scale.
+
 ### Quick Start Guide
 
 1. **Load a FITS image**: Use the file browser to select and load your astronomical image
@@ -152,6 +196,24 @@ RGB_FIGURE_SIZE_INCHES = (10, 10)
 SED_FIGURE_SIZE_INCHES = (18, 14)
 ```
 
+### Admin mode (`NELOURA_ADMIN`)
+
+Neloura has an **admin mode** intended for trusted/local deployments. Enable it by setting the environment variable `NELOURA_ADMIN=true` when starting the server.
+
+
+When **admin mode** is enabled, Neloura unlocks privileged endpoints, including:
+
+- **Local coding routes**: `/local-coding/*` is enabled (otherwise these routes return `403`).
+- **Maintenance cleanup**: `/admin/erase-uploads` is enabled (used by the Settings UI to clear the uploads folder).
+
+### Temporary (“temporal”) file removal (`files/uploads`)
+
+Neloura treats `files/uploads/` as a **temporary workspace** (uploads + intermediate/generated artifacts). On startup, a background worker is scheduled that periodically deletes the contents of this folder (default interval: 60 minutes).
+
+Important implications:
+
+- **Admin mode does not disable or change the periodic cleanup**. It only enables the *manual* “erase uploads” endpoint (`/admin/erase-uploads`) so you can trigger an immediate cleanup.
+- **Do not store anything you want to keep long-term in `files/uploads/`**, since it may be removed automatically. Put persistent data in `files/`, `catalogs/`, or a separate directory.
 
 
 ## Acknowledgments
