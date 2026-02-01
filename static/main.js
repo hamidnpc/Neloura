@@ -8182,6 +8182,7 @@ function __parseCatalogDeepLink() {
             ra_col: sp.get('ra_col') ? String(sp.get('ra_col')).trim() : null,
             dec_col: sp.get('dec_col') ? String(sp.get('dec_col')).trim() : null,
             size_col: sp.get('size_col') ? String(sp.get('size_col')).trim() : null,
+            size_unit: sp.get('size_unit') ? String(sp.get('size_unit')).trim() : null,
             color_col: sp.get('color_col') ? String(sp.get('color_col')).trim() : null,
             // basic style (optional)
             border_color: sp.get('border_color') ? String(sp.get('border_color')).trim() : null,
@@ -8219,6 +8220,7 @@ function __applyCatalogDeepLinkIfPresent() {
                 if (spec.ra_col) overrides.ra_col = spec.ra_col;
                 if (spec.dec_col) overrides.dec_col = spec.dec_col;
                 if (spec.size_col) overrides.size_col = spec.size_col;
+                if (spec.size_unit) overrides.size_unit = spec.size_unit;
                 if (spec.color_col) overrides.color_col = spec.color_col;
                 window.catalogOverridesByCatalog[key] = { ...(window.catalogOverridesByCatalog[key] || {}), ...overrides };
                 if (apiKey) window.catalogOverridesByCatalog[apiKey] = { ...(window.catalogOverridesByCatalog[apiKey] || {}), ...overrides };
@@ -8229,6 +8231,7 @@ function __applyCatalogDeepLinkIfPresent() {
             if (spec.ra_col) styles.raColumn = spec.ra_col;
             if (spec.dec_col) styles.decColumn = spec.dec_col;
             if (spec.size_col) styles.sizeColumn = spec.size_col;
+            if (spec.size_unit) styles.sizeUnit = spec.size_unit;
             if (spec.color_col) styles.colorCodeColumn = spec.color_col;
             if (spec.color_map) styles.colorMapName = spec.color_map;
             if (spec.border_color) styles.borderColor = spec.border_color;
