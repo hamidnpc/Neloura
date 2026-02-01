@@ -9355,7 +9355,21 @@ async def catalog_binary(
                                 try:
                                     const_r = float(str(size_col).strip())
                                     if np.isfinite(const_r) and const_r > 0:
-                                        radius_px = np.full(len(catalog_table), const_r, dtype=np.float32)
+                                        unit_txt = (size_unit or "").strip().lower()
+                                        # For constant sizes, interpret unit via size_unit:
+                                        # - pixels/px => pixels
+                                        # - arcsec/deg/rad => angular converted using WCS scale
+                                        if unit_txt in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\""):
+                                            if arcsec_per_pixel is not None:
+                                                const_r = float(const_r) / max(float(arcsec_per_pixel), 1e-12)
+                                        elif unit_txt in ("deg", "degree", "degrees"):
+                                            if arcsec_per_pixel is not None:
+                                                const_r = (float(const_r) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                                        elif unit_txt in ("rad", "radian", "radians"):
+                                            if arcsec_per_pixel is not None:
+                                                const_r = (float(const_r) * (180.0 / np.pi) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                                        # else: treat as pixels by default
+                                        radius_px = np.full(len(catalog_table), float(const_r), dtype=np.float32)
                                     else:
                                         radius_px = np.full(len(catalog_table), 5.0, dtype=np.float32)
                                 except Exception:
@@ -10620,7 +10634,19 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     try:
                         const_r = float(str(res_override).strip())
                         if np.isfinite(const_r) and const_r > 0:
-                            constant_radius_pixels = const_r
+                            # Interpret constant using size_unit if provided
+                            unit_txt = (unit_override or "").strip().lower()
+                            if unit_txt in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\""):
+                                if arcsec_per_pixel is not None:
+                                    const_r = float(const_r) / max(float(arcsec_per_pixel), 1e-12)
+                            elif unit_txt in ("deg", "degree", "degrees"):
+                                if arcsec_per_pixel is not None:
+                                    const_r = (float(const_r) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                            elif unit_txt in ("rad", "radian", "radians"):
+                                if arcsec_per_pixel is not None:
+                                    const_r = (float(const_r) * (180.0 / np.pi) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                            # else: treat as pixels by default
+                            constant_radius_pixels = float(const_r)
                             resolution_col = None
                         else:
                             resolution_col = res_override
@@ -10646,7 +10672,18 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                     try:
                         const_r = float(str(res_hdr).strip())
                         if np.isfinite(const_r) and const_r > 0:
-                            constant_radius_pixels = const_r
+                            # Interpret constant using header-provided size unit if present
+                            unit_txt = (unit_hdr or "").strip().lower()
+                            if unit_txt in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\""):
+                                if arcsec_per_pixel is not None:
+                                    const_r = float(const_r) / max(float(arcsec_per_pixel), 1e-12)
+                            elif unit_txt in ("deg", "degree", "degrees"):
+                                if arcsec_per_pixel is not None:
+                                    const_r = (float(const_r) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                            elif unit_txt in ("rad", "radian", "radians"):
+                                if arcsec_per_pixel is not None:
+                                    const_r = (float(const_r) * (180.0 / np.pi) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                            constant_radius_pixels = float(const_r)
                             resolution_col = None
                         else:
                             resolution_col = res_hdr
@@ -10675,7 +10712,18 @@ def load_catalog_data(catalog_path_str, request: Request = None):
                             try:
                                 const_r = float(str(v).strip())
                                 if np.isfinite(const_r) and const_r > 0:
-                                    constant_radius_pixels = const_r
+                                    # Interpret constant using any discovered x-size-unit
+                                    unit_txt = (size_unit or "").strip().lower()
+                                    if unit_txt in ("arcsec", "arcsecs", "arcsecond", "arcseconds", "asec", "\""):
+                                        if arcsec_per_pixel is not None:
+                                            const_r = float(const_r) / max(float(arcsec_per_pixel), 1e-12)
+                                    elif unit_txt in ("deg", "degree", "degrees"):
+                                        if arcsec_per_pixel is not None:
+                                            const_r = (float(const_r) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                                    elif unit_txt in ("rad", "radian", "radians"):
+                                        if arcsec_per_pixel is not None:
+                                            const_r = (float(const_r) * (180.0 / np.pi) * 3600.0) / max(float(arcsec_per_pixel), 1e-12)
+                                    constant_radius_pixels = float(const_r)
                                     resolution_col = None
                                 else:
                                     resolution_col = v
