@@ -4216,7 +4216,9 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
             // Request very high resolution so the inset can show true pixels when zoomed/scaled.
             // (The backend will still downsample only if needed.)
             maxDim = Math.round(base * dpr * 4);
-            maxDim = Math.max(1024, Math.min(4096, maxDim));
+            // IMPORTANT: some deployments enforce max_dim <= 2048 (FastAPI validation).
+            // Clamp here so zoom insets don't 422 even if the server wasn't updated.
+            maxDim = Math.max(1024, Math.min(2048, maxDim));
         } catch (_) {}
         params.set('max_dim', String(maxDim));
         // For "show me the pixels", force nearest downsampling and disable browser smoothing (see CSS below).

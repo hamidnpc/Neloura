@@ -15,58 +15,58 @@
     <meta http-equiv="Expires" content="0">
     <script>
       // Bump this value on each deployment to force-refresh JS/CSS in user browsers.
-      window.APP_ASSET_VERSION = "20260127-07";
+      window.APP_ASSET_VERSION = "20260201-01";
     </script>
     <title>Neloura</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260127-07">
-    <script src="/static/vendor/openseadragon/openseadragon.min.js?v=20260127-07"></script>
-    <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css?v=20260127-07">
-    <link rel="stylesheet" href="/static/vendor/codemirror/theme/dracula.min.css?v=20260127-07">
-    <link rel="stylesheet" href="/static/vendor/codemirror/addon/hint/show-hint.min.css?v=20260127-07">
+    <link rel="stylesheet" href="/static/style.css?v=20260201-01">
+    <script src="/static/vendor/openseadragon/openseadragon.min.js?v=20260201-01"></script>
+    <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css?v=20260201-01">
+    <link rel="stylesheet" href="/static/vendor/codemirror/theme/dracula.min.css?v=20260201-01">
+    <link rel="stylesheet" href="/static/vendor/codemirror/addon/hint/show-hint.min.css?v=20260201-01">
     <!-- Required libraries for WCS overlay -->
-    <script src="/static/vendor/fabric/fabric.min.js?v=20260127-07"></script>
-    <link rel="stylesheet" href="/static/progress.css?v=20260127-07">
+    <script src="/static/vendor/fabric/fabric.min.js?v=20260201-01"></script>
+    <link rel="stylesheet" href="/static/progress.css?v=20260201-01">
 
-    <script defer src="/static/peak.js?v=20260127-07"></script>
-    <script defer src="/static/image-processing.js?v=20260127-07"></script>
-    <script defer src="/static/main.js?v=20260127-07"></script>
-    <script defer src="/static/coords_overlay.js?v=20260127-07"></script>
-    <script defer src="/static/sed.js?v=20260127-07"></script>
-    <script defer src="/static/plotter.js?v=20260127-07"></script>
-    <script defer src="/static/asttest.js?v=20260127-07"></script>
-    <script defer src="/static/catalogs.js?v=20260127-07"></script>
-    <script defer src="/static/catalog_webgl.js?v=20260127-07"></script>
-    <script defer src="/static/files.js?v=20260127-07"></script>
-    <script defer src="/static/mast.js?v=20260127-07"></script>
-    <script defer src="/static/canvas.js?v=20260127-07"></script>
+    <script defer src="/static/peak.js?v=20260201-01"></script>
+    <script defer src="/static/image-processing.js?v=20260201-01"></script>
+    <script defer src="/static/main.js?v=20260201-01"></script>
+    <script defer src="/static/coords_overlay.js?v=20260201-01"></script>
+    <script defer src="/static/sed.js?v=20260201-01"></script>
+    <script defer src="/static/plotter.js?v=20260201-01"></script>
+    <script defer src="/static/asttest.js?v=20260201-01"></script>
+    <script defer src="/static/catalogs.js?v=20260201-01"></script>
+    <script defer src="/static/catalog_webgl.js?v=20260201-01"></script>
+    <script defer src="/static/files.js?v=20260201-01"></script>
+    <script defer src="/static/mast.js?v=20260201-01"></script>
+    <script defer src="/static/canvas.js?v=20260201-01"></script>
     <script>
       (function(){
         fetch('/settings/me').then(r=>r.json()).then(me=>{
           if (me && me.admin) {
-            var s=document.createElement('script'); s.defer=true; s.src='/static/local_coding.js?v=20260127-07'; document.head.appendChild(s);
+            var s=document.createElement('script'); s.defer=true; s.src='/static/local_coding.js?v=20260201-01'; document.head.appendChild(s);
           }
         }).catch(()=>{});
       })();
     </script>
-    <script defer src="/static/settings.js?v=20260127-07"></script>
-    <script defer src="/static/save.js?v=20260127-07"></script>
-    <script defer src="/static/toolbar.js?v=20260127-07"></script>
+    <script defer src="/static/settings.js?v=20260201-01"></script>
+    <script defer src="/static/save.js?v=20260201-01"></script>
+    <script defer src="/static/toolbar.js?v=20260201-01"></script>
     <!-- plot3d removed -->
-    <script defer src="/static/wcs.js?v=20260127-07"></script>
+    <script defer src="/static/wcs.js?v=20260201-01"></script>
 
-    <script src="/static/catalog_viewer.js?v=20260127-07"></script>
-    <script src="/static/vendor/codemirror/codemirror.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/codemirror/mode/python/python.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/codemirror/addon/comment/comment.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/codemirror/addon/hint/show-hint.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/codemirror/addon/hint/anyword-hint.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/lodash/lodash.min.js?v=20260127-07"></script>
-    <script src="/static/vendor/sweetalert2/sweetalert2.all.min.js?v=20260127-07"></script>
-    <script src="/static/usage.js?v=20260127-07" defer></script>
-    <script src="/static/credit.js?v=20260127-07" defer></script>
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/logo/apple-touch-icon.png?v=20260127-07">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/logo/favicon-32x32.png?v=20260127-07">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/logo/favicon-16x16.png?v=20260127-07">
+    <script src="/static/catalog_viewer.js?v=20260201-01"></script>
+    <script src="/static/vendor/codemirror/codemirror.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/codemirror/mode/python/python.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/codemirror/addon/comment/comment.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/codemirror/addon/hint/show-hint.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/codemirror/addon/hint/anyword-hint.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/lodash/lodash.min.js?v=20260201-01"></script>
+    <script src="/static/vendor/sweetalert2/sweetalert2.all.min.js?v=20260201-01"></script>
+    <script src="/static/usage.js?v=20260201-01" defer></script>
+    <script src="/static/credit.js?v=20260201-01" defer></script>
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/logo/apple-touch-icon.png?v=20260201-01">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/logo/favicon-32x32.png?v=20260201-01">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/logo/favicon-16x16.png?v=20260201-01">
 </head>
 <body>
     <div class="toolbar">
