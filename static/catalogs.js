@@ -3003,14 +3003,24 @@ function loadCatalog(catalogName, styles = null) {
     const raCol = (styles && styles.raColumn) || (persisted && persisted.ra_col);
     const decCol = (styles && styles.decColumn) || (persisted && persisted.dec_col);
     const sizeCol = (styles && styles.sizeColumn) || (persisted && persisted.size_col);
+    // Optional size unit (deep-link or persisted). Used by backend to interpret size_col correctly.
+    let sizeUnit = (styles && (styles.sizeUnit || styles.size_unit)) || (persisted && (persisted.size_unit || persisted.sizeUnit)) || null;
+    if (!sizeUnit) {
+        try {
+            const sp = new URLSearchParams(window.location.search || '');
+            sizeUnit = sp.get('size_unit');
+        } catch (_) {}
+    }
     if (raCol) urlParams.set('ra_col', raCol);
     if (decCol) urlParams.set('dec_col', decCol);
     if (sizeCol) urlParams.set('size_col', sizeCol);
+    if (sizeUnit) urlParams.set('size_unit', sizeUnit);
     // Also mirror overrides in headers for robustness
     const extraHeaders = {};
     if (raCol) extraHeaders['X-RA-Col'] = raCol;
     if (decCol) extraHeaders['X-DEC-Col'] = decCol;
     if (sizeCol) extraHeaders['X-Size-Col'] = sizeCol;
+    if (sizeUnit) extraHeaders['X-Size-Unit'] = sizeUnit;
     const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
     if (!urlParams.has('ra_col') && raColBin) urlParams.set('ra_col', raColBin);
     if (!urlParams.has('dec_col') && decColBin) urlParams.set('dec_col', decColBin);
@@ -3227,10 +3237,19 @@ function loadCatalogBinary(catalogName, styles = null) {
     const raColBin = (styles && styles.raColumn) || (persistedBin && persistedBin.ra_col);
     const decColBin = (styles && styles.decColumn) || (persistedBin && persistedBin.dec_col);
     const sizeColBin = (styles && styles.sizeColumn) || (persistedBin && persistedBin.size_col);
+    // Optional size unit (deep-link or persisted). Used by backend to interpret size_col correctly.
+    let sizeUnitBin = (styles && (styles.sizeUnit || styles.size_unit)) || (persistedBin && (persistedBin.size_unit || persistedBin.sizeUnit)) || null;
+    if (!sizeUnitBin) {
+        try {
+            const sp = new URLSearchParams(window.location.search || '');
+            sizeUnitBin = sp.get('size_unit');
+        } catch (_) {}
+    }
     const colorColBin = (styles && styles.colorCodeColumn) || (persistedBin && persistedBin.color_col);
     if (raColBin) urlParams.set('ra_col', raColBin);
     if (decColBin) urlParams.set('dec_col', decColBin);
     if (sizeColBin) urlParams.set('size_col', sizeColBin);
+    if (sizeUnitBin) urlParams.set('size_unit', sizeUnitBin);
     if (colorColBin) urlParams.set('color_col', colorColBin);
 
     const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
@@ -3247,6 +3266,7 @@ function loadCatalogBinary(catalogName, styles = null) {
     if (raColBin) extraHeadersBin['X-RA-Col'] = raColBin;
     if (decColBin) extraHeadersBin['X-DEC-Col'] = decColBin;
     if (sizeColBin) extraHeadersBin['X-Size-Col'] = sizeColBin;
+    if (sizeUnitBin) extraHeadersBin['X-Size-Unit'] = sizeUnitBin;
     if (colorColBin) extraHeadersBin['X-Color-Col'] = colorColBin;
     console.log('[loadCatalogBinary] Headers to send:', extraHeadersBin);
     apiFetch(finalUrl, {
