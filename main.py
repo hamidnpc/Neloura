@@ -4112,7 +4112,7 @@ async def generate_sed_optimized(
                 SED_FLUX_COLUMN_TEMPLATE.format(filter=filter_name),  # e.g., F555W
                 f"flux_{filter_name}",                               # e.g., flux_F555W
                 f"PHANGS_{filter_name}_mJy",
-                f"PHANGS_{filter_name}_mJy_TOT",
+                f"PHANGS_{filter_name}_mJy_TOT"
              # e.g., PHANGS_F555W_mJy
             ]
             err_candidates = [
@@ -4178,12 +4178,16 @@ async def generate_sed_optimized(
             flux_candidates = [
                 SED_FLUX_COLUMN_TEMPLATE.format(filter=filter_name),
                 f"flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy"
+                f"PHANGS_{filter_name}_mJy",
+                f"PHANGS_{filter_name}_mJy_TOT"
+                
             ]
             err_candidates = [
                 SED_ERR_COLUMN_TEMPLATE.format(filter=filter_name),
                 f"er_flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy_ERR"
+                f"PHANGS_{filter_name}_mJy_ERR",
+                f"PHANGS_{filter_name}_mJy_TOT_ERR"
+
             ]
             flux_column = next((c for c in flux_candidates if c in available_cols), flux_candidates[0])
             bkg_column = SED_BKG_COLUMN_TEMPLATE.format(filter=filter_name)
