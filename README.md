@@ -77,7 +77,7 @@ The platform features a clean, responsive design with integrated code execution,
 5. **Access the interface**
    Open your browser to `http://localhost:8000`
 
-## API & Deep Links (Practical Guide)
+## API & Deep Links
 
 Neloura is a web app, but many actions are driven by HTTP endpoints. This section documents the **most useful URLs** for automation and sharing links.
 
