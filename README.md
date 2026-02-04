@@ -255,3 +255,7 @@ Important implications:
 - OpenSeadragon
 - D3.js
 - SweetAlert2
+
+## Known Issues:
+WCS readout errors: Some ALMA maps have issues displaying the correct x, y, and pixel values in the coordinate display panel located at the top left.
+WCS lock inconsistency: When WCS locking is enabled, galaxies may not always zoom into the same region. In some cases, the view mirrors a different part of the galaxy. Refreshing the browser may resolve these issues in some cases.
