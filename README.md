@@ -216,12 +216,6 @@ SED_FIGURE_SIZE_INCHES = (18, 14)
 
 Neloura has an **admin mode** intended for trusted/local deployments. Enable it by setting the environment variable `NELOURA_ADMIN=true` when starting the server.
 
-Example:
-
-```bash
-NELOURA_ADMIN=true python main.py
-```
-
 
 When **admin mode** is enabled, Neloura unlocks privileged endpoints, including:
 
