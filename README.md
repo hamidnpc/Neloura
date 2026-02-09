@@ -260,12 +260,21 @@ Important implications:
 - WCS readout errors: Some ALMA maps have issues displaying the correct x, y, and pixel values in the coordinate display panel located at the top left.
 - WCS lock inconsistency: When WCS locking is enabled, galaxies may not always zoom into the same region. In some cases, the view mirrors a different part of the galaxy. Refreshing the browser may resolve these issues in some cases.
 
+
 ## Citation
 
-If you use **Neloura** in a publication, please cite:
+If you use **Neloura** in your research, please cite the software.
+If your work additionally makes use of PHANGS-JWST mid-infrared source catalogs or analysis workflows produced with Neloura, please also cite the associated PHANGS-JWST science paper.
+
+### Software
 
 Hassani, H. (2026). *Neloura: A Web-Based Astronomical Image Analysis and Visualization Platform*. Zenodo.
 [https://doi.org/10.5281/zenodo.18381747](https://doi.org/10.5281/zenodo.18381747)
+
+### PHANGS-JWST catalog paper
+
+Hassani et al. (2025), *The Hidden Life of Stars: Embedded Beginnings to AGB Endings in the PHANGS-JWST Sample. I. Catalog of Mid-IR Sources*, arXiv:2509.16459
+[https://ui.adsabs.harvard.edu/abs/2025arXiv250916459H/abstract](https://ui.adsabs.harvard.edu/abs/2025arXiv250916459H/abstract)
 
 ### BibTeX
 
@@ -278,6 +287,27 @@ Hassani, H. (2026). *Neloura: A Web-Based Astronomical Image Analysis and Visual
   doi          = {10.5281/zenodo.18381747},
   url          = {https://doi.org/10.5281/zenodo.18381747}
 }
+
+@ARTICLE{2025arXiv250916459H,
+       author = {{Hassani}, Hamid and {Rosolowsky}, Erik and {Leroy}, Adam K. and
+                 {Sandstrom}, Karin and {Boquien}, M{\'e}d{\'e}ric and {Thilker}, David A. and
+                 {Whitmore}, Bradley C. and {Anand}, Gagandeep S. and {Barnes}, Ashley T. and
+                 {Cao}, Yixian and {Chown}, Ryan and {Congiu}, Enrico and {Dale}, Daniel A. and
+                 {Egorov}, Oleg V. and {Gerasimov}, Ivan and {Grasha}, Kathryn and
+                 {Indebetouw}, Remy and {Lee}, Janice C. and {Liang}, Fu-Heng and
+                 {Maschmann}, Daniel and {Meidt}, Sharon E. and {Oakes}, Elias K. and
+                 {Pessa}, Ismael and {Pety}, J{\'e}r{\^o}me and {Querejeta}, Miguel and
+                 {Ramambason}, Lise and {Rodr{\'\i}guez}, M. Jimena and {Sarbadhicary}, Sumit K. and
+                 {Sutter}, Jessica and {{\'U}beda}, Leonardo and {Williams}, Thomas G.},
+        title = {The Hidden Life of Stars: Embedded Beginnings to AGB Endings in the PHANGS-JWST Sample. I. Catalog of Mid-IR Sources},
+      journal = {arXiv e-prints},
+         year = 2025,
+          eid = {arXiv:2509.16459},
+        pages = {arXiv:2509.16459},
+          doi = {10.48550/arXiv.2509.16459},
+archivePrefix = {arXiv},
+       eprint = {2509.16459},
+ primaryClass = {astro-ph.GA},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2025arXiv250916459H}
+}
 ```
-
-
