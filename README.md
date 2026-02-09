@@ -1,7 +1,10 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18381747.svg)](https://doi.org/10.5281/zenodo.18381747)
-![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)
-![Platform](https://img.shields.io/badge/platform-web%20app-lightgrey)
-![Status](https://img.shields.io/badge/status-active-success)
+[![ADS](https://img.shields.io/badge/ADS-Paper-orange)](https://ui.adsabs.harvard.edu/abs/2025arXiv250916459H/abstract)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Launch-Neloura.com-2ea44f)](https://neloura.com)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)]()
+[![Status](https://img.shields.io/badge/status-active-success)]()
+
 
 # Neloura
 <img src="static/logo/logo.png" alt="Neloura Logo" width="200"/>
