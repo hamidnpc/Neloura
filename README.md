@@ -260,3 +260,24 @@ Important implications:
 - WCS readout errors: Some ALMA maps have issues displaying the correct x, y, and pixel values in the coordinate display panel located at the top left.
 - WCS lock inconsistency: When WCS locking is enabled, galaxies may not always zoom into the same region. In some cases, the view mirrors a different part of the galaxy. Refreshing the browser may resolve these issues in some cases.
 
+## Citation
+
+If you use **Neloura** in a publication, please cite:
+
+Hassani, H. (2026). *Neloura: A Web-Based Astronomical Image Analysis and Visualization Platform*. Zenodo.
+[https://doi.org/10.5281/zenodo.18381747](https://doi.org/10.5281/zenodo.18381747)
+
+### BibTeX
+
+```bibtex
+@software{hassani_neloura_2026,
+  author       = {Hassani, Hamid},
+  title        = {Neloura: A Web-Based Astronomical Image Analysis and Visualization Platform},
+  year         = 2026,
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.18381747},
+  url          = {https://doi.org/10.5281/zenodo.18381747}
+}
+```
+
+
