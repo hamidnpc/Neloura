@@ -882,6 +882,9 @@
 
 // ---------------- Multi-Panel (DS9-like) Basic UI via iframes ----------------
 (function () {
+    const BLINK_INTERVAL_MS = 650;
+    const BLINK_PAUSE_AFTER_INTERACTION_MS = 70;
+
     function createWcsLockFab() {
         try { if (window.self !== window.top) return; } catch (_) { }
         if (document.getElementById('multi-panel-wcs-lock')) return;
@@ -933,6 +936,526 @@
         document.body.appendChild(btn);
         updateWcsLockVisibility();
     }
+
+    function createBlinkFab() {
+        try { if (window.self !== window.top) return; } catch (_) { }
+        if (document.getElementById('multi-panel-blink')) return;
+        const btn = document.createElement('button');
+        btn.id = 'multi-panel-blink';
+        btn.title = 'Blink between panes (strip layouts: 1×N or N×1)';
+        btn.className = 'mp-interactive';
+        Object.assign(btn.style, {
+            position: 'fixed',
+            // Place just left of the WCS Lock pill (which is right: 125px, width: 118px)
+            right: '251px',
+            bottom: '22px',
+            width: '38px',
+            height: '38px',
+            borderRadius: '999px',
+            background: '#374151',
+            color: '#fff',
+            border: 'none',
+            boxShadow: '0 6px 14px rgba(0,0,0,0.3)',
+            cursor: 'pointer',
+            zIndex: '50000',
+            display: 'none',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '16px',
+            lineHeight: '1',
+            transition: 'background 0.2s ease, opacity 0.2s ease, transform 0.12s ease'
+        });
+        btn.textContent = '👁';
+        btn.addEventListener('mouseenter', () => {
+            if (!window.__multiPanelBlinkEnabled) btn.style.background = '#465065';
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (!window.__multiPanelBlinkEnabled) btn.style.background = '#374151';
+        });
+        btn.addEventListener('click', () => {
+            const want = !window.__multiPanelBlinkEnabled;
+            setBlinkEnabled(want);
+        });
+        document.body.appendChild(btn);
+        updateBlinkVisibility();
+    }
+
+    function _getBlinkEligibleStripInfo() {
+        try {
+            const wrap = document.getElementById('multi-panel-container');
+            const grid = document.getElementById('multi-panel-grid');
+            if (!wrap || wrap.style.display === 'none' || !grid) return null;
+            const layoutMode = grid.dataset && grid.dataset.layout;
+            if (layoutMode !== 'grid') return null;
+            const rows = parseInt((grid.dataset && grid.dataset.rows) || '1', 10);
+            const cols = parseInt((grid.dataset && grid.dataset.cols) || '1', 10);
+            // Only enable blink for strip layouts (1×N or N×1). This matches the user intent
+            // (side-by-side or top-to-bottom comparisons, including 3+ panes).
+            const isStrip = (rows === 1 && cols >= 2) || (cols === 1 && rows >= 2);
+            if (!isStrip) return null;
+            const holders = Array.from(grid.children || []).filter(h => {
+                try { return !!(h && h.querySelector && h.querySelector('iframe')); } catch (_) { return false; }
+            });
+            if (holders.length < 2) return null;
+            return { grid, rows, cols, holders: holders.slice(0) };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _sameHolderList(a, b) {
+        try {
+            if (!a || !b) return false;
+            if (a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) {
+                if (a[i] !== b[i]) return false;
+            }
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _getHolderFrameWindow(holder) {
+        try {
+            const f = holder && holder.querySelector ? holder.querySelector('iframe') : null;
+            return f ? f.contentWindow : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _setCatalogOverlayControlsHiddenForHolder(holder, hidden) {
+        try {
+            const w = _getHolderFrameWindow(holder);
+            const doc = w && w.document;
+            if (!doc) return;
+            const el = doc.getElementById('catalog-overlay-controls');
+            if (!el) return;
+            if (hidden) {
+                try {
+                    if (el.__blinkPrevDisplay == null) el.__blinkPrevDisplay = el.style.display;
+                } catch (_) { }
+                el.style.display = 'none';
+            } else {
+                const prev = (() => { try { return el.__blinkPrevDisplay; } catch (_) { return ''; } })();
+                el.style.display = prev || '';
+                try { delete el.__blinkPrevDisplay; } catch (_) { }
+            }
+        } catch (_) { }
+    }
+
+    function _setCatalogOverlayControlsHiddenForHolders(holders, hidden) {
+        try {
+            (holders || []).forEach(h => {
+                try { _setCatalogOverlayControlsHiddenForHolder(h, hidden); } catch (_) { }
+            });
+        } catch (_) { }
+    }
+
+    function _setTopCatalogOverlayControlsHidden(hidden) {
+        // NOTE: The catalog controls panel is rendered into the TOP document (via getTopLevelDocument()).
+        // So we must hide it here.
+        try {
+            const panel = document.getElementById('catalog-overlay-controls');
+            if (!panel) return;
+            if (hidden) {
+                try { if (panel.__blinkPrevDisplay == null) panel.__blinkPrevDisplay = panel.style.display; } catch (_) { }
+                panel.style.display = 'none';
+                panel.style.pointerEvents = 'none';
+            } else {
+                const prev = (() => { try { return panel.__blinkPrevDisplay; } catch (_) { return ''; } })();
+                panel.style.display = prev || '';
+                panel.style.pointerEvents = '';
+                try { delete panel.__blinkPrevDisplay; } catch (_) { }
+            }
+        } catch (_) { }
+    }
+
+    function _captureViewportState(holder) {
+        try {
+            const w = _getHolderFrameWindow(holder);
+            const v = w && (w.tiledViewer || w.viewer);
+            if (!v || !v.viewport) return null;
+            return {
+                zoom: v.viewport.getZoom ? v.viewport.getZoom() : null,
+                center: v.viewport.getCenter ? v.viewport.getCenter(true) : null,
+                rotation: (v.viewport.getRotation && typeof v.viewport.getRotation === 'function') ? v.viewport.getRotation() : 0
+            };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _restoreViewportState(holder, state) {
+        try {
+            if (!state) return;
+            const w = _getHolderFrameWindow(holder);
+            const v = w && (w.tiledViewer || w.viewer);
+            if (!v || !v.viewport) return;
+            try {
+                if (state.rotation != null && isFinite(state.rotation) && typeof v.viewport.setRotation === 'function') {
+                    v.viewport.setRotation(state.rotation);
+                }
+            } catch (_) { }
+            try {
+                if (state.zoom != null && isFinite(state.zoom) && typeof v.viewport.zoomTo === 'function') {
+                    v.viewport.zoomTo(state.zoom, null, true);
+                }
+            } catch (_) { }
+            try {
+                if (state.center && typeof v.viewport.panTo === 'function') {
+                    v.viewport.panTo(state.center, true);
+                }
+            } catch (_) { }
+            try { if (typeof v.forceRedraw === 'function') v.forceRedraw(); } catch (_) { }
+        } catch (_) { }
+    }
+
+    function _setBlinkTop(holders, activeIdx, opts) {
+        if (!holders || holders.length < 2) return;
+        const options = opts || {};
+        holders.forEach((h, idx) => {
+            try {
+                // We do NOT change visibility/opacity/clip-path to avoid "black iframe" artifacts.
+                h.style.zIndex = (idx === activeIdx) ? '30' : '20';
+                // Allow interaction only with the visible (top) pane.
+                h.style.pointerEvents = (idx === activeIdx) ? 'auto' : 'none';
+            } catch (_) { }
+        });
+        // IMPORTANT: Do NOT flip the active pane on every blink tick.
+        // Doing so can cause WCS/viewport sync ping-pong (especially for different WCS headers).
+        if (options.setActive) {
+            try {
+                if (typeof setActivePanel === 'function') {
+                    const topHolder = holders[activeIdx];
+                    if (topHolder) setActivePanel(topHolder);
+                }
+            } catch (_) { }
+        }
+        // During blinking, hide catalog overlay controls in ALL panes.
+        try {
+            if (window.__multiPanelBlinkEnabled) {
+                _setCatalogOverlayControlsHiddenForHolders(holders, true);
+                _setTopCatalogOverlayControlsHidden(true);
+            }
+        } catch (_) { }
+        // Nudge the visible viewer to repaint (helps avoid stale/black frames on some browsers/GPU drivers).
+        try {
+            const w = _getHolderFrameWindow(holders[activeIdx]);
+            const v = w && (w.tiledViewer || w.viewer);
+            if (v && typeof v.forceRedraw === 'function') v.forceRedraw();
+        } catch (_) { }
+    }
+
+    function _applyBlinkStyles(info, activeIdx) {
+        if (!info || !info.holders || info.holders.length < 2) return;
+        const holders = info.holders;
+        const grid = info.grid;
+        // Overlay approach: remove both holders from grid flow and stack them
+        // with absolute positioning. This avoids iframe black/blank artifacts
+        // from opacity/display toggles and ensures z-index swaps actually show A/B.
+
+        // Remember grid styles once so we can restore later
+        try {
+            if (grid && !grid.__blinkPrev) {
+                grid.__blinkPrev = {
+                    gridTemplateColumns: grid.style.gridTemplateColumns,
+                    gridTemplateRows: grid.style.gridTemplateRows,
+                    gridAutoFlow: grid.style.gridAutoFlow,
+                    position: grid.style.position
+                };
+            }
+        } catch (_) { }
+        try {
+            if (grid) {
+                // Needed so absolutely-positioned children are contained
+                grid.style.position = grid.style.position || 'relative';
+            }
+        } catch (_) { }
+
+        holders.forEach((h, idx) => {
+            try {
+                if (!h.__blinkPrev) {
+                    h.__blinkPrev = {
+                        display: h.style.display,
+                        position: h.style.position,
+                        top: h.style.top,
+                        left: h.style.left,
+                        right: h.style.right,
+                        bottom: h.style.bottom,
+                        width: h.style.width,
+                        height: h.style.height,
+                        margin: h.style.margin,
+                        gridColumn: h.style.gridColumn,
+                        gridRow: h.style.gridRow,
+                        zIndex: h.style.zIndex,
+                        pointerEvents: h.style.pointerEvents,
+                        opacity: h.style.opacity,
+                        transition: h.style.transition
+                    };
+                }
+                h.style.display = '';
+                // Take out of grid layout and overlay
+                h.style.gridColumn = '';
+                h.style.gridRow = '';
+                h.style.margin = '0';
+                h.style.position = 'absolute';
+                h.style.top = '0';
+                h.style.left = '0';
+                h.style.right = '0';
+                h.style.bottom = '0';
+                h.style.width = '100%';
+                h.style.height = '100%';
+                h.style.transition = '';
+                // Avoid touching opacity/clip-path; just stacking order.
+                h.style.opacity = '';
+            } catch (_) { }
+        });
+        _setBlinkTop(holders, activeIdx, { setActive: false });
+    }
+
+    function _restoreBlinkStyles(infoOrHolders) {
+        if (!infoOrHolders) return;
+        const holders = Array.isArray(infoOrHolders) ? infoOrHolders : (infoOrHolders.holders || []);
+        const grid = (!Array.isArray(infoOrHolders) && infoOrHolders.grid) ? infoOrHolders.grid : null;
+
+        holders.forEach((h) => {
+            try {
+                const prev = h.__blinkPrev || null;
+                if (prev) {
+                    h.style.display = prev.display || '';
+                    h.style.position = prev.position || '';
+                    h.style.top = prev.top || '';
+                    h.style.left = prev.left || '';
+                    h.style.right = prev.right || '';
+                    h.style.bottom = prev.bottom || '';
+                    h.style.width = prev.width || '';
+                    h.style.height = prev.height || '';
+                    h.style.margin = prev.margin || '';
+                    h.style.gridColumn = prev.gridColumn || '';
+                    h.style.gridRow = prev.gridRow || '';
+                    h.style.zIndex = prev.zIndex || '';
+                    h.style.pointerEvents = prev.pointerEvents || '';
+                    h.style.opacity = prev.opacity || '';
+                    h.style.transition = prev.transition || '';
+                } else {
+                    h.style.display = '';
+                    h.style.position = '';
+                    h.style.top = '';
+                    h.style.left = '';
+                    h.style.right = '';
+                    h.style.bottom = '';
+                    h.style.width = '';
+                    h.style.height = '';
+                    h.style.margin = '';
+                    h.style.gridColumn = '';
+                    h.style.gridRow = '';
+                    h.style.zIndex = '';
+                    h.style.pointerEvents = '';
+                    h.style.opacity = '';
+                    h.style.transition = '';
+                }
+                delete h.__blinkPrev;
+            } catch (_) { }
+        });
+
+        // Restore grid style if we touched it
+        try {
+            if (grid && grid.__blinkPrev) {
+                grid.style.gridTemplateColumns = grid.__blinkPrev.gridTemplateColumns || '';
+                grid.style.gridTemplateRows = grid.__blinkPrev.gridTemplateRows || '';
+                grid.style.gridAutoFlow = grid.__blinkPrev.gridAutoFlow || '';
+                grid.style.position = grid.__blinkPrev.position || '';
+                delete grid.__blinkPrev;
+            }
+        } catch (_) { }
+    }
+
+    function setBlinkEnabled(enabled) {
+        const want = !!enabled;
+        const info = _getBlinkEligibleStripInfo();
+        const holders = info ? info.holders : null;
+        const btn = document.getElementById('multi-panel-blink');
+        if (!holders) {
+            // Not eligible; force-disable without error
+            try { if (window.__multiPanelBlinkTimer) clearInterval(window.__multiPanelBlinkTimer); } catch (_) { }
+            window.__multiPanelBlinkTimer = null;
+            window.__multiPanelBlinkEnabled = false;
+            window.__multiPanelBlinkIdx = 0;
+            try { _restoreBlinkStyles(window.__multiPanelBlinkLastInfo || (window.__multiPanelBlinkLastHolders || [])); } catch (_) { }
+            window.__multiPanelBlinkLastHolders = null;
+            window.__multiPanelBlinkLastInfo = null;
+            if (btn) {
+                btn.dataset.enabled = '0';
+                btn.style.background = '#374151';
+                btn.style.transform = '';
+                btn.title = 'Blink between the two panes (A/B)';
+            }
+            updateBlinkVisibility();
+            return;
+        }
+
+        if (!want) {
+            try { if (window.__multiPanelBlinkTimer) clearInterval(window.__multiPanelBlinkTimer); } catch (_) { }
+            window.__multiPanelBlinkTimer = null;
+            window.__multiPanelBlinkEnabled = false;
+            window.__multiPanelBlinkIdx = 0;
+            try { _restoreBlinkStyles(info || holders); } catch (_) { }
+            // Restore viewport states after layout returns to normal (prevents "zoomed out" panel).
+            try {
+                const toRestore = Array.isArray(holders) ? holders : (window.__multiPanelBlinkLastHolders || []);
+                const states = window.__multiPanelBlinkViewportStates || [];
+                requestAnimationFrame(() => {
+                    try {
+                        toRestore.forEach((h, i) => {
+                            const st = (h && h.__blinkViewportState) ? h.__blinkViewportState : (states[i] || null);
+                            _restoreViewportState(h, st);
+                            try { delete h.__blinkViewportState; } catch (_) { }
+                        });
+                    } catch (_) { }
+                    try { window.__multiPanelBlinkViewportStates = null; } catch (_) { }
+                    // Restore catalog overlay controls visibility when blinking stops.
+                    try {
+                        _setCatalogOverlayControlsHiddenForHolders(toRestore, false);
+                        _setTopCatalogOverlayControlsHidden(false);
+                    } catch (_) { }
+                    // Re-activate a pane so catalog/segment overlay controls re-render.
+                    // (During blinking we toggle active panes rapidly, which can leave controls hidden.)
+                    try {
+                        const grid = document.getElementById('multi-panel-grid');
+                        const prevActive = window.__multiPanelBlinkPrevActiveHolder || null;
+                        const fallback = (Array.isArray(toRestore) && toRestore[0]) ? toRestore[0] : null;
+                        const target = (prevActive && grid && prevActive.parentNode === grid) ? prevActive : fallback;
+                        if (target && typeof setActivePanel === 'function') {
+                            // First activation now, then again after layout settles.
+                            try { setActivePanel(target); } catch (_) { }
+                            setTimeout(() => { try { setActivePanel(target); } catch (_) { } }, 80);
+                        }
+                    } catch (_) { }
+                    try { window.__multiPanelBlinkPrevActiveHolder = null; } catch (_) { }
+                });
+            } catch (_) { }
+            window.__multiPanelBlinkLastHolders = null;
+            window.__multiPanelBlinkLastInfo = null;
+            try { window.__multiPanelBlinkHoldUntil = 0; window.__multiPanelBlinkPointerDown = false; } catch (_) { }
+            if (btn) {
+                btn.dataset.enabled = '0';
+                btn.style.background = '#374151';
+                btn.style.transform = '';
+                btn.title = 'Blink between the two panes (A/B)';
+            }
+            // Tell panes blinking is disabled.
+            try {
+                const hs = holders || [];
+                hs.forEach(h => {
+                    try {
+                        const f = h && h.querySelector ? h.querySelector('iframe') : null;
+                        const w = f && f.contentWindow;
+                        if (w && typeof w.postMessage === 'function') {
+                            w.postMessage({ type: 'neloura-blink-state', enabled: false }, '*');
+                        }
+                    } catch (_) { }
+                });
+            } catch (_) { }
+            return;
+        }
+
+        // Enable
+        window.__multiPanelBlinkEnabled = true;
+        try { window.__multiPanelBlinkHoldUntil = 0; window.__multiPanelBlinkPointerDown = false; } catch (_) { }
+        window.__multiPanelBlinkIdx = window.__multiPanelBlinkIdx ? 1 : 0;
+        window.__multiPanelBlinkLastHolders = holders;
+        window.__multiPanelBlinkLastInfo = info;
+        // Remember user-selected active pane so we can restore overlay controls afterwards.
+        try { window.__multiPanelBlinkPrevActiveHolder = window.__activePaneHolder || null; } catch (_) { }
+        // Hide catalog overlay controls during blinking (distracting panel at bottom).
+        try {
+            _setCatalogOverlayControlsHiddenForHolders(holders, true);
+            _setTopCatalogOverlayControlsHidden(true);
+        } catch (_) { }
+        // Snapshot each pane's viewport before we change layout.
+        try {
+            window.__multiPanelBlinkViewportStates = holders.map(h => {
+                const st = _captureViewportState(h);
+                try { h.__blinkViewportState = st; } catch (_) { }
+                return st;
+            });
+        } catch (_) { window.__multiPanelBlinkViewportStates = null; }
+        if (btn) {
+            btn.dataset.enabled = '1';
+            btn.style.background = '#F59E0B';
+            btn.style.transform = 'scale(1.02)';
+            btn.title = 'Blinking enabled (click to stop)';
+        }
+        // Apply immediately, then start timer
+        try {
+            // One-time sync at blink start (helps ensure same region even for different WCS/pixel scales).
+            // Avoid doing this repeatedly to prevent AbortErrors / drift.
+            try {
+                if (window.__multiPanelWcsLockEnabled && typeof synchronizeWcsAcrossPanes === 'function') {
+                    const p = synchronizeWcsAcrossPanes({ silent: true });
+                    if (p && typeof p.then === 'function') p.catch(() => { });
+                }
+            } catch (_) { }
+            _applyBlinkStyles(info, window.__multiPanelBlinkIdx);
+        } catch (_) { }
+
+        // Tell panes blinking is enabled so they can report interactions (for pausing).
+        try {
+            const hs = holders || [];
+            hs.forEach(h => {
+                try {
+                    const f = h && h.querySelector ? h.querySelector('iframe') : null;
+                    const w = f && f.contentWindow;
+                    if (w && typeof w.postMessage === 'function') {
+                        w.postMessage({ type: 'neloura-blink-state', enabled: true }, '*');
+                    }
+                } catch (_) { }
+            });
+        } catch (_) { }
+        try { if (window.__multiPanelBlinkTimer) clearInterval(window.__multiPanelBlinkTimer); } catch (_) { }
+        window.__multiPanelBlinkTimer = setInterval(() => {
+            try {
+                if (!window.__multiPanelBlinkEnabled) return;
+                // If user is interacting (drag/zoom), don't swap panels.
+                try {
+                    if (window.__multiPanelBlinkPointerDown) return;
+                    if (window.__multiPanelBlinkHoldUntil && Date.now() < window.__multiPanelBlinkHoldUntil) return;
+                } catch (_) { }
+                const nextInfo = _getBlinkEligibleStripInfo();
+                const hs = nextInfo ? nextInfo.holders : null;
+                if (!nextInfo || !hs) {
+                    setBlinkEnabled(false);
+                    return;
+                }
+                // If holders changed, restore old then rebind
+                const prev = window.__multiPanelBlinkLastHolders || null;
+                const changed = !prev || !_sameHolderList(prev, hs);
+                if (changed) {
+                    try { _restoreBlinkStyles(window.__multiPanelBlinkLastInfo || prev); } catch (_) { }
+                }
+                window.__multiPanelBlinkLastHolders = hs;
+                window.__multiPanelBlinkLastInfo = nextInfo;
+                const n = (Array.isArray(hs) && hs.length) ? hs.length : 2;
+                window.__multiPanelBlinkIdx = (window.__multiPanelBlinkIdx + 1) % n;
+                // Only flip stacking order; avoid reflow/resizes on every blink tick.
+                _setBlinkTop(hs, window.__multiPanelBlinkIdx, { setActive: false });
+            } catch (_) { }
+        }, BLINK_INTERVAL_MS);
+    }
+
+    function updateBlinkVisibility() {
+        const btn = document.getElementById('multi-panel-blink');
+        if (!btn) return;
+        const info = _getBlinkEligibleStripInfo();
+        const eligible = !!(info && info.holders && info.holders.length >= 2);
+        btn.style.display = eligible ? 'flex' : 'none';
+        if (!eligible && window.__multiPanelBlinkEnabled) {
+            try { setBlinkEnabled(false); } catch (_) { }
+        }
+    }
+
     function updateWcsLockVisibility() {
         const btn = document.getElementById('multi-panel-wcs-lock');
         if (!btn) return;
@@ -951,6 +1474,7 @@
             btn.style.pointerEvents = 'none';
             btn.title = 'Add another panel to enable WCS sync';
         }
+        try { updateBlinkVisibility(); } catch (_) { }
     }
 
     function broadcastWcsLockState(enabled) {
@@ -1021,6 +1545,7 @@
         // Also create global close-panels button and WCS sync
         createClosePanelsFab();
         createWcsLockFab();
+        createBlinkFab();
         updateWcsLockVisibility();
     }
     function createClosePanelsFab() {
@@ -1285,6 +1810,14 @@
                                         }
                                     } catch (_) { }
                                 });
+                            } else if (type === 'neloura-blink-interaction') {
+                                // Pause blinking while the user is actively dragging/zooming in a pane.
+                                try {
+                                    if (!window.__multiPanelBlinkEnabled) return;
+                                    window.__multiPanelBlinkHoldUntil = Date.now() + BLINK_PAUSE_AFTER_INTERACTION_MS;
+                                    if (e.data && e.data.pointerDown === true) window.__multiPanelBlinkPointerDown = true;
+                                    if (e.data && e.data.pointerUp === true) window.__multiPanelBlinkPointerDown = false;
+                                } catch (_) { }
                             }
                         } catch (_) { }
                     }, true);
@@ -3093,6 +3626,7 @@
             grid.style.gridTemplateRows = 'repeat(1, 1fr)';
             grid.dataset.rows = '1';
             grid.dataset.cols = '2';
+            try { grid.dataset.layout = 'grid'; } catch (_) { }
             wrap.style.display = 'block';
             disableBaseViewerInteraction(true);
             setBaseViewerImageHidden(true);

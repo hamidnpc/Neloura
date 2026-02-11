@@ -13732,6 +13732,46 @@ if (window.parent && window.parent !== window) {
         if (!data) return;
         if (data.type === 'neloura-wcs-lock-state') {
             window.__wcsLockStateEnabled = !!data.enabled;
+        } else if (data.type === 'neloura-blink-state') {
+            // When blinking, the parent will swap panes rapidly; report interactions so the parent
+            // can pause swapping while the user is actively panning/zooming (for smooth dragging).
+            window.__paneBlinkEnabled = !!data.enabled;
+            try {
+                if (window.__paneBlinkEnabled) {
+                    // Install once.
+                    if (!window.__paneBlinkInteractionInstalled) {
+                        window.__paneBlinkInteractionInstalled = true;
+                        let lastSend = 0;
+                        const send = (extra) => {
+                            try {
+                                if (!window.__paneBlinkEnabled) return;
+                                const now = Date.now();
+                                if (!extra && now - lastSend < 90) return;
+                                lastSend = now;
+                                window.parent.postMessage({ type: 'neloura-blink-interaction', ...(extra || {}) }, '*');
+                            } catch (_) { }
+                        };
+                        // Pointer down/up signals (helps pause swap during drag)
+                        document.addEventListener('pointerdown', () => send({ pointerDown: true }), { capture: true });
+                        document.addEventListener('pointerup', () => send({ pointerUp: true }), { capture: true });
+                        document.addEventListener('pointercancel', () => send({ pointerUp: true }), { capture: true });
+                        // Viewer motion signals
+                        const v = window.tiledViewer || window.viewer;
+                        if (v && typeof v.addHandler === 'function') {
+                            const bump = () => send(null);
+                            v.addHandler('pan', bump);
+                            v.addHandler('zoom', bump);
+                            v.addHandler('animation', bump);
+                            v.addHandler('rotate', bump);
+                        }
+                    }
+                    // Notify parent immediately when enabled.
+                    try { window.parent.postMessage({ type: 'neloura-blink-interaction' }, '*'); } catch (_) { }
+                } else {
+                    // When disabled, release any "pointerDown" pause in parent.
+                    try { window.parent.postMessage({ type: 'neloura-blink-interaction', pointerUp: true }, '*'); } catch (_) { }
+                }
+            } catch (_) { }
         } else if (data.type === 'neloura-pane-active') {
             window.__wcsIsActivePane = !!data.active;
             if (data.active) {
