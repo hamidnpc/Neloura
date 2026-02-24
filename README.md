@@ -262,9 +262,10 @@ Important implications:
 Neloura was developed with the assistance of AI-based programming tools, including OpenAI ChatGPT, Google Gemini, and Anthropic Claude. These tools were used as interactive coding assistants for debugging, refactoring, implementation suggestions, and documentation drafting.
 
 ## Known Issues:
-- WCS readout errors: Some ALMA maps have issues displaying the correct x, y, and pixel values in the coordinate display panel located at the top left.
+- WCS display issue: For some images (e.g., JWST data downloaded from MAST), the image does not align with the WCS coordinates, and the image appears rotated.
+- WCS readout errors: Some ALMA maps display incorrect x, y, and pixel values in the coordinate readout panel located in the top-left corner.
 - WCS lock inconsistency: When WCS locking is enabled, galaxies may not always zoom into the same region. In some cases, the view mirrors a different part of the galaxy. Refreshing the browser may resolve these issues in some cases.
-
+- Peak finder performance: For very large images, choosing a low RMS threshold causes the peak finder to take a very long time to identify sources.
 
 ## Citation
 
