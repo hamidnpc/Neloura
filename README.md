@@ -140,7 +140,7 @@ Or on `neloura.com`:
 ### Quick Start Guide
 
 1. **Load a FITS image**: Use the file browser to select and load your astronomical image
-2. **Upload catalogs**: Drag and drop FITS catalogs or CSV files with source coordinates
+2. **Upload catalogs**: Drag and drop FITS catalogs files with source coordinates
 3. **Generate visualizations**: Create RGB composites or SED plots for selected objects
 4. **Export results**: Download generated plots and analysis results
 
