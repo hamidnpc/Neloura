@@ -6813,7 +6813,20 @@ async def cube_overview(
     # Build a temporary generator to reuse the existing overview pipeline (colormap/scaling)
     gen = SimpleTileGenerator(str(full_path), int(hdu_index), image_data=slice2d)
     try:
-        _apply_display_settings_to_generator(gen, _get_session_display_settings(session_data))
+        # IMPORTANT: Previews must NOT inherit the viewer's dynamic range.
+        # Always use preview defaults (grayscale + auto min/max).
+        gen.color_map = 'grayscale'
+        gen.scaling_function = 'asinh'
+        gen.invert_colormap = False
+        try:
+            gen.min_value = None
+            gen.max_value = None
+        except Exception:
+            pass
+        try:
+            gen._update_colormap_lut()
+        except Exception:
+            pass
         gen.ensure_overview_generated()
         if not gen.overview_image:
             raise HTTPException(status_code=404, detail="Overview not available")
@@ -8053,37 +8066,22 @@ async def fits_preview(
         except Exception:
             pass
 
-        # Choose display settings (preview-friendly defaults if user hasn't set min/max)
-        settings = {}
-        try:
-            settings = _get_session_display_settings(session_data) or {}
-        except Exception:
-            settings = {}
+        # IMPORTANT: Previews must NOT inherit the viewer's dynamic range.
+        # Always use preview defaults (grayscale + auto min/max).
+        color_map = "grayscale"
+        scaling_function = "asinh"
+        invert_colormap = False
 
-        # Allow per-request overrides for tooltip/inset UIs
-        color_map = (color_map or settings.get("color_map") or "grayscale")
-        scaling_function = (scaling_function or settings.get("scaling_function") or "asinh")
-        if invert_colormap is None:
-            invert_colormap = bool(settings.get("invert_colormap")) if "invert_colormap" in settings else False
-
-        has_user_range = (
-            (min_value is not None and max_value is not None) or
-            (settings.get("min_value") is not None and settings.get("max_value") is not None)
-        )
-        if min_value is not None and max_value is not None:
-            vmin = float(min_value)
-            vmax = float(max_value)
-        elif settings.get("min_value") is not None and settings.get("max_value") is not None:
-            vmin = float(settings.get("min_value"))
-            vmax = float(settings.get("max_value"))
+        # Auto stretch on finite values (robust; avoids NaNs/inf skewing percentiles).
+        finite = small[np.isfinite(small)]
+        if finite.size == 0:
+            vmin, vmax = 0.0, 1.0
         else:
-            # Brighter preview stretch: 1–99 percentile on the small image
-            valid = np.nan_to_num(small, nan=0.0, posinf=0.0, neginf=0.0)
-            vmin = float(np.percentile(valid, 1.0))
-            vmax = float(np.percentile(valid, 99.0))
+            vmin = float(np.percentile(finite, 1.0))
+            vmax = float(np.percentile(finite, 99.0))
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
-                vmin = float(np.nanmin(valid))
-                vmax = float(np.nanmax(valid))
+                vmin = float(np.nanmin(finite))
+                vmax = float(np.nanmax(finite))
                 if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
                     vmin, vmax = 0.0, 1.0
 
