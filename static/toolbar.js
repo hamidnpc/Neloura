@@ -883,7 +883,9 @@
 // ---------------- Multi-Panel (DS9-like) Basic UI via iframes ----------------
 (function () {
     const BLINK_INTERVAL_MS = 650;
-    const BLINK_PAUSE_AFTER_INTERACTION_MS = 70;
+    const BLINK_PAUSE_AFTER_INTERACTION_MS = 80;
+    const FADE_INACTIVE_OPACITY_DEFAULT = 0.7;
+    const FADE_TIME_DEFAULT_MS = 650;
 
     function createWcsLockFab() {
         try { if (window.self !== window.top) return; } catch (_) { }
@@ -940,6 +942,10 @@
     function createBlinkFab() {
         try { if (window.self !== window.top) return; } catch (_) { }
         if (document.getElementById('multi-panel-blink')) return;
+        // Default to blink mode; no mode picker UI.
+        try { window.__multiPanelEyeMode = 'blink'; } catch (_) { }
+        try { if (!window.__multiPanelFadeTimeMs) window.__multiPanelFadeTimeMs = FADE_TIME_DEFAULT_MS; } catch (_) { }
+        try { if (typeof window.__multiPanelFadeAlpha !== 'number') window.__multiPanelFadeAlpha = FADE_INACTIVE_OPACITY_DEFAULT; } catch (_) { }
         const btn = document.createElement('button');
         btn.id = 'multi-panel-blink';
         btn.title = 'Blink between panes (strip layouts: 1×N or N×1)';
@@ -966,15 +972,31 @@
             transition: 'background 0.2s ease, opacity 0.2s ease, transform 0.12s ease'
         });
         btn.textContent = '👁';
+
+        // Remove legacy eye-mode picker menu if it exists.
+        try { const m = document.getElementById('multi-panel-eye-menu'); if (m && m.parentNode) m.parentNode.removeChild(m); } catch (_) { }
+
+        const isEyeEnabled = () => {
+            try { return !!(window.__multiPanelBlinkEnabled || window.__multiPanelFadeEnabled); } catch (_) { return false; }
+        };
+
         btn.addEventListener('mouseenter', () => {
-            if (!window.__multiPanelBlinkEnabled) btn.style.background = '#465065';
+            if (!isEyeEnabled()) btn.style.background = '#465065';
         });
         btn.addEventListener('mouseleave', () => {
-            if (!window.__multiPanelBlinkEnabled) btn.style.background = '#374151';
+            if (!isEyeEnabled()) btn.style.background = '#374151';
         });
+
         btn.addEventListener('click', () => {
-            const want = !window.__multiPanelBlinkEnabled;
-            setBlinkEnabled(want);
+            const enabled = isEyeEnabled();
+            if (enabled) {
+                try { if (window.__multiPanelFadeEnabled) setFadeEnabled(false); } catch (_) { }
+                try { if (window.__multiPanelBlinkEnabled) setBlinkEnabled(false); } catch (_) { }
+                return;
+            }
+            try { window.__multiPanelEyeMode = 'blink'; } catch (_) { }
+            try { if (window.__multiPanelFadeEnabled) setFadeEnabled(false); } catch (_) { }
+            setBlinkEnabled(true);
         });
         document.body.appendChild(btn);
         updateBlinkVisibility();
@@ -1445,14 +1467,321 @@
         }, BLINK_INTERVAL_MS);
     }
 
+    function setFadeEnabled(enabled, opts) {
+        const options = opts || {};
+        const want = !!enabled;
+        const info = _getBlinkEligibleStripInfo();
+        const holders = info ? info.holders : null;
+        const btn = document.getElementById('multi-panel-blink');
+
+        const getFadeMs = () => {
+            try {
+                const v = parseInt(window.__multiPanelFadeTimeMs || FADE_TIME_DEFAULT_MS, 10);
+                return (isFinite(v) && v >= 150) ? v : FADE_TIME_DEFAULT_MS;
+            } catch (_) { return FADE_TIME_DEFAULT_MS; }
+        };
+
+        const clearTimers = () => {
+            try { if (window.__multiPanelFadeTimer) clearTimeout(window.__multiPanelFadeTimer); } catch (_) { }
+            try { if (window.__multiPanelFadePhaseTimer) clearTimeout(window.__multiPanelFadePhaseTimer); } catch (_) { }
+            window.__multiPanelFadeTimer = null;
+            window.__multiPanelFadePhaseTimer = null;
+        };
+
+        const snapshotFadePrev = (hs) => {
+            (hs || []).forEach(h => {
+                try {
+                    if (!h.__fadePrev) {
+                        h.__fadePrev = { opacity: h.style.opacity, transition: h.style.transition };
+                    }
+                } catch (_) { }
+            });
+        };
+
+        const restoreFadePrev = (hs) => {
+            (hs || []).forEach(h => {
+                try {
+                    const prev = h.__fadePrev || null;
+                    if (prev) {
+                        h.style.opacity = prev.opacity || '';
+                        h.style.transition = prev.transition || '';
+                    } else {
+                        h.style.opacity = '';
+                        h.style.transition = '';
+                    }
+                    delete h.__fadePrev;
+                } catch (_) { }
+            });
+        };
+
+        const setAllOpacity = (hs, activeIdx, opacityActive, opacityInactive, durMs) => {
+            (hs || []).forEach((h, idx) => {
+                try {
+                    h.style.transition = `opacity ${durMs}ms ease`;
+                    h.style.opacity = (idx === activeIdx) ? String(opacityActive) : String(opacityInactive);
+                } catch (_) { }
+            });
+        };
+
+        const ensureOverlay = (infoObj, idx) => {
+            // Reuse the SAME full-size overlay setup as Blink (no changes to blink logic).
+            // We will control visibility via opacity sequencing (fade-to-black then fade-in).
+            try { _applyBlinkStyles(infoObj, idx); } catch (_) { }
+        };
+
+        const tellPanesBlinkState = (hs, on) => {
+            try {
+                (hs || []).forEach(h => {
+                    try {
+                        const f = h && h.querySelector ? h.querySelector('iframe') : null;
+                        const w = f && f.contentWindow;
+                        if (w && typeof w.postMessage === 'function') w.postMessage({ type: 'neloura-blink-state', enabled: !!on }, '*');
+                    } catch (_) { }
+                });
+            } catch (_) { }
+        };
+
+        if (!holders || holders.length < 2) {
+            clearTimers();
+            window.__multiPanelFadeEnabled = false;
+            try { _setTopCatalogOverlayControlsHidden(false); } catch (_) { }
+            try {
+                restoreFadePrev(window.__multiPanelFadeLastHolders || []);
+                _restoreBlinkStyles(window.__multiPanelFadeLastInfo || (window.__multiPanelFadeLastHolders || []));
+            } catch (_) { }
+            window.__multiPanelFadeLastHolders = null;
+            window.__multiPanelFadeLastInfo = null;
+            updateBlinkVisibility();
+            return;
+        }
+
+        if (!want) {
+            clearTimers();
+            window.__multiPanelFadeEnabled = false;
+            try { _setTopCatalogOverlayControlsHidden(false); } catch (_) { }
+            try { tellPanesBlinkState(holders, false); } catch (_) { }
+            try { restoreFadePrev(holders); } catch (_) { }
+            try { _restoreBlinkStyles(info || holders); } catch (_) { }
+            window.__multiPanelFadeLastHolders = null;
+            window.__multiPanelFadeLastInfo = null;
+            if (btn && !window.__multiPanelBlinkEnabled) {
+                btn.dataset.enabled = '0';
+                btn.style.background = '#374151';
+                btn.style.transform = '';
+                btn.title = 'Blink between panes (strip layouts: 1×N or N×1)';
+            }
+            return;
+        }
+
+        // Enable fade (full-size overlay, CROSSFADE overlap).
+        // We keep the outgoing pane visible at a low alpha while the next pane fades in on top.
+        window.__multiPanelFadeEnabled = true;
+        window.__multiPanelFadeLastHolders = holders;
+        window.__multiPanelFadeLastInfo = info;
+        try { _setTopCatalogOverlayControlsHidden(true); } catch (_) { }
+        try { tellPanesBlinkState(holders, true); } catch (_) { }
+        try {
+            if (typeof window.__multiPanelBlinkIdx !== 'number') window.__multiPanelBlinkIdx = 0;
+            window.__multiPanelBlinkIdx = Math.max(0, Math.min(window.__multiPanelBlinkIdx, holders.length - 1));
+        } catch (_) { window.__multiPanelBlinkIdx = 0; }
+
+        // Overlay setup + initial visibility:
+        // Fade mode is a 2-layer overlay:
+        // - base pane stays ALWAYS visible at alpha
+        // - top pane is shown at 1.0 and cycles (fades) above the base
+        snapshotFadePrev(holders);
+        ensureOverlay(info, window.__multiPanelBlinkIdx);
+        try {
+            const n = holders.length;
+            const baseIdx = Math.max(0, Math.min(window.__multiPanelBlinkIdx || 0, n - 1));
+            let topIdx = (baseIdx + 1) % n;
+            if (topIdx === baseIdx) topIdx = (topIdx + 1) % n;
+            try { window.__multiPanelFadeBaseIdxFixed = baseIdx; } catch (_) { }
+            try { window.__multiPanelFadeTopIdx = topIdx; } catch (_) { }
+            try { window.__multiPanelBlinkIdx = topIdx; } catch (_) { }
+            showTwoLayers(holders, baseIdx, topIdx, getFadeAlpha());
+        } catch (_) { }
+
+        if (btn) {
+            btn.dataset.enabled = '1';
+            btn.style.background = '#F59E0B';
+            btn.style.transform = 'scale(1.02)';
+            btn.title = 'Fade enabled (click to stop)';
+        }
+
+        const schedule = (delayMs) => {
+            try { if (window.__multiPanelFadeTimer) clearTimeout(window.__multiPanelFadeTimer); } catch (_) { }
+            window.__multiPanelFadeTimer = setTimeout(tick, delayMs);
+        };
+
+        const getFadeAlpha = () => {
+            try {
+                const a = (typeof window.__multiPanelFadeAlpha === 'number') ? window.__multiPanelFadeAlpha : FADE_INACTIVE_OPACITY_DEFAULT;
+                return (isFinite(a) && a > 0 && a < 1) ? a : FADE_INACTIVE_OPACITY_DEFAULT;
+            } catch (_) {
+                return FADE_INACTIVE_OPACITY_DEFAULT;
+            }
+        };
+
+        const showTwoLayers = (hs, baseIdx, topIdx, alpha) => {
+            if (!hs || hs.length < 2) return;
+            hs.forEach((h, idx) => {
+                try {
+                    h.style.transition = 'opacity 0ms';
+                    h.style.opacity = '0';
+                    h.style.pointerEvents = 'none';
+                    h.style.zIndex = '10';
+                } catch (_) { }
+            });
+            try {
+                const base = hs[baseIdx];
+                if (base) {
+                    base.style.zIndex = '20';
+                    base.style.opacity = String(alpha);
+                    base.style.pointerEvents = 'none';
+                }
+            } catch (_) { }
+            try {
+                const top = hs[topIdx];
+                if (top) {
+                    top.style.zIndex = '30';
+                    top.style.opacity = '1';
+                    top.style.pointerEvents = 'auto';
+                }
+            } catch (_) { }
+        };
+
+        const nextTopIndex = (n, curTop, baseIdx) => {
+            if (!n || n < 2) return 0;
+            let next = (curTop + 1) % n;
+            if (next === baseIdx) next = (next + 1) % n;
+            return next;
+        };
+
+        const crossFadeTopOnly = (hs, baseIdx, fromTopIdx, toTopIdx) => {
+            if (!hs || hs.length < 2) return;
+            if (fromTopIdx === toTopIdx) return;
+            const dur = Math.min(1600, Math.max(140, getFadeMs()));
+            const alpha = getFadeAlpha();
+            const base = hs[baseIdx];
+            const fromTop = hs[fromTopIdx];
+            const toTop = hs[toTopIdx];
+            if (!base || !fromTop || !toTop) return;
+
+            // Base stays ALWAYS visible (never fades to 0).
+            try {
+                base.style.zIndex = '20';
+                base.style.pointerEvents = 'none';
+                base.style.transition = 'opacity 0ms';
+                base.style.opacity = String(alpha);
+            } catch (_) { }
+
+            // Prepare incoming top above outgoing top
+            try {
+                toTop.style.zIndex = '31';
+                toTop.style.pointerEvents = 'none';
+                toTop.style.transition = `opacity ${dur}ms ease`;
+                toTop.style.opacity = '0';
+            } catch (_) { }
+
+            // Outgoing top fades out, incoming fades in
+            try {
+                fromTop.style.zIndex = '30';
+                fromTop.style.pointerEvents = 'none';
+                fromTop.style.transition = `opacity ${dur}ms ease`;
+                fromTop.style.opacity = '1';
+            } catch (_) { }
+
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    try { fromTop.style.opacity = '0'; } catch (_) { }
+                    try { toTop.style.opacity = '1'; } catch (_) { }
+                });
+            });
+
+            // Commit: keep base + new top
+            try { if (window.__multiPanelFadePhaseTimer) clearTimeout(window.__multiPanelFadePhaseTimer); } catch (_) { }
+            window.__multiPanelFadePhaseTimer = setTimeout(() => {
+                try {
+                    if (!window.__multiPanelFadeEnabled) return;
+                    try {
+                        fromTop.style.transition = 'opacity 0ms';
+                        fromTop.style.opacity = '0';
+                        fromTop.style.zIndex = '10';
+                        fromTop.style.pointerEvents = 'none';
+                    } catch (_) { }
+                    try {
+                        toTop.style.zIndex = '30';
+                        toTop.style.pointerEvents = 'auto';
+                        toTop.style.opacity = '1';
+                    } catch (_) { }
+                } catch (_) { }
+            }, dur + 40);
+        };
+
+        const tick = () => {
+            try {
+                if (!window.__multiPanelFadeEnabled) return;
+                // Pause during interaction
+                try {
+                    if (window.__multiPanelBlinkPointerDown) { schedule(120); return; }
+                    if (window.__multiPanelBlinkHoldUntil && Date.now() < window.__multiPanelBlinkHoldUntil) { schedule(140); return; }
+                } catch (_) { }
+
+                const nextInfo = _getBlinkEligibleStripInfo();
+                const hs = nextInfo ? nextInfo.holders : null;
+                if (!nextInfo || !hs || hs.length < 2) {
+                    setFadeEnabled(false);
+                    return;
+                }
+                const prevHs = window.__multiPanelFadeLastHolders || null;
+                const changed = !prevHs || !_sameHolderList(prevHs, hs);
+                if (changed) {
+                    try { restoreFadePrev(prevHs || []); } catch (_) { }
+                    try { _restoreBlinkStyles(window.__multiPanelFadeLastInfo || (prevHs || [])); } catch (_) { }
+                    window.__multiPanelFadeLastHolders = hs;
+                    window.__multiPanelFadeLastInfo = nextInfo;
+                    try { window.__multiPanelBlinkIdx = 0; } catch (_) { }
+                    snapshotFadePrev(hs);
+                    ensureOverlay(nextInfo, window.__multiPanelBlinkIdx || 0);
+                    try {
+                        const n2 = hs.length;
+                        const baseIdx2 = 0;
+                        const topIdx2 = nextTopIndex(n2, baseIdx2, baseIdx2);
+                        try { window.__multiPanelFadeBaseIdxFixed = baseIdx2; } catch (_) { }
+                        try { window.__multiPanelFadeTopIdx = topIdx2; } catch (_) { }
+                        try { window.__multiPanelBlinkIdx = topIdx2; } catch (_) { }
+                        showTwoLayers(hs, baseIdx2, topIdx2, getFadeAlpha());
+                    } catch (_) { }
+                    schedule(getFadeMs());
+                    return;
+                }
+
+                const ms = getFadeMs();
+                const baseIdx = (typeof window.__multiPanelFadeBaseIdxFixed === 'number') ? window.__multiPanelFadeBaseIdxFixed : 0;
+                const curTop = (typeof window.__multiPanelFadeTopIdx === 'number') ? window.__multiPanelFadeTopIdx : Math.max(0, Math.min(window.__multiPanelBlinkIdx || 0, hs.length - 1));
+                const nextTop = nextTopIndex(hs.length, curTop, baseIdx);
+                crossFadeTopOnly(hs, baseIdx, curTop, nextTop);
+                try { window.__multiPanelFadeTopIdx = nextTop; } catch (_) { }
+                try { window.__multiPanelBlinkIdx = nextTop; } catch (_) { }
+                schedule(ms);
+            } catch (_) { }
+        };
+
+        // Start / restart timer
+        clearTimers();
+        schedule(options.restartTimer ? 20 : getFadeMs());
+    }
+
     function updateBlinkVisibility() {
         const btn = document.getElementById('multi-panel-blink');
         if (!btn) return;
         const info = _getBlinkEligibleStripInfo();
         const eligible = !!(info && info.holders && info.holders.length >= 2);
         btn.style.display = eligible ? 'flex' : 'none';
-        if (!eligible && window.__multiPanelBlinkEnabled) {
-            try { setBlinkEnabled(false); } catch (_) { }
+        if (!eligible) {
+            try { if (window.__multiPanelFadeEnabled) setFadeEnabled(false); } catch (_) { }
+            try { if (window.__multiPanelBlinkEnabled) setBlinkEnabled(false); } catch (_) { }
         }
     }
 
@@ -1813,7 +2142,7 @@
                             } else if (type === 'neloura-blink-interaction') {
                                 // Pause blinking while the user is actively dragging/zooming in a pane.
                                 try {
-                                    if (!window.__multiPanelBlinkEnabled) return;
+                                    if (!window.__multiPanelBlinkEnabled && !window.__multiPanelFadeEnabled) return;
                                     window.__multiPanelBlinkHoldUntil = Date.now() + BLINK_PAUSE_AFTER_INTERACTION_MS;
                                     if (e.data && e.data.pointerDown === true) window.__multiPanelBlinkPointerDown = true;
                                     if (e.data && e.data.pointerUp === true) window.__multiPanelBlinkPointerDown = false;

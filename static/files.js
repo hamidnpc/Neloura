@@ -470,6 +470,10 @@ function loadLocalFitsFile(file) {
 
 // Enhanced HDU selector with search functionality and close button
 function createHduSelectorPopup(hduList, filepath) {
+    // Prefer the Time Machine style selector if available (loaded via static/hdu_time_machine.js).
+    if (typeof window.createTimeMachineHduSelectorPopup === 'function') {
+        try { return window.createTimeMachineHduSelectorPopup(hduList, filepath); } catch (_) {}
+    }
     const popupDoc = (typeof getHduPopupDocument === 'function') ? getHduPopupDocument() : document;
     const createEl = (tag) => popupDoc.createElement(tag);
     const removePopup = () => {
