@@ -1,27 +1,37 @@
 cff-version: 1.2.0
 title: "Neloura: A Web-Based Astronomical Image Analysis and Visualization Platform"
-message: "If you use Neloura in academic research, please cite the software DOI below."
+message: "If you use Neloura in academic research, please cite the paper below."
 type: software
 
 authors:
-
-* family-names: Hassani
-  given-names: Hamid
-  affiliation: University of Alberta
+  - family-names: Hassani
+    given-names: Hamid
+    affiliation: University of Alberta
 
 identifiers:
+  - type: doi
+    value: 10.5281/zenodo.18381747
 
-* type: doi
-  value: 10.5281/zenodo.18381747
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Hassani
+      given-names: Hamid
+  title: "The Hidden Life of Stars: Embedded Beginnings to AGB Endings in the PHANGS-JWST Sample. I. Catalog of Mid-IR Sources"
+  year: 2025
+  journal: "arXiv e-prints"
+  identifiers:
+    - type: doi
+      value: 10.48550/arXiv.2509.16459
 
-repository-code: [https://github.com/hamidnpc/neloura](https://github.com/hamidnpc/neloura)
-url: [https://neloura.com](https://neloura.com)
+repository-code: https://github.com/hamidnpc/neloura
+url: https://neloura.com
 
 abstract: >
-Neloura is a browser-based astronomical FITS image visualization and catalog
-analysis platform designed for multi-wavelength data exploration. It provides
-interactive image viewing, catalog overlay, photometry, and publication-quality
-visualization.
+  Neloura is a browser-based astronomical FITS image visualization and catalog
+  analysis platform designed for multi-wavelength data exploration. It provides
+  interactive image viewing, catalog overlay, photometry, and publication-quality
+  visualization.
 
 license: BSD-3-Clause
 version: 1.0.0
