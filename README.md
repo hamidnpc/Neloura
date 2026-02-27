@@ -1,4 +1,3 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18381747.svg)](https://doi.org/10.5281/zenodo.18381747)
 [![ADS](https://img.shields.io/badge/ADS-Paper-orange)](https://ui.adsabs.harvard.edu/abs/2025arXiv250916459H/abstract)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/Launch-Neloura.com-2ea44f)](https://neloura.com)
