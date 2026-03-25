@@ -6,7 +6,7 @@
 
 
 # Neloura
-<img src="static/logo/logo.png" alt="Neloura Logo" width="200"/>
+<img src="static/logo/logo.png" alt="Neloura Logo" width="800"/>
 
 **A modern, web-based astronomical image analysis and visualization platform.  
 Check the server-based app [here](https://neloura.com)**
