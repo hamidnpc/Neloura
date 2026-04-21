@@ -1370,6 +1370,8 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/defaults",
     "/settings/me",
     "/settings/profiles",
+    "/ws/system-stats"
+
 })
 
 # Serve simple static HTML pages from repo root (no session required).
