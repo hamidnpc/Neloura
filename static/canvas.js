@@ -1388,6 +1388,68 @@ function __catalogScreenPlacementForOverlay(activeOsViewer, tiledImage, hasTiled
     return { center, radius: Math.max(1, radius) };
 }
 
+function __catalogViewportImageRect(activeOsViewer, tiledImage, padImagePx = 128) {
+    try {
+        if (!activeOsViewer || !activeOsViewer.viewport || !tiledImage
+            || typeof tiledImage.viewportToImageRectangle !== 'function') {
+            return null;
+        }
+        const vb = activeOsViewer.viewport.getBounds(true);
+        const imgRect = tiledImage.viewportToImageRectangle(vb);
+        if (!imgRect) return null;
+        const pad = Number.isFinite(padImagePx) ? Math.max(0, padImagePx) : 128;
+        return {
+            left: imgRect.x - pad,
+            top: imgRect.y - pad,
+            right: imgRect.x + imgRect.width + pad,
+            bottom: imgRect.y + imgRect.height + pad
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function __catalogPointInImageRect(x, y, rect) {
+    if (!rect) return true;
+    return Number.isFinite(x) && Number.isFinite(y)
+        && x >= rect.left && x <= rect.right
+        && y >= rect.top && y <= rect.bottom;
+}
+
+function __catalogViewportCandidateIndices(activeOsViewer, tiledImage, catalogData, padImagePx = 128) {
+    try {
+        const grid = window.__catalogSpatialGrid;
+        if (!grid || !grid.cells || typeof grid.cellSize !== 'number' || !tiledImage
+            || typeof tiledImage.viewportToImageRectangle !== 'function') {
+            return null;
+        }
+        const rect = __catalogViewportImageRect(activeOsViewer, tiledImage, padImagePx);
+        if (!rect) return null;
+        const cs = grid.cellSize;
+        const minCx = Math.floor(rect.left / cs);
+        const maxCx = Math.floor(rect.right / cs);
+        const minCy = Math.floor(rect.top / cs);
+        const maxCy = Math.floor(rect.bottom / cs);
+        const out = [];
+        const seen = new Set();
+        for (let cx = minCx; cx <= maxCx; cx += 1) {
+            for (let cy = minCy; cy <= maxCy; cy += 1) {
+                const arr = grid.cells.get(`${cx},${cy}`);
+                if (!arr || !arr.length) continue;
+                for (let i = 0; i < arr.length; i += 1) {
+                    const idx = Number(arr[i]);
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= catalogData.length || seen.has(idx)) continue;
+                    seen.add(idx);
+                    out.push(idx);
+                }
+            }
+        }
+        return out.length ? out : null;
+    } catch (_) {
+        return null;
+    }
+}
+
 function __normalizeCatalogLabelHex(hex, fallback) {
     const fb = fallback || '#f8fafc';
     if (typeof hex !== 'string') return fb;
@@ -2046,13 +2108,19 @@ function canvasUpdateOverlay(opts = null) {
                         }
                     }
 
-                    // Draw labels during pan (preview) too — avoids empty canvas between frames.
-                    // Cap harder in preview to keep interaction smooth; full pass uses a higher cap.
+                    // Draw every label currently inside the viewport, including during pan.
+                    // Do not cap by catalog order; otherwise one side of a large view can lose labels.
                     if (hasTiledImageMethod || !hasMultipleImages) {
-                        const MAX_LABEL_SOURCES = isPreview ? 1000 : 3500;
-                        let numLabeled = 0;
-                        const previewFastDrawLabels = ((catalogData && catalogData.length) || 0) > 20000;
-                        for (let i = 0; i < catalogData.length; i += 1) {
+                        const imageRect = hasTiledImageMethod
+                            ? __catalogViewportImageRect(activeOsViewer, tiledImage, isPreview ? 256 : 384)
+                            : null;
+                        const labelCandidateIndices = hasTiledImageMethod
+                            ? __catalogViewportCandidateIndices(activeOsViewer, tiledImage, catalogData, isPreview ? 256 : 384)
+                            : null;
+                        const total = (catalogData && catalogData.length) || 0;
+                        const iterCount = Array.isArray(labelCandidateIndices) ? labelCandidateIndices.length : total;
+                        for (let k = 0; k < iterCount; k += 1) {
+                            const i = Array.isArray(labelCandidateIndices) ? labelCandidateIndices[k] : k;
                             const s = catalogData[i];
                             if (!s) continue;
                             if (!passesBooleanFilters(s)) continue;
@@ -2091,6 +2159,7 @@ function canvasUpdateOverlay(opts = null) {
                                 } catch (_) {}
                             }
                             if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) continue;
+                            if (!__catalogPointInImageRect(imgX, imgY, imageRect)) continue;
 
                             const pl = __catalogScreenPlacementForOverlay(activeOsViewer, tiledImage, hasTiledImageMethod, hasMultipleImages, {
                                 x: imgX,
@@ -2098,9 +2167,7 @@ function canvasUpdateOverlay(opts = null) {
                                 radius_pixels: s.radius_pixels
                             });
                             if (!pl) continue;
-                            __drawCatalogLabelsAtSource(ctx2, pl.center, pl.radius, s, previewFastDrawLabels);
-                            numLabeled += 1;
-                            if (numLabeled >= MAX_LABEL_SOURCES) break;
+                            __drawCatalogLabelsAtSource(ctx2, pl.center, pl.radius, s, false);
                         }
                     }
 
@@ -2450,6 +2517,7 @@ function canvasUpdateOverlay(opts = null) {
             // 2x2 pixel marker
             ctx.fillRect(center.x - 1, center.y - 1, 2, 2);
             ctx.globalAlpha = 1.0;
+            __drawCatalogLabelsAtSource(ctx, center, radius, source, false);
             return;
         }
 
