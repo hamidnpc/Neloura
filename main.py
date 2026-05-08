@@ -403,7 +403,7 @@ RGB_FILTERS = {
 }
 
 TILE_CACHE_MAX_SIZE = int(os.getenv('TILE_CACHE_MAX_SIZE', '300'))
-SED_HST_FILTERS = ['F275W','NUV', 'F336W','U', 'F438W','B', 'F555W','V', 'F814W','I']
+SED_HST_FILTERS = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']
 SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
 SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
 
@@ -575,6 +575,45 @@ SED_CIGALE_COLUMN_PATTERNS = {
 SED_FILTER_WAVELENGTHS = [0.275, 0.336, 0.438, 0.555, 0.814, 2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3, 21]
 SED_FILTER_NAMES = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W', 'F200W', 'F300M', 'F335M', 'F360M', 'F770W', 'F1000W', 'F1130W', 'F2100W']
 SED_FILTER_WAVELENGTHS_EXTENDED = [0.275, 0.336, 0.438, 0.555, 0.814, 2.0, 3.0, 3.35, 3.6, 7.7, 10.0, 11.3, 11.4, 11.5, 21, 21.5]
+SED_FILTER_WAVELENGTH_BY_NAME = {
+    'F275W': 0.275, 'NUV': 0.275,
+    'F336W': 0.336, 'U': 0.336,
+    'F438W': 0.438, 'F435W': 0.438, 'B': 0.438,
+    'F555W': 0.555, 'V': 0.555,
+    'F814W': 0.814, 'I': 0.814,
+    'F200W': 2.0,
+    'F300M': 3.0,
+    'F335M': 3.35,
+    'F360M': 3.6,
+    'F770W': 7.7,
+    'F1000W': 10.0,
+    'F1130W': 11.3,
+    'F2100W': 21.0,
+}
+SED_FILTER_COLUMN_ALIASES = {
+    'F275W': ['NUV'],
+    'NUV': ['F275W'],
+    'F336W': ['U'],
+    'U': ['F336W'],
+    'F438W': ['B', 'F435W'],
+    'F435W': ['B', 'F438W'],
+    'B': ['F438W', 'F435W'],
+    'F555W': ['V'],
+    'V': ['F555W'],
+    'F814W': ['I'],
+    'I': ['F814W'],
+}
+SED_CANONICAL_FILTER_NAME = {
+    'NUV': 'F275W',
+    'U': 'F336W',
+    'B': 'F438W',
+    'V': 'F555W',
+    'I': 'F814W',
+    'F435W': 'F438W',
+}
+SED_CUTOUT_WAVELENGTH_BY_FILTER = {
+    name: wave for name, wave in zip(SED_FILTER_NAMES, SED_FILTER_WAVELENGTHS_EXTENDED[:len(SED_FILTER_NAMES)])
+}
 
 # Filter categories
 
@@ -615,6 +654,9 @@ SED_RGB_BBOX_SIZE = 0.62
 
 # X-axis offsets for cutout positioning
 SED_X_OFFSETS = [0.002, 0.02, 0.023, 0.032, 0.009, -0.07, -0.083, -0.045, 0.001, -0.10, -0.0955, -0.06, 0.007, -0.7, -1, -0.885]
+SED_CUTOUT_X_OFFSET_BY_FILTER = {
+    name: offset for name, offset in zip(SED_FILTER_NAMES, SED_X_OFFSETS[:len(SED_FILTER_NAMES)])
+}
 
 # RGB composite positioning
 SED_RGB_NIRCAM_X = -0.17
@@ -700,7 +742,17 @@ SED_FILE_SEARCH_PATTERNS = [
 ]
 SED_FILTER_ALIASES = {
     # Use lowercase needles here; base filter name will be added automatically
-    'F438W': ['f435w'],
+    'F275W': ['nuv'],
+    'NUV': ['f275w'],
+    'F336W': ['u'],
+    'U': ['f336w'],
+    'F438W': ['f435w', 'b'],
+    'F435W': ['f438w', 'b'],
+    'B': ['f438w', 'f435w'],
+    'F555W': ['v'],
+    'V': ['f555w'],
+    'F814W': ['i'],
+    'I': ['f814w'],
 }
 
 # Contour settings
@@ -1370,8 +1422,6 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/defaults",
     "/settings/me",
     "/settings/profiles",
-    "/ws/system-stats"
-
 })
 
 # Serve simple static HTML pages from repo root (no session required).
@@ -4023,6 +4073,7 @@ async def generate_sed_optimized(
             return JSONResponse(status_code=404, content={"error": "No object found near specified coordinates"})
         closest_obj = catalog_table[closest_idx]
         available_cols = set(catalog_table.colnames)
+        available_cols_by_lower = {str(c).lower(): c for c in catalog_table.colnames}
 
         # 3) Derive galaxy from the matched row (ignore JS galaxy_name)
         def _first_non_empty_string(*vals):
@@ -4105,109 +4156,165 @@ async def generate_sed_optimized(
 
         galaxy_tokens = build_galaxy_tokens(target_galaxy_name)
 
+        def _unique_preserve_order(values):
+            out = []
+            seen = set()
+            if isinstance(values, str):
+                values = [values]
+            for value in values:
+                if value is None:
+                    continue
+                s = str(value).strip()
+                if not s:
+                    continue
+                key = s.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(s)
+            return out
+
+        def sed_filter_variants(filter_name: str) -> list[str]:
+            key = str(filter_name or '').strip().upper()
+            aliases = SED_FILTER_COLUMN_ALIASES.get(key, [])
+            return _unique_preserve_order([filter_name, key] + aliases)
+
+        def resolve_sed_filter_wavelength(filter_name: str) -> float:
+            for variant in sed_filter_variants(filter_name):
+                wave = SED_FILTER_WAVELENGTH_BY_NAME.get(str(variant).upper())
+                if wave is not None:
+                    return float(wave)
+            return float('nan')
+
+        def canonical_sed_filter_name(filter_name: str) -> str:
+            key = str(filter_name or '').strip().upper()
+            return SED_CANONICAL_FILTER_NAME.get(key, key)
+
+        def resolve_sed_cutout_wavelength(filter_name: str, fallback: float) -> float:
+            canonical = canonical_sed_filter_name(filter_name)
+            return float(SED_CUTOUT_WAVELENGTH_BY_FILTER.get(canonical, fallback))
+
+        def resolve_sed_cutout_x_offset(filter_name: str, index: int) -> float:
+            canonical = canonical_sed_filter_name(filter_name)
+            if canonical in SED_CUTOUT_X_OFFSET_BY_FILTER:
+                return float(SED_CUTOUT_X_OFFSET_BY_FILTER[canonical])
+            return float(SED_X_OFFSETS[index]) if index < len(SED_X_OFFSETS) else 0.0
+
+        def resolve_existing_column(candidates):
+            for c in candidates:
+                key = str(c).lower()
+                if key in available_cols_by_lower:
+                    return available_cols_by_lower[key]
+            return None
+
+        def build_sed_flux_candidates(filter_name: str):
+            candidates = []
+            for variant in sed_filter_variants(filter_name):
+                candidates.extend([
+                    SED_FLUX_COLUMN_TEMPLATE.format(filter=variant),
+                    f"flux_{variant}",
+                    f"PHANGS_{variant}_mJy",
+                    f"PHANGS_{variant}_mJy_TOT",
+                ])
+            return _unique_preserve_order(candidates)
+
+        def build_sed_err_candidates(filter_name: str):
+            candidates = []
+            for variant in sed_filter_variants(filter_name):
+                candidates.extend([
+                    SED_ERR_COLUMN_TEMPLATE.format(filter=variant),
+                    f"er_flux_{variant}",
+                    f"PHANGS_{variant}_mJy_ERR",
+                    f"PHANGS_{variant}_mJy_TOT_ERR",
+                ])
+            return _unique_preserve_order(candidates)
+
+        def build_sed_bkg_candidates(filter_name: str):
+            return _unique_preserve_order(
+                SED_BKG_COLUMN_TEMPLATE.format(filter=variant)
+                for variant in sed_filter_variants(filter_name)
+            )
+
+        def resolve_cigale_flux(group: str, filter_name: str) -> float:
+            try:
+                for variant in sed_filter_variants(filter_name):
+                    for pattern in SED_CIGALE_COLUMN_PATTERNS.get(group, []):
+                        col = resolve_existing_column([pattern.format(filter=variant)])
+                        if col:
+                            return float(closest_obj[col]) * SED_CIGALE_MULTIPLIER
+            except Exception:
+                pass
+            return np.nan
+
+        def sed_filter_matches_any(filter_name: str, target_filters) -> bool:
+            filter_keys = {str(v).upper() for v in sed_filter_variants(filter_name)}
+            target_keys = set()
+            for target in target_filters:
+                target_keys.update(str(v).upper() for v in sed_filter_variants(target))
+            return bool(filter_keys & target_keys)
+
+        sed_hst_filters = _unique_preserve_order(SED_HST_FILTERS)
+        sed_nircam_filters = _unique_preserve_order(SED_JWST_NIRCAM_FILTERS)
+        sed_miri_filters = _unique_preserve_order(SED_JWST_MIRI_FILTERS)
+        sed_filter_names = sed_hst_filters + sed_nircam_filters + sed_miri_filters
+        sed_filter_wavelengths = [resolve_sed_filter_wavelength(f) for f in sed_filter_names]
+
         # 4) Gather fluxes
         sed_fluxes, sed_fluxes_err, sed_fluxes_cigale, sed_fluxes_total = [], [], [], []
 
-        for filter_name in SED_HST_FILTERS:
+        for filter_name in sed_hst_filters:
             # Resolve flux/error columns from multiple naming variants
-            flux_candidates = [
-                SED_FLUX_COLUMN_TEMPLATE.format(filter=filter_name),  # e.g., F555W
-                f"flux_{filter_name}",                               # e.g., flux_F555W
-                f"PHANGS_{filter_name}_mJy",
-                f"PHANGS_{filter_name}_mJy_TOT"
-             # e.g., PHANGS_F555W_mJy
-            ]
-            err_candidates = [
-                SED_ERR_COLUMN_TEMPLATE.format(filter=filter_name),   # e.g., F555W_err
-                f"er_flux_{filter_name}",                            # e.g., er_flux_F555W
-                f"PHANGS_{filter_name}_mJy_ERR",
-                f"PHANGS_{filter_name}_mJy_TOT_ERR"                      # e.g., PHANGS_F555W_mJy_ERR
-                                    # e.g., PHANGS_F555W_mJy_ERR
-            ]
-            flux_column = next((c for c in flux_candidates if c in available_cols), flux_candidates[0])
-            bkg_column = SED_BKG_COLUMN_TEMPLATE.format(filter=filter_name)
-            err_column = next((c for c in err_candidates if c in available_cols), err_candidates[0])
+            flux_candidates = build_sed_flux_candidates(filter_name)
+            err_candidates = build_sed_err_candidates(filter_name)
+            bkg_candidates = build_sed_bkg_candidates(filter_name)
+            flux_column = resolve_existing_column(flux_candidates)
+            bkg_column = resolve_existing_column(bkg_candidates)
+            err_column = resolve_existing_column(err_candidates)
 
-            flux_val = float(closest_obj[flux_column]) if flux_column in available_cols else np.nan
+            flux_val = float(closest_obj[flux_column]) if flux_column else np.nan
             sed_fluxes.append(flux_val)
-            if bkg_column in available_cols:
-                sed_fluxes_total.append(flux_val + float(closest_obj.get(bkg_column, np.nan)))
+            if bkg_column:
+                sed_fluxes_total.append(flux_val + float(closest_obj[bkg_column]))
             else:
                 sed_fluxes_total.append(np.nan)
-            sed_fluxes_err.append(float(closest_obj.get(err_column, np.nan)) if err_column in available_cols else np.nan)
-            cigale_val = np.nan
-            for pattern in [p.format(filter=filter_name) for p in SED_CIGALE_COLUMN_PATTERNS['HST']]:
-                if pattern in available_cols:
-                    cigale_val = float(closest_obj[pattern]) * SED_CIGALE_MULTIPLIER
-                    break
-            sed_fluxes_cigale.append(cigale_val)
+            sed_fluxes_err.append(float(closest_obj[err_column]) if err_column else np.nan)
+            sed_fluxes_cigale.append(resolve_cigale_flux('HST', filter_name))
 
-        for filter_name in SED_JWST_NIRCAM_FILTERS:
+        for filter_name in sed_nircam_filters:
             # Resolve flux/error columns from multiple naming variants
-            flux_candidates = [
-                SED_FLUX_COLUMN_TEMPLATE.format(filter=filter_name),
-                f"flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy",
-                f"PHANGS_{filter_name}_mJy_TOT",
+            flux_candidates = build_sed_flux_candidates(filter_name)
+            err_candidates = build_sed_err_candidates(filter_name)
+            bkg_candidates = build_sed_bkg_candidates(filter_name)
+            flux_column = resolve_existing_column(flux_candidates)
+            bkg_column = resolve_existing_column(bkg_candidates)
+            err_column = resolve_existing_column(err_candidates)
 
-            ]
-            err_candidates = [
-                SED_ERR_COLUMN_TEMPLATE.format(filter=filter_name),
-                f"er_flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy_ERR",
-                f"PHANGS_{filter_name}_mJy_TOT_ERR"
-            ]
-            flux_column = next((c for c in flux_candidates if c in available_cols), flux_candidates[0])
-            bkg_column = SED_BKG_COLUMN_TEMPLATE.format(filter=filter_name)
-            err_column = next((c for c in err_candidates if c in available_cols), err_candidates[0])
-
-            flux_val = float(closest_obj[flux_column]) if flux_column in available_cols else np.nan
+            flux_val = float(closest_obj[flux_column]) if flux_column else np.nan
             sed_fluxes.append(flux_val)
-            if bkg_column in available_cols:
-                sed_fluxes_total.append(flux_val + float(closest_obj.get(bkg_column, np.nan)))
+            if bkg_column:
+                sed_fluxes_total.append(flux_val + float(closest_obj[bkg_column]))
             else:
                 sed_fluxes_total.append(np.nan)
-            sed_fluxes_err.append(float(closest_obj.get(err_column, np.nan)) if err_column in available_cols else np.nan)
-            cigale_col = None
-            for pattern in [p.format(filter=filter_name) for p in SED_CIGALE_COLUMN_PATTERNS['NIRCAM']]:
-                if pattern in available_cols:
-                    cigale_col = pattern
-                    break
-            sed_fluxes_cigale.append((float(closest_obj.get(cigale_col, np.nan)) if cigale_col in available_cols else np.nan) * SED_CIGALE_MULTIPLIER)
+            sed_fluxes_err.append(float(closest_obj[err_column]) if err_column else np.nan)
+            sed_fluxes_cigale.append(resolve_cigale_flux('NIRCAM', filter_name))
 
-        for filter_name in SED_JWST_MIRI_FILTERS:
+        for filter_name in sed_miri_filters:
             # Resolve flux/error columns from multiple naming variants
-            flux_candidates = [
-                SED_FLUX_COLUMN_TEMPLATE.format(filter=filter_name),
-                f"flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy",
-                f"PHANGS_{filter_name}_mJy_TOT"
-                
-            ]
-            err_candidates = [
-                SED_ERR_COLUMN_TEMPLATE.format(filter=filter_name),
-                f"er_flux_{filter_name}",
-                f"PHANGS_{filter_name}_mJy_ERR",
-                f"PHANGS_{filter_name}_mJy_TOT_ERR"
+            flux_candidates = build_sed_flux_candidates(filter_name)
+            err_candidates = build_sed_err_candidates(filter_name)
+            bkg_candidates = build_sed_bkg_candidates(filter_name)
+            flux_column = resolve_existing_column(flux_candidates)
+            bkg_column = resolve_existing_column(bkg_candidates)
+            err_column = resolve_existing_column(err_candidates)
 
-            ]
-            flux_column = next((c for c in flux_candidates if c in available_cols), flux_candidates[0])
-            bkg_column = SED_BKG_COLUMN_TEMPLATE.format(filter=filter_name)
-            err_column = next((c for c in err_candidates if c in available_cols), err_candidates[0])
-
-            flux_val = float(closest_obj[flux_column]) if flux_column in available_cols else np.nan
+            flux_val = float(closest_obj[flux_column]) if flux_column else np.nan
             sed_fluxes.append(flux_val)
-            if bkg_column in available_cols:
-                sed_fluxes_total.append(flux_val + float(closest_obj.get(bkg_column, np.nan)))
+            if bkg_column:
+                sed_fluxes_total.append(flux_val + float(closest_obj[bkg_column]))
             else:
                 sed_fluxes_total.append(np.nan)
-            sed_fluxes_err.append(float(closest_obj.get(err_column, np.nan)) if err_column in available_cols else np.nan)
-            cigale_col = None
-            for pattern in [p.format(filter=filter_name) for p in SED_CIGALE_COLUMN_PATTERNS['MIRI']]:
-                if pattern in available_cols:
-                    cigale_col = pattern
-                    break
-            sed_fluxes_cigale.append((float(closest_obj.get(cigale_col, np.nan)) if cigale_col in available_cols else np.nan) * SED_CIGALE_MULTIPLIER)
+            sed_fluxes_err.append(float(closest_obj[err_column]) if err_column else np.nan)
+            sed_fluxes_cigale.append(resolve_cigale_flux('MIRI', filter_name))
 
         # 5) Plot
         fig = plt.figure(figsize=(SED_FIGURE_SIZE_WIDTH, SED_FIGURE_SIZE_HEIGHT))
@@ -4271,7 +4378,7 @@ async def generate_sed_optimized(
         try:
             if any(np.isfinite(y_total_plot)):
                 ax.errorbar(
-                    SED_FILTER_WAVELENGTHS,
+                    sed_filter_wavelengths,
                     y_total_plot,
                     yerr=yerr_total_plot,
                     fmt=SED_MARKER_FMT,
@@ -4285,7 +4392,7 @@ async def generate_sed_optimized(
                 )
             if any(np.isfinite(y_bkg_plot)):
                 ax.errorbar(
-                    SED_FILTER_WAVELENGTHS,
+                    sed_filter_wavelengths,
                     y_bkg_plot,
                     yerr=yerr_bkg_plot,
                     fmt=SED_MARKER_FMT,
@@ -4299,13 +4406,13 @@ async def generate_sed_optimized(
                 )
             # Plot CIGALE only if at least one finite, non-zero after sanitization
             if any(np.isfinite(y_cigale_plot)):
-                ax.plot(SED_FILTER_WAVELENGTHS, y_cigale_plot, '-', color='red', alpha=0.8, linewidth=1.5, label='CIGALE', zorder=11)
-                ax.scatter(SED_FILTER_WAVELENGTHS, y_cigale_plot, marker='s', facecolors='none', edgecolors='red', linewidths=1.5, s=max(60, SED_MARKERSIZE*3), label='_nolegend_', zorder=12)
+                ax.plot(sed_filter_wavelengths, y_cigale_plot, '-', color='red', alpha=0.8, linewidth=1.5, label='CIGALE', zorder=11)
+                ax.scatter(sed_filter_wavelengths, y_cigale_plot, marker='s', facecolors='none', edgecolors='red', linewidths=1.5, s=max(60, SED_MARKERSIZE*3), label='_nolegend_', zorder=12)
         except Exception:
             # Fallback minimal plot to avoid total failure
             if any(np.isfinite(y_bkg_plot)):
                 ax.errorbar(
-                    SED_FILTER_WAVELENGTHS,
+                    sed_filter_wavelengths,
                     y_bkg_plot,
                     yerr=yerr_bkg_plot,
                     fmt=SED_MARKER_FMT,
@@ -4322,8 +4429,8 @@ async def generate_sed_optimized(
         ax.set_ylabel(SED_Y_LABEL, fontsize=SED_FONTSIZE_LABELS)
         ax.set_xscale(SED_XSCALE)
         ax.set_yscale(yscale_mode)
-        ax.set_xticks(SED_FILTER_WAVELENGTHS)
-        ax.set_xticklabels([SED_XTICK_LABEL_FORMAT.format(w=w) for w in SED_FILTER_WAVELENGTHS], rotation=SED_XTICK_ROTATION_DEGREES, fontsize=SED_FONTSIZE_TICKS)
+        ax.set_xticks(sed_filter_wavelengths)
+        ax.set_xticklabels([SED_XTICK_LABEL_FORMAT.format(w=w) for w in sed_filter_wavelengths], rotation=SED_XTICK_ROTATION_DEGREES, fontsize=SED_FONTSIZE_TICKS)
         ax.set_xlim(SED_X_LIM_MIN, SED_X_LIM_MAX)
 
         # Only add legend if there are visible labeled artists
@@ -4345,18 +4452,26 @@ async def generate_sed_optimized(
         # 6) File search (recursive + tokens)
         base_dir = FILES_DIRECTORY
         filter_patterns = {}
-        for filter_name in SED_FILTER_NAMES:
-            lf = filter_name.lower()
-            needles = [lf] + SED_FILTER_ALIASES.get(filter_name, [])
+        for filter_name in sed_filter_names:
+            needles = _unique_preserve_order(
+                [str(v).lower() for v in sed_filter_variants(filter_name)]
+                + SED_FILTER_ALIASES.get(str(filter_name).upper(), [])
+            )
+            # Single-letter shorthand filters (U/B/V/I) are valid catalog columns, but
+            # too broad for filename globbing; they match words like "subtracted" or "broad".
+            needles = [nd for nd in needles if len(nd) > 1]
+            needles = sorted(needles, key=len, reverse=True)
             patterns = []
-            for nd in needles:
-                for tmpl in SED_FILE_SEARCH_PATTERNS:
-                    patterns.append(tmpl.format(base_dir=base_dir, needle=nd))
-            # token-augmented
+            # Search galaxy-specific files first. If a target galaxy is known, do not
+            # let a top-level file for another galaxy win before recursive matches run.
             for tok in galaxy_tokens:
                 for nd in needles:
                     for tmpl in SED_FILE_SEARCH_PATTERNS:
                         patterns.append(tmpl.format(base_dir=base_dir, needle=f"{tok}*{nd}"))
+            if not galaxy_tokens:
+                for nd in needles:
+                    for tmpl in SED_FILE_SEARCH_PATTERNS:
+                        patterns.append(tmpl.format(base_dir=base_dir, needle=nd))
             filter_patterns[filter_name] = patterns
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -4377,18 +4492,20 @@ async def generate_sed_optimized(
                 ]
                 if not matches:
                     continue
-                if filter_name.upper() in set([f.upper() for f in (SED_HST_GREEN_FILTER + SED_HST_RED_FILTERS)]):
+                if sed_filter_matches_any(filter_name, SED_HST_GREEN_FILTER + SED_HST_RED_FILTERS):
                     matches = [
                         f for f in matches
                         if not any(t in os.path.basename(f).lower() for t in SED_EXCLUDED_HA_TOKENS_FOR_CONTINUUM)
                     ]
                     if not matches:
                         continue
-                chosen = matches
                 if galaxy_tokens:
                     prioritized = [f for f in matches if any(tok in f.lower() for tok in galaxy_tokens)]
-                    if prioritized:
-                        chosen = prioritized
+                    if not prioritized:
+                        continue
+                    chosen = prioritized
+                else:
+                    chosen = matches
                 with file_lock:
                     if filter_name not in file_matches and chosen:
                         file_matches[filter_name] = chosen[0]
@@ -4449,8 +4566,42 @@ async def generate_sed_optimized(
         nircam_header = miri_header = hst_header = None
         rgbsss = []          # CO data
         rgbsss2 = []         # HST HA data
-        for i, (wavelength, filter_name) in enumerate(zip(SED_FILTER_WAVELENGTHS_EXTENDED[:len(SED_FILTER_NAMES)], SED_FILTER_NAMES)):
+
+        def add_sed_no_data_inset(filter_name: str, wavelength: float, index: int, message: str = "No data"):
+            try:
+                cutout_wavelength = resolve_sed_cutout_wavelength(filter_name, wavelength)
+                x_norm, _ = transform.transform(ax.transData.transform((cutout_wavelength, 0)))
+                x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0)
+                x_norm += resolve_sed_cutout_x_offset(filter_name, index)
+                ax_inset = inset_axes(
+                    ax,
+                    width=SED_INSET_WIDTH,
+                    height=SED_INSET_HEIGHT,
+                    loc='center',
+                    bbox_to_anchor=(x_norm, SED_CUTOUT_BASE_Y, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                    bbox_transform=fig.transFigure,
+                )
+                ax_inset.imshow(np.zeros((12, 12)), origin='lower', cmap=SED_CUTOUT_CMAP, vmin=0, vmax=1)
+                ax_inset.text(
+                    0.5,
+                    0.5,
+                    message,
+                    transform=ax_inset.transAxes,
+                    ha='center',
+                    va='center',
+                    color='white',
+                    fontsize=max(5, SED_FONTSIZE_TITLE - 1),
+                    fontweight='bold',
+                )
+                ax_inset.set_title(filter_name, fontsize=SED_FONTSIZE_TITLE)
+                ax_inset.axis('off')
+            except Exception as e:
+                print(f"Could not draw no-data inset for {filter_name}: {e}")
+
+        for i, (wavelength, filter_name) in enumerate(zip(sed_filter_wavelengths, sed_filter_names)):
+            cutout_wavelength = resolve_sed_cutout_wavelength(filter_name, wavelength)
             if filter_name not in file_matches:
+                add_sed_no_data_inset(filter_name, wavelength, i)
                 continue
             try:
                 fits_file = file_matches[filter_name]
@@ -4459,12 +4610,14 @@ async def generate_sed_optimized(
                     image_hdu = next((h for h in hdul if (h.data is not None and hasattr(h.data, 'shape') and len(h.data.shape) >= 2)), None)
                     if image_hdu is None:
                         print(f"No valid image HDU found in {fits_file}")
+                        add_sed_no_data_inset(filter_name, wavelength, i)
                         continue
 
                     prepared_header = _prepare_jwst_header_for_wcs(image_hdu.header)
                     wcs = WCS(prepared_header)
                     if not wcs.has_celestial:
                         print(f"No celestial WCS found for {filter_name}")
+                        add_sed_no_data_inset(filter_name, wavelength, i)
                         continue
 
                     image_data = image_hdu.data
@@ -4478,19 +4631,19 @@ async def generate_sed_optimized(
                     cutout_data[np.isnan(cutout_data)] = 0
                     cutout_data[np.isinf(cutout_data)] = 0
 
-                    x_norm, _ = transform.transform(ax.transData.transform((wavelength, 0)))
+                    x_norm, _ = transform.transform(ax.transData.transform((cutout_wavelength, 0)))
                     x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0)
-                    x_norm += SED_X_OFFSETS[i] if i < len(SED_X_OFFSETS) else 0
+                    x_norm += resolve_sed_cutout_x_offset(filter_name, i)
 
                     ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
                                           bbox_to_anchor=(x_norm, SED_CUTOUT_BASE_Y, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
                                           bbox_transform=fig.transFigure)
 
                     # Determine instrument group and percentile, then resolve norm mode
-                    if filter_name in SED_JWST_NIRCAM_FILTERS:
+                    if filter_name in sed_nircam_filters:
                         group = 'NIRCAM'
                         vmax_pct = SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE
-                    elif filter_name in SED_JWST_MIRI_FILTERS:
+                    elif filter_name in sed_miri_filters:
                         group = 'MIRI'
                         vmax_pct = SED_NIRCAM_MIRI_CUTOUT_DISPLAY_MAX_PERCENTILE
                     else:
@@ -4529,11 +4682,11 @@ async def generate_sed_optimized(
                         nircam_cutouts['green'] = np.array(cutout_data); nircam_header = nircam_header or header.copy()
                     elif filter_name == SED_NIRCAM_BLUE_FILTER:
                         nircam_cutouts['blue'] = np.array(cutout_data); nircam_header = nircam_header or header.copy()
-                    elif filter_name.upper() in [f.upper() for f in SED_HST_RED_FILTERS]:
+                    elif sed_filter_matches_any(filter_name, SED_HST_RED_FILTERS):
                         hst_cutouts['red'] = np.array(cutout_data); hst_header = header.copy()
-                    elif filter_name.upper() in [f.upper() for f in SED_HST_GREEN_FILTER]:
+                    elif sed_filter_matches_any(filter_name, SED_HST_GREEN_FILTER):
                         hst_cutouts['green'] = np.array(cutout_data); hst_header = hst_header or header.copy()
-                    elif filter_name.upper() in [f.upper() for f in SED_HST_BLUE_FILTER]:
+                    elif sed_filter_matches_any(filter_name, SED_HST_BLUE_FILTER):
                         hst_cutouts['blue'] = np.array(cutout_data); hst_header = hst_header or header.copy()
                     elif filter_name == SED_MIRI_RED_FILTER:
                         miri_cutouts['red'] = np.array(cutout_data); miri_header = header.copy()
@@ -4544,7 +4697,7 @@ async def generate_sed_optimized(
 
             except Exception as e:
                 print(f"Error processing {filter_name}: {e}")
-                import traceback; traceback.print_exc()
+                add_sed_no_data_inset(filter_name, wavelength, i)
                 continue
 
         print(f"Total cutouts processed: {len(nircam_cutouts) + len(miri_cutouts) + len(hst_cutouts)}")
@@ -8068,11 +8221,25 @@ async def fits_preview(
         except Exception:
             pass
 
-        # IMPORTANT: Previews must NOT inherit the viewer's dynamic range.
-        # Always use preview defaults (grayscale + auto min/max).
-        color_map = "grayscale"
-        scaling_function = "asinh"
-        invert_colormap = False
+        # Snapshot query overrides before using local names (zoom inset / file preview).
+        q_min_value = min_value
+        q_max_value = max_value
+        q_color_map = color_map
+        q_scaling_function = scaling_function
+        q_invert_colormap = invert_colormap
+
+        # Defaults: do not inherit the main viewer session unless query params say so.
+        eff_color_map = (
+            str(q_color_map).strip().lower()
+            if q_color_map is not None and str(q_color_map).strip()
+            else "grayscale"
+        )
+        eff_scaling = (
+            str(q_scaling_function).strip().lower()
+            if q_scaling_function is not None and str(q_scaling_function).strip()
+            else "asinh"
+        )
+        eff_invert = bool(q_invert_colormap) if q_invert_colormap is not None else False
 
         # Auto stretch on finite values (robust; avoids NaNs/inf skewing percentiles).
         finite = small[np.isfinite(small)]
@@ -8087,6 +8254,25 @@ async def fits_preview(
                 if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
                     vmin, vmax = 0.0, 1.0
 
+        if q_min_value is not None:
+            try:
+                fv = float(q_min_value)
+                if np.isfinite(fv):
+                    vmin = fv
+            except (TypeError, ValueError):
+                pass
+        if q_max_value is not None:
+            try:
+                fv = float(q_max_value)
+                if np.isfinite(fv):
+                    vmax = fv
+            except (TypeError, ValueError):
+                pass
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            vmin, vmax = 0.0, 1.0
+        elif vmin >= vmax:
+            vmax = vmin + max(abs(float(vmin)) * 1e-9, 1e-9)
+
         # Normalize + scale (vectorized)
         data = np.nan_to_num(small, nan=vmin, posinf=vmax, neginf=vmin)
         delta = float(vmax - vmin)
@@ -8094,7 +8280,7 @@ async def fits_preview(
             norm = np.full_like(data, 0.5, dtype=np.float32)
         else:
             t = (np.clip(data, vmin, vmax) - vmin) / delta
-            sf = str(scaling_function or "linear").lower()
+            sf = str(eff_scaling or "linear").lower()
             if sf == "logarithmic":
                 norm = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
             elif sf == "sqrt":
@@ -8107,11 +8293,12 @@ async def fits_preview(
                 norm = t
 
         img8 = (np.clip(norm, 0.0, 1.0) * 255.0).astype(np.uint8)
-        if invert_colormap:
+        if eff_invert:
             img8 = 255 - img8
 
         # Apply colormap LUT (fast, pure-Python colormap functions)
-        cmap_key = str(color_map) if isinstance(color_map, str) else "grayscale"
+        _resolved_cm = resolve_color_map_key(eff_color_map)
+        cmap_key = _resolved_cm if _resolved_cm else "grayscale"
         color_map_func = COLOR_MAPS_PY.get(cmap_key, COLOR_MAPS_PY["grayscale"])
         lut = np.zeros((256, 3), dtype=np.uint8)
         for i in range(256):
@@ -9078,6 +9265,7 @@ async def catalog_binary_raw(
             },
             "record_size": 28,
             "column_names": list(table.colnames if requested_cols is None else requested_cols),
+            "column_units": _catalog_column_units_map(table),
         }
 
         buf = BytesIO()
@@ -9168,6 +9356,7 @@ async def catalog_binary(
         catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
         if catalog_table is None:
             raise HTTPException(status_code=404, detail=f"Could not load catalog '{catalog_name}'.")
+        column_units_for_header = _catalog_column_units_map(catalog_table)
 
         # Extract boolean columns (same logic as before)
         boolean_columns = []
@@ -9513,6 +9702,7 @@ async def catalog_binary(
                 },
                 "record_size": 28,
                 "column_names": colnames_for_meta,
+                "column_units": column_units_for_header,
             }
             header_json = json.dumps(header).encode('utf-8')
             binary_buffer.write(struct.pack('<I', len(header_json)))
@@ -9666,7 +9856,8 @@ async def catalog_binary(
                     "radius_pixels": {"dtype": "float32", "offset": 24},
                     "metadata": {"dtype": "json", "offset": 28}
                 },
-                "record_size": 28
+                "record_size": 28,
+                "column_units": column_units_for_header,
             }
             header_json = json.dumps(header).encode('utf-8')
             binary_buffer.write(struct.pack('<I', len(header_json)))
@@ -10285,6 +10476,30 @@ from urllib.parse import unquote
 from pathlib import Path
 from astropy.table import Table
 from astropy.io import fits
+
+
+def _catalog_column_units_map(table) -> dict:
+    """Map column name -> unit string from an Astropy Table (for overlay value suffixes)."""
+    out = {}
+    if table is None:
+        return out
+    try:
+        for cn in table.colnames:
+            col = table[cn]
+            u = getattr(col, "unit", None)
+            if u is None:
+                continue
+            s = str(u).strip()
+            if not s:
+                continue
+            sl = s.lower()
+            if sl in ("none", "---", "dimensionless", "unitless"):
+                continue
+            out[str(cn)] = s
+    except Exception:
+        pass
+    return out
+
 
 def get_astropy_table_from_catalog(catalog_name: str, catalogs_dir_path: Path) -> Optional[Table]:
    # Resolve path intelligently: allow references under 'files/...', absolute paths, or catalogs/
@@ -12073,14 +12288,16 @@ def get_system_stats_data(app_process_names=['python']):
     # This part for process filtering remains the same
     for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
         try:
-            if app_process_names and any(name in proc.info['name'].lower() for name in app_process_names):
+            proc_name = proc.info.get('name') or ''
+            proc_name_lower = proc_name.lower()
+            if app_process_names and any(name in proc_name_lower for name in app_process_names):
                 if proc.info['cpu_percent'] is not None and proc.info['cpu_percent'] > 0.1:
                     processes.append({
                         'pid': proc.info['pid'],
-                        'name': proc.info['name'],
+                        'name': proc_name,
                         'cpu': proc.info['cpu_percent']
                     })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     
     top_processes = sorted(processes, key=lambda p: p['cpu'], reverse=True)[:5]
