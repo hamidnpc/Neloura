@@ -626,6 +626,14 @@ function showProperties(ra, dec, catalogName, radiusPixels, prefetchedProperties
         }
     })();
 
+    // Toolbar-drawn regions are not FITS catalog rows; `catalogName` often falls back to "catalog"
+    // and the backend has no Astropy table for them. Show RA/Dec, pixel coords, and size locally.
+    const isDrawingToolbarRegion =
+        prefetchedProperties &&
+        typeof prefetchedProperties === 'object' &&
+        prefetchedProperties.source_type === 'region' &&
+        !(Number.isInteger(prefetchedProperties.__row_index) && prefetchedProperties.__row_index >= 0);
+
     // Resolve overrides from last-applied styles if available
     const overrides = (window.catalogOverridesByCatalog && (window.catalogOverridesByCatalog[effectiveCatalogName] || window.catalogOverridesByCatalog[(effectiveCatalogName||'').toString().split('/').pop()])) || {};
 
@@ -703,6 +711,100 @@ function showProperties(ra, dec, catalogName, radiusPixels, prefetchedProperties
     };
 
     (async () => {
+        if (isDrawingToolbarRegion) {
+            const p = prefetchedProperties;
+            async function ensureWorldCoordsForToolbarRegion() {
+                try {
+                    if (Number.isFinite(p.ra) && Number.isFinite(p.dec)) return true;
+                    const x =
+                        typeof p.x_bottom_left === 'number' && Number.isFinite(p.x_bottom_left)
+                            ? Math.round(p.x_bottom_left)
+                            : null;
+                    const yBottom =
+                        typeof p.y_bottom_left === 'number' && Number.isFinite(p.y_bottom_left)
+                            ? Math.round(p.y_bottom_left)
+                            : null;
+                    if (!Number.isFinite(x) || !Number.isFinite(yBottom)) return false;
+
+                    const fitsPath = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || null;
+                    const hduIndex = typeof window.currentHduIndex === 'number' ? window.currentHduIndex : 0;
+
+                    if (!window.__sid) {
+                        const sessionRes = await fetch('/session/start');
+                        const sessionJson = await sessionRes.json();
+                        if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+                    }
+                    const headers = {};
+                    if (window.__sid) headers['X-Session-ID'] = window.__sid;
+
+                    const url =
+                        `/pixel-to-world/?x=${encodeURIComponent(x)}&y=${encodeURIComponent(yBottom)}` +
+                        '&origin=bottom' +
+                        (fitsPath ? `&filepath=${encodeURIComponent(fitsPath)}` : '') +
+                        `&hdu=${encodeURIComponent(hduIndex)}` +
+                        `&_t=${Date.now()}`;
+
+                    const resp = await fetch(url, { headers, cache: 'no-store' });
+                    if (!resp.ok) return false;
+                    const wdata = await resp.json().catch(() => null);
+                    if (wdata && Number.isFinite(wdata.ra) && Number.isFinite(wdata.dec)) {
+                        p.ra = wdata.ra;
+                        p.dec = wdata.dec;
+                        return true;
+                    }
+                    return false;
+                } catch (_) {
+                    return false;
+                }
+            }
+
+            await ensureWorldCoordsForToolbarRegion();
+
+            const rRa = Number.isFinite(p.ra) ? p.ra : Number.isFinite(ra) ? ra : null;
+            const rDec = Number.isFinite(p.dec) ? p.dec : Number.isFinite(dec) ? dec : null;
+
+            const props = {};
+            if (Number.isFinite(rRa)) props.ra = rRa;
+            if (Number.isFinite(rDec)) props.dec = rDec;
+            if (p.region_type) props['Region shape'] = p.region_type;
+            if (p.region_id != null && p.region_id !== '') props['Region id'] = p.region_id;
+            if (typeof p.region_label === 'string' && p.region_label.trim()) props.Label = p.region_label.trim();
+            if (typeof p.x_bottom_left === 'number' && Number.isFinite(p.x_bottom_left)) {
+                props['Image x (center, bottom-left origin)'] = p.x_bottom_left;
+            }
+            if (typeof p.y_bottom_left === 'number' && Number.isFinite(p.y_bottom_left)) {
+                props['Image y (center, bottom-left origin)'] = p.y_bottom_left;
+            }
+            if (typeof p.radius_pixels === 'number' && Number.isFinite(p.radius_pixels)) {
+                props['Radius (pixels)'] = p.radius_pixels;
+            }
+            if (typeof p.minor_radius_pixels === 'number' && Number.isFinite(p.minor_radius_pixels)) {
+                props['Minor radius (pixels)'] = p.minor_radius_pixels;
+            }
+            if (typeof p.width_pixels === 'number' && Number.isFinite(p.width_pixels)) {
+                props['Width (pixels)'] = p.width_pixels;
+            }
+            if (typeof p.height_pixels === 'number' && Number.isFinite(p.height_pixels)) {
+                props['Height (pixels)'] = p.height_pixels;
+            }
+            if (Array.isArray(p.vertices) && p.vertices.length) {
+                props.Vertices = `${p.vertices.length} points`;
+            }
+
+            const data = { properties: props };
+            window.currentPropertiesData = {
+                ra: rRa,
+                dec: rDec,
+                catalogName: '',
+                properties: props,
+            };
+            try {
+                console.log('[showProperties] toolbar region (local properties, no catalog table)', data);
+            } catch (_) {}
+            renderFromData(data);
+            return;
+        }
+
         // Exact lookup only (no search / radius retries)
         let data = await fetchProps();
 

@@ -3,10 +3,8 @@
     'use strict';
 
     // Order after Files; Plotter and Local Coding always visible; others only when image is loaded
-    // "Mouse mode" (pointer tool) is its own toolbar button.
-    // Requested UX: place it immediately to the RIGHT of the Settings button.
-    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'settings', 'mouse-mode', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
-    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'plotter', 'catalog', 'segments', 'mouse-mode', 'regions', 'peak', 'settings']);
+    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'settings', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
+    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings']);
     const WHEN_LOADED = new Set();
 
     // Admin flag (fetched once on init)
@@ -57,7 +55,6 @@
             'settings': 'settings-button'
             , 'segments': 'segments-button'
             , 'regions': 'region-tools-button'
-            , 'mouse-mode': 'mouse-mode-button'
         };
         const id = ids[type]; if (!id) return null;
         const el = document.getElementById(id); if (!el) return null;
@@ -281,24 +278,6 @@
             };
             b.addEventListener('click', (e) => { e.preventDefault(); invokeSegmentsBrowser(); });
             b.__segmentsInvoke = invokeSegmentsBrowser;
-            return b;
-        },
-        'mouse-mode': () => {
-            const a = anchorBtn(); if (!a) return null;
-            const b = document.createElement('button');
-            b.id = 'mouse-mode-button';
-            b.type = 'button';
-            b.className = a.className || '';
-            b.title = 'Mouse mode';
-            b.setAttribute('aria-label', 'Mouse mode');
-            // Outline (inactive) icon by default; filled icon when active (pointer mode).
-            b.dataset.active = '0';
-            b.innerHTML = `
-<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-  <path d="M5 3l14 8-6.4 1.6 2.8 7-2.3.9-2.8-7L6 18V3Z"
-        stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
-</svg>`;
-            // Click handler is bound in bindToolbarActions()
             return b;
         },
         'peak': () => {
@@ -590,7 +569,6 @@
             'histogram': 'histogram-button',
             'catalog': 'catalog-button',
             'segments': 'segments-button',
-            'mouse-mode': 'mouse-mode-button',
             'peak': 'peak-finder-button',
             'regions': 'region-tools-button',
             'settings': 'settings-button'
@@ -648,62 +626,6 @@
         bindZoomLike('zoom-out-button', (v) => v.viewport.zoomBy(1 / 1.2));
         bindZoomLike('reset-button', (v) => v.viewport.goHome(true));
 
-        const mouseMode = document.getElementById('mouse-mode-button');
-        if (mouseMode && !mouseMode.dataset.bound) {
-            const setMouseModeActive = (active) => {
-                try {
-                    const isActive = !!active;
-                    mouseMode.dataset.active = isActive ? '1' : '0';
-                    mouseMode.classList.toggle('active', isActive);
-                    // Requested styling:
-                    // - active: white button background, black icon
-                    // - inactive: default toolbar styling (transparent bg, white icon)
-                    mouseMode.style.background = isActive ? '#ffffff' : '';
-                    mouseMode.style.borderColor = isActive ? 'rgba(0,0,0,0.25)' : '';
-                    mouseMode.style.color = isActive ? '#111111' : '';
-
-                    // Swap icon: outline (inactive) vs filled (active)
-                    mouseMode.innerHTML = isActive
-                        ? `
-<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-  <path d="M5 3l14 8-6.4 1.6 2.8 7-2.3.9-2.8-7L6 18V3Z"></path>
-</svg>`
-                        : `
-<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-  <path d="M5 3l14 8-6.4 1.6 2.8 7-2.3.9-2.8-7L6 18V3Z"
-        stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
-</svg>`;
-                } catch (_) { }
-            };
-
-            mouseMode.addEventListener('click', (e) => {
-                e.preventDefault();
-                try {
-                    const target = (typeof window.getActivePaneWindow === 'function') ? (window.getActivePaneWindow() || window) : window;
-                    if (target && typeof target.setRegionDrawingTool === 'function') {
-                        target.setRegionDrawingTool(null);
-                    }
-                } catch (_) { }
-                try {
-                    document.dispatchEvent(new CustomEvent('region-tool-changed', { detail: { toolId: null } }));
-                } catch (_) { }
-                setMouseModeActive(true);
-            });
-            mouseMode.dataset.bound = '1';
-
-            // Keep the toggle state in sync with region-tool changes:
-            // pointer mode = active when no toolId is selected.
-            document.addEventListener('region-tool-changed', (evt) => {
-                try {
-                    const toolId = evt && evt.detail ? (evt.detail.toolId || null) : null;
-                    setMouseModeActive(!toolId);
-                } catch (_) { }
-            });
-
-            // Initial state: pointer mode (no active tool) => active.
-            setMouseModeActive(true);
-        }
-
         const localCoding = document.getElementById('local-coding-button');
         if (localCoding && !localCoding.dataset.bound) {
             // Remove any inline onclick to avoid calling undefined handlers
@@ -754,7 +676,7 @@
             peak.dataset.bound = '1';
         }
 
-        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'histogram-button', 'catalog-button', 'mouse-mode-button', 'peak-finder-button', 'settings-button', 'save-png-toolbar-btn', 'region-tools-button']
+        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'histogram-button', 'catalog-button', 'peak-finder-button', 'settings-button', 'save-png-toolbar-btn', 'region-tools-button']
             .forEach(id => { const el = document.getElementById(id); if (el) inheritAnchorClasses(el); });
     }
 
@@ -772,7 +694,6 @@
             'histogram-button',
             'catalog-button',
             'segments-button',
-            'mouse-mode-button',
             'region-tools-button',
             'peak-finder-button',
             'settings-button'
@@ -1934,6 +1855,9 @@
                         disableBaseViewerInteraction(false);
                         setBaseViewerImageHidden(false);
                         raiseToolbarForPanels(false);
+                        try {
+                            if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
+                        } catch (_) { /* ignore */ }
                         setWcsLockEnabled(false, { silent: true, skipSync: true });
                         try {
                             if (window.tiledViewer && typeof window.tiledViewer.close === 'function') {
@@ -2600,6 +2524,7 @@
                         invert: !!window.currentColorMapInverted
                     };
                 } catch (_) { s.display = null; }
+                mergeNelouraOverlayColorBarSnapshotInto(s);
                 return s;
             })();
 
@@ -2651,6 +2576,7 @@
             if (firstHolder) setActivePanel(firstHolder);
         } catch (_) { }
         updateWcsLockVisibility();
+        nelouraRefreshHostScreenColorBarForMultiPanel();
     }
 
     function clearCustomLayoutArtifacts() {
@@ -2802,6 +2728,7 @@
                     invert: !!window.currentColorMapInverted
                 };
             } catch (_) { s.display = null; }
+            mergeNelouraOverlayColorBarSnapshotInto(s);
             return s;
         })();
         
@@ -2906,6 +2833,7 @@
             });
         } catch (_) { }
         updateWcsLockVisibility();
+        nelouraRefreshHostScreenColorBarForMultiPanel();
     }
 
     function applyTiltedGridLayout() {
@@ -3016,6 +2944,7 @@
                     invert: !!window.currentColorMapInverted
                 };
             } catch (_) { s.display = null; }
+            mergeNelouraOverlayColorBarSnapshotInto(s);
             return s;
         })();
         
@@ -3125,6 +3054,7 @@
             try { setActivePanel(holders[0]); } catch (_) { }
         }
         updateWcsLockVisibility();
+        nelouraRefreshHostScreenColorBarForMultiPanel();
     }
 
     function getTopLevelSid() {
@@ -3134,6 +3064,163 @@
             // If we don't mirror the correct sid, "Add panel" creates a brand-new session and everything resets.
             return (window.__forcedSid) || (window.__sid) || sp.get('sid') || sp.get('pane_sid') || (sessionStorage.getItem('sid') || null);
         } catch (_) { try { return sessionStorage.getItem('sid'); } catch (__) { return null; } }
+    }
+
+    function mergeNelouraOverlayColorBarSnapshotInto(s) {
+        if (!s || typeof s !== 'object') return s;
+        try {
+            const nt = (v) => {
+                const t = parseInt(v, 10);
+                return Number.isFinite(t) ? t : 5;
+            };
+            const nd = (v) => {
+                const d = parseInt(v, 10);
+                return Number.isFinite(d) ? Math.max(0, Math.min(12, d)) : 2;
+            };
+            const nfOk = (f) => ['auto', 'scientific', 'fixed', 'integer'].includes(f);
+            const posImg = window.screenColorBarPosition;
+            s.screenColorBar = {
+                visible: !!window.screenColorBarVisible,
+                position: ['top', 'left', 'right', 'bottom'].includes(posImg) ? posImg : 'right',
+                unit: typeof window.screenColorBarUnit === 'string' ? window.screenColorBarUnit : '',
+                ticks: nt(window.screenColorBarTicks),
+                labelColor: (typeof window.screenColorBarLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(String(window.screenColorBarLabelColor).trim()))
+                    ? String(window.screenColorBarLabelColor).trim()
+                    : '#eaeaea',
+                numberFormat: nfOk(window.screenColorBarNumberFormat) ? window.screenColorBarNumberFormat : 'auto',
+                decimals: nd(window.screenColorBarDecimals)
+            };
+        } catch (_) {
+            try { s.screenColorBar = null; } catch (__) { /* ignore */ }
+        }
+        try {
+            const nt = (v) => {
+                const t = parseInt(v, 10);
+                return Number.isFinite(t) ? t : 5;
+            };
+            const nd = (v) => {
+                const d = parseInt(v, 10);
+                return Number.isFinite(d) ? Math.max(0, Math.min(12, d)) : 2;
+            };
+            const nfOk = (f) => ['auto', 'scientific', 'fixed', 'integer'].includes(f);
+            const posCat = window.catalogScreenColorBarPosition;
+            s.catalogScreenColorBar = {
+                visible: !!window.catalogScreenColorBarVisible,
+                position: ['top', 'left', 'right', 'bottom'].includes(posCat) ? posCat : 'left',
+                unit: typeof window.catalogScreenColorBarUnit === 'string' ? window.catalogScreenColorBarUnit : '',
+                ticks: nt(window.catalogScreenColorBarTicks),
+                labelColor: (typeof window.catalogScreenColorBarLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(String(window.catalogScreenColorBarLabelColor).trim()))
+                    ? String(window.catalogScreenColorBarLabelColor).trim()
+                    : '#eaeaea',
+                numberFormat: nfOk(window.catalogScreenColorBarNumberFormat) ? window.catalogScreenColorBarNumberFormat : 'auto',
+                decimals: nd(window.catalogScreenColorBarDecimals)
+            };
+        } catch (_) {
+            try { s.catalogScreenColorBar = null; } catch (__) { /* ignore */ }
+        }
+        return s;
+    }
+
+    function nelouraRefreshHostScreenColorBarForMultiPanel() {
+        try {
+            if (window.self !== window.top) return;
+            if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
+        } catch (_) { /* ignore */ }
+    }
+
+    function nelouraApplyRestoredScreenColorBarSettings(w, st) {
+        if (!w || !st) return;
+        const getDoc = () => {
+            try {
+                if (typeof w.getHistogramDocument === 'function') return w.getHistogramDocument();
+            } catch (_) { /* ignore */ }
+            try {
+                if (typeof getHistogramDocument === 'function') return getHistogramDocument();
+            } catch (_) { /* ignore */ }
+            return w.document;
+        };
+        try {
+            const sc = st.screenColorBar;
+            if (sc && typeof sc === 'object') {
+                if (typeof sc.visible === 'boolean') w.screenColorBarVisible = sc.visible;
+                if (sc.position && ['top', 'left', 'right', 'bottom'].includes(sc.position)) {
+                    w.screenColorBarPosition = sc.position;
+                }
+                if (typeof sc.unit === 'string') w.screenColorBarUnit = sc.unit;
+                if (Number.isFinite(sc.ticks)) w.screenColorBarTicks = sc.ticks;
+                if (typeof sc.labelColor === 'string') w.screenColorBarLabelColor = sc.labelColor;
+                if (['auto', 'scientific', 'fixed', 'integer'].includes(sc.numberFormat)) {
+                    w.screenColorBarNumberFormat = sc.numberFormat;
+                }
+                if (Number.isFinite(sc.decimals)) w.screenColorBarDecimals = sc.decimals;
+                try {
+                    const doc = getDoc();
+                    const tg = doc.getElementById('screen-colorbar-toggle');
+                    if (tg) tg.checked = !!w.screenColorBarVisible;
+                    const pan = doc.getElementById('screen-colorbar-options-panel');
+                    if (pan) pan.style.display = w.screenColorBarVisible ? 'block' : 'none';
+                    const pos = doc.getElementById('screen-colorbar-position');
+                    if (pos && w.screenColorBarPosition) pos.value = w.screenColorBarPosition;
+                    const u = doc.getElementById('screen-colorbar-unit');
+                    if (u) u.value = w.screenColorBarUnit != null ? String(w.screenColorBarUnit) : '';
+                    const tk = doc.getElementById('screen-colorbar-ticks');
+                    if (tk) tk.value = String(w.screenColorBarTicks != null ? w.screenColorBarTicks : 5);
+                    const lc = doc.getElementById('screen-colorbar-labelcolor');
+                    if (lc) lc.value = w.screenColorBarLabelColor || '#eaeaea';
+                    const nf = doc.getElementById('screen-colorbar-numfmt');
+                    if (nf) nf.value = w.screenColorBarNumberFormat || 'auto';
+                    const dc = doc.getElementById('screen-colorbar-decimals');
+                    if (dc) {
+                        dc.value = String(w.screenColorBarDecimals != null ? w.screenColorBarDecimals : 2);
+                        const dis = (w.screenColorBarNumberFormat !== 'fixed' && w.screenColorBarNumberFormat !== 'scientific');
+                        dc.disabled = !!dis;
+                    }
+                    const decCap = doc.getElementById('screen-colorbar-decimals-caption');
+                    if (decCap) decCap.style.opacity = (dc && dc.disabled) ? '0.45' : '1';
+                } catch (_) { /* ignore */ }
+            }
+        } catch (_) { /* ignore */ }
+        try {
+            const cc = st.catalogScreenColorBar;
+            if (cc && typeof cc === 'object') {
+                if (typeof cc.visible === 'boolean') w.catalogScreenColorBarVisible = cc.visible;
+                if (cc.position && ['top', 'left', 'right', 'bottom'].includes(cc.position)) {
+                    w.catalogScreenColorBarPosition = cc.position;
+                }
+                if (typeof cc.unit === 'string') w.catalogScreenColorBarUnit = cc.unit;
+                if (Number.isFinite(cc.ticks)) w.catalogScreenColorBarTicks = cc.ticks;
+                if (typeof cc.labelColor === 'string') w.catalogScreenColorBarLabelColor = cc.labelColor;
+                if (['auto', 'scientific', 'fixed', 'integer'].includes(cc.numberFormat)) {
+                    w.catalogScreenColorBarNumberFormat = cc.numberFormat;
+                }
+                if (Number.isFinite(cc.decimals)) w.catalogScreenColorBarDecimals = cc.decimals;
+                try {
+                    const doc = getDoc();
+                    const tg = doc.getElementById('region-style-screen-colorbar-toggle');
+                    if (tg) tg.checked = !!w.catalogScreenColorBarVisible;
+                    const pan = doc.getElementById('region-style-screen-colorbar-options-panel');
+                    if (pan) pan.style.display = w.catalogScreenColorBarVisible ? 'block' : 'none';
+                    const pos = doc.getElementById('region-style-screen-colorbar-position');
+                    if (pos && w.catalogScreenColorBarPosition) pos.value = w.catalogScreenColorBarPosition;
+                    const u = doc.getElementById('region-style-screen-colorbar-unit');
+                    if (u) u.value = w.catalogScreenColorBarUnit != null ? String(w.catalogScreenColorBarUnit) : '';
+                    const tk = doc.getElementById('region-style-screen-colorbar-ticks');
+                    if (tk) tk.value = String(w.catalogScreenColorBarTicks != null ? w.catalogScreenColorBarTicks : 5);
+                    const lc = doc.getElementById('region-style-screen-colorbar-labelcolor');
+                    if (lc) lc.value = w.catalogScreenColorBarLabelColor || '#eaeaea';
+                    const nf = doc.getElementById('region-style-screen-colorbar-numfmt');
+                    if (nf) nf.value = w.catalogScreenColorBarNumberFormat || 'auto';
+                    const dc = doc.getElementById('region-style-screen-colorbar-decimals');
+                    if (dc) {
+                        dc.value = String(w.catalogScreenColorBarDecimals != null ? w.catalogScreenColorBarDecimals : 2);
+                        const dis = (w.catalogScreenColorBarNumberFormat !== 'fixed' && w.catalogScreenColorBarNumberFormat !== 'scientific');
+                        dc.disabled = !!dis;
+                    }
+                    const decCap = doc.getElementById('region-style-screen-colorbar-decimals-caption');
+                    if (decCap) decCap.style.opacity = (dc && dc.disabled) ? '0.45' : '1';
+                } catch (_) { /* ignore */ }
+            }
+        } catch (_) { /* ignore */ }
     }
 
     async function restoreOverlayStateIntoWindow(w, st) {
@@ -3354,6 +3441,10 @@
                 }
             }
         } catch (_) { }
+        try { nelouraApplyRestoredScreenColorBarSettings(w, st); } catch (_) { /* ignore */ }
+        try {
+            if (typeof w.updateScreenColorBar === 'function') w.updateScreenColorBar();
+        } catch (_) { /* ignore */ }
     }
 
     // In-pane restore handler (runs in BOTH top window and iframe panes)
@@ -3942,6 +4033,7 @@
                         invert: !!window.currentColorMapInverted
                     };
                 } catch (_) { s.display = null; }
+                mergeNelouraOverlayColorBarSnapshotInto(s);
                 return s;
             })();
             // IMPORTANT: once we switch into multi-panel, the base window should not keep showing
@@ -3981,6 +4073,7 @@
             // Keep the current view active (left), so "Add panel" doesn't feel like a reset
             try { setActivePanel(leftHolder || rightHolder); } catch (_) { }
             updateWcsLockVisibility();
+            nelouraRefreshHostScreenColorBarForMultiPanel();
             return;
         }
         // If a 1×N layout, grow columns; if an M×1 layout, grow rows (only when user explicitly clicks Add Panel)
@@ -4313,6 +4406,7 @@
             } catch (_) { }
         } catch (_) { }
         updateWcsLockVisibility();
+        nelouraRefreshHostScreenColorBarForMultiPanel();
     }
 
     function panelsActiveCount() {

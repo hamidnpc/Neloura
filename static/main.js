@@ -178,8 +178,8 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
 
     const label = document.createElement('label');
     label.textContent = labelText;
-    Object.assign(label.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '14px', alignSelf: 'flex-start', marginBottom: '5px' });
-
+    Object.assign(label.style, { color: '#aaa', fontFamily: 'Arial, sans-serif', fontSize: '14px', fontWeight: 'normal', alignSelf: 'flex-start', marginBottom: '5px' });
+1
     const customSelectContainer = document.createElement('div');
     Object.assign(customSelectContainer.style, { width: '100%', position: 'relative' });
 
@@ -967,7 +967,7 @@ function renderSegmentOverlayControls(info) {
         flexDirection: 'column',
         alignItems: 'stretch',
         gap: '10px',
-        zIndex: '60020',
+        zIndex: '60080',
         color: '#f9fafb',
         fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
         minWidth: '260px',
@@ -1049,11 +1049,20 @@ function renderSegmentOverlayControls(info) {
             collapseBtn.textContent = '×';
             collapseBtn.setAttribute('aria-label', 'Collapse segments controls');
         }
-        // Use requestAnimationFrame to ensure DOM has updated before recalculating positions
-        requestAnimationFrame(() => {
-            positionSegmentControlsPanel(panel);
-        });
+        // Recalculate during/after height transitions so lower toolbars do not cover this panel.
+        const repositionNow = () => {
+            try { positionSegmentControlsPanel(panel); } catch (_) {}
+        };
+        requestAnimationFrame(repositionNow);
+        setTimeout(repositionNow, 80);
+        setTimeout(repositionNow, 240);
     };
+
+    try {
+        expandedContent.addEventListener('transitionend', () => {
+            try { positionSegmentControlsPanel(panel); } catch (_) {}
+        });
+    } catch (_) {}
 
     collapseBtn.addEventListener('click', () => {
         setCollapsedState(!segmentOverlayControlsCollapsed);
@@ -1193,7 +1202,7 @@ function renderSegmentOverlayControls(info) {
 }
 
 // ---------------- Catalog Overlay Controls (bottom-center, per active pane) ----------------
-let catalogOverlayControlsCollapsed = false;
+let catalogOverlayControlsCollapsed = true;
 
 // ---------------- Catalog boolean-column filtering (per catalog) ----------------
 function __catalogFilterRootWin() {
@@ -1212,6 +1221,55 @@ function __normalizeCatalogKey(raw) {
         return base ? `catalogs/${base}` : s;
     } catch (_) {
         return String(raw || '');
+    }
+}
+
+/** Deep-enough copy of global label fields for a new per-catalog slot in `catalogLabelByCatalog`. */
+function __snapshotGlobalCatalogLabelFields(rs) {
+    const src = rs && typeof rs === 'object' ? rs : {};
+    const cols = Array.isArray(src.catalogLabelColumns)
+        ? src.catalogLabelColumns.map((c) => String(c || '').trim()).filter(Boolean)
+        : [];
+    return {
+        catalogLabelColumns: cols.slice(),
+        catalogLabelTextColor: src.catalogLabelTextColor,
+        catalogLabelPosition: src.catalogLabelPosition,
+        catalogLabelsVisible: src.catalogLabelsVisible,
+        catalogLabelShowColumnNames: src.catalogLabelShowColumnNames,
+        catalogLabelNumberFormat: src.catalogLabelNumberFormat,
+        catalogLabelDecimals: src.catalogLabelDecimals,
+        catalogLabelRenderStyle: src.catalogLabelRenderStyle,
+        catalogLabelBackgroundColor: src.catalogLabelBackgroundColor
+    };
+}
+
+/** Normalize catalog label-related fields on `regionStyles` or a per-catalog slot object. */
+function __normalizeRegionStyleCatalogLabelFields(o) {
+    if (!o || typeof o !== 'object') return;
+    if (!Array.isArray(o.catalogLabelColumns)) o.catalogLabelColumns = [];
+    if (typeof o.catalogLabelTextColor !== 'string'
+        || !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(o.catalogLabelTextColor.trim())) {
+        o.catalogLabelTextColor = '#f8fafc';
+    }
+    const pos = String(o.catalogLabelPosition || 'above').toLowerCase();
+    const allowedPos = new Set(['above', 'below', 'left', 'right']);
+    o.catalogLabelPosition = allowedPos.has(pos) ? pos : 'above';
+    if (typeof o.catalogLabelsVisible !== 'boolean') o.catalogLabelsVisible = true;
+    if (typeof o.catalogLabelShowColumnNames !== 'boolean') o.catalogLabelShowColumnNames = false;
+    const fmt = String(o.catalogLabelNumberFormat || 'auto').toLowerCase();
+    const allowedFmt = new Set(['auto', 'integer', 'fixed', 'scientific', 'compact']);
+    o.catalogLabelNumberFormat = allowedFmt.has(fmt) ? fmt : 'auto';
+    let dec = parseInt(o.catalogLabelDecimals, 10);
+    if (!Number.isFinite(dec)) dec = 2;
+    o.catalogLabelDecimals = Math.max(0, Math.min(10, dec));
+    let rst = String(o.catalogLabelRenderStyle || 'halo').toLowerCase();
+    if (rst === 'box') rst = 'pill';
+    if (rst === 'plain') rst = 'halo';
+    const allowedRs = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+    o.catalogLabelRenderStyle = allowedRs.has(rst) ? rst : 'halo';
+    if (typeof o.catalogLabelBackgroundColor !== 'string'
+        || !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(o.catalogLabelBackgroundColor.trim())) {
+        o.catalogLabelBackgroundColor = '#1f2937';
     }
 }
 
@@ -1241,9 +1299,37 @@ function __ensureCatalogBooleanUiStateStore() {
         if (!rootWin.__catalogBooleanFilterUiState.colsCache) rootWin.__catalogBooleanFilterUiState.colsCache = {};
         if (!rootWin.__catalogBooleanFilterUiState.numColsCache) rootWin.__catalogBooleanFilterUiState.numColsCache = {};
         if (!rootWin.__catalogBooleanFilterUiState.allColsCache) rootWin.__catalogBooleanFilterUiState.allColsCache = {};
+        if (typeof rootWin.__catalogBooleanFilterUiState.sourceLabelsPanelOpen !== 'boolean') {
+            rootWin.__catalogBooleanFilterUiState.sourceLabelsPanelOpen = false;
+        }
+        if (typeof rootWin.__catalogBooleanFilterUiState.sourceLabelsPanelOpenKey !== 'string') {
+            rootWin.__catalogBooleanFilterUiState.sourceLabelsPanelOpenKey = '';
+        }
+        if (typeof rootWin.__catalogBooleanFilterUiState.colorCodingPanelOpenKey !== 'string') {
+            rootWin.__catalogBooleanFilterUiState.colorCodingPanelOpenKey = '';
+        }
         return rootWin.__catalogBooleanFilterUiState;
     } catch (_) {
-        if (!__ensureCatalogBooleanUiStateStore.__fallback) __ensureCatalogBooleanUiStateStore.__fallback = { openKey: null, colsCache: {}, numColsCache: {}, allColsCache: {} };
+        if (!__ensureCatalogBooleanUiStateStore.__fallback) {
+            __ensureCatalogBooleanUiStateStore.__fallback = {
+                openKey: null,
+                colsCache: {},
+                numColsCache: {},
+                allColsCache: {},
+                sourceLabelsPanelOpen: false,
+                sourceLabelsPanelOpenKey: '',
+                colorCodingPanelOpenKey: ''
+            };
+        }
+        if (typeof __ensureCatalogBooleanUiStateStore.__fallback.sourceLabelsPanelOpen !== 'boolean') {
+            __ensureCatalogBooleanUiStateStore.__fallback.sourceLabelsPanelOpen = false;
+        }
+        if (typeof __ensureCatalogBooleanUiStateStore.__fallback.sourceLabelsPanelOpenKey !== 'string') {
+            __ensureCatalogBooleanUiStateStore.__fallback.sourceLabelsPanelOpenKey = '';
+        }
+        if (typeof __ensureCatalogBooleanUiStateStore.__fallback.colorCodingPanelOpenKey !== 'string') {
+            __ensureCatalogBooleanUiStateStore.__fallback.colorCodingPanelOpenKey = '';
+        }
         return __ensureCatalogBooleanUiStateStore.__fallback;
     }
 }
@@ -1759,8 +1845,6 @@ function removeCatalogOverlayControls(force = false) {
             hostDoc.defaultView.__catalogPanelOwnerId = null;
         }
     } catch (_) {}
-    catalogOverlayControlsCollapsed = false;
-    try { window.catalogOverlayControlsCollapsed = catalogOverlayControlsCollapsed; } catch (_) {}
 }
 
 function syncCatalogOverlayControls() {
@@ -1820,6 +1904,7 @@ function positionCatalogControlsPanel(panel) {
         } else {
             panel.style.bottom = '72px';
         }
+        try { hostDoc.dispatchEvent(new CustomEvent('overlay-controls-positioned')); } catch (_) {}
         return;
     }
     const centerX = anchor.left + (anchor.width / 2);
@@ -1833,6 +1918,7 @@ function positionCatalogControlsPanel(panel) {
         panel.style.left = `${centerX}px`;
         panel.style.bottom = `${baseOffset + 48}px`;
     }
+    try { hostDoc.dispatchEvent(new CustomEvent('overlay-controls-positioned')); } catch (_) {}
 }
 
 function repositionCatalogOverlayControls() {
@@ -1876,7 +1962,11 @@ function renderCatalogOverlayControls() {
     const hasOverlay = window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay) && window.catalogDataForOverlay.length > 0;
     const loadedCats = (typeof window.getLoadedCatalogOverlays === 'function') ? window.getLoadedCatalogOverlays() : [];
     const hasAnyCatalog = Array.isArray(loadedCats) ? loadedCats.length > 0 : !!window.currentCatalogName;
-    if (!hasOverlay || !hasAnyCatalog) return;
+    if (!hasOverlay || !hasAnyCatalog) {
+        catalogOverlayControlsCollapsed = true;
+        try { window.catalogOverlayControlsCollapsed = true; } catch (_) {}
+        return;
+    }
 
     const hostDoc = getTopLevelDocument();
     if (!hostDoc || !hostDoc.body) return;
@@ -1895,17 +1985,20 @@ function renderCatalogOverlayControls() {
         alignItems: 'stretch',
         gap: '10px',
         // Keep above the image viewer, but below top-level popups (Plotter/Region Style/Catalog Viewer).
-        zIndex: '3500',
+        zIndex: '60060',
         color: '#f9fafb',
         fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
         minWidth: '260px',
+        width: 'min(92vw, 640px)',
+        maxWidth: 'calc(100vw - 32px)',
         pointerEvents: 'auto',
         // Prevent any child from causing horizontal scroll
         overflowX: 'hidden',
         boxSizing: 'border-box',
-        // Prevent the panel from growing beyond the viewport (so the close button is always reachable)
+        // Cap height and scroll vertically so long catalog lists / filters stay usable
         maxHeight: '82vh',
-        overflowY: 'hidden'
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch'
     });
 
     // Ensure box-sizing is consistent inside the panel (prevents subtle width overflow from padding/borders)
@@ -1916,7 +2009,7 @@ function renderCatalogOverlayControls() {
             st.id = styleId;
             st.textContent = `
             #catalog-overlay-controls, #catalog-overlay-controls * { box-sizing: border-box; }
-            #catalog-overlay-controls { overflow-x: hidden; }
+            #catalog-overlay-controls { overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; }
             @keyframes catalog-btn-pulse {
               0% { transform: scale(1); box-shadow: 0 0 0 rgba(34,211,238,0); }
               45% { transform: scale(1.06); box-shadow: 0 0 0 4px rgba(34,211,238,0.15); }
@@ -1945,18 +2038,29 @@ function renderCatalogOverlayControls() {
     } catch (_) {}
 
     // Header (similar to segment controls)
+    const stickyHeader = createEl('div');
+    Object.assign(stickyHeader.style, {
+        position: 'sticky',
+        top: '-12px',
+        zIndex: '5',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        width: 'calc(100% + 40px)',
+        margin: '-12px -20px 0 -20px',
+        padding: '12px 20px 8px 20px',
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.99) 0%, rgba(17,24,39,0.98) 82%, rgba(17,24,39,0.92) 100%)',
+        borderTopLeftRadius: '12px',
+        borderTopRightRadius: '12px',
+        boxShadow: '0 8px 14px rgba(0,0,0,0.18)'
+    });
     const headerRow = createEl('div');
     Object.assign(headerRow.style, {
         display: 'flex',
         width: '100%',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: '10px',
-        position: 'sticky',
-        top: '0',
-        zIndex: '3',
-        background: 'rgba(17,24,39,0.98)',
-        paddingBottom: '6px'
+        gap: '10px'
     });
     const titleLabel = createEl('span');
     const activeName = window.currentCatalogName || window.activeCatalog || '';
@@ -1989,7 +2093,7 @@ function renderCatalogOverlayControls() {
     collapseBtn.addEventListener('mouseleave', () => collapseBtn.style.background = 'rgba(255,255,255,0.08)');
     collapseBtn.setAttribute('aria-label', 'Collapse catalog controls');
     headerRow.append(titleLabel, collapseBtn);
-    panel.appendChild(headerRow);
+    stickyHeader.appendChild(headerRow);
 
     // Live visible-source counter (fed by canvasUpdateOverlay -> window.__catalogOverlayRenderStats)
     const statsRow = createEl('div');
@@ -1997,15 +2101,11 @@ function renderCatalogOverlayControls() {
     Object.assign(statsRow.style, {
         fontSize: '12px',
         color: '#cbd5e1',
-        marginTop: '-6px',
-        position: 'sticky',
-        top: '34px',
-        zIndex: '2',
-        background: 'rgba(17,24,39,0.98)',
-        paddingBottom: '6px'
+        lineHeight: '1.35'
     });
     statsRow.textContent = 'Visible sources: —';
-    panel.appendChild(statsRow);
+    stickyHeader.appendChild(statsRow);
+    panel.appendChild(stickyHeader);
 
     const expandedContent = createEl('div');
     Object.assign(expandedContent.style, {
@@ -2015,10 +2115,10 @@ function renderCatalogOverlayControls() {
         width: '100%',
         gap: '10px',
         transition: 'opacity 200ms ease, max-height 220ms ease',
-        overflowY: 'auto',
+        // Main scroll is on #catalog-overlay-controls; avoid nested scroll + arbitrary 600px clip
         overflowX: 'hidden',
-        // Let this section scroll within the capped panel height
-        maxHeight: 'calc(82vh - 72px)'
+        overflowY: 'visible',
+        maxHeight: 'none'
     });
     panel.appendChild(expandedContent);
 
@@ -2058,6 +2158,45 @@ function renderCatalogOverlayControls() {
             const condCount = (cCfg && typeof cCfg === 'object' && Array.isArray(cCfg.conditions)) ? cCfg.conditions.filter(Boolean).length : 0;
             return boolCount + condCount;
         } catch (_) { return 0; }
+    };
+    const countEnabledLabels = (key) => {
+        try {
+            const nk = __normalizeCatalogKey(key);
+            const cfg = window.regionStyles
+                && window.regionStyles.catalogLabelByCatalog
+                && window.regionStyles.catalogLabelByCatalog[nk];
+            if (!cfg || typeof cfg !== 'object') return 0;
+            return Array.isArray(cfg.catalogLabelColumns)
+                ? cfg.catalogLabelColumns.map((c) => String(c || '').trim()).filter(Boolean).length
+                : 0;
+        } catch (_) { return 0; }
+    };
+    const getCatalogStyleForControls = (key) => {
+        try {
+            const nk = __normalizeCatalogKey(key);
+            if (!nk) return null;
+            const store = window.__catalogStylesByName;
+            if (store && typeof store === 'object') {
+                if (store[nk] && typeof store[nk] === 'object') return store[nk];
+                const shortKey = String(nk).replace(/^catalogs\//, '');
+                if (store[shortKey] && typeof store[shortKey] === 'object') return store[shortKey];
+            }
+            const entry = Array.isArray(window.catalogData)
+                ? window.catalogData.find((cat) => __normalizeCatalogKey(cat && cat.name) === nk)
+                : null;
+            if (entry && entry.style && typeof entry.style === 'object') return entry.style;
+            if (__normalizeCatalogKey(window.currentCatalogName || window.activeCatalog || '') === nk
+                && window.regionStyles && typeof window.regionStyles === 'object') {
+                return window.regionStyles;
+            }
+        } catch (_) {}
+        return null;
+    };
+    const hasColorCodingForCatalog = (key) => {
+        try {
+            const st = getCatalogStyleForControls(key);
+            return !!(st && st.colorCodeColumn);
+        } catch (_) { return false; }
     };
 
     cats.slice(0, 8).forEach((c) => {
@@ -2137,7 +2276,15 @@ function renderCatalogOverlayControls() {
 
         // Right side: count + filter button
         const right = createEl('div');
-        Object.assign(right.style, { display: 'flex', alignItems: 'center', gap: '8px', flex: '0 0 auto' });
+        Object.assign(right.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '8px',
+            flex: '0 1 auto',
+            flexWrap: 'wrap',
+            minWidth: '0'
+        });
 
         const filterCount = countEnabledFilters(key);
         const isFilterOpen = (openKey && String(openKey) === String(key));
@@ -2166,12 +2313,102 @@ function renderCatalogOverlayControls() {
         filterBtn.addEventListener('click', (ev) => {
             try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
             try {
+                if (typeof window.setActiveCatalogForControls === 'function') {
+                    window.setActiveCatalogForControls(key);
+                } else {
+                    window.currentCatalogName = key;
+                    window.activeCatalog = key;
+                }
                 // Open/close this catalog's filter panel
                 uiState.openKey = (uiState.openKey === key) ? null : key;
+                uiState.sourceLabelsPanelOpen = false;
+                uiState.sourceLabelsPanelOpenKey = '';
+                uiState.colorCodingPanelOpenKey = '';
             } catch (_) {}
             try { renderCatalogOverlayControls(); } catch (_) {}
             // Ensure a redraw so filter changes show immediately if user opens/closes quickly
             try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+        });
+
+        const labelCount = countEnabledLabels(key);
+        const isLabelsRowOpen = uiState.sourceLabelsPanelOpenKey && String(uiState.sourceLabelsPanelOpenKey) === String(key);
+        const labelsBtn = createEl('button');
+        labelsBtn.type = 'button';
+        labelsBtn.title = 'Source labels for this catalog';
+        labelsBtn.textContent = `${isLabelsRowOpen ? '⏶' : '⏷'} Labels${labelCount > 0 ? ` · ${labelCount}` : ''}`;
+        Object.assign(labelsBtn.style, {
+            border: 'none',
+            background: isLabelsRowOpen
+                ? 'rgba(37,99,235,0.35)'
+                : (labelCount > 0 ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.06)'),
+            color: isLabelsRowOpen
+                ? '#bfdbfe'
+                : (labelCount > 0 ? '#67e8f9' : '#e5e7eb'),
+            padding: '3px 10px',
+            borderRadius: '999px',
+            cursor: 'pointer',
+            fontSize: '11px',
+            transition: 'background 150ms ease, transform 150ms ease, box-shadow 150ms ease',
+            boxShadow: isLabelsRowOpen ? '0 0 0 1px rgba(147,197,253,0.45) inset' : 'none'
+        });
+        labelsBtn.addEventListener('mouseenter', () => { labelsBtn.style.transform = 'scale(1.02)'; });
+        labelsBtn.addEventListener('mouseleave', () => { labelsBtn.style.transform = 'scale(1)'; });
+        labelsBtn.addEventListener('click', (ev) => {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+            try {
+                if (typeof window.setActiveCatalogForControls === 'function') {
+                    window.setActiveCatalogForControls(key);
+                } else {
+                    window.currentCatalogName = key;
+                    window.activeCatalog = key;
+                }
+                const wasOpen = uiState.sourceLabelsPanelOpenKey === key;
+                uiState.sourceLabelsPanelOpenKey = wasOpen ? '' : key;
+                uiState.sourceLabelsPanelOpen = !wasOpen;
+                uiState.openKey = null;
+                uiState.colorCodingPanelOpenKey = '';
+            } catch (_) {}
+            try { renderCatalogOverlayControls(); } catch (_) {}
+        });
+
+        const colorEnabled = hasColorCodingForCatalog(key);
+        const colorOpen = uiState.colorCodingPanelOpenKey && String(uiState.colorCodingPanelOpenKey) === String(key);
+        const colorBtn = createEl('button');
+        colorBtn.type = 'button';
+        colorBtn.title = colorEnabled ? 'Color coding for this catalog' : 'No color-coded column configured for this catalog';
+        colorBtn.textContent = `${colorOpen ? '⏶' : '⏷'} Color code`;
+        Object.assign(colorBtn.style, {
+            border: 'none',
+            background: colorOpen
+                ? 'rgba(37,99,235,0.35)'
+                : (colorEnabled ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.06)'),
+            color: colorOpen
+                ? '#bfdbfe'
+                : (colorEnabled ? '#67e8f9' : '#cbd5e1'),
+            padding: '3px 10px',
+            borderRadius: '999px',
+            cursor: 'pointer',
+            fontSize: '11px',
+            transition: 'background 150ms ease, transform 150ms ease, box-shadow 150ms ease',
+            boxShadow: colorOpen ? '0 0 0 1px rgba(147,197,253,0.45) inset' : 'none'
+        });
+        colorBtn.addEventListener('mouseenter', () => { colorBtn.style.transform = 'scale(1.02)'; });
+        colorBtn.addEventListener('mouseleave', () => { colorBtn.style.transform = 'scale(1)'; });
+        colorBtn.addEventListener('click', (ev) => {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+            try {
+                if (typeof window.setActiveCatalogForControls === 'function') {
+                    window.setActiveCatalogForControls(key);
+                } else {
+                    window.currentCatalogName = key;
+                    window.activeCatalog = key;
+                }
+                uiState.colorCodingPanelOpenKey = (uiState.colorCodingPanelOpenKey === key) ? '' : key;
+                uiState.openKey = null;
+                uiState.sourceLabelsPanelOpen = false;
+                uiState.sourceLabelsPanelOpenKey = '';
+            } catch (_) {}
+            try { renderCatalogOverlayControls(); } catch (_) {}
         });
 
         const removeBtn = createEl('button');
@@ -2220,7 +2457,9 @@ function renderCatalogOverlayControls() {
             }, 180);
         });
 
-        right.append(meta, filterBtn, removeBtn);
+        right.append(meta, labelsBtn);
+        if (colorEnabled) right.appendChild(colorBtn);
+        right.append(filterBtn, removeBtn);
         row.append(left, right);
         rows.appendChild(row);
 
@@ -2399,7 +2638,7 @@ function renderCatalogOverlayControls() {
                     display: 'grid',
                     gridTemplateColumns: '1fr',
                     gap: '6px',
-                    maxHeight: '140px',
+                    maxHeight: '84px',
                     overflowY: 'auto',
                     paddingRight: '4px'
                 });
@@ -2976,15 +3215,23 @@ function renderCatalogOverlayControls() {
             expandedContent.style.overflow = 'hidden';
             panel.style.padding = '6px 12px';
             panel.style.minWidth = 'auto';
+            panel.style.width = 'auto';
+            stickyHeader.style.width = 'calc(100% + 24px)';
+            stickyHeader.style.margin = '-6px -12px 0 -12px';
+            stickyHeader.style.padding = '6px 12px';
             collapseBtn.textContent = '➕';
             collapseBtn.setAttribute('aria-label', 'Show catalog controls');
         } else {
             expandedContent.style.opacity = '1';
-            expandedContent.style.maxHeight = '600px';
+            expandedContent.style.maxHeight = 'none';
             expandedContent.style.pointerEvents = 'auto';
             expandedContent.style.overflow = 'visible';
             panel.style.padding = '12px 20px';
             panel.style.minWidth = '260px';
+            panel.style.width = 'min(92vw, 640px)';
+            stickyHeader.style.width = 'calc(100% + 40px)';
+            stickyHeader.style.margin = '-12px -20px 0 -20px';
+            stickyHeader.style.padding = '12px 20px 8px 20px';
             collapseBtn.textContent = '×';
             collapseBtn.setAttribute('aria-label', 'Collapse catalog controls');
         }
@@ -3061,129 +3308,1096 @@ function renderCatalogOverlayControls() {
     sliderRow.appendChild(sliderValue);
     expandedContent.appendChild(sliderRow);
 
-    // Color selection row
-    const colorRow = createEl('div');
-    colorRow.style.display = 'flex';
-    colorRow.style.alignItems = 'center';
-    colorRow.style.gap = '8px';
-
-    const colorLabel = createEl('span');
-    colorLabel.textContent = 'Color:';
-    Object.assign(colorLabel.style, {
-        fontSize: '12px',
-        color: '#d1d5db'
-    });
-
-    // Populate color options from catalog quick styles (if available)
-    let colorOptions = [];
-    try {
-        if (typeof window.getCatalogQuickStyleOptions === 'function') {
-            colorOptions = window.getCatalogQuickStyleOptions();
-        }
-    } catch (_) {}
-    if (!Array.isArray(colorOptions) || !colorOptions.length) {
-        colorOptions = [
-            { id: 'amber', label: 'Amber' },
-            { id: 'emerald', label: 'Emerald' },
-            { id: 'sky', label: 'Sky' },
-            { id: 'violet', label: 'Violet' }
-        ];
-    }
-
-    const swatchContainer = createEl('div');
-    swatchContainer.style.display = 'flex';
-    swatchContainer.style.alignItems = 'center';
-    swatchContainer.style.gap = '6px';
-
     const ownerWin = window;
-    let activeStyleId = null;
-    try {
-        const rs = ownerWin.regionStyles;
-        if (rs && rs.borderColor) {
-            const match = colorOptions.find(opt => {
-                const c = (opt.style && opt.style.borderColor) || opt.style?.color;
-                if (!c) return false;
-                return String(c).toLowerCase() === String(rs.borderColor).toLowerCase();
-            });
-            if (match) activeStyleId = match.id;
-        }
-    } catch (_) {}
 
-    const updateSwatchSelection = (selectedId) => {
-        Array.from(swatchContainer.children).forEach((child) => {
-            if (!child.dataset) return;
-            const isSelected = child.dataset.styleId === selectedId;
-            child.style.boxShadow = isSelected
-                ? '0 0 0 2px #e5e7eb, 0 0 0 4px rgba(37,99,235,0.7)'
-                : '0 0 0 1px rgba(15,23,42,0.9)';
-            child.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
-        });
+    const redrawing = () => {
+        try {
+            if (typeof canvasUpdateOverlay === 'function') canvasUpdateOverlay();
+        } catch (_) {}
+    };
+    const ensureLabelStyle = () => {
+        ownerWin.regionStyles = ownerWin.regionStyles || {};
+        if (!ownerWin.regionStyles.catalogLabelByCatalog || typeof ownerWin.regionStyles.catalogLabelByCatalog !== 'object') {
+            ownerWin.regionStyles.catalogLabelByCatalog = {};
+        }
+        __normalizeRegionStyleCatalogLabelFields(ownerWin.regionStyles);
+    };
+    ensureLabelStyle();
+
+    const catalogKeyForLabels = __normalizeCatalogKey(
+        String(ownerWin.currentCatalogName || ownerWin.activeCatalog || '').trim()
+    );
+    const rsRef = ownerWin.regionStyles;
+    if (catalogKeyForLabels) {
+        if (!rsRef.catalogLabelByCatalog[catalogKeyForLabels] || typeof rsRef.catalogLabelByCatalog[catalogKeyForLabels] !== 'object') {
+            rsRef.catalogLabelByCatalog[catalogKeyForLabels] = __snapshotGlobalCatalogLabelFields(rsRef);
+        }
+        __normalizeRegionStyleCatalogLabelFields(rsRef.catalogLabelByCatalog[catalogKeyForLabels]);
+    }
+    const labelStyleTarget = catalogKeyForLabels
+        ? rsRef.catalogLabelByCatalog[catalogKeyForLabels]
+        : rsRef;
+
+    const loadedCatsForLabelHint = (typeof window.getLoadedCatalogOverlays === 'function') ? window.getLoadedCatalogOverlays() : [];
+    const multiCatalogLabelHint = Array.isArray(loadedCatsForLabelHint) && loadedCatsForLabelHint.length > 1;
+
+    const selectStyle = {
+        background: 'rgba(255,255,255,0.06)',
+        color: '#f9fafb',
+        border: '1px solid rgba(255,255,255,0.16)',
+        borderRadius: '8px',
+        padding: '6px 8px',
+        fontSize: '12px',
+        cursor: 'pointer'
     };
 
-    colorOptions.slice(0, 9).forEach((opt) => {
-        const style = opt.style || {};
-        const swatch = createEl('button');
-        swatch.type = 'button';
-        swatch.dataset.styleId = opt.id;
-        Object.assign(swatch.style, {
-            width: '18px',
-            height: '18px',
-            borderRadius: '999px',
-            padding: '0',
-            border: 'none',
-            cursor: 'pointer',
-            backgroundColor: style.backgroundColor && style.backgroundColor !== 'transparent'
-                ? style.backgroundColor
-                : (style.borderColor || '#ffffff'),
-            boxShadow: '0 0 0 1px rgba(15,23,42,0.9)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'transform 120ms ease, box-shadow 120ms ease',
-        });
-        if (style.backgroundColor === 'transparent' && style.borderColor) {
-            // Inner dot to hint at fill when only a stroke color is defined
-            const inner = createEl('div');
-            Object.assign(inner.style, {
-                width: '11px',
-                height: '11px',
-                borderRadius: '999px',
-                backgroundColor: style.borderColor
-            });
-            swatch.appendChild(inner);
-        }
-        swatch.title = opt.label || opt.id;
-        swatch.addEventListener('mouseenter', () => {
-            if (swatch.style.transform !== 'scale(1.05)') {
-                swatch.style.transform = 'scale(1.08)';
-            }
-        });
-        swatch.addEventListener('mouseleave', () => {
-            const isSelected = swatch.dataset.styleId === activeStyleId;
-            swatch.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
-        });
-        swatch.addEventListener('click', () => {
-            try {
-                const name = ownerWin.currentCatalogName || catalogName;
-                if (ownerWin && typeof ownerWin.applyCatalogQuickStyle === 'function') {
-                    ownerWin.applyCatalogQuickStyle(name, opt.id);
-                    activeStyleId = opt.id;
-                    updateSwatchSelection(activeStyleId);
-                }
-            } catch (_) {}
-        });
-        swatchContainer.appendChild(swatch);
+    const lw = createEl('div');
+    Object.assign(lw.style, {
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        padding: '10px 10px',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: '10px'
     });
 
-    // Default selection if none matched
-    if (!activeStyleId && colorOptions.length) {
-        activeStyleId = colorOptions[0].id;
-    }
-    updateSwatchSelection(activeStyleId);
+    const labelUi = __ensureCatalogBooleanUiStateStore();
+    if (typeof labelUi.sourceLabelsPanelOpen !== 'boolean') labelUi.sourceLabelsPanelOpen = false;
+    const isLabelsOpen = !!(catalogKeyForLabels
+        && labelUi.sourceLabelsPanelOpenKey
+        && String(labelUi.sourceLabelsPanelOpenKey) === String(catalogKeyForLabels));
 
-    colorRow.appendChild(colorLabel);
-    colorRow.appendChild(swatchContainer);
-    expandedContent.appendChild(colorRow);
+    const labelHeaderRow = createEl('div');
+    Object.assign(labelHeaderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        width: '100%'
+    });
+    const labelToggleBtn = createEl('button');
+    labelToggleBtn.type = 'button';
+    labelToggleBtn.title = 'Open or close source label options';
+    const nLabelCols = (labelStyleTarget.catalogLabelColumns || []).filter(Boolean).length;
+    const labelsShownOnMap = labelStyleTarget.catalogLabelsVisible !== false;
+    const chevLabels = isLabelsOpen ? '⏶' : '⏷';
+    let labelBtnExtra = '';
+    if (nLabelCols) labelBtnExtra += ` · ${nLabelCols} col${nLabelCols === 1 ? '' : 's'}`;
+    if (!labelsShownOnMap) labelBtnExtra += ' · hidden';
+    const labelCatalogShort = catalogKeyForLabels ? (String(catalogKeyForLabels).split(/[/\\]/).pop() || catalogKeyForLabels) : '';
+    labelToggleBtn.textContent = `${chevLabels} Source labels${labelCatalogShort ? ` · ${labelCatalogShort}` : ''}${labelBtnExtra}`;
+    Object.assign(labelToggleBtn.style, {
+        border: 'none',
+        background: isLabelsOpen
+            ? 'rgba(37,99,235,0.35)'
+            : (nLabelCols > 0 ? 'rgba(34,211,238,0.12)' : 'rgba(255,255,255,0.06)'),
+        color: isLabelsOpen
+            ? '#bfdbfe'
+            : (nLabelCols > 0 ? '#67e8f9' : '#e5e7eb'),
+        padding: '4px 12px',
+        borderRadius: '999px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        fontWeight: '600',
+        transition: 'background 150ms ease, transform 150ms ease, box-shadow 150ms ease',
+        boxShadow: isLabelsOpen ? '0 0 0 1px rgba(147,197,253,0.45) inset' : 'none',
+        textAlign: 'left',
+        flex: '1',
+        minWidth: '0',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+    });
+    labelToggleBtn.addEventListener('mouseenter', () => { labelToggleBtn.style.transform = 'scale(1.02)'; });
+    labelToggleBtn.addEventListener('mouseleave', () => { labelToggleBtn.style.transform = 'scale(1)'; });
+    labelToggleBtn.addEventListener('click', (ev) => {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+        try {
+            labelUi.sourceLabelsPanelOpen = !labelUi.sourceLabelsPanelOpen;
+        } catch (_) {}
+        try { renderCatalogOverlayControls(); } catch (_) {}
+    });
+    // The per-catalog row "Labels" button is the toggle; keep this body compact.
+
+    const labelBodyWrap = createEl('div');
+    Object.assign(labelBodyWrap.style, {
+        width: '100%',
+        overflow: 'hidden',
+        maxHeight: '2000px',
+        opacity: '1',
+        transition: 'max-height 220ms ease, opacity 180ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px'
+    });
+
+    const rowLabelCols = createEl('div');
+    Object.assign(rowLabelCols.style, { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' });
+    const colPickHint = createEl('div');
+    colPickHint.textContent = (multiCatalogLabelHint && catalogKeyForLabels)
+        ? `Columns for on-map text — active catalog: ${String(catalogKeyForLabels).split(/[/\\]/).pop() || catalogKeyForLabels}`
+        : 'Columns for on-map text';
+    Object.assign(colPickHint.style, { fontSize: '11px', color: '#94a3b8' });
+    rowLabelCols.appendChild(colPickHint);
+
+    let colNames = catalogKeyForLabels ? __getAllCatalogColumnsCached(catalogKeyForLabels) : [];
+    const currentLabelCols = (labelStyleTarget.catalogLabelColumns || [])
+        .map((c) => String(c || '').trim())
+        .filter(Boolean);
+    const nameSet = new Set(colNames);
+    for (const c of currentLabelCols) {
+        if (c && !nameSet.has(c)) {
+            colNames.push(c);
+            nameSet.add(c);
+        }
+    }
+    colNames.sort((a, b) => a.localeCompare(b));
+
+    let colsLoading = false;
+    if (catalogKeyForLabels && !colNames.length) {
+        try {
+            const ui = __ensureCatalogBooleanUiStateStore();
+            const ent = ui.allColsCache && ui.allColsCache[catalogKeyForLabels];
+            colsLoading = !!(ent && ent.inflight);
+        } catch (_) {}
+    }
+
+    const searchInp = createEl('input');
+    searchInp.type = 'search';
+    searchInp.placeholder = 'Search columns…';
+    searchInp.autocomplete = 'off';
+    searchInp.disabled = !catalogKeyForLabels || colsLoading;
+    Object.assign(searchInp.style, {
+        width: '100%',
+        boxSizing: 'border-box',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#f9fafb',
+        border: '1px solid rgba(255,255,255,0.16)',
+        borderRadius: '8px',
+        padding: '6px 8px',
+        fontSize: '12px'
+    });
+    rowLabelCols.appendChild(searchInp);
+
+    const listBox = createEl('div');
+    const labelListMaxH = '84px';
+    Object.assign(listBox.style, {
+        maxHeight: labelListMaxH,
+        overflowY: 'auto',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '8px',
+        padding: '4px',
+        background: 'rgba(0,0,0,0.22)'
+    });
+    rowLabelCols.appendChild(listBox);
+
+    const colMultiHint = createEl('div');
+    Object.assign(colMultiHint.style, { fontSize: '10px', color: '#64748b' });
+    if (!catalogKeyForLabels) {
+        colMultiHint.textContent = 'Load or select the active catalog on the map to load all column names.';
+    } else if (colsLoading) {
+        colMultiHint.textContent = 'Loading all columns for this catalog…';
+    } else if (!colNames.length) {
+        colMultiHint.textContent = 'No columns returned for this catalog.';
+    } else if (!currentLabelCols.length) {
+        colMultiHint.textContent = 'Search and tick columns for on-map text.';
+    } else {
+        colMultiHint.textContent = 'Search and tick one or more columns for on-map text.';
+    }
+    rowLabelCols.appendChild(colMultiHint);
+
+    const labelColIsSelected = (name) => {
+        const arr = labelStyleTarget.catalogLabelColumns || [];
+        return arr.some((c) => String(c || '').trim() === name);
+    };
+
+    const scheduleCatalogOverlayControlsRefresh = () => {
+        try {
+            queueMicrotask(() => { try { renderCatalogOverlayControls(); } catch (_) {} });
+        } catch (_) {}
+    };
+
+    const commitLabelColumnsAndRedraw = (selected) => {
+        labelStyleTarget.catalogLabelColumns = selected;
+        const apiKey = catalogKeyForLabels || __normalizeCatalogKey(ownerWin.currentCatalogName || ownerWin.activeCatalog || '');
+        const recordsForApi = (() => {
+            try {
+                const perCat = ownerWin.catalogOverlaysByCatalog && ownerWin.catalogOverlaysByCatalog[apiKey];
+                if (Array.isArray(perCat) && perCat.length) return perCat;
+            } catch (_) {}
+            try {
+                const all = ownerWin.catalogDataForOverlay;
+                if (Array.isArray(all) && all.length) {
+                    const filtered = all.filter((r) => r && __normalizeCatalogKey(r.__catalogName || r.catalog_name || r.catalog || '') === apiKey);
+                    if (filtered.length) return filtered;
+                }
+            } catch (_) {}
+            return [];
+        })();
+        if (selected.length && typeof __attachColumnValuesToRawRecords === 'function'
+            && recordsForApi.length) {
+            __attachColumnValuesToRawRecords(apiKey, recordsForApi, selected)
+                .then(() => {
+                    redrawing();
+                    scheduleCatalogOverlayControlsRefresh();
+                })
+                .catch(() => {
+                    redrawing();
+                    scheduleCatalogOverlayControlsRefresh();
+                });
+        } else {
+            redrawing();
+            scheduleCatalogOverlayControlsRefresh();
+        }
+    };
+
+    const toggleLabelColumn = (name, checked) => {
+        const set = new Set(
+            (labelStyleTarget.catalogLabelColumns || []).map((c) => String(c || '').trim()).filter(Boolean)
+        );
+        if (checked) set.add(name);
+        else set.delete(name);
+        commitLabelColumnsAndRedraw(Array.from(set));
+    };
+
+    const renderLabelColList = () => {
+        listBox.innerHTML = '';
+        if (!catalogKeyForLabels || colsLoading) {
+            const msg = createEl('div');
+            msg.textContent = colsLoading ? 'Loading…' : 'No catalog selected.';
+            Object.assign(msg.style, { fontSize: '12px', color: '#94a3b8', padding: '10px 8px' });
+            listBox.appendChild(msg);
+            return;
+        }
+        if (!colNames.length) {
+            const msg = createEl('div');
+            msg.textContent = 'No columns available.';
+            Object.assign(msg.style, { fontSize: '12px', color: '#94a3b8', padding: '10px 8px' });
+            listBox.appendChild(msg);
+            return;
+        }
+        const q = String(searchInp.value || '').trim().toLowerCase();
+        const rows = colNames.filter((n) => !q || String(n).toLowerCase().includes(q));
+        if (!rows.length) {
+            const msg = createEl('div');
+            msg.textContent = 'No matching columns.';
+            Object.assign(msg.style, { fontSize: '12px', color: '#94a3b8', padding: '10px 8px' });
+            listBox.appendChild(msg);
+            return;
+        }
+        for (const name of rows) {
+            const row = createEl('label');
+            Object.assign(row.style, {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '4px 6px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                color: '#e5e7eb',
+                borderRadius: '6px'
+            });
+            row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.06)'; });
+            row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+            const cb = createEl('input');
+            cb.type = 'checkbox';
+            cb.checked = labelColIsSelected(name);
+            cb.addEventListener('change', () => {
+                toggleLabelColumn(name, cb.checked);
+            });
+            const sp = createEl('span');
+            sp.textContent = name;
+            Object.assign(sp.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0', flex: '1' });
+            row.appendChild(cb);
+            row.appendChild(sp);
+            listBox.appendChild(row);
+        }
+    };
+
+    searchInp.addEventListener('input', renderLabelColList);
+    renderLabelColList();
+
+    labelBodyWrap.appendChild(rowLabelCols);
+
+    const rowA = createEl('div');
+        Object.assign(rowA.style, { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' });
+
+        const visWrap = createEl('label');
+        Object.assign(visWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#e5e7eb' });
+        const visCb = createEl('input');
+        visCb.type = 'checkbox';
+        visCb.checked = labelStyleTarget.catalogLabelsVisible !== false;
+        visWrap.appendChild(visCb);
+        const visSp = createEl('span');
+        visSp.textContent = 'Show on image';
+        visWrap.appendChild(visSp);
+        visCb.addEventListener('change', () => {
+            labelStyleTarget.catalogLabelsVisible = !!visCb.checked;
+            redrawing();
+            scheduleCatalogOverlayControlsRefresh();
+        });
+        rowA.appendChild(visWrap);
+
+        const nameColWrap = createEl('label');
+        Object.assign(nameColWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#e5e7eb' });
+        const nameColCb = createEl('input');
+        nameColCb.type = 'checkbox';
+        nameColCb.checked = labelStyleTarget.catalogLabelShowColumnNames === true;
+        nameColWrap.appendChild(nameColCb);
+        const nameColSp = createEl('span');
+        nameColSp.textContent = 'Column names';
+        nameColWrap.appendChild(nameColSp);
+        nameColCb.addEventListener('change', () => {
+            labelStyleTarget.catalogLabelShowColumnNames = !!nameColCb.checked;
+            redrawing();
+        });
+        rowA.appendChild(nameColWrap);
+
+        const colorHint = createEl('span');
+        colorHint.textContent = 'Text color';
+        Object.assign(colorHint.style, { fontSize: '11px', color: '#94a3b8' });
+        rowA.appendChild(colorHint);
+        let cpVal = String(labelStyleTarget.catalogLabelTextColor || '#f8fafc').trim();
+        if (/^#[0-9a-fA-F]{3}$/.test(cpVal)) {
+            const x = cpVal.slice(1);
+            cpVal = `#${x[0]}${x[0]}${x[1]}${x[1]}${x[2]}${x[2]}`;
+        }
+        if (!/^#[0-9a-fA-F]{6}$/.test(cpVal)) cpVal = '#f8fafc';
+        const colPick = createEl('input');
+        colPick.type = 'color';
+        colPick.value = cpVal;
+        Object.assign(colPick.style, {
+            width: '36px',
+            height: '28px',
+            padding: '0',
+            border: '1px solid rgba(255,255,255,0.2)',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            background: 'transparent'
+        });
+        colPick.addEventListener('input', () => {
+            labelStyleTarget.catalogLabelTextColor = colPick.value;
+            redrawing();
+        });
+        rowA.appendChild(colPick);
+
+        const posHint = createEl('span');
+        posHint.textContent = 'Position';
+        Object.assign(posHint.style, { fontSize: '11px', color: '#94a3b8', marginLeft: '4px' });
+        rowA.appendChild(posHint);
+        const posSel = createEl('select');
+        posSel.innerHTML = ''
+            + '<option value="above">Above marker</option>'
+            + '<option value="below">Below marker</option>'
+            + '<option value="left">Left of marker</option>'
+            + '<option value="right">Right of marker</option>';
+        Object.assign(posSel.style, {
+            background: 'rgba(255,255,255,0.06)',
+            color: '#f9fafb',
+            border: '1px solid rgba(255,255,255,0.16)',
+            borderRadius: '8px',
+            padding: '6px 8px',
+            fontSize: '12px',
+            cursor: 'pointer'
+        });
+        posSel.value = labelStyleTarget.catalogLabelPosition || 'above';
+        const posAllowed = new Set(['above', 'below', 'left', 'right']);
+        if (!posAllowed.has(posSel.value)) posSel.value = 'above';
+        posSel.addEventListener('change', () => {
+            labelStyleTarget.catalogLabelPosition = posSel.value;
+            redrawing();
+        });
+        rowA.appendChild(posSel);
+
+        const rowFmt = createEl('div');
+        Object.assign(rowFmt.style, { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' });
+        const fmtHint = createEl('span');
+        fmtHint.textContent = 'Numbers';
+        Object.assign(fmtHint.style, { fontSize: '11px', color: '#94a3b8' });
+        rowFmt.appendChild(fmtHint);
+        const fmtSel = createEl('select');
+        fmtSel.innerHTML = ''
+            + '<option value="auto">Auto</option>'
+            + '<option value="integer">Integer</option>'
+            + '<option value="fixed">Fixed decimals</option>'
+            + '<option value="scientific">Scientific</option>'
+            + '<option value="compact">Compact</option>';
+        Object.assign(fmtSel.style, selectStyle);
+        fmtSel.value = String(labelStyleTarget.catalogLabelNumberFormat || 'auto');
+        const decHint = createEl('span');
+        decHint.textContent = 'Decimals';
+        Object.assign(decHint.style, { fontSize: '11px', color: '#94a3b8' });
+        const decInp = createEl('input');
+        decInp.type = 'number';
+        decInp.min = '0';
+        decInp.max = '10';
+        decInp.step = '1';
+        Object.assign(decInp.style, {
+            width: '52px',
+            background: 'rgba(255,255,255,0.06)',
+            color: '#f9fafb',
+            border: '1px solid rgba(255,255,255,0.16)',
+            borderRadius: '8px',
+            padding: '6px 8px',
+            fontSize: '12px'
+        });
+        decInp.value = String(labelStyleTarget.catalogLabelDecimals ?? 2);
+        const syncDecVisibility = () => {
+            const f = fmtSel.value;
+            const show = (f === 'fixed' || f === 'scientific' || f === 'compact');
+            decHint.style.display = show ? '' : 'none';
+            decInp.style.display = show ? '' : 'none';
+        };
+        fmtSel.addEventListener('change', () => {
+            labelStyleTarget.catalogLabelNumberFormat = fmtSel.value;
+            syncDecVisibility();
+            redrawing();
+        });
+        decInp.addEventListener('change', () => {
+            let d = parseInt(decInp.value, 10);
+            if (!Number.isFinite(d)) d = 2;
+            d = Math.max(0, Math.min(10, d));
+            decInp.value = String(d);
+            labelStyleTarget.catalogLabelDecimals = d;
+            redrawing();
+        });
+        rowFmt.appendChild(fmtSel);
+        rowFmt.appendChild(decHint);
+        rowFmt.appendChild(decInp);
+        syncDecVisibility();
+
+        const rowLook = createEl('div');
+        Object.assign(rowLook.style, { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' });
+        const lookHint = createEl('span');
+        lookHint.textContent = 'Label look';
+        Object.assign(lookHint.style, { fontSize: '11px', color: '#94a3b8' });
+        rowLook.appendChild(lookHint);
+        const lookSel = createEl('select');
+        lookSel.innerHTML = ''
+            + '<option value="halo">Plain text</option>'
+            + '<option value="shadow">Soft shadow</option>'
+            + '<option value="glow">Soft glow</option>'
+            + '<option value="pill">Tag (rounded fill)</option>'
+            + '<option value="glass">Frosted glass</option>'
+            + '<option value="outline">Outline frame</option>';
+        Object.assign(lookSel.style, selectStyle);
+        lookSel.value = String(labelStyleTarget.catalogLabelRenderStyle || 'halo');
+        const bgHint = createEl('span');
+        bgHint.textContent = 'Fill';
+        Object.assign(bgHint.style, { fontSize: '11px', color: '#94a3b8' });
+        let bgVal = String(labelStyleTarget.catalogLabelBackgroundColor || '#1f2937').trim();
+        if (/^#[0-9a-fA-F]{3}$/.test(bgVal)) {
+            const x = bgVal.slice(1);
+            bgVal = `#${x[0]}${x[0]}${x[1]}${x[1]}${x[2]}${x[2]}`;
+        }
+        if (!/^#[0-9a-fA-F]{6}$/.test(bgVal)) bgVal = '#1f2937';
+        const bgPick = createEl('input');
+        bgPick.type = 'color';
+        bgPick.value = bgVal;
+        Object.assign(bgPick.style, {
+            width: '36px',
+            height: '28px',
+            padding: '0',
+            border: '1px solid rgba(255,255,255,0.2)',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            background: 'transparent'
+        });
+        const syncBgVisibility = () => {
+            const s = lookSel.value;
+            const show = (s === 'pill' || s === 'glass');
+            bgHint.style.display = show ? '' : 'none';
+            bgPick.style.display = show ? '' : 'none';
+        };
+        lookSel.addEventListener('change', () => {
+            labelStyleTarget.catalogLabelRenderStyle = lookSel.value;
+            syncBgVisibility();
+            redrawing();
+        });
+        bgPick.addEventListener('input', () => {
+            labelStyleTarget.catalogLabelBackgroundColor = bgPick.value;
+            redrawing();
+        });
+        rowLook.appendChild(lookSel);
+        rowLook.appendChild(bgHint);
+        rowLook.appendChild(bgPick);
+        syncBgVisibility();
+
+        labelBodyWrap.appendChild(rowA);
+        labelBodyWrap.appendChild(rowFmt);
+        labelBodyWrap.appendChild(rowLook);
+        lw.appendChild(labelBodyWrap);
+        if (isLabelsOpen) list.appendChild(lw);
+
+    const catalogKeyForColor = __normalizeCatalogKey(
+        String(ownerWin.currentCatalogName || ownerWin.activeCatalog || '').trim()
+    );
+    const colorUi = __ensureCatalogBooleanUiStateStore();
+    const colorPanelOpenForCatalog = !!(catalogKeyForColor
+        && colorUi.colorCodingPanelOpenKey
+        && String(colorUi.colorCodingPanelOpenKey) === String(catalogKeyForColor));
+    const activeCatalogHasColorCode = !!(catalogKeyForColor && hasColorCodingForCatalog(catalogKeyForColor));
+    const hasColorCode = !!((ownerWin.regionStyles && ownerWin.regionStyles.colorCodeColumn) || activeCatalogHasColorCode);
+
+    if (hasColorCode && colorPanelOpenForCatalog) {
+        const ccWrap = createEl('div');
+        Object.assign(ccWrap.style, {
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            padding: '10px 10px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '10px'
+        });
+
+        const headerTop = createEl('div');
+        Object.assign(headerTop.style, {
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '10px',
+            width: '100%'
+        });
+        const title = createEl('div');
+        title.textContent = 'Color coding';
+        Object.assign(title.style, { fontSize: '12px', color: '#cbd5e1', fontWeight: '600' });
+        headerTop.appendChild(title);
+        ccWrap.appendChild(headerTop);
+
+        const colLine = createEl('div');
+        colLine.textContent = `Column: ${String(ownerWin.regionStyles.colorCodeColumn)}`;
+        Object.assign(colLine.style, { fontSize: '12px', color: '#9ca3af' });
+        ccWrap.appendChild(colLine);
+
+        const row = createEl('div');
+        Object.assign(row.style, { display: 'grid', gridTemplateColumns: '1fr', gap: '6px' });
+
+        const mkLab = (txt) => {
+            const l = createEl('div');
+            l.textContent = txt;
+            Object.assign(l.style, { fontSize: '11px', color: '#d1d5db' });
+            return l;
+        };
+        const mkInp = (ph) => {
+            const i = createEl('input');
+            i.type = 'text';
+            i.placeholder = ph;
+            Object.assign(i.style, {
+                width: '100%',
+                background: 'rgba(255,255,255,0.06)',
+                color: '#f9fafb',
+                border: '1px solid rgba(255,255,255,0.16)',
+                borderRadius: '8px',
+                padding: '6px 8px',
+                fontSize: '12px'
+            });
+            return i;
+        };
+
+        const paletteKeys = Object.keys(NELOURA_BUILTIN_REGION_PALETTES || { viridis: 1 });
+        let selectedCmap = 'viridis';
+        try {
+            selectedCmap = String(ownerWin.regionStyles.colorMapName || 'viridis');
+        } catch (_) {}
+        if (!paletteKeys.includes(selectedCmap)) {
+            selectedCmap = paletteKeys[0] || 'viridis';
+        }
+
+        const minInp = mkInp('min (auto)');
+        const maxInp = mkInp('max (auto)');
+        try { if (Number.isFinite(ownerWin.regionStyles.colorCodeMin)) minInp.value = String(ownerWin.regionStyles.colorCodeMin); } catch (_) {}
+        try { if (Number.isFinite(ownerWin.regionStyles.colorCodeMax)) maxInp.value = String(ownerWin.regionStyles.colorCodeMax); } catch (_) {}
+
+        const parseOpt = (s) => {
+            const t = String(s || '').trim();
+            if (!t) return null;
+            const n = Number(t);
+            return Number.isFinite(n) ? n : null;
+        };
+
+        const persistActiveCatalogColorStyle = () => {
+            try {
+                const activeKey = __normalizeCatalogKey(ownerWin.currentCatalogName || ownerWin.activeCatalog || catalogKeyForColor || '');
+                if (!activeKey || !ownerWin.regionStyles || typeof ownerWin.regionStyles !== 'object') return;
+                ownerWin.__catalogStylesByName = ownerWin.__catalogStylesByName || {};
+                const prev = (ownerWin.__catalogStylesByName[activeKey] && typeof ownerWin.__catalogStylesByName[activeKey] === 'object')
+                    ? ownerWin.__catalogStylesByName[activeKey]
+                    : {};
+                ownerWin.__catalogStylesByName[activeKey] = { ...prev, ...ownerWin.regionStyles };
+                const shortKey = String(activeKey).replace(/^catalogs\//, '');
+                ownerWin.__catalogStylesByName[shortKey] = ownerWin.__catalogStylesByName[activeKey];
+                if (Array.isArray(ownerWin.catalogData)) {
+                    const ent = ownerWin.catalogData.find((cat) => __normalizeCatalogKey(cat && cat.name) === activeKey);
+                    if (ent) ent.style = { ...(ent.style || {}), ...ownerWin.regionStyles };
+                }
+            } catch (_) {}
+        };
+        const apply = () => {
+            try {
+                ownerWin.regionStyles = ownerWin.regionStyles || {};
+                ownerWin.regionStyles.colorMapName = selectedCmap || 'viridis';
+                ownerWin.regionStyles.colorCodeMin = parseOpt(minInp.value);
+                ownerWin.regionStyles.colorCodeMax = parseOpt(maxInp.value);
+            } catch (_) {}
+            persistActiveCatalogColorStyle();
+            try { if (typeof ownerWin.refreshCatalogOverlayColorCoding === 'function') ownerWin.refreshCatalogOverlayColorCoding(); } catch (_) {}
+            try { if (typeof ownerWin.updateScreenColorBar === 'function') ownerWin.updateScreenColorBar(); } catch (_) {}
+        };
+
+        const mkCmapCircleGradient = (mapKey) => {
+            const pals = NELOURA_BUILTIN_REGION_PALETTES || {};
+            const colors = pals[mapKey] || pals.viridis || ['#440154', '#fde725'];
+            if (!colors || !colors.length) return 'linear-gradient(90deg, #666, #333)';
+            const n = colors.length;
+            if (n === 1) return colors[0];
+            const stops = colors.map((c, i) => `${c} ${(i / (n - 1)) * 100}%`).join(', ');
+            return `linear-gradient(90deg, ${stops})`;
+        };
+
+        const cmapRow = createEl('div');
+        Object.assign(cmapRow.style, {
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '5px',
+            width: 'auto',
+            maxWidth: '58%'
+        });
+
+        const updateCmapSelection = () => {
+            Array.from(cmapRow.children).forEach((btn) => {
+                const k = btn.dataset.cmapKey;
+                const isSel = k === selectedCmap;
+                btn.style.boxShadow = isSel
+                    ? '0 0 0 2px #e5e7eb, 0 0 0 4px rgba(37,99,235,0.7)'
+                    : '0 0 0 1px rgba(15,23,42,0.9)';
+                btn.style.transform = isSel ? 'scale(1.05)' : 'scale(1)';
+            });
+        };
+
+        paletteKeys.forEach((k) => {
+            const btn = createEl('button');
+            btn.type = 'button';
+            btn.dataset.cmapKey = k;
+            btn.setAttribute('aria-pressed', k === selectedCmap ? 'true' : 'false');
+            btn.setAttribute('aria-label', `Color map ${k}`);
+            btn.title = k.charAt(0).toUpperCase() + k.slice(1);
+            Object.assign(btn.style, {
+                width: '22px',
+                height: '22px',
+                borderRadius: '50%',
+                padding: '0',
+                border: 'none',
+                cursor: 'pointer',
+                background: mkCmapCircleGradient(k),
+                boxShadow: '0 0 0 1px rgba(15,23,42,0.9)',
+                flexShrink: '0',
+                transition: 'transform 120ms ease, box-shadow 120ms ease',
+            });
+            btn.addEventListener('click', () => {
+                selectedCmap = k;
+                Array.from(cmapRow.children).forEach((b) => {
+                    b.setAttribute('aria-pressed', b.dataset.cmapKey === selectedCmap ? 'true' : 'false');
+                });
+                updateCmapSelection();
+                apply();
+            });
+            btn.addEventListener('mouseenter', () => {
+                if (btn.dataset.cmapKey !== selectedCmap) {
+                    btn.style.transform = 'scale(1.08)';
+                }
+            });
+            btn.addEventListener('mouseleave', () => {
+                updateCmapSelection();
+            });
+            cmapRow.appendChild(btn);
+        });
+        updateCmapSelection();
+
+        const cmapHeader = createEl('div');
+        Object.assign(cmapHeader.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '6px',
+            minWidth: '0',
+            flex: '1'
+        });
+        const cmapHeaderLabel = createEl('span');
+        cmapHeaderLabel.textContent = 'Color map';
+        Object.assign(cmapHeaderLabel.style, {
+            fontSize: '11px',
+            color: '#d1d5db',
+            whiteSpace: 'nowrap'
+        });
+        cmapHeader.appendChild(cmapHeaderLabel);
+        cmapHeader.appendChild(cmapRow);
+        headerTop.appendChild(cmapHeader);
+
+        row.appendChild(mkLab('Legend min / max'));
+        const mmRow = createEl('div');
+        Object.assign(mmRow.style, { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' });
+        mmRow.appendChild(minInp);
+        mmRow.appendChild(maxInp);
+        row.appendChild(mmRow);
+        minInp.addEventListener('change', apply);
+        minInp.addEventListener('blur', apply);
+        maxInp.addEventListener('change', apply);
+        maxInp.addEventListener('blur', apply);
+
+        ccWrap.appendChild(row);
+
+        try {
+            if (typeof ownerWin.nelouraEnsureCatalogScreenColorBarDefaults === 'function') {
+                ownerWin.nelouraEnsureCatalogScreenColorBarDefaults(ownerWin);
+            } else {
+                if (typeof ownerWin.catalogScreenColorBarVisible !== 'boolean') ownerWin.catalogScreenColorBarVisible = false;
+                if (!ownerWin.catalogScreenColorBarPosition) ownerWin.catalogScreenColorBarPosition = 'left';
+                if (typeof ownerWin.catalogScreenColorBarUnit !== 'string') ownerWin.catalogScreenColorBarUnit = '';
+                if (typeof ownerWin.catalogScreenColorBarTicks !== 'number' || !Number.isFinite(ownerWin.catalogScreenColorBarTicks)) {
+                    ownerWin.catalogScreenColorBarTicks = 5;
+                }
+            }
+        } catch (_) {}
+
+        const barWrap = createEl('div');
+        Object.assign(barWrap.style, {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            marginTop: '2px',
+            padding: '8px',
+            border: '1px solid rgba(255,255,255,0.10)',
+            borderRadius: '8px',
+            background: 'rgba(15,23,42,0.38)'
+        });
+
+        const barToggleLab = createEl('label');
+        Object.assign(barToggleLab.style, {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            color: '#e5e7eb',
+            fontWeight: '600'
+        });
+        const barToggle = createEl('input');
+        barToggle.type = 'checkbox';
+        barToggle.checked = !!ownerWin.catalogScreenColorBarVisible;
+        const barToggleText = createEl('span');
+        barToggleText.textContent = 'Show catalog colorbar';
+        barToggleLab.appendChild(barToggle);
+        barToggleLab.appendChild(barToggleText);
+        barWrap.appendChild(barToggleLab);
+
+        const barOptions = createEl('div');
+        Object.assign(barOptions.style, {
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            gap: '8px',
+            width: '100%'
+        });
+        const barField = (labelText, controlEl) => {
+            const wrap = createEl('label');
+            Object.assign(wrap.style, {
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                flex: '1 1 calc(33.333% - 8px)',
+                minWidth: '92px',
+                maxWidth: 'calc(33.333% - 6px)',
+                fontSize: '11px',
+                color: '#94a3b8'
+            });
+            const lab = createEl('span');
+            lab.textContent = labelText;
+            lab.style.whiteSpace = 'nowrap';
+            wrap.appendChild(lab);
+            if (controlEl) {
+                controlEl.style.width = '100%';
+                controlEl.style.maxWidth = '100%';
+                wrap.appendChild(controlEl);
+            }
+            return wrap;
+        };
+        const posSel = createEl('select');
+        [['left', 'Left'], ['right', 'Right'], ['top', 'Top'], ['bottom', 'Bottom']].forEach(([v, lab]) => {
+            const opt = createEl('option');
+            opt.value = v;
+            opt.textContent = lab;
+            posSel.appendChild(opt);
+        });
+        posSel.value = String(ownerWin.catalogScreenColorBarPosition || 'left');
+        Object.assign(posSel.style, selectStyle, { width: '100%' });
+
+        const unitInp = mkInp('unit');
+        unitInp.value = String(ownerWin.catalogScreenColorBarUnit || '');
+        const ticksInp = mkInp('ticks');
+        ticksInp.type = 'number';
+        ticksInp.min = '2';
+        ticksInp.max = '25';
+        ticksInp.step = '1';
+        ticksInp.value = String(Math.max(2, Math.min(25, Math.round(Number(ownerWin.catalogScreenColorBarTicks) || 5))));
+
+        const labelColorInp = createEl('input');
+        labelColorInp.type = 'color';
+        {
+            const rawColor = String(ownerWin.catalogScreenColorBarLabelColor || '#eaeaea').trim();
+            labelColorInp.value = /^#[0-9a-fA-F]{6}$/.test(rawColor) ? rawColor : '#eaeaea';
+        }
+        Object.assign(labelColorInp.style, {
+            height: '28px',
+            padding: '0',
+            border: '1px solid rgba(255,255,255,0.16)',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            background: 'rgba(255,255,255,0.06)'
+        });
+
+        const numFmtSel = createEl('select');
+        [
+            ['auto', 'Auto'],
+            ['scientific', 'Scientific'],
+            ['fixed', 'Fixed'],
+            ['integer', 'Integer']
+        ].forEach(([v, lab]) => {
+            const opt = createEl('option');
+            opt.value = v;
+            opt.textContent = lab;
+            numFmtSel.appendChild(opt);
+        });
+        {
+            const fmt = String(ownerWin.catalogScreenColorBarNumberFormat || 'auto');
+            numFmtSel.value = ['auto', 'scientific', 'fixed', 'integer'].includes(fmt) ? fmt : 'auto';
+        }
+        Object.assign(numFmtSel.style, selectStyle, { width: '100%' });
+
+        const decInp = mkInp('decimals');
+        decInp.type = 'number';
+        decInp.min = '0';
+        decInp.max = '12';
+        decInp.step = '1';
+        {
+            let d = parseInt(ownerWin.catalogScreenColorBarDecimals, 10);
+            if (!Number.isFinite(d)) d = 2;
+            decInp.value = String(Math.max(0, Math.min(12, d)));
+        }
+
+        barOptions.appendChild(barField('Position', posSel));
+        barOptions.appendChild(barField('Unit', unitInp));
+        barOptions.appendChild(barField('Ticks', ticksInp));
+        barOptions.appendChild(barField('Label color', labelColorInp));
+        barOptions.appendChild(barField('Number format', numFmtSel));
+        barOptions.appendChild(barField('Precision', decInp));
+        barWrap.appendChild(barOptions);
+
+        const syncBarPrecisionUi = () => {
+            const fmt = String(numFmtSel.value || 'auto');
+            const enabled = (fmt === 'scientific' || fmt === 'fixed');
+            decInp.disabled = !barToggle.checked || !enabled;
+            decInp.style.opacity = enabled ? '1' : '0.55';
+        };
+        const syncBarOptionsUi = () => {
+            const enabled = !!barToggle.checked;
+            barOptions.style.opacity = enabled ? '1' : '0.55';
+            [posSel, unitInp, ticksInp, labelColorInp, numFmtSel].forEach((el) => { el.disabled = !enabled; });
+            syncBarPrecisionUi();
+        };
+        const applyCatalogColorbar = () => {
+            try {
+                ownerWin.catalogScreenColorBarVisible = !!barToggle.checked;
+                ownerWin.catalogScreenColorBarPosition = posSel.value || 'left';
+                ownerWin.catalogScreenColorBarUnit = String(unitInp.value || '');
+                let nTicks = parseInt(ticksInp.value, 10);
+                if (!Number.isFinite(nTicks)) nTicks = 5;
+                nTicks = Math.max(2, Math.min(25, nTicks));
+                ownerWin.catalogScreenColorBarTicks = nTicks;
+                ticksInp.value = String(nTicks);
+                const hex = String(labelColorInp.value || '').trim();
+                ownerWin.catalogScreenColorBarLabelColor = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#eaeaea';
+                const fmt = String(numFmtSel.value || 'auto');
+                ownerWin.catalogScreenColorBarNumberFormat = ['auto', 'scientific', 'fixed', 'integer'].includes(fmt) ? fmt : 'auto';
+                let dec = parseInt(decInp.value, 10);
+                if (!Number.isFinite(dec)) dec = 2;
+                dec = Math.max(0, Math.min(12, dec));
+                ownerWin.catalogScreenColorBarDecimals = dec;
+                decInp.value = String(dec);
+            } catch (_) {}
+            persistActiveCatalogColorStyle();
+            syncBarOptionsUi();
+            try { if (typeof ownerWin.updateScreenColorBar === 'function') ownerWin.updateScreenColorBar(); } catch (_) {}
+        };
+        barToggle.addEventListener('change', applyCatalogColorbar);
+        posSel.addEventListener('change', applyCatalogColorbar);
+        unitInp.addEventListener('change', applyCatalogColorbar);
+        unitInp.addEventListener('blur', applyCatalogColorbar);
+        ticksInp.addEventListener('change', applyCatalogColorbar);
+        ticksInp.addEventListener('blur', applyCatalogColorbar);
+        labelColorInp.addEventListener('input', applyCatalogColorbar);
+        labelColorInp.addEventListener('change', applyCatalogColorbar);
+        numFmtSel.addEventListener('change', applyCatalogColorbar);
+        decInp.addEventListener('change', applyCatalogColorbar);
+        decInp.addEventListener('blur', applyCatalogColorbar);
+        syncBarOptionsUi();
+
+        ccWrap.appendChild(barWrap);
+        list.appendChild(ccWrap);
+    } else if (!hasColorCode) {
+        // Color selection row (single-color quick styles) when NOT color-coding a column
+        const colorRow = createEl('div');
+        colorRow.style.display = 'flex';
+        colorRow.style.alignItems = 'center';
+        colorRow.style.gap = '8px';
+
+        const colorLabel = createEl('span');
+        colorLabel.textContent = 'Color:';
+        Object.assign(colorLabel.style, {
+            fontSize: '12px',
+            color: '#d1d5db'
+        });
+
+        // Same preset list as CATALOG_QUICK_STYLE_OPTIONS in catalogs.js (toolbar / region style).
+        const FALLBACK_QUICK_STYLE_OPTIONS = [
+            { id: 'red', label: 'Red', style: { borderColor: '#EF4444', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'orange', label: 'Orange', style: { borderColor: '#F97316', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'yellow', label: 'Yellow', style: { borderColor: '#EAB308', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'green', label: 'Green', style: { borderColor: '#22C55E', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'cyan', label: 'Cyan', style: { borderColor: '#22D3EE', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'blue', label: 'Blue', style: { borderColor: '#3B82F6', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'purple', label: 'Purple', style: { borderColor: '#8B5CF6', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'pink', label: 'Pink', style: { borderColor: '#EC4899', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'white', label: 'White', style: { borderColor: '#FFFFFF', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } },
+            { id: 'black', label: 'Black', style: { borderColor: '#000000', backgroundColor: 'transparent', borderWidth: 2, opacity: 0.9 } }
+        ];
+
+        let colorOptions = [];
+        try {
+            const wins = [ownerWin, ownerWin.parent, ownerWin.top].filter((w, i, a) => w && a.indexOf(w) === i);
+            for (let wi = 0; wi < wins.length; wi += 1) {
+                const w = wins[wi];
+                if (w && typeof w.getCatalogQuickStyleOptions === 'function') {
+                    colorOptions = w.getCatalogQuickStyleOptions();
+                    break;
+                }
+            }
+        } catch (_) {}
+        if (!Array.isArray(colorOptions) || !colorOptions.length) {
+            colorOptions = FALLBACK_QUICK_STYLE_OPTIONS.slice();
+        }
+
+        const normalizeHex = (h) => {
+            if (typeof h !== 'string') return '';
+            let s = h.trim().replace(/^#/, '').toLowerCase();
+            if (s.length === 3) s = s.split('').map((ch) => ch + ch).join('');
+            return s.length === 6 ? s : '';
+        };
+
+        const swatchContainer = createEl('div');
+        swatchContainer.style.display = 'flex';
+        swatchContainer.style.flexWrap = 'wrap';
+        swatchContainer.style.alignItems = 'center';
+        swatchContainer.style.gap = '6px';
+
+        let activeStyleId = null;
+        try {
+            const rs = ownerWin.regionStyles;
+            if (rs && rs.borderColor) {
+                const br = String(rs.borderColor).trim().toLowerCase();
+                const brNorm = normalizeHex(rs.borderColor);
+                const match = colorOptions.find((opt) => {
+                    const c = (opt.style && opt.style.borderColor) || opt.style?.color;
+                    if (!c) return false;
+                    if (String(c).toLowerCase() === br) return true;
+                    const cNorm = normalizeHex(c);
+                    if (brNorm && cNorm && brNorm === cNorm) return true;
+                    return false;
+                });
+                if (match) activeStyleId = match.id;
+                else if (brNorm === 'ff0000' || br === 'red' || br === '#f00') activeStyleId = 'red';
+            }
+        } catch (_) {}
+
+        const updateSwatchSelection = (selectedId) => {
+            Array.from(swatchContainer.children).forEach((child) => {
+                if (!child.dataset) return;
+                const isSelected = child.dataset.styleId === selectedId;
+                child.style.boxShadow = isSelected
+                    ? '0 0 0 2px #e5e7eb, 0 0 0 4px rgba(37,99,235,0.7)'
+                    : '0 0 0 1px rgba(15,23,42,0.9)';
+                child.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
+            });
+        };
+
+        colorOptions.forEach((opt) => {
+            const style = opt.style || {};
+            const swatch = createEl('button');
+            swatch.type = 'button';
+            swatch.dataset.styleId = opt.id;
+            Object.assign(swatch.style, {
+                width: '18px',
+                height: '18px',
+                borderRadius: '999px',
+                padding: '0',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: style.backgroundColor && style.backgroundColor !== 'transparent'
+                    ? style.backgroundColor
+                    : (style.borderColor || '#ffffff'),
+                boxShadow: '0 0 0 1px rgba(15,23,42,0.9)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'transform 120ms ease, box-shadow 120ms ease',
+            });
+            if (style.backgroundColor === 'transparent' && style.borderColor) {
+                const inner = createEl('div');
+                Object.assign(inner.style, {
+                    width: '11px',
+                    height: '11px',
+                    borderRadius: '999px',
+                    backgroundColor: style.borderColor
+                });
+                swatch.appendChild(inner);
+            }
+            swatch.title = opt.label || opt.id;
+            swatch.addEventListener('mouseenter', () => {
+                if (swatch.style.transform !== 'scale(1.05)') {
+                    swatch.style.transform = 'scale(1.08)';
+                }
+            });
+            swatch.addEventListener('mouseleave', () => {
+                const isSelected = swatch.dataset.styleId === activeStyleId;
+                swatch.style.transform = isSelected ? 'scale(1.05)' : 'scale(1)';
+            });
+            swatch.addEventListener('click', () => {
+                try {
+                    const name = ownerWin.currentCatalogName || catalogName;
+                    if (ownerWin && typeof ownerWin.applyCatalogQuickStyle === 'function') {
+                        ownerWin.applyCatalogQuickStyle(name, opt.id);
+                        activeStyleId = opt.id;
+                        updateSwatchSelection(activeStyleId);
+                    }
+                } catch (_) {}
+            });
+            swatchContainer.appendChild(swatch);
+        });
+
+        if (!activeStyleId && colorOptions.length) {
+            activeStyleId = colorOptions[0].id;
+        }
+        updateSwatchSelection(activeStyleId);
+
+        colorRow.appendChild(colorLabel);
+        colorRow.appendChild(swatchContainer);
+        expandedContent.appendChild(colorRow);
+    }
 
     const clearBtn = createEl('button');
     clearBtn.type = 'button';
@@ -3357,11 +4571,33 @@ function positionSegmentControlsPanel(panel) {
     if (!anchor) {
         panel.style.left = '50%';
         panel.style.bottom = '24px';
+        try { hostDoc.dispatchEvent(new CustomEvent('overlay-controls-positioned')); } catch (_) {}
         return;
     }
     const centerX = anchor.left + (anchor.width / 2);
     const bottomOffset = Math.max(16, viewportHeight - anchor.bottom + 24);
-    panel.style.left = `${centerX}px`;
+    let segmentCenterX = centerX;
+    try {
+        const regionBar = hostDoc.getElementById('region-mouse-mode-bar');
+        const catalogPanel = hostDoc.getElementById('catalog-overlay-controls');
+        const hostWin = hostDoc.defaultView || topWin || window;
+        const rbStyle = regionBar && hostWin.getComputedStyle ? hostWin.getComputedStyle(regionBar) : null;
+        const rbVisible = !!(regionBar && rbStyle && rbStyle.display !== 'none' && rbStyle.visibility !== 'hidden');
+        if (catalogPanel && rbVisible) {
+            const rb = regionBar.getBoundingClientRect();
+            const gap = 12;
+            const segRect = panel.getBoundingClientRect();
+            if (rb.width > 0) {
+                segmentCenterX = centerX - ((rb.width + gap) / 2);
+                if (segRect.width > 0) {
+                    const minCenter = 12 + segRect.width / 2;
+                    const maxCenter = Math.max(minCenter, hostWin.innerWidth - rb.width - gap - 12 - segRect.width / 2);
+                    segmentCenterX = Math.min(Math.max(segmentCenterX, minCenter), maxCenter);
+                }
+            }
+        }
+    } catch (_) {}
+    panel.style.left = `${segmentCenterX}px`;
     panel.style.bottom = `${bottomOffset}px`;
     
     // After positioning segment panel, reposition catalog panel if it exists
@@ -3370,6 +4606,7 @@ function positionSegmentControlsPanel(panel) {
     if (catalogPanel) {
         positionCatalogControlsPanel(catalogPanel);
     }
+    try { hostDoc.dispatchEvent(new CustomEvent('overlay-controls-positioned')); } catch (_) {}
 }
 
 function repositionSegmentOverlayControls() {
@@ -3380,6 +4617,10 @@ function repositionSegmentOverlayControls() {
         // positionSegmentControlsPanel already repositions catalog panel if it exists
     }
 }
+try {
+    window.repositionSegmentOverlayControls = repositionSegmentOverlayControls;
+    document.addEventListener('region-mouse-mode-bar-visibility-changed', repositionSegmentOverlayControls);
+} catch (_) {}
 
 function createSegmentModal(contentBuilder) {
     const hostDoc = getTopLevelDocument();
@@ -4832,6 +6073,12 @@ function processBinaryData(arrayBuffer, filepath) {
                 
                 // Function to finalize processing after all chunks are done
                 function finalizeImageProcessing() {
+                    const prevFits = window.fitsData || {};
+                    const hduIdx = (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0;
+                    const prevKey = `${String(prevFits.filename || '')}:${String(prevFits.hduIndex ?? '')}`;
+                    const nextKey = `${String(filepath || '')}:${String(hduIdx)}`;
+                    const isSameFileAndHdu = prevKey && nextKey && prevKey === nextKey;
+
                     // Store FITS data globally
                     window.fitsData = {
                         data: data,
@@ -4840,8 +6087,15 @@ function processBinaryData(arrayBuffer, filepath) {
                         min_value: minValue,
                         max_value: maxValue,
                         wcs: wcsInfo,
-                        filename: filepath
+                        filename: filepath,
+                        hduIndex: hduIdx
                     };
+
+                    if (!isSameFileAndHdu) {
+                        try {
+                            if (typeof resetScreenColorBarOnNewImage === 'function') resetScreenColorBarOnNewImage();
+                        } catch (_) { /* ignore */ }
+                    }
 
                     // Check if we're in multi-panel mode - if so, don't clear catalogs as they should persist across panels
                     let isMultiPanelMode = false;
@@ -5822,6 +7076,421 @@ function ensureHistogramOverlayReady() {
 
     return true;
 }
+
+/**
+ * Diagonal / tilted multi-panel layouts clip panes; the fixed map color bar is not supported there.
+ */
+function nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(win) {
+    try {
+        const w = win || window;
+        const tw = w.top;
+        if (!tw || !tw.document) return false;
+        const doc = tw.document;
+        const wrap = doc.getElementById('multi-panel-container');
+        const grid = doc.getElementById('multi-panel-grid');
+        if (!wrap || wrap.style.display === 'none' || !grid) return false;
+        const mode = grid.dataset && grid.dataset.layout;
+        return mode === 'diagonal' || mode === 'tilted-2x3';
+    } catch (_) {
+        return false;
+    }
+}
+
+function nelouraMapColorBarEffectivelyVisible(w) {
+    const x = w || window;
+    return !!x.screenColorBarVisible && !nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(x);
+}
+
+/**
+ * Screen color bar UI: histogram uses image/map globals; region style uses catalog-only globals when bindCatalog is true.
+ * @param {object} [options]
+ * @param {string} [options.idPrefix] - Element id prefix to avoid duplicate ids (e.g. 'region-style').
+ * @param {boolean} [options.defaultLeftWhenEnabling] - When Show is turned on (off→on), set position to left.
+ * @param {boolean} [options.bindCatalog] - Bind to catalogScreenColorBar* (catalog legend), not screenColorBar* (scaling map).
+ */
+function createScreenColorBarControls(options) {
+    options = options || {};
+    const idPrefix = (options.idPrefix && String(options.idPrefix).trim()) ? String(options.idPrefix).trim() + '-' : '';
+    const defaultLeftWhenEnabling = !!options.defaultLeftWhenEnabling;
+    const bindCatalog = !!options.bindCatalog;
+    const gid = (base) => (idPrefix ? idPrefix + base : base);
+
+    const PK = bindCatalog
+        ? {
+            vis: 'catalogScreenColorBarVisible',
+            pos: 'catalogScreenColorBarPosition',
+            unit: 'catalogScreenColorBarUnit',
+            ticks: 'catalogScreenColorBarTicks',
+            labelColor: 'catalogScreenColorBarLabelColor',
+            numFmt: 'catalogScreenColorBarNumberFormat',
+            dec: 'catalogScreenColorBarDecimals'
+        }
+        : {
+            vis: 'screenColorBarVisible',
+            pos: 'screenColorBarPosition',
+            unit: 'screenColorBarUnit',
+            ticks: 'screenColorBarTicks',
+            labelColor: 'screenColorBarLabelColor',
+            numFmt: 'screenColorBarNumberFormat',
+            dec: 'screenColorBarDecimals'
+        };
+    const gv = (k) => window[PK[k]];
+    const sv = (k, v) => { window[PK[k]] = v; };
+    const defaultPos = bindCatalog ? 'left' : 'right';
+
+    const container = document.createElement('div');
+    container.style.marginTop = '4px';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+    container.style.gap = '4px';
+    container.style.width = '100%';
+    container.style.boxSizing = 'border-box';
+
+    if (bindCatalog) {
+        nelouraEnsureCatalogScreenColorBarDefaults(window);
+    } else {
+        if (typeof window.screenColorBarVisible !== 'boolean') window.screenColorBarVisible = false;
+        if (!window.screenColorBarPosition) window.screenColorBarPosition = 'right';
+        if (typeof window.screenColorBarUnit !== 'string') window.screenColorBarUnit = '';
+        if (typeof window.screenColorBarTicks !== 'number' || !Number.isFinite(window.screenColorBarTicks)) {
+            window.screenColorBarTicks = 5;
+        }
+        if (typeof window.screenColorBarLabelColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(window.screenColorBarLabelColor.trim())) {
+            window.screenColorBarLabelColor = '#eaeaea';
+        }
+        const _fmt0 = window.screenColorBarNumberFormat;
+        if (!['auto', 'scientific', 'fixed', 'integer'].includes(_fmt0)) {
+            window.screenColorBarNumberFormat = 'auto';
+        }
+        let _dec0 = parseInt(window.screenColorBarDecimals, 10);
+        if (!Number.isFinite(_dec0)) _dec0 = 2;
+        window.screenColorBarDecimals = Math.max(0, Math.min(12, _dec0));
+    }
+
+    const inpStyle = {
+        width: '100%',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+        backgroundColor: '#3a3a3e',
+        color: '#f0f0f0',
+        border: '1px solid #505058',
+        borderRadius: '4px',
+        padding: '4px 6px',
+        fontSize: '12px',
+        fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif'
+    };
+
+    const row1 = document.createElement('label');
+    row1.style.display = 'flex';
+    row1.style.alignItems = 'center';
+    row1.style.cursor = 'pointer';
+    row1.style.color = '#ddd';
+    row1.style.fontSize = '13px';
+    row1.style.fontWeight = 'normal';
+    row1.htmlFor = gid('screen-colorbar-toggle');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = gid('screen-colorbar-toggle');
+    checkbox.style.marginRight = '8px';
+    checkbox.checked = !!gv('vis');
+
+    const span = document.createElement('span');
+    span.textContent = bindCatalog ? 'Show catalog legend' : 'Show color bar';
+
+    row1.appendChild(checkbox);
+    row1.appendChild(span);
+
+    const optionsPanel = document.createElement('div');
+    optionsPanel.id = gid('screen-colorbar-options-panel');
+    Object.assign(optionsPanel.style, {
+        display: checkbox.checked ? 'block' : 'none',
+        marginTop: '4px',
+        padding: '8px 10px 7px',
+        borderRadius: '6px',
+        border: '1px solid #4a4a52',
+        background: 'linear-gradient(165deg, #2e2e34 0%, #26262c 100%)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+        width: '100%',
+        boxSizing: 'border-box'
+    });
+
+    const panelTitle = document.createElement('div');
+    panelTitle.textContent = bindCatalog ? 'Catalog legend' : 'Color bar';
+    Object.assign(panelTitle.style, {
+        fontSize: '10px',
+        fontWeight: 'normal',
+        letterSpacing: '0.05em',
+        textTransform: 'uppercase',
+        color: '#8b8b98',
+        marginBottom: '6px',
+        borderBottom: '1px solid #3d3d45',
+        paddingBottom: '4px'
+    });
+    optionsPanel.appendChild(panelTitle);
+
+    const grid = document.createElement('div');
+    Object.assign(grid.style, {
+        display: 'grid',
+        gridTemplateColumns: 'minmax(72px, 24%) minmax(0, 1fr)',
+        columnGap: '10px',
+        rowGap: '4px',
+        alignItems: 'center',
+        width: '100%'
+    });
+
+    const addGridRow = (labelText, controlEl) => {
+        const L = document.createElement('div');
+        L.textContent = labelText;
+        Object.assign(L.style, {
+            color: '#c4c4ce',
+            fontSize: '11px',
+            fontWeight: 'normal',
+            lineHeight: '1.2',
+            textAlign: 'right',
+            paddingRight: '2px',
+            justifySelf: 'end'
+        });
+        const C = document.createElement('div');
+        C.style.minWidth = '0';
+        C.style.width = '100%';
+        if (controlEl) {
+            controlEl.style.width = '100%';
+            controlEl.style.maxWidth = '100%';
+            C.appendChild(controlEl);
+        }
+        grid.appendChild(L);
+        grid.appendChild(C);
+    };
+
+    const sel = document.createElement('select');
+    sel.id = gid('screen-colorbar-position');
+    Object.assign(sel.style, { ...inpStyle, cursor: 'pointer' });
+    [['top', 'Top'], ['left', 'Left'], ['right', 'Right'], ['bottom', 'Bottom']].forEach(([v, lab]) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = lab;
+        sel.appendChild(o);
+    });
+    sel.value = gv('pos') || defaultPos;
+
+    const unitInp = document.createElement('input');
+    unitInp.type = 'text';
+    unitInp.id = gid('screen-colorbar-unit');
+    unitInp.placeholder = 'e.g. MJy/sr';
+    unitInp.value = (typeof gv('unit') === 'string' ? gv('unit') : '') || '';
+    Object.assign(unitInp.style, inpStyle);
+
+    const ticksInp = document.createElement('input');
+    ticksInp.type = 'number';
+    ticksInp.id = gid('screen-colorbar-ticks');
+    ticksInp.min = '2';
+    ticksInp.max = '25';
+    ticksInp.step = '1';
+    ticksInp.value = String(Math.max(2, Math.min(25, Math.round(gv('ticks')) || 5)));
+    Object.assign(ticksInp.style, { ...inpStyle });
+
+    const colorWrap = document.createElement('div');
+    colorWrap.style.display = 'flex';
+    colorWrap.style.alignItems = 'center';
+    colorWrap.style.gap = '8px';
+    colorWrap.style.width = '100%';
+    const colorInp = document.createElement('input');
+    colorInp.type = 'color';
+    colorInp.id = gid('screen-colorbar-labelcolor');
+    colorInp.value = gv('labelColor');
+    Object.assign(colorInp.style, {
+        width: '34px',
+        height: '26px',
+        padding: '0',
+        border: '1px solid #505058',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        backgroundColor: '#2a2a30'
+    });
+    const colorHex = document.createElement('span');
+    colorHex.style.fontSize = '11px';
+    colorHex.style.color = '#9a9aa8';
+    colorHex.style.fontFamily = 'ui-monospace, monospace';
+    const syncHex = () => { colorHex.textContent = (colorInp.value || '').toUpperCase(); };
+    syncHex();
+    colorInp.addEventListener('input', syncHex);
+    colorWrap.appendChild(colorInp);
+    colorWrap.appendChild(colorHex);
+
+    const numFmtSel = document.createElement('select');
+    numFmtSel.id = gid('screen-colorbar-numfmt');
+    Object.assign(numFmtSel.style, { ...inpStyle, cursor: 'pointer' });
+    [
+        ['auto', 'Auto (smart)'],
+        ['scientific', 'Scientific'],
+        ['fixed', 'Fixed decimals'],
+        ['integer', 'Integer']
+    ].forEach(([v, lab]) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = lab;
+        numFmtSel.appendChild(o);
+    });
+    numFmtSel.value = gv('numFmt') || 'auto';
+
+    const decLab = document.createElement('span');
+    decLab.id = gid('screen-colorbar-decimals-caption');
+    decLab.textContent = 'Decimals';
+    decLab.style.fontSize = '10px';
+    decLab.style.color = '#9a9aa8';
+    decLab.style.marginRight = '6px';
+    decLab.style.flexShrink = '0';
+    const decInp = document.createElement('input');
+    decInp.type = 'number';
+    decInp.id = gid('screen-colorbar-decimals');
+    decInp.min = '0';
+    decInp.max = '12';
+    decInp.step = '1';
+    decInp.value = String(gv('dec'));
+    Object.assign(decInp.style, { ...inpStyle, flex: '1', minWidth: '0' });
+    const decRow = document.createElement('div');
+    decRow.style.display = 'flex';
+    decRow.style.alignItems = 'center';
+    decRow.style.width = '100%';
+    decRow.style.gap = '8px';
+    decRow.appendChild(decLab);
+    decRow.appendChild(decInp);
+
+    addGridRow('Position', sel);
+    addGridRow('Unit', unitInp);
+    addGridRow('Tick count', ticksInp);
+    addGridRow('Label color', colorWrap);
+    addGridRow('Number format', numFmtSel);
+    addGridRow('Precision', decRow);
+
+    optionsPanel.appendChild(grid);
+
+    const parseTicks = () => {
+        let n = parseInt(ticksInp.value, 10);
+        if (!Number.isFinite(n)) n = 5;
+        return Math.max(2, Math.min(25, n));
+    };
+
+    const syncDecEnabled = () => {
+        const m = numFmtSel.value || 'auto';
+        const on = (m === 'scientific' || m === 'fixed');
+        decInp.disabled = !on;
+        decLab.style.opacity = on ? '1' : '0.45';
+    };
+
+    const syncOptsVisibility = () => {
+        optionsPanel.style.display = checkbox.checked ? 'block' : 'none';
+    };
+
+    const mapBarLayoutBlocked = () => !bindCatalog && nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(window);
+
+    const applyMapBarBlockedUi = () => {
+        if (bindCatalog) return;
+        const blocked = mapBarLayoutBlocked();
+        checkbox.disabled = blocked;
+        row1.style.cursor = blocked ? 'not-allowed' : 'pointer';
+        row1.style.opacity = blocked ? '0.55' : '';
+        row1.style.pointerEvents = blocked ? 'none' : '';
+        [sel, unitInp, ticksInp, colorInp, numFmtSel].forEach((el) => {
+            if (el) el.disabled = !!blocked;
+        });
+        if (decInp) {
+            if (blocked) decInp.disabled = true;
+        }
+    };
+
+    const applyBar = () => {
+        if (mapBarLayoutBlocked()) {
+            if (checkbox.checked) {
+                checkbox.checked = false;
+                try {
+                    if (typeof showNotification === 'function') {
+                        showNotification(
+                            'The on-screen map color bar is not available in diagonal or tilted 2×3 layouts. Use a rectangular grid.',
+                            4500,
+                            'error'
+                        );
+                    }
+                } catch (_) { /* ignore */ }
+            }
+            syncOptsVisibility();
+            syncDecEnabled();
+            applyMapBarBlockedUi();
+            return;
+        }
+        sv('vis', checkbox.checked);
+        sv('pos', sel.value || defaultPos);
+        sv('unit', unitInp.value != null ? String(unitInp.value) : '');
+        const nt = parseTicks();
+        sv('ticks', nt);
+        ticksInp.value = String(nt);
+        const hex = colorInp.value;
+        sv('labelColor', /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#eaeaea');
+        sv('numFmt', numFmtSel.value || 'auto');
+        let d = parseInt(decInp.value, 10);
+        if (!Number.isFinite(d)) d = 2;
+        d = Math.max(0, Math.min(12, d));
+        sv('dec', d);
+        decInp.value = String(d);
+        syncDecEnabled();
+        syncOptsVisibility();
+        if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
+        applyMapBarBlockedUi();
+    };
+
+    container.syncFromGlobals = function nelouraSyncScreenColorBarFormFromGlobals() {
+        if (bindCatalog) nelouraEnsureCatalogScreenColorBarDefaults(window);
+        const blocked = mapBarLayoutBlocked();
+        checkbox.checked = blocked ? false : !!gv('vis');
+        sel.value = gv('pos') || defaultPos;
+        unitInp.value = typeof gv('unit') === 'string' ? gv('unit') : '';
+        const t = Number(gv('ticks'));
+        ticksInp.value = String(Number.isFinite(t) ? Math.max(2, Math.min(25, Math.round(t))) : 5);
+        const c = typeof gv('labelColor') === 'string' ? gv('labelColor').trim() : '';
+        colorInp.value = /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#eaeaea';
+        syncHex();
+        const f = gv('numFmt') || 'auto';
+        numFmtSel.value = ['auto', 'scientific', 'fixed', 'integer'].includes(f) ? f : 'auto';
+        let d = parseInt(gv('dec'), 10);
+        if (!Number.isFinite(d)) d = 2;
+        decInp.value = String(Math.max(0, Math.min(12, d)));
+        syncDecEnabled();
+        syncOptsVisibility();
+        applyMapBarBlockedUi();
+    };
+
+    syncDecEnabled();
+    syncOptsVisibility();
+    applyMapBarBlockedUi();
+    let prevChecked = !!checkbox.checked;
+    checkbox.addEventListener('change', () => {
+        if (defaultLeftWhenEnabling && checkbox.checked && !prevChecked) {
+            sel.value = 'left';
+        }
+        prevChecked = checkbox.checked;
+        applyBar();
+    });
+    sel.addEventListener('change', applyBar);
+    unitInp.addEventListener('change', applyBar);
+    unitInp.addEventListener('blur', applyBar);
+    ticksInp.addEventListener('change', applyBar);
+    ticksInp.addEventListener('blur', applyBar);
+    colorInp.addEventListener('input', applyBar);
+    colorInp.addEventListener('change', applyBar);
+    numFmtSel.addEventListener('change', () => { syncDecEnabled(); applyBar(); });
+    decInp.addEventListener('change', applyBar);
+    decInp.addEventListener('blur', applyBar);
+
+    container.appendChild(row1);
+    container.appendChild(optionsPanel);
+    return container;
+}
+
+if (typeof window !== 'undefined') {
+    window.createScreenColorBarControls = createScreenColorBarControls;
+}
+
 // PASTE THE FOLLOWING CODE INTO static/main.js, REPLACING THE EXISTING showDynamicRangePopup function
 
 function showDynamicRangePopup(options = {}) {
@@ -5960,7 +7629,7 @@ function showDynamicRangePopup(options = {}) {
     let preservedPosition = null;
 
     if (popup) {
-        if (popup.dataset.ownerPaneId !== currentPaneId || opts.forceRebind || opts.forceRebuild) {
+        if (popup.dataset.ownerPaneId !== currentPaneId || opts.forceRebind || opts.forceRebuild || !popup.querySelector('#dynamic-range-popup-scroll')) {
             preservedPosition = {
                 top: popup.style.top,
                 left: popup.style.left,
@@ -5984,6 +7653,64 @@ function showDynamicRangePopup(options = {}) {
         if (invertToggle) {
             invertToggle.checked = !!window.currentColorMapInverted;
         }
+        const screenBarToggle = doc.getElementById('screen-colorbar-toggle');
+        const screenBarPos = doc.getElementById('screen-colorbar-position');
+        const screenBarUnit = doc.getElementById('screen-colorbar-unit');
+        const screenBarTicks = doc.getElementById('screen-colorbar-ticks');
+        const screenBarLabelColor = doc.getElementById('screen-colorbar-labelcolor');
+        const screenBarNumFmt = doc.getElementById('screen-colorbar-numfmt');
+        const screenBarDecimals = doc.getElementById('screen-colorbar-decimals');
+        const mpBarBlocked = nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(window);
+        if (screenBarToggle) {
+            screenBarToggle.checked = mpBarBlocked ? false : !!window.screenColorBarVisible;
+            screenBarToggle.disabled = mpBarBlocked;
+            const lab = screenBarToggle.parentElement;
+            if (lab && lab.tagName === 'LABEL') {
+                lab.style.cursor = mpBarBlocked ? 'not-allowed' : 'pointer';
+                lab.style.opacity = mpBarBlocked ? '0.55' : '';
+                lab.style.pointerEvents = mpBarBlocked ? 'none' : '';
+            }
+        }
+        if (screenBarPos) {
+            screenBarPos.value = window.screenColorBarPosition || 'right';
+            screenBarPos.disabled = mpBarBlocked;
+        }
+        if (screenBarUnit) {
+            screenBarUnit.value = typeof window.screenColorBarUnit === 'string' ? window.screenColorBarUnit : '';
+            screenBarUnit.disabled = mpBarBlocked;
+        }
+        if (screenBarTicks) {
+            const t = Number(window.screenColorBarTicks);
+            screenBarTicks.value = String(Number.isFinite(t) ? t : 5);
+            screenBarTicks.disabled = mpBarBlocked;
+        }
+        if (screenBarLabelColor) {
+            const c = typeof window.screenColorBarLabelColor === 'string' ? window.screenColorBarLabelColor.trim() : '';
+            screenBarLabelColor.value = /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#eaeaea';
+            screenBarLabelColor.disabled = mpBarBlocked;
+        }
+        if (screenBarNumFmt) {
+            const f = window.screenColorBarNumberFormat || 'auto';
+            screenBarNumFmt.value = ['auto', 'scientific', 'fixed', 'integer'].includes(f) ? f : 'auto';
+            screenBarNumFmt.disabled = mpBarBlocked;
+        }
+        if (screenBarDecimals) {
+            let d = parseInt(window.screenColorBarDecimals, 10);
+            if (!Number.isFinite(d)) d = 2;
+            screenBarDecimals.value = String(Math.max(0, Math.min(12, d)));
+        }
+        if (screenBarNumFmt && screenBarDecimals) {
+            const m = screenBarNumFmt.value || 'auto';
+            const on = (m === 'scientific' || m === 'fixed');
+            screenBarDecimals.disabled = mpBarBlocked ? true : !on;
+            const decCap = doc.getElementById('screen-colorbar-decimals-caption');
+            if (decCap) decCap.style.opacity = (mpBarBlocked || !on) ? '0.45' : '1';
+        }
+        const screenBarOptsPanel = doc.getElementById('screen-colorbar-options-panel');
+        if (screenBarOptsPanel && screenBarToggle) {
+            screenBarOptsPanel.style.display = (screenBarToggle.checked && !mpBarBlocked) ? 'block' : 'none';
+        }
+        if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
         const fileNameLabel = popup.querySelector('.scaling-popup-filename');
         if (fileNameLabel) {
             fileNameLabel.textContent = window.fitsData?.filename || window.currentFitsFile || 'Current image';
@@ -6007,6 +7734,10 @@ function showDynamicRangePopup(options = {}) {
     popup.style.width = '500px'; // Keep reasonable width
     popup.style.boxSizing = 'border-box';
     popup.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.3)';
+    popup.style.display = 'flex';
+    popup.style.flexDirection = 'column';
+    popup.style.maxHeight = 'calc(100vh - 24px)';
+    popup.style.overflow = 'hidden';
     popup.dataset.ownerPaneId = currentPaneId;
     if (preservedPosition) {
         if (preservedPosition.transform) popup.style.transform = preservedPosition.transform;
@@ -6025,10 +7756,11 @@ function showDynamicRangePopup(options = {}) {
         cursor: 'grab',
         display: 'flex',
         flexDirection: 'column',
-        gap: '4px'
+        gap: '4px',
+        flexShrink: '0'
     });
     const titleText = document.createElement('div');
-    Object.assign(titleText.style, { fontSize: '18px', fontWeight: 'bold' });
+    Object.assign(titleText.style, { fontSize: '18px', fontWeight: 'normal' });
     titleText.textContent = 'Scaling Controls';
     const fileNameLabel = document.createElement('div');
     fileNameLabel.className = 'scaling-popup-filename';
@@ -6124,6 +7856,7 @@ function showDynamicRangePopup(options = {}) {
         button.style.cursor = 'pointer';
         button.style.fontFamily = 'Arial, sans-serif';
         button.style.fontSize = '13px'; // Slightly smaller font
+        button.style.fontWeight = 'normal';
         button.addEventListener('mouseover', () => button.style.backgroundColor = '#555');
         button.addEventListener('mouseout', () => button.style.backgroundColor = '#444');
         button.addEventListener('click', () => applyPercentile(p.value));
@@ -6136,13 +7869,13 @@ function showDynamicRangePopup(options = {}) {
     inputContainer.style.marginBottom = '15px';
 
     const minLabel = document.createElement('label');
-    minLabel.textContent = 'Min:'; minLabel.style.color = '#aaa'; minLabel.style.marginRight = '5px'; minLabel.style.fontSize = '14px';
+    minLabel.textContent = 'Min:'; minLabel.style.color = '#aaa'; minLabel.style.marginRight = '5px'; minLabel.style.fontSize = '14px'; minLabel.style.fontWeight = 'normal';
     const minInput = document.createElement('input');
     minInput.id = 'min-range-input'; minInput.type = 'text';
     Object.assign(minInput.style, { flex: '1', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', padding: '5px', marginRight: '10px', fontFamily: 'monospace', fontSize: '14px' });
 
     const maxLabel = document.createElement('label');
-    maxLabel.textContent = 'Max:'; maxLabel.style.color = '#aaa'; maxLabel.style.marginRight = '5px'; maxLabel.style.fontSize = '14px';
+    maxLabel.textContent = 'Max:'; maxLabel.style.color = '#aaa'; maxLabel.style.marginRight = '5px'; maxLabel.style.fontSize = '14px'; maxLabel.style.fontWeight = 'normal';
     const maxInput = document.createElement('input');
     maxInput.id = 'max-range-input'; maxInput.type = 'text';
     Object.assign(maxInput.style, { flex: '1', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', padding: '5px', fontFamily: 'monospace', fontSize: '14px' });
@@ -6174,6 +7907,7 @@ function showDynamicRangePopup(options = {}) {
         label.style.cursor = 'pointer';
         label.style.color = '#aaa';
         label.style.fontSize = '14px';
+        label.style.fontWeight = 'normal';
         label.htmlFor = 'invert-colormap-toggle';
 
         const checkbox = document.createElement('input');
@@ -6212,6 +7946,7 @@ function showDynamicRangePopup(options = {}) {
         return container;
     }
 
+
     // Define colormaps and scaling functions
     const colorMaps = getColorMapOptions();
     const scalingFunctions = [
@@ -6225,6 +7960,7 @@ function showDynamicRangePopup(options = {}) {
         window.__baseColorMapOptions = colorMaps.map(opt => ({ ...opt }));
     }
     const invertToggleControl = createInvertColorMapToggle();
+    const screenColorBarControl = createScreenColorBarControls();
     const scalingDropdown = createSearchableDropdown('Scaling:', 'scaling-select', scalingFunctions, 'currentScaling', 'linear', false);
     
     // Close dropdowns when clicking outside
@@ -6243,21 +7979,40 @@ function showDynamicRangePopup(options = {}) {
 
     const controlsContainer = document.createElement('div');
     controlsContainer.style.display = 'flex';
-    controlsContainer.style.flexDirection = 'row'; // Arrange side-by-side
-    controlsContainer.style.justifyContent = 'space-between';
-    controlsContainer.style.gap = '15px'; // Add gap between dropdowns
+    controlsContainer.style.flexDirection = 'column';
+    controlsContainer.style.gap = '8px';
+    controlsContainer.style.width = '100%';
+    controlsContainer.style.boxSizing = 'border-box';
+
+    const controlsTopRow = document.createElement('div');
+    controlsTopRow.style.display = 'flex';
+    controlsTopRow.style.flexDirection = 'row';
+    controlsTopRow.style.justifyContent = 'space-between';
+    controlsTopRow.style.gap = '15px';
+    controlsTopRow.style.width = '100%';
 
     const leftColumn = document.createElement('div');
     leftColumn.style.flex = '1';
+    leftColumn.style.minWidth = '0';
     leftColumn.appendChild(colorMapDropdown);
     leftColumn.appendChild(invertToggleControl);
 
     const rightColumn = document.createElement('div');
     rightColumn.style.flex = '1';
+    rightColumn.style.minWidth = '0';
     rightColumn.appendChild(scalingDropdown);
 
-    controlsContainer.appendChild(leftColumn);
-    controlsContainer.appendChild(rightColumn);
+    controlsTopRow.appendChild(leftColumn);
+    controlsTopRow.appendChild(rightColumn);
+
+    const colorBarRow = document.createElement('div');
+    colorBarRow.style.width = '100%';
+    colorBarRow.style.minWidth = '0';
+    colorBarRow.style.boxSizing = 'border-box';
+    colorBarRow.appendChild(screenColorBarControl);
+
+    controlsContainer.appendChild(controlsTopRow);
+    controlsContainer.appendChild(colorBarRow);
 
 
     const buttonsContainer = document.createElement('div');
@@ -6282,17 +8037,37 @@ function showDynamicRangePopup(options = {}) {
     // buttonsContainer.appendChild(resetButton);
     // buttonsContainer.appendChild(applyButton);
 
+    const scrollWrap = document.createElement('div');
+    scrollWrap.id = 'dynamic-range-popup-scroll';
+    Object.assign(scrollWrap.style, {
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        flex: '1 1 auto',
+        minHeight: '0',
+        maxHeight: 'calc(100vh - 110px)',
+        paddingRight: '4px',
+        WebkitOverflowScrolling: 'touch'
+    });
+    scrollWrap.appendChild(canvasContainer);
+    scrollWrap.appendChild(percentileContainer);
+    scrollWrap.appendChild(inputContainer);
+    scrollWrap.appendChild(controlsContainer);
+    scrollWrap.appendChild(buttonsContainer);
+
     popup.appendChild(title);
     popup.appendChild(closeButton);
-    popup.appendChild(canvasContainer);
-    popup.appendChild(percentileContainer);
-    popup.appendChild(inputContainer);
-    popup.appendChild(controlsContainer); // Add new container for dropdowns
-    popup.appendChild(buttonsContainer);
+    popup.appendChild(scrollWrap);
     popupDoc.body.appendChild(popup);
+
+    try {
+        if (screenColorBarControl && typeof screenColorBarControl.syncFromGlobals === 'function') {
+            screenColorBarControl.syncFromGlobals();
+        }
+    } catch (_) { /* ignore */ }
 
     addHistogramInteraction(linesCanvas, minInput, maxInput);
     requestHistogramUpdate(); // Initial histogram draw
+    if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
 }
 
 function attachRangeInputAutoApply(minInput, maxInput) {
@@ -6354,6 +8129,1174 @@ function attachRangeInputAutoApply(minInput, maxInput) {
     maxInput.addEventListener('keydown', onKeyDown);
 }
 // END OF REPLACEMENT CODE
+
+function formatScreenColorBarTick(v, w, which) {
+    if (v == null || !isFinite(v)) return '';
+    const catalog = which === 'catalog';
+    const mode = catalog
+        ? ((w && w.catalogScreenColorBarNumberFormat) || 'auto')
+        : ((w && w.screenColorBarNumberFormat) || 'auto');
+    let dec = parseInt(catalog ? (w && w.catalogScreenColorBarDecimals) : (w && w.screenColorBarDecimals), 10);
+    if (!Number.isFinite(dec)) dec = 2;
+    dec = Math.max(0, Math.min(12, dec));
+    switch (mode) {
+        case 'scientific':
+            return v.toExponential(dec);
+        case 'fixed':
+            return v.toFixed(dec);
+        case 'integer':
+            return String(Math.round(v));
+        case 'auto':
+        default:
+            return typeof formatRangeValue === 'function' ? formatRangeValue(v) : String(v);
+    }
+}
+
+function screenColorBarHexToRgb(hex) {
+    const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || '').trim());
+    if (!m) return { r: 234, g: 234, b: 234 };
+    const n = parseInt(m[1], 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function screenColorBarRelLuminance(rgb) {
+    const lin = (c) => {
+        const x = c / 255;
+        return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    };
+    const R = lin(rgb.r);
+    const G = lin(rgb.g);
+    const B = lin(rgb.b);
+    return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+}
+
+function screenColorBarTextShadowForLabelColor(hex) {
+    const L = screenColorBarRelLuminance(screenColorBarHexToRgb(hex));
+    if (L > 0.55) {
+        return '0 0 3px rgba(0,0,0,0.9), 0 1px 4px rgba(0,0,0,0.85), 0 0 1px #000';
+    }
+    return '0 0 4px rgba(255,255,255,0.35), 0 1px 3px rgba(0,0,0,0.5)';
+}
+
+function nelouraScreenColorBarSlideTransform(pos, forHide) {
+    const amt = '110%';
+    if (forHide) {
+        switch (pos) {
+            case 'left': return `translateX(-${amt})`;
+            case 'top': return `translateY(-${amt})`;
+            case 'bottom': return `translateY(${amt})`;
+            case 'right':
+            default: return `translateX(${amt})`;
+        }
+    }
+    switch (pos) {
+        case 'left': return `translateX(-${amt})`;
+        case 'top': return `translateY(-${amt})`;
+        case 'bottom': return `translateY(${amt})`;
+        case 'right':
+        default: return `translateX(${amt})`;
+    }
+}
+
+function nelouraAnimateScreenColorBarShow(el, pos) {
+    const win = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!win) return;
+    win.__nelouraCbarAnimToken = (win.__nelouraCbarAnimToken || 0) + 1;
+    const token = win.__nelouraCbarAnimToken;
+    const startT = nelouraScreenColorBarSlideTransform(pos, false);
+    let cleaned = false;
+    el.style.transition = 'none';
+    el.style.transform = startT;
+    el.style.opacity = '0';
+    win.requestAnimationFrame(() => {
+        win.requestAnimationFrame(() => {
+            if (token !== win.__nelouraCbarAnimToken) return;
+            el.style.transition = 'transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.38s ease-out';
+            el.style.transform = 'none';
+            el.style.opacity = '1';
+        });
+    });
+    const done = (e) => {
+        if (cleaned) return;
+        if (e && e.propertyName && e.propertyName !== 'transform' && e.propertyName !== 'opacity') return;
+        if (token !== win.__nelouraCbarAnimToken) return;
+        cleaned = true;
+        el.removeEventListener('transitionend', done);
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.opacity = '';
+    };
+    el.addEventListener('transitionend', done);
+    win.setTimeout(() => done({ propertyName: 'transform' }), 520);
+}
+
+function nelouraScreenColorBarRepositionStartTransform(fromPos, toPos) {
+    const edge = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+    const f = edge[fromPos];
+    const t = edge[toPos];
+    if (!f || !t) {
+        return 'translateY(-20px) scale(0.94)';
+    }
+    const dx = (f[0] - t[0]) * 44;
+    const dy = (f[1] - t[1]) * 44;
+    return `translate(${dx}px, ${dy}px) scale(0.93)`;
+}
+
+/** Slide/fade when moving the bar between edges (position dropdown). */
+function nelouraScreenColorBarPlayPositionChangeAnim(el, win, fromPos, toPos) {
+    if (!el || !win) return;
+    const startT = nelouraScreenColorBarRepositionStartTransform(fromPos, toPos);
+    win.__nelouraCbarAnimToken = (win.__nelouraCbarAnimToken || 0) + 1;
+    const token = win.__nelouraCbarAnimToken;
+    el.style.transition = 'none';
+    el.style.transform = startT;
+    el.style.opacity = '0.35';
+    win.requestAnimationFrame(() => {
+        win.requestAnimationFrame(() => {
+            if (token !== win.__nelouraCbarAnimToken) return;
+            el.style.transition = 'transform 0.48s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.45s ease-out';
+            el.style.transform = 'none';
+            el.style.opacity = '1';
+            let cleaned = false;
+            const finish = () => {
+                if (cleaned || token !== win.__nelouraCbarAnimToken) return;
+                cleaned = true;
+                el.removeEventListener('transitionend', onEnd);
+                el.style.transition = '';
+                el.style.transform = '';
+                el.style.opacity = '';
+            };
+            const onEnd = (e) => {
+                if (e.propertyName !== 'transform' && e.propertyName !== 'opacity') return;
+                finish();
+            };
+            el.addEventListener('transitionend', onEnd);
+            win.setTimeout(finish, 520);
+        });
+    });
+}
+
+function nelouraAnimateScreenColorBarHide(el, pos, onDone) {
+    const win = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!win) {
+        if (typeof onDone === 'function') onDone();
+        return;
+    }
+    win.__nelouraCbarAnimToken = (win.__nelouraCbarAnimToken || 0) + 1;
+    const token = win.__nelouraCbarAnimToken;
+    const endT = nelouraScreenColorBarSlideTransform(pos, true);
+    let finished = false;
+    const finish = () => {
+        if (finished || token !== win.__nelouraCbarAnimToken) return;
+        finished = true;
+        el.removeEventListener('transitionend', onEnd);
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.opacity = '';
+        if (typeof onDone === 'function') onDone();
+    };
+    const onEnd = (e) => {
+        if (e.propertyName !== 'transform' && e.propertyName !== 'opacity') return;
+        finish();
+    };
+    el.style.transition = 'transform 0.34s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease-in';
+    el.addEventListener('transitionend', onEnd);
+    win.requestAnimationFrame(() => {
+        if (token !== win.__nelouraCbarAnimToken) return;
+        el.style.transform = endT;
+        el.style.opacity = '0';
+    });
+    win.setTimeout(finish, 450);
+}
+
+const NELOURA_SCREEN_COLORBAR_ID = 'neloura-screen-colorbar';
+/** Catalog legend only — independent from histogram / image scaling color bar. */
+const NELOURA_CATALOG_SCREEN_COLORBAR_ID = 'neloura-catalog-colorbar';
+
+function nelouraEnsureCatalogScreenColorBarDefaults(w) {
+    const x = w || window;
+    if (typeof x.catalogScreenColorBarVisible !== 'boolean') x.catalogScreenColorBarVisible = false;
+    if (!x.catalogScreenColorBarPosition) x.catalogScreenColorBarPosition = 'left';
+    if (typeof x.catalogScreenColorBarUnit !== 'string') x.catalogScreenColorBarUnit = '';
+    if (typeof x.catalogScreenColorBarTicks !== 'number' || !Number.isFinite(x.catalogScreenColorBarTicks)) {
+        x.catalogScreenColorBarTicks = 5;
+    }
+    if (typeof x.catalogScreenColorBarLabelColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(String(x.catalogScreenColorBarLabelColor || '').trim())) {
+        x.catalogScreenColorBarLabelColor = '#eaeaea';
+    }
+    const cf = x.catalogScreenColorBarNumberFormat;
+    if (!['auto', 'scientific', 'fixed', 'integer'].includes(cf)) {
+        x.catalogScreenColorBarNumberFormat = 'auto';
+    }
+    let cd = parseInt(x.catalogScreenColorBarDecimals, 10);
+    if (!Number.isFinite(cd)) cd = 2;
+    x.catalogScreenColorBarDecimals = Math.max(0, Math.min(12, cd));
+}
+
+/** Call when all catalog overlays are removed (clear / delete catalog). */
+function hideNelouraCatalogLegendColorBar() {
+    const w = window;
+    nelouraEnsureCatalogScreenColorBarDefaults(w);
+    w.catalogScreenColorBarVisible = false;
+    w.__nelouraCatalogScreenColorBarWasVisible = false;
+    try {
+        const doc = w.document;
+        const el = doc && doc.getElementById(NELOURA_CATALOG_SCREEN_COLORBAR_ID);
+        if (el) {
+            el.style.display = 'none';
+            el.style.transition = '';
+            el.style.transform = '';
+            el.style.opacity = '';
+        }
+    } catch (_) {}
+    try {
+        const t = document.getElementById('region-style-screen-colorbar-toggle');
+        if (t) t.checked = false;
+        const pan = document.getElementById('region-style-screen-colorbar-options-panel');
+        if (pan) pan.style.display = 'none';
+    } catch (_) {}
+    if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
+}
+
+if (typeof window !== 'undefined') {
+    window.hideNelouraCatalogLegendColorBar = hideNelouraCatalogLegendColorBar;
+}
+
+function nelouraSyncOsdInsetForColorBars(w) {
+    try {
+        const doc = w.document;
+        if (!doc || !doc.body) return;
+        const rs = w.regionStyles;
+        const catOn = !!(w.catalogScreenColorBarVisible && rs && rs.colorCodeColumn);
+        const imgOn = nelouraMapColorBarEffectivelyVisible(w);
+        const lane = nelouraScreenColorBarSideLaneWidthPx();
+        const fallV = nelouraScreenColorBarTopBottomLanePxFallback();
+
+        const normPos = (p, def) => (['top', 'left', 'right', 'bottom'].includes(p) ? p : def);
+
+        let leftLanes = 0;
+        let rightLanes = 0;
+        if (imgOn) {
+            const ip = normPos(w.screenColorBarPosition || 'right', 'right');
+            if (ip === 'left') leftLanes += 1;
+            else if (ip === 'right') rightLanes += 1;
+        }
+        if (catOn) {
+            nelouraEnsureCatalogScreenColorBarDefaults(w);
+            const cp = normPos(w.catalogScreenColorBarPosition || 'left', 'left');
+            if (cp === 'left') leftLanes += 1;
+            else if (cp === 'right') rightLanes += 1;
+        }
+        leftLanes = Math.min(2, leftLanes);
+        rightLanes = Math.min(2, rightLanes);
+
+        const measureBarHeight = (id) => {
+            try {
+                const el = doc.getElementById(id);
+                if (el && el.style.display !== 'none') {
+                    const h = Math.ceil(el.getBoundingClientRect().height);
+                    if (h > 1) return h;
+                }
+            } catch (_) { /* ignore */ }
+            return fallV;
+        };
+
+        let topPx = 0;
+        let bottomPx = 0;
+        if (imgOn && normPos(w.screenColorBarPosition || 'right', 'right') === 'top') {
+            topPx += measureBarHeight(NELOURA_SCREEN_COLORBAR_ID);
+        }
+        if (catOn && normPos(w.catalogScreenColorBarPosition || 'left', 'left') === 'top') {
+            topPx += measureBarHeight(NELOURA_CATALOG_SCREEN_COLORBAR_ID);
+        }
+        if (imgOn && normPos(w.screenColorBarPosition || 'right', 'right') === 'bottom') {
+            bottomPx += measureBarHeight(NELOURA_SCREEN_COLORBAR_ID);
+        }
+        if (catOn && normPos(w.catalogScreenColorBarPosition || 'left', 'left') === 'bottom') {
+            bottomPx += measureBarHeight(NELOURA_CATALOG_SCREEN_COLORBAR_ID);
+        }
+
+        const active = imgOn || catOn;
+        if (!active) {
+            nelouraApplyCombinedColorBarViewerInsets(doc, {
+                active: false,
+                leftPx: 0,
+                rightPx: 0,
+                topPx: 0,
+                bottomPx: 0
+            });
+            return;
+        }
+
+        nelouraApplyCombinedColorBarViewerInsets(doc, {
+            active: true,
+            leftPx: leftLanes * lane,
+            rightPx: rightLanes * lane,
+            topPx,
+            bottomPx
+        });
+    } catch (_) { /* ignore */ }
+}
+const NELOURA_SCREEN_COLORBAR_STRIP_PX = 24;
+/** Horizontal band for vertical-bar tick labels (tighter gap to the strip). */
+const NELOURA_SCREEN_COLORBAR_TICKS_BAND_PX = 52;
+/** Gap from the viewport edge to the color bar (same for left and right). */
+const NELOURA_SCREEN_COLORBAR_VIEWPORT_EDGE_GAP_PX = 6;
+/** Horizontal color bar: reserved tick row height before we measure the real bar. */
+const NELOURA_SCREEN_COLORBAR_HBAR_TICKS_ROW_PX = 14;
+
+function nelouraScreenColorBarSideLaneWidthPx() {
+    return (
+        NELOURA_SCREEN_COLORBAR_VIEWPORT_EDGE_GAP_PX +
+        NELOURA_SCREEN_COLORBAR_STRIP_PX +
+        NELOURA_SCREEN_COLORBAR_TICKS_BAND_PX
+    );
+}
+
+/** Fallback vertical inset if measurement is unavailable (strip + tick row, flush to edge). */
+function nelouraScreenColorBarTopBottomLanePxFallback() {
+    return NELOURA_SCREEN_COLORBAR_STRIP_PX + NELOURA_SCREEN_COLORBAR_HBAR_TICKS_ROW_PX;
+}
+
+/**
+ * Reserve space for any combination of map + catalog screen color bars (independent positions).
+ * Uses pixel insets so the OpenSeadragon viewer sits in the middle like a single bar, but with both sides when needed.
+ */
+function nelouraApplyCombinedColorBarViewerInsets(doc, spec) {
+    try {
+        const body = doc && doc.body;
+        const win = doc.defaultView || window;
+        const leftPx = Math.max(0, Math.round(spec.leftPx || 0));
+        const rightPx = Math.max(0, Math.round(spec.rightPx || 0));
+        const topPx = Math.max(0, Math.round(spec.topPx || 0));
+        const bottomPx = Math.max(0, Math.round(spec.bottomPx || 0));
+        const active = !!spec.active && (leftPx > 0 || rightPx > 0 || topPx > 0 || bottomPx > 0);
+
+        const stateKey = `${active ? 1 : 0}|L${leftPx}|R${rightPx}|T${topPx}|B${bottomPx}`;
+        const insetChanged = win.__nelouraOsdInsetKey !== stateKey;
+        win.__nelouraOsdInsetKey = stateKey;
+
+        if (body) {
+            body.classList.remove(
+                'neloura-screen-cbar-right',
+                'neloura-screen-cbar-left',
+                'neloura-screen-cbar-top',
+                'neloura-screen-cbar-bottom'
+            );
+            body.style.removeProperty('--neloura-screen-cbar-lane');
+            body.style.removeProperty('--neloura-screen-cbar-lane-left');
+            body.style.removeProperty('--neloura-screen-cbar-lane-right');
+            body.style.removeProperty('--neloura-screen-cbar-lane-v');
+            body.style.removeProperty('--neloura-screen-cbar-lane-v-top');
+            body.style.removeProperty('--neloura-screen-cbar-lane-v-bottom');
+
+            if (active) {
+                if (leftPx > 0) {
+                    body.classList.add('neloura-screen-cbar-left');
+                    body.style.setProperty('--neloura-screen-cbar-lane-left', `${leftPx}px`);
+                    body.style.setProperty('--neloura-screen-cbar-lane', `${leftPx}px`);
+                }
+                if (rightPx > 0) {
+                    body.classList.add('neloura-screen-cbar-right');
+                    body.style.setProperty('--neloura-screen-cbar-lane-right', `${rightPx}px`);
+                    if (leftPx <= 0) {
+                        body.style.setProperty('--neloura-screen-cbar-lane', `${rightPx}px`);
+                    }
+                }
+                if (topPx > 0) {
+                    body.classList.add('neloura-screen-cbar-top');
+                    body.style.setProperty('--neloura-screen-cbar-lane-v-top', `${topPx}px`);
+                    body.style.setProperty('--neloura-screen-cbar-lane-v', `${topPx}px`);
+                }
+                if (bottomPx > 0) {
+                    body.classList.add('neloura-screen-cbar-bottom');
+                    body.style.setProperty('--neloura-screen-cbar-lane-v-bottom', `${bottomPx}px`);
+                    if (topPx <= 0) {
+                        body.style.setProperty('--neloura-screen-cbar-lane-v', `${bottomPx}px`);
+                    }
+                }
+            }
+        }
+
+        const osd = doc && doc.getElementById('openseadragon');
+        if (osd) {
+            osd.style.paddingRight = '';
+            if (!active) {
+                osd.style.width = '';
+                osd.style.left = '';
+                osd.style.top = '';
+                osd.style.height = '';
+                osd.style.boxSizing = '';
+            } else {
+                osd.style.boxSizing = 'border-box';
+                osd.style.left = `${leftPx}px`;
+                osd.style.top = `${topPx}px`;
+                osd.style.width = `calc(100vw - ${leftPx + rightPx}px)`;
+                osd.style.height = `calc(100vh - ${topPx + bottomPx}px)`;
+            }
+        }
+
+        if (!insetChanged) return;
+
+        win.requestAnimationFrame(() => {
+            try {
+                const v = win.tiledViewer || win.viewer;
+                if (v && typeof v.forceRedraw === 'function') v.forceRedraw();
+                try {
+                    win.dispatchEvent(new Event('resize'));
+                } catch (_) { /* ignore */ }
+            } catch (_) { /* ignore */ }
+        });
+    } catch (_) { /* ignore */ }
+}
+
+/**
+ * Reset screen color bar options when the colormap changes (visibility off + defaults).
+ */
+function resetScreenColorBarOnColormapChange() {
+    const w = window;
+    w.screenColorBarVisible = false;
+    w.screenColorBarPosition = 'right';
+    w.screenColorBarUnit = '';
+    w.screenColorBarTicks = 5;
+    w.screenColorBarLabelColor = '#eaeaea';
+    w.screenColorBarNumberFormat = 'auto';
+    w.screenColorBarDecimals = 2;
+    w.__nelouraScreenColorBarLayoutPos = undefined;
+    w.__nelouraScreenColorBarWasVisible = false;
+    try {
+        const doc = typeof getHistogramDocument === 'function' ? getHistogramDocument() : document;
+        const tg = doc.getElementById('screen-colorbar-toggle');
+        if (tg) tg.checked = false;
+        const pan = doc.getElementById('screen-colorbar-options-panel');
+        if (pan) pan.style.display = 'none';
+        const pos = doc.getElementById('screen-colorbar-position');
+        if (pos) pos.value = 'right';
+        const u = doc.getElementById('screen-colorbar-unit');
+        if (u) u.value = '';
+        const tk = doc.getElementById('screen-colorbar-ticks');
+        if (tk) tk.value = '5';
+        const lc = doc.getElementById('screen-colorbar-labelcolor');
+        if (lc) lc.value = '#eaeaea';
+        const nf = doc.getElementById('screen-colorbar-numfmt');
+        if (nf) nf.value = 'auto';
+        const dc = doc.getElementById('screen-colorbar-decimals');
+        if (dc) {
+            dc.value = '2';
+            dc.disabled = true;
+        }
+        const decCap = doc.getElementById('screen-colorbar-decimals-caption');
+        if (decCap) decCap.style.opacity = '0.45';
+    } catch (_) { /* ignore */ }
+    if (typeof updateScreenColorBar === 'function') {
+        updateScreenColorBar();
+    }
+}
+
+/** Reset screen color bar UI when a new image (file/HDU) is loaded; same defaults as colormap change. */
+function resetScreenColorBarOnNewImage() {
+    resetScreenColorBarOnColormapChange();
+}
+
+/** Same keys as REGION_COLOR_MAPS in catalogs.js — used when catalog bar renders before/without catalogs.js or nelouraRegionPaletteRgbAt. */
+const NELOURA_BUILTIN_REGION_PALETTES = {
+    viridis: ['#440154', '#3b528b', '#21918c', '#5dc863', '#fde725'],
+    plasma: ['#0d0887', '#7e03a8', '#cc4778', '#fca636', '#f0f921'],
+    magma: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
+    cividis: ['#00204c', '#29397d', '#5c4f99', '#8b659c', '#ba7a8a', '#e79362', '#f7c966'],
+    categorical: ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#a65628', '#f781bf', '#999999']
+};
+
+function nelouraBuiltinHexToRgb(hex) {
+    if (typeof hex !== 'string') return { r: 128, g: 128, b: 128 };
+    const normalized = hex.replace('#', '');
+    const bigint = parseInt(normalized.length === 3 ? normalized.split('').map((ch) => ch + ch).join('') : normalized, 16);
+    return { r: (bigint >> 16) & 255, g: (bigint >> 8) & 255, b: bigint & 255 };
+}
+
+function nelouraBuiltinRegionPaletteRgbAt(mapName, t) {
+    const palettes = NELOURA_BUILTIN_REGION_PALETTES;
+    const key = (mapName && palettes[mapName]) ? mapName : 'viridis';
+    const colors = palettes[key];
+    const clamped = Math.max(0, Math.min(1, t));
+    if (!colors || colors.length === 0) return [128, 128, 128];
+    if (colors.length === 1) {
+        const { r, g, b } = nelouraBuiltinHexToRgb(colors[0]);
+        return [r, g, b];
+    }
+    const scaled = clamped * (colors.length - 1);
+    const i0 = Math.floor(scaled);
+    const i1 = Math.min(colors.length - 1, Math.ceil(scaled));
+    const frac = scaled - i0;
+    if (i0 === i1) {
+        const { r, g, b } = nelouraBuiltinHexToRgb(colors[i0]);
+        return [r, g, b];
+    }
+    const c1 = nelouraBuiltinHexToRgb(colors[i0]);
+    const c2 = nelouraBuiltinHexToRgb(colors[i1]);
+    return [
+        Math.round(c1.r + (c2.r - c1.r) * frac),
+        Math.round(c1.g + (c2.g - c1.g) * frac),
+        Math.round(c1.b + (c2.b - c1.b) * frac)
+    ];
+}
+
+function resolveNelouraRegionPaletteRgbAt(win) {
+    const w = win || window;
+    if (typeof w.nelouraRegionPaletteRgbAt === 'function') return w.nelouraRegionPaletteRgbAt;
+    try {
+        const tw = w.top;
+        if (tw && tw !== w && typeof tw.nelouraRegionPaletteRgbAt === 'function') return tw.nelouraRegionPaletteRgbAt;
+    } catch (_) { /* cross-origin */ }
+    return nelouraBuiltinRegionPaletteRgbAt;
+}
+
+/** Height of the map (image) horizontal color bar for stacking the catalog bar below/above it. */
+function nelouraMeasureImageScreenColorBarTopBottomHeight(win) {
+    try {
+        const doc = win.document;
+        const el = doc && doc.getElementById(NELOURA_SCREEN_COLORBAR_ID);
+        if (el && el.style.display !== 'none') {
+            const h = Math.ceil(el.getBoundingClientRect().height);
+            if (h > 1) return h;
+        }
+    } catch (_) { /* ignore */ }
+    return nelouraScreenColorBarTopBottomLanePxFallback();
+}
+
+function nelouraResolveCatalogOverlayContext(win) {
+    const w = win || window;
+    const seen = new Set();
+    const candidates = [];
+    const push = (x) => {
+        if (!x || seen.has(x)) return;
+        seen.add(x);
+        candidates.push(x);
+    };
+    // Prefer the active pane window (multi-panel), then current window, then top.
+    try {
+        const ap = (typeof w.getActivePaneWindow === 'function') ? w.getActivePaneWindow() : null;
+        if (ap) push(ap);
+    } catch (_) {}
+    try {
+        const tw = w.top;
+        if (tw && tw !== w) {
+            try {
+                const apTop = (typeof tw.getActivePaneWindow === 'function') ? tw.getActivePaneWindow() : null;
+                if (apTop) push(apTop);
+            } catch (_) {}
+            push(tw);
+        }
+    } catch (_) {}
+    push(w);
+
+    for (const cand of candidates) {
+        try {
+            const rows = cand.catalogDataForOverlay;
+            if (Array.isArray(rows) && rows.length && typeof cand.computeCatalogColumnNumericRange === 'function') return cand;
+        } catch (_) {}
+    }
+    // If no candidate has the range helper, still return a window that has rows (best-effort).
+    for (const cand of candidates) {
+        try {
+            const rows = cand.catalogDataForOverlay;
+            if (Array.isArray(rows) && rows.length) return cand;
+        } catch (_) {}
+    }
+    return w;
+}
+
+
+/**
+ * One pane: kind === 'image' (histogram / map) or 'catalog' (catalog legend). Separate DOM + globals.
+ */
+function nelouraUpdateOneColorBarPane(w, kind) {
+    try {
+        const image = kind === 'image';
+        const doc = w.document;
+        if (!doc || !doc.body) return;
+
+        if (!image) nelouraEnsureCatalogScreenColorBarDefaults(w);
+
+        const barId = image ? NELOURA_SCREEN_COLORBAR_ID : NELOURA_CATALOG_SCREEN_COLORBAR_ID;
+        const rs = w.regionStyles;
+        const visible = image
+            ? nelouraMapColorBarEffectivelyVisible(w)
+            : !!(w.catalogScreenColorBarVisible && rs && rs.colorCodeColumn);
+
+        const posRaw = image ? (w.screenColorBarPosition || 'right') : (w.catalogScreenColorBarPosition || 'left');
+        const pos = ['top', 'left', 'right', 'bottom'].includes(posRaw) ? posRaw : (image ? 'right' : 'left');
+
+        const wasKey = image ? '__nelouraScreenColorBarWasVisible' : '__nelouraCatalogScreenColorBarWasVisible';
+        const layoutKey = image ? '__nelouraScreenColorBarLayoutPos' : '__nelouraCatalogScreenColorBarLayoutPos';
+
+        let el = doc.getElementById(barId);
+        if (!visible) {
+            const posHide = pos;
+            if (el && w[wasKey]) {
+                w[wasKey] = false;
+                nelouraAnimateScreenColorBarHide(el, posHide, () => {
+                    if (image) {
+                        if (!nelouraMapColorBarEffectivelyVisible(w) && el.parentNode) el.style.display = 'none';
+                    } else {
+                        const on = !!(w.catalogScreenColorBarVisible && w.regionStyles && w.regionStyles.colorCodeColumn);
+                        if (!on && el.parentNode) el.style.display = 'none';
+                    }
+                });
+            } else if (el) {
+                el.style.display = 'none';
+                el.style.transition = '';
+                el.style.transform = '';
+                el.style.opacity = '';
+                w[wasKey] = false;
+            }
+            return;
+        }
+
+        const unitText = image
+            ? (typeof w.screenColorBarUnit === 'string' ? w.screenColorBarUnit.trim() : '')
+            : (typeof w.catalogScreenColorBarUnit === 'string' ? w.catalogScreenColorBarUnit.trim() : '');
+
+        const wasShown = !!w[wasKey];
+
+        let labelHex = image
+            ? (typeof w.screenColorBarLabelColor === 'string' ? w.screenColorBarLabelColor.trim() : '#eaeaea')
+            : (typeof w.catalogScreenColorBarLabelColor === 'string' ? w.catalogScreenColorBarLabelColor.trim() : '#eaeaea');
+        if (!/^#[0-9a-fA-F]{6}$/.test(labelHex)) labelHex = '#eaeaea';
+        if (image) w.screenColorBarLabelColor = labelHex;
+        else w.catalogScreenColorBarLabelColor = labelHex;
+
+        const labelStyle = {
+            color: labelHex,
+            fontSize: '11px',
+            fontFamily: 'Arial, sans-serif',
+            lineHeight: '1.15',
+            textShadow: screenColorBarTextShadowForLabelColor(labelHex),
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap'
+        };
+
+        const fmtTick = (v) => formatScreenColorBarTick(v, w, image ? undefined : 'catalog');
+
+        let minV = NaN;
+        let maxV = NaN;
+        let fn;
+        let invert = false;
+
+        if (image) {
+            if (w.fitsData && typeof w.fitsData.min_value === 'number' && typeof w.fitsData.max_value === 'number') {
+                minV = w.fitsData.min_value;
+                maxV = w.fitsData.max_value;
+            }
+            if (!isFinite(minV) || !isFinite(maxV) || minV === maxV) {
+                minV = 0;
+                maxV = 1;
+            }
+            const cmap =
+                (w.COLOR_MAPS && typeof w.COLOR_MAPS === 'object' ? w.COLOR_MAPS : null) ||
+                (typeof COLOR_MAPS !== 'undefined' ? COLOR_MAPS : null);
+            const mapName = String(
+                w.currentColorMap || (typeof currentColorMap !== 'undefined' ? currentColorMap : 'grayscale') || 'grayscale'
+            ).trim();
+            let fn0 = cmap && typeof cmap[mapName] === 'function' ? cmap[mapName] : null;
+            if (!fn0 && cmap && typeof cmap.grayscale === 'function') fn0 = cmap.grayscale;
+            if (!fn0) fn0 = (v) => [v, v, v];
+            fn = fn0;
+            invert = !!(w.currentColorMapInverted ?? (typeof currentColorMapInverted !== 'undefined' ? currentColorMapInverted : false));
+        } else {
+            const ctxWin = nelouraResolveCatalogOverlayContext(w);
+            const rs0 = (rs && typeof rs === 'object') ? rs : (ctxWin.regionStyles || null);
+            const col = rs0 && rs0.colorCodeColumn;
+            const mapNm = String((rs0 && rs0.colorMapName) || 'viridis').trim();
+            const records = Array.isArray(ctxWin.catalogDataForOverlay) ? ctxWin.catalogDataForOverlay : [];
+            const stats = (records.length && col && typeof ctxWin.computeCatalogColumnNumericRange === 'function')
+                ? ctxWin.computeCatalogColumnNumericRange(records, col)
+                : { hasNumeric: false, min: 0, max: 1 };
+
+            let nMin = Number.isFinite(rs0 && rs0.colorCodeMin) ? rs0.colorCodeMin : null;
+            let nMax = Number.isFinite(rs0 && rs0.colorCodeMax) ? rs0.colorCodeMax : null;
+            if (stats && stats.hasNumeric) {
+                if (nMin == null) nMin = stats.min;
+                if (nMax == null) nMax = stats.max;
+            } else {
+                if (nMin == null) nMin = 0;
+                if (nMax == null) nMax = 1;
+            }
+            if (nMin > nMax) {
+                const t = nMin;
+                nMin = nMax;
+                nMax = t;
+            }
+            if (!isFinite(nMin) || !isFinite(nMax) || nMin === nMax) {
+                if (stats && stats.hasNumeric && isFinite(stats.min) && isFinite(stats.max) && stats.min !== stats.max) {
+                    nMin = stats.min;
+                    nMax = stats.max;
+                } else {
+                    nMin = 0;
+                    nMax = 1;
+                }
+            }
+            minV = nMin;
+            maxV = nMax;
+            const pal = resolveNelouraRegionPaletteRgbAt(w);
+            fn = (idx) => {
+                const t = Math.max(0, Math.min(255, idx)) / 255;
+                return pal(mapNm, t);
+            };
+            invert = false;
+        }
+
+        let numTicks = parseInt(image ? w.screenColorBarTicks : w.catalogScreenColorBarTicks, 10);
+        if (!Number.isFinite(numTicks)) numTicks = 5;
+        numTicks = Math.max(2, Math.min(25, numTicks));
+        if (image) w.screenColorBarTicks = numTicks;
+        else w.catalogScreenColorBarTicks = numTicks;
+
+        const tickValues = [];
+        for (let i = 0; i < numTicks; i++) {
+            tickValues.push(minV + (maxV - minV) * (i / (numTicks - 1)));
+        }
+
+        if (!el) {
+            el = doc.createElement('div');
+            el.id = barId;
+            Object.assign(el.style, {
+                position: 'fixed',
+                zIndex: image ? '59990' : '59991',
+                pointerEvents: 'none',
+                boxSizing: 'border-box',
+                overflow: 'visible',
+                display: 'flex'
+            });
+            doc.body.appendChild(el);
+            if (!w.__nelouraAnyScreenColorBarResizeBound) {
+                w.__nelouraAnyScreenColorBarResizeBound = true;
+                w.addEventListener('resize', () => {
+                    try { updateScreenColorBar(); } catch (_) { /* ignore */ }
+                });
+            }
+        }
+
+        if (!el.querySelector('.neloura-cbar-unit')) {
+            el.innerHTML = '';
+            const unitEl = doc.createElement('div');
+            unitEl.className = 'neloura-cbar-unit';
+            const mainEl = doc.createElement('div');
+            mainEl.className = 'neloura-cbar-main';
+            const ticksEl = doc.createElement('div');
+            ticksEl.className = 'neloura-cbar-ticks';
+            const stripEl = doc.createElement('div');
+            stripEl.className = 'neloura-cbar-strip';
+            const canvas = doc.createElement('canvas');
+            canvas.setAttribute('aria-hidden', 'true');
+            Object.assign(canvas.style, { display: 'block', width: '100%', height: '100%' });
+            stripEl.appendChild(canvas);
+            mainEl.appendChild(ticksEl);
+            mainEl.appendChild(stripEl);
+            el.appendChild(unitEl);
+            el.appendChild(mainEl);
+        }
+
+        const unitEl = el.querySelector('.neloura-cbar-unit');
+        const mainEl = el.querySelector('.neloura-cbar-main');
+        const ticksEl = el.querySelector('.neloura-cbar-ticks');
+        const stripEl = el.querySelector('.neloura-cbar-strip');
+        const canvas = stripEl && stripEl.querySelector('canvas');
+        if (!unitEl || !mainEl || !ticksEl || !stripEl || !canvas) return;
+
+        unitEl.textContent = unitText;
+        Object.assign(unitEl.style, {
+            ...labelStyle,
+            fontSize: '12px',
+            fontWeight: 'normal',
+            textAlign: 'center',
+            padding: (pos === 'top' || pos === 'bottom') ? '1px 6px 0' : '4px 6px 2px',
+            flexShrink: '0'
+        });
+
+        const S = `${NELOURA_SCREEN_COLORBAR_STRIP_PX}px`;
+        const TB = `${NELOURA_SCREEN_COLORBAR_TICKS_BAND_PX}px`;
+        const prevLayoutPos = w[layoutKey];
+
+        const gap = NELOURA_SCREEN_COLORBAR_VIEWPORT_EDGE_GAP_PX;
+        const laneW = nelouraScreenColorBarSideLaneWidthPx();
+        const mapBarOn = nelouraMapColorBarEffectivelyVisible(w);
+        const imageScreenPos = mapBarOn ? (w.screenColorBarPosition || 'right') : '';
+        const imageOnRight = !!(mapBarOn && imageScreenPos === 'right');
+        const imageOnLeft = !!(mapBarOn && imageScreenPos === 'left');
+        const imageOnTop = !!(mapBarOn && imageScreenPos === 'top');
+        const imageOnBottom = !!(mapBarOn && imageScreenPos === 'bottom');
+        const rightExtra = (!image && pos === 'right' && imageOnRight) ? laneW : 0;
+        const leftExtra = (!image && pos === 'left' && imageOnLeft) ? laneW : 0;
+        const topExtraCatalog = (!image && pos === 'top' && imageOnTop) ? nelouraMeasureImageScreenColorBarTopBottomHeight(w) : 0;
+        const bottomExtraCatalog = (!image && pos === 'bottom' && imageOnBottom) ? nelouraMeasureImageScreenColorBarTopBottomHeight(w) : 0;
+
+        Object.assign(el.style, {
+            top: 'auto', right: 'auto', bottom: 'auto', left: 'auto',
+            width: 'auto',
+            height: 'auto',
+            maxHeight: '',
+            minHeight: '',
+            flexDirection: 'column',
+            alignItems: 'stretch'
+        });
+        stripEl.style.minWidth = '';
+        stripEl.style.maxWidth = '';
+        stripEl.style.minHeight = '';
+        stripEl.style.maxHeight = '';
+        stripEl.style.flexBasis = '';
+        ticksEl.style.minWidth = '';
+        ticksEl.style.maxWidth = '';
+        ticksEl.style.minHeight = '';
+        ticksEl.style.maxHeight = '';
+        ticksEl.style.alignSelf = '';
+        ticksEl.style.flex = '';
+        mainEl.style.flexBasis = '';
+        mainEl.style.maxHeight = '';
+        Object.assign(mainEl.style, {
+            display: 'flex',
+            minWidth: '0',
+            alignItems: 'stretch',
+            flexDirection: 'row',
+            boxSizing: 'border-box'
+        });
+        Object.assign(stripEl.style, {
+            boxSizing: 'border-box',
+            flexShrink: '0',
+            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.35)',
+            overflow: 'hidden'
+        });
+        Object.assign(ticksEl.style, {
+            display: 'flex',
+            boxSizing: 'border-box',
+            flexShrink: '0',
+            ...labelStyle,
+            alignItems: 'stretch',
+            justifyContent: 'space-between'
+        });
+
+        ticksEl.innerHTML = '';
+        const isVertTicks = (pos === 'left' || pos === 'right');
+        if (isVertTicks) {
+            for (let i = numTicks - 1; i >= 0; i--) {
+                const tv = tickValues[i];
+                const line = doc.createElement('div');
+                line.textContent = fmtTick(tv);
+                Object.assign(line.style, labelStyle);
+                ticksEl.appendChild(line);
+            }
+        } else {
+            tickValues.forEach((tv) => {
+                const line = doc.createElement('div');
+                line.textContent = fmtTick(tv);
+                Object.assign(line.style, labelStyle);
+                ticksEl.appendChild(line);
+            });
+        }
+
+        const isH = (pos === 'top' || pos === 'bottom');
+
+        if (pos === 'right') {
+            if (unitEl.parentNode === el && mainEl.parentNode === el) {
+                el.insertBefore(unitEl, mainEl);
+            }
+            Object.assign(el.style, {
+                top: '0',
+                right: `${gap + rightExtra}px`,
+                left: 'auto',
+                bottom: 'auto',
+                height: '100vh',
+                maxHeight: 'none',
+                width: `calc(${S} + ${TB})`,
+                alignItems: 'flex-end'
+            });
+            unitEl.style.display = unitText ? 'block' : 'none';
+            unitEl.style.width = '100%';
+            unitEl.style.flexShrink = '0';
+            Object.assign(mainEl.style, {
+                flexDirection: 'row',
+                flex: '1 1 0%',
+                minHeight: '0',
+                width: '100%',
+                height: 'auto'
+            });
+            Object.assign(stripEl.style, {
+                width: S,
+                height: '100%',
+                flex: '1 1 auto',
+                minHeight: '0',
+                minWidth: '',
+                maxWidth: 'none',
+                maxHeight: 'none'
+            });
+            Object.assign(ticksEl.style, {
+                width: TB,
+                height: '100%',
+                minHeight: '0',
+                flex: '0 0 auto',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                justifyContent: 'space-between',
+                padding: '6px 2px 6px 0',
+                textAlign: 'right',
+                alignSelf: 'stretch'
+            });
+            mainEl.insertBefore(stripEl, ticksEl);
+        } else if (pos === 'left') {
+            if (unitEl.parentNode === el && mainEl.parentNode === el) {
+                el.insertBefore(unitEl, mainEl);
+            }
+            Object.assign(el.style, {
+                top: '0',
+                left: `${gap + leftExtra}px`,
+                right: 'auto',
+                bottom: 'auto',
+                height: '100vh',
+                maxHeight: 'none',
+                width: `calc(${S} + ${TB})`,
+                alignItems: 'flex-start'
+            });
+            unitEl.style.display = unitText ? 'block' : 'none';
+            unitEl.style.width = '100%';
+            unitEl.style.flexShrink = '0';
+            Object.assign(mainEl.style, {
+                flexDirection: 'row',
+                flex: '1 1 0%',
+                minHeight: '0',
+                width: '100%',
+                height: 'auto'
+            });
+            Object.assign(stripEl.style, {
+                width: S,
+                height: '100%',
+                flex: '1 1 auto',
+                minHeight: '0',
+                minWidth: '',
+                maxWidth: 'none',
+                maxHeight: 'none'
+            });
+            Object.assign(ticksEl.style, {
+                width: TB,
+                height: '100%',
+                minHeight: '0',
+                flex: '0 0 auto',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                padding: '6px 0 6px 2px',
+                textAlign: 'left',
+                alignSelf: 'stretch'
+            });
+            mainEl.insertBefore(ticksEl, stripEl);
+        } else if (pos === 'top') {
+            el.style.flexDirection = 'column';
+            if (unitEl.parentNode === el && mainEl.parentNode === el) {
+                el.insertBefore(unitEl, mainEl);
+            }
+            Object.assign(el.style, {
+                top: `${topExtraCatalog}px`,
+                left: '0',
+                right: 'auto',
+                bottom: 'auto',
+                width: '100vw',
+                height: 'auto',
+                maxHeight: '100vh',
+                alignItems: 'stretch'
+            });
+            unitEl.style.display = unitText ? 'block' : 'none';
+            unitEl.style.width = '100%';
+            unitEl.style.flexShrink = '0';
+            Object.assign(mainEl.style, {
+                flexDirection: 'column',
+                flex: '0 0 auto',
+                width: '100%',
+                minHeight: '',
+                height: 'auto'
+            });
+            Object.assign(stripEl.style, {
+                height: S,
+                width: '100%',
+                flex: '0 0 auto',
+                minHeight: '',
+                minWidth: '0',
+                maxHeight: 'none',
+                maxWidth: 'none'
+            });
+            Object.assign(ticksEl.style, {
+                flexDirection: 'row',
+                width: '100%',
+                flex: '0 0 auto',
+                height: 'auto',
+                minHeight: '12px',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '0 4px 1px'
+            });
+            mainEl.insertBefore(stripEl, ticksEl);
+        } else {
+            el.style.flexDirection = 'column';
+            if (unitEl.parentNode === el && mainEl.parentNode === el) {
+                el.appendChild(unitEl);
+            }
+            if (mainEl.parentNode === el) {
+                el.insertBefore(mainEl, unitEl);
+            }
+            Object.assign(el.style, {
+                bottom: `${bottomExtraCatalog}px`,
+                left: '0',
+                right: 'auto',
+                top: 'auto',
+                width: '100vw',
+                height: 'auto',
+                maxHeight: '100vh',
+                alignItems: 'stretch'
+            });
+            unitEl.style.display = unitText ? 'block' : 'none';
+            unitEl.style.width = '100%';
+            unitEl.style.flexShrink = '0';
+            Object.assign(mainEl.style, {
+                flexDirection: 'column',
+                flex: '0 0 auto',
+                width: '100%',
+                minHeight: '',
+                height: 'auto'
+            });
+            Object.assign(stripEl.style, {
+                height: S,
+                width: '100%',
+                flex: '0 0 auto',
+                minHeight: '',
+                minWidth: '0',
+                maxHeight: 'none',
+                maxWidth: 'none'
+            });
+            Object.assign(ticksEl.style, {
+                flexDirection: 'row',
+                width: '100%',
+                flex: '0 0 auto',
+                height: 'auto',
+                minHeight: '12px',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '1px 4px 0'
+            });
+            mainEl.insertBefore(ticksEl, stripEl);
+        }
+
+        const cw = isH ? 256 : 1;
+        const ch = isH ? 1 : 256;
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const img = ctx.createImageData(cw, ch);
+        const d = img.data;
+        if (isH) {
+            for (let x = 0; x < 256; x++) {
+                const p = x;
+                const idx = invert ? (255 - p) : p;
+                const [r, g, b] = fn(idx);
+                const o = x * 4;
+                d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+            }
+        } else {
+            for (let y = 0; y < 256; y++) {
+                const p = 255 - y;
+                const idx = invert ? (255 - p) : p;
+                const [r, g, b] = fn(idx);
+                const o = y * 4;
+                d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+            }
+        }
+        ctx.putImageData(img, 0, 0);
+
+        el.style.display = 'flex';
+        void el.offsetHeight;
+
+        w[wasKey] = true;
+        if (!wasShown) {
+            nelouraAnimateScreenColorBarShow(el, pos);
+        } else if (prevLayoutPos && prevLayoutPos !== pos) {
+            nelouraScreenColorBarPlayPositionChangeAnim(el, w, prevLayoutPos, pos);
+        } else {
+            el.style.transition = '';
+            el.style.transform = '';
+            el.style.opacity = '';
+        }
+        w[layoutKey] = pos;
+    } catch (e) {
+        console.warn('[screen color bar]', kind, e);
+    }
+}
+
+/** True when the top document shows the multi-panel iframe grid (host viewer is hidden). */
+function nelouraIsTopMultiPanelGridVisible(doc) {
+    try {
+        const d = doc || (typeof document !== 'undefined' ? document : null);
+        if (!d) return false;
+        const wrap = d.getElementById('multi-panel-container');
+        const grid = d.getElementById('multi-panel-grid');
+        return !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelector('iframe'));
+    } catch (_) {
+        return false;
+    }
+}
+
+/** Remove fixed color bars from the host window; map/catalog bars live in each pane iframe. */
+function nelouraClearHostScreenColorBarDom(win) {
+    const doc = win && win.document;
+    if (!doc) return;
+    try {
+        [NELOURA_SCREEN_COLORBAR_ID, NELOURA_CATALOG_SCREEN_COLORBAR_ID].forEach((id) => {
+            const el = doc.getElementById(id);
+            if (el) {
+                el.style.display = 'none';
+                el.style.transition = '';
+                el.style.transform = '';
+                el.style.opacity = '';
+            }
+        });
+    } catch (_) { /* ignore */ }
+    try {
+        nelouraApplyCombinedColorBarViewerInsets(doc, {
+            active: false,
+            leftPx: 0,
+            rightPx: 0,
+            topPx: 0,
+            bottomPx: 0
+        });
+    } catch (_) { /* ignore */ }
+    try {
+        const view = doc.defaultView || win;
+        if (view) {
+            view.__nelouraScreenColorBarWasVisible = false;
+            view.__nelouraCatalogScreenColorBarWasVisible = false;
+        }
+    } catch (_) { /* ignore */ }
+}
+
+/**
+ * Image map bar (scaling / histogram) + catalog legend bar — independent visibility and options.
+ */
+function updateScreenColorBar() {
+    const w = window;
+    try {
+        if (w === w.top && nelouraIsTopMultiPanelGridVisible(w.document)) {
+            nelouraClearHostScreenColorBarDom(w);
+            return;
+        }
+    } catch (_) { /* ignore */ }
+    nelouraUpdateOneColorBarPane(w, 'image');
+    nelouraUpdateOneColorBarPane(w, 'catalog');
+    nelouraSyncOsdInsetForColorBars(w);
+}
+
+
+if (typeof window !== 'undefined') {
+    window.updateScreenColorBar = updateScreenColorBar;
+    window.nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout = nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout;
+}
+
 // Function to apply the new dynamic range
 function applyDynamicRange() {
     const doc = getHistogramDocument();
@@ -6429,6 +9372,36 @@ function applyDynamicRange() {
     if (invertToggle) {
         window.currentColorMapInverted = invertToggle.checked;
         currentColorMapInverted = invertToggle.checked;
+    }
+
+    const screenBarUnitEl = doc.getElementById('screen-colorbar-unit');
+    const screenBarTicksEl = doc.getElementById('screen-colorbar-ticks');
+    if (screenBarUnitEl) {
+        window.screenColorBarUnit = screenBarUnitEl.value != null ? String(screenBarUnitEl.value) : '';
+    }
+    if (screenBarTicksEl) {
+        let nt = parseInt(screenBarTicksEl.value, 10);
+        if (!Number.isFinite(nt)) nt = 5;
+        nt = Math.max(2, Math.min(25, nt));
+        window.screenColorBarTicks = nt;
+        screenBarTicksEl.value = String(nt);
+    }
+    const screenBarLabelColorEl = doc.getElementById('screen-colorbar-labelcolor');
+    const screenBarNumFmtEl = doc.getElementById('screen-colorbar-numfmt');
+    const screenBarDecimalsEl = doc.getElementById('screen-colorbar-decimals');
+    if (screenBarLabelColorEl) {
+        const hx = screenBarLabelColorEl.value;
+        window.screenColorBarLabelColor = /^#[0-9a-fA-F]{6}$/.test(hx) ? hx : '#eaeaea';
+    }
+    if (screenBarNumFmtEl) {
+        const f = screenBarNumFmtEl.value;
+        window.screenColorBarNumberFormat = ['auto', 'scientific', 'fixed', 'integer'].includes(f) ? f : 'auto';
+    }
+    if (screenBarDecimalsEl) {
+        let d = parseInt(screenBarDecimalsEl.value, 10);
+        if (!Number.isFinite(d)) d = 2;
+        window.screenColorBarDecimals = Math.max(0, Math.min(12, d));
+        screenBarDecimalsEl.value = String(window.screenColorBarDecimals);
     }
 
     const isTiledViewActive = window.tiledViewer && window.tiledViewer.isOpen && window.tiledViewer.isOpen();
@@ -6541,6 +9514,9 @@ function applyDynamicRange() {
     }
     
     // Update the histogram display (this should now work for both modes)
+    if (typeof updateScreenColorBar === 'function') {
+        updateScreenColorBar();
+    }
     requestHistogramUpdate();
     attachHistogramInteractionWhenReady();
 }
@@ -6639,6 +9615,14 @@ function resetDynamicRange() {
 function applyColorMap(colorMapName) {
     if (!colorMapName) return;
 
+    const prevMapStr = String(
+        window.currentColorMap != null && window.currentColorMap !== ''
+            ? window.currentColorMap
+            : (typeof currentColorMap !== 'undefined' ? currentColorMap : '')
+    );
+    const nextMapStr = String(colorMapName);
+    const colormapChanged = prevMapStr.length > 0 && prevMapStr !== nextMapStr;
+
     // Persist selection for both old/new code paths
     window.currentColorMap = colorMapName;
     try { currentColorMap = colorMapName; } catch (_) {}
@@ -6646,6 +9630,10 @@ function applyColorMap(colorMapName) {
         window.currentColorMapInverted = false;
     }
     try { currentColorMapInverted = !!window.currentColorMapInverted; } catch (_) {}
+
+    if (colormapChanged) {
+        resetScreenColorBarOnColormapChange();
+    }
 
     // Ensure Min/Max exist so applyDynamicRange can post correct payload
     const doc = getHistogramDocument();
@@ -8423,6 +11411,41 @@ async function initializeTiledViewer() {
                 }
             }
         } catch (_) {}
+
+        // Per-pane color bar globals from multi-panel restore (even if display block above did not run)
+        try {
+            const pr = window.__pendingRestoreState;
+            const sc = pr && pr.screenColorBar && typeof pr.screenColorBar === 'object' ? pr.screenColorBar : null;
+            if (sc) {
+                if (typeof sc.visible === 'boolean') window.screenColorBarVisible = sc.visible;
+                if (sc.position && ['top', 'left', 'right', 'bottom'].includes(sc.position)) {
+                    window.screenColorBarPosition = sc.position;
+                }
+                if (typeof sc.unit === 'string') window.screenColorBarUnit = sc.unit;
+                if (Number.isFinite(sc.ticks)) window.screenColorBarTicks = sc.ticks;
+                if (typeof sc.labelColor === 'string') window.screenColorBarLabelColor = sc.labelColor;
+                if (['auto', 'scientific', 'fixed', 'integer'].includes(sc.numberFormat)) {
+                    window.screenColorBarNumberFormat = sc.numberFormat;
+                }
+                if (Number.isFinite(sc.decimals)) window.screenColorBarDecimals = sc.decimals;
+            }
+            const cc = pr && pr.catalogScreenColorBar && typeof pr.catalogScreenColorBar === 'object'
+                ? pr.catalogScreenColorBar
+                : null;
+            if (cc) {
+                if (typeof cc.visible === 'boolean') window.catalogScreenColorBarVisible = cc.visible;
+                if (cc.position && ['top', 'left', 'right', 'bottom'].includes(cc.position)) {
+                    window.catalogScreenColorBarPosition = cc.position;
+                }
+                if (typeof cc.unit === 'string') window.catalogScreenColorBarUnit = cc.unit;
+                if (Number.isFinite(cc.ticks)) window.catalogScreenColorBarTicks = cc.ticks;
+                if (typeof cc.labelColor === 'string') window.catalogScreenColorBarLabelColor = cc.labelColor;
+                if (['auto', 'scientific', 'fixed', 'integer'].includes(cc.numberFormat)) {
+                    window.catalogScreenColorBarNumberFormat = cc.numberFormat;
+                }
+                if (Number.isFinite(cc.decimals)) window.catalogScreenColorBarDecimals = cc.decimals;
+            }
+        } catch (_) { /* ignore */ }
         
         // Store initial display min/max from server (priority)
         // But only if we don't have pending restoreState (which already set the values)
@@ -8987,6 +12010,12 @@ function handleFastLoadingResponse(data, filepath) {
         hduIndex: currentHduIdx,
         ...(preservedFlipY != null ? { flip_y: preservedFlipY } : {})
     };
+
+    if (!isSameFileAndHdu) {
+        try {
+            if (typeof resetScreenColorBarOnNewImage === 'function') resetScreenColorBarOnNewImage();
+        } catch (_) { /* ignore */ }
+    }
 
     // If we changed file/HDU and the fast path didn't supply WCS, ensure we don't keep a stale parsedWCS.
     try {

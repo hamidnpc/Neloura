@@ -10,7 +10,310 @@
     z-index: 30000 !important;
 }
 /* #catalog-overlay-controls{transition: all 0.4s ease;} */
-#zoom-in-button, #zoom-out-button, #reset-button, #settings-button, #mouse-mode-button{       font-size: 16px;
+
+/* Bottom bar: Regions / Pan + four shape icons when ≥1 region exists (canvas.js). */
+#region-mouse-mode-bar {
+    box-sizing: border-box;
+}
+#region-mouse-mode-bar .region-mouse-mode-bar-btn {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #f9fafb;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+}
+#region-mouse-mode-bar .region-mouse-mode-bar-btn--active {
+    background: rgba(56, 189, 248, 0.32);
+    border-color: rgba(56, 189, 248, 0.55);
+}
+#region-mouse-mode-bar .region-mouse-mode-bar-sep {
+    width: 1px;
+    height: 22px;
+    background: rgba(255, 255, 255, 0.16);
+    flex-shrink: 0;
+    align-self: center;
+}
+#region-mouse-mode-shapes {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+}
+#region-mouse-mode-bar .region-mouse-mode-shape-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 32px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+#region-mouse-mode-bar .region-mouse-mode-shape-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.22);
+}
+#region-mouse-mode-bar .region-mouse-mode-shape-btn--active {
+    background: rgba(56, 189, 248, 0.32);
+    border-color: rgba(56, 189, 248, 0.55);
+    color: #fff;
+}
+
+/* Source information popup for drawn regions — match catalog #canvas-dom-popup (canvas.js) */
+#simple-region-popup.simple-region-popup {
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    color: #fff;
+    background-color: rgba(42, 42, 42, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+}
+#simple-region-popup.simple-region-popup .srp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+}
+#simple-region-popup.simple-region-popup .srp-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #fff;
+}
+#simple-region-popup.simple-region-popup .srp-close {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+#simple-region-popup.simple-region-popup .srp-close:hover {
+    color: #fff;
+}
+#simple-region-popup.simple-region-popup .srp-content {
+    padding: 12px;
+    font-size: 14px;
+    line-height: 1.45;
+}
+#simple-region-popup.simple-region-popup .srp-section {
+    margin-bottom: 12px;
+}
+#simple-region-popup.simple-region-popup .srp-section:last-child {
+    margin-bottom: 0;
+}
+#simple-region-popup.simple-region-popup .srp-field-label {
+    display: block;
+    font-size: 13px;
+    font-weight: normal;
+    color: #aaa;
+    margin-bottom: 6px;
+}
+#simple-region-popup.simple-region-popup .srp-hint {
+    display: inline;
+    font-size: 12px;
+    font-weight: normal;
+    color: #888;
+    margin-left: 4px;
+}
+#simple-region-popup.simple-region-popup .srp-grid {
+    display: grid;
+    gap: 10px;
+}
+#simple-region-popup.simple-region-popup .srp-grid--2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+#simple-region-popup.simple-region-popup .srp-grid--3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: end;
+}
+#simple-region-popup.simple-region-popup .srp-grid--size {
+    grid-template-columns: 1fr auto 1fr;
+    align-items: end;
+}
+#simple-region-popup.simple-region-popup .srp-cell {
+    min-width: 0;
+}
+#simple-region-popup.simple-region-popup .srp-sublabel {
+    display: block;
+    font-size: 13px;
+    font-weight: normal;
+    color: #ccc;
+    margin-bottom: 4px;
+}
+#simple-region-popup.simple-region-popup .srp-input {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #222;
+    color: #fff;
+    font-size: 14px;
+    font-family: Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+#simple-region-popup.simple-region-popup .srp-input:hover {
+    border-color: #666;
+}
+#simple-region-popup.simple-region-popup .srp-input:focus {
+    outline: none;
+    border-color: #777;
+}
+#simple-region-popup.simple-region-popup .srp-input::placeholder {
+    color: #888;
+}
+#simple-region-popup.simple-region-popup .srp-size-x {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-bottom: 6px;
+    font-size: 14px;
+    font-weight: normal;
+    color: #888;
+}
+#simple-region-popup.simple-region-popup .srp-readonly-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: baseline;
+    margin-bottom: 8px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    border: none;
+}
+#simple-region-popup.simple-region-popup .srp-readonly-row:last-child {
+    margin-bottom: 0;
+}
+#simple-region-popup.simple-region-popup .srp-k {
+    font-size: 13px;
+    font-weight: normal;
+    color: #aaa;
+    min-width: 0;
+}
+#simple-region-popup.simple-region-popup .srp-v {
+    font-size: 14px;
+    font-weight: normal;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+}
+#simple-region-popup.simple-region-popup .srp-actions {
+    margin-top: 12px;
+    padding-top: 0;
+    border-top: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+}
+#simple-region-popup.simple-region-popup .srp-btn {
+    font-size: 14px;
+    font-family: Arial, sans-serif;
+    font-weight: normal;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    color: #fff;
+}
+#simple-region-popup.simple-region-popup .srp-btn:hover {
+    filter: brightness(1.06);
+}
+#simple-region-popup.simple-region-popup .srp-btn:active {
+    filter: brightness(0.95);
+}
+#simple-region-popup.simple-region-popup .srp-btn--properties {
+    background-color: #2196f3;
+}
+#simple-region-popup.simple-region-popup .srp-btn--rgb {
+    background-color: #ff9800;
+}
+#simple-region-popup.simple-region-popup .srp-btn--sed {
+    background-color: #4caf50;
+}
+#simple-region-popup.simple-region-popup .srp-btn--cutout {
+    background-color: #9c27b0;
+}
+#simple-region-popup.simple-region-popup .srp-btn--inset {
+    background-color: #111827;
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+#simple-region-popup.simple-region-popup .srp-btn--delete {
+    background-color: #dc2626;
+}
+
+/* Tighter vertical layout for drawn-region editor (many fields) */
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-header {
+    padding: 6px 10px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-title {
+    font-size: 13px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-content {
+    padding: 8px 10px 10px;
+    font-size: 13px;
+    line-height: 1.35;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-section {
+    margin-bottom: 7px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-field-label {
+    font-size: 12px;
+    margin-bottom: 3px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-hint {
+    font-size: 11px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-grid {
+    gap: 6px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-sublabel {
+    font-size: 12px;
+    margin-bottom: 2px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-input {
+    padding: 4px 6px;
+    font-size: 13px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-size-x {
+    padding-bottom: 3px;
+    font-size: 12px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-actions {
+    margin-top: 8px;
+    gap: 5px;
+}
+#simple-region-popup.simple-region-popup.simple-region-popup--editable .srp-btn {
+    padding: 5px 10px;
+    font-size: 13px;
+}
+
+#zoom-in-button, #zoom-out-button, #reset-button, #settings-button{       font-size: 16px;
     font-size: 16px;
     border-color: white !important;
     border-radius: 0px !important;
@@ -390,12 +693,6 @@ color: black !important;
         0% 25%
     );
 }
-#mouse-mode-button{
-
-    padding-top: 0px;
-    height: 40px;
-    line-height: 42px;
-}
 /* Border */
 .hexagon::before {
     background: var(--hex-border-color, red);
@@ -488,10 +785,98 @@ color: black !important;
         }
         .dropdown:hover .dropdown-content { display: block; }
 
+        /* When the screen color bar is on the right, reserve the right lane: bar flush to edge, UI shifts left. */
+        body.neloura-screen-cbar-right .toolbar {
+            right: calc(10px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px)));
+        }
+        body.neloura-screen-cbar-right #multi-panel-fab {
+            right: calc(18px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-right #multi-panel-close-fab {
+            right: calc(70px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-right #multi-panel-wcs-lock {
+            right: calc(125px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-right #multi-panel-blink {
+            right: calc(251px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-right #multi-panel-manager {
+            right: calc(18px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-right #progress-container {
+            right: calc(20px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+
+        /* Left color bar: same lane width; shift left-anchored chrome out of the strip */
+        body.neloura-screen-cbar-left .catalog-info {
+            left: calc(20px + var(--neloura-screen-cbar-lane-left, var(--neloura-screen-cbar-lane, 0px)));
+        }
+        body.neloura-screen-cbar-left #usage-icon-container {
+            left: calc(12px + var(--neloura-screen-cbar-lane-left, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-left #usage-popup {
+            left: calc(10px + var(--neloura-screen-cbar-lane-left, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        /* Credit sits to the right of the 44px usage icon (+10px gap); inline left ignores usage shift otherwise */
+        body.neloura-screen-cbar-left #credit-icon-container {
+            left: calc(12px + 44px + 10px + var(--neloura-screen-cbar-lane-left, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+        body.neloura-screen-cbar-left #credit-popup {
+            left: calc(10px + var(--neloura-screen-cbar-lane-left, var(--neloura-screen-cbar-lane, 0px))) !important;
+        }
+
+        /* Top color bar: drop toolbar below the bar lane */
+        body.neloura-screen-cbar-top .toolbar {
+            top: calc(20px + var(--neloura-screen-cbar-lane-v-top, var(--neloura-screen-cbar-lane-v, 0px)));
+        }
+
+        /* Bottom color bar: lift bottom-fixed controls above the bar lane */
+        body.neloura-screen-cbar-bottom #multi-panel-fab {
+            bottom: calc(18px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #multi-panel-close-fab {
+            bottom: calc(18px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #multi-panel-wcs-lock {
+            bottom: calc(22px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #multi-panel-blink {
+            bottom: calc(22px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #multi-panel-manager {
+            bottom: calc(74px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #progress-container {
+            bottom: calc(20px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom .catalog-info {
+            bottom: calc(20px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px)));
+        }
+        /* Keep usage/credit on the image area when the viewer is shortened from the bottom */
+        body.neloura-screen-cbar-bottom #usage-icon-container {
+            bottom: calc(12px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #usage-popup {
+            bottom: calc(60px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #credit-icon-container {
+            bottom: calc(10px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+        body.neloura-screen-cbar-bottom #credit-popup {
+            bottom: calc(60px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px))) !important;
+        }
+
         /* Improve iPad portrait spacing */
         @media (max-width: 1024px) and (orientation: portrait) {
             .toolbar { top: 12px; right: 8px; padding: 8px; border-radius: 6px; }
             .toolbar button { margin: 4px; padding: 8px; }
+            body.neloura-screen-cbar-right .toolbar {
+                right: calc(8px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px)));
+            }
+            body.neloura-screen-cbar-top .toolbar {
+                top: calc(12px + var(--neloura-screen-cbar-lane-v-top, var(--neloura-screen-cbar-lane-v, 0px)));
+            }
         }
         .catalog-info {
             position: absolute;

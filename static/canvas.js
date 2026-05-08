@@ -693,7 +693,7 @@ window.canvasPopup = {
                 const isRegion = this.content.source_type === 'region';
                 html += `
                 <div style="margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;">
-                    <button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Show SED</button>
+                    ${!isRegion ? '<button id="show-sed-btn" class="sed-button" style="padding: 6px 12px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Show SED</button>' : ''}
                     <button id="show-properties-btn" class="properties-button" style="padding: 6px 12px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Show Properties</button>
                     <button id="show-rgb-btn" class="rgb-button" style="padding: 6px 12px; background-color: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer;">Show RGB</button>
                     ${isRegion ? '<button id="cutout-region-btn" class="cutout-region-button" style="padding: 6px 12px; background-color: #9C27B0; color: white; border: none; border-radius: 4px; cursor: pointer;">Cutout</button>' : ''}
@@ -1132,6 +1132,389 @@ window.canvasPopup = {
         // Not needed for DOM popup
     }
 };
+
+function __resolveRegionStylesForCatalogOverlayCanvas() {
+    if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
+    try {
+        const topRs = window.top && window.top.regionStyles;
+        if (topRs && typeof topRs === 'object') return topRs;
+    } catch (_) {}
+    return {};
+}
+
+/** Keys stored per catalog in `regionStyles.catalogLabelByCatalog[key]`. */
+const __CATALOG_LABEL_STYLE_KEYS = [
+    'catalogLabelColumns',
+    'catalogLabelTextColor',
+    'catalogLabelPosition',
+    'catalogLabelsVisible',
+    'catalogLabelShowColumnNames',
+    'catalogLabelNumberFormat',
+    'catalogLabelDecimals',
+    'catalogLabelRenderStyle',
+    'catalogLabelBackgroundColor'
+];
+
+function __getCatalogKeyFromOverlayRecord(record) {
+    if (!record || typeof record !== 'object') return '';
+    const raw = record.__catalogName ?? record.catalog_name ?? record.catalog;
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    try {
+        if (typeof __normalizeCatalogKey === 'function') return __normalizeCatalogKey(s);
+    } catch (_) {}
+    return s;
+}
+
+/** Merge global `regionStyles` label fields with per-catalog overrides (multi-catalog overlays). */
+function __effectiveCatalogLabelRs(baseRs, catalogKey) {
+    const base = baseRs && typeof baseRs === 'object' ? baseRs : {};
+    const map = base.catalogLabelByCatalog;
+    if (!catalogKey || !map || typeof map !== 'object') return base;
+    const slot = map[catalogKey];
+    if (!slot || typeof slot !== 'object') return base;
+    const out = { ...base };
+    for (let i = 0; i < __CATALOG_LABEL_STYLE_KEYS.length; i += 1) {
+        const k = __CATALOG_LABEL_STYLE_KEYS[i];
+        if (Object.prototype.hasOwnProperty.call(slot, k)) out[k] = slot[k];
+    }
+    return out;
+}
+
+function __getCatalogLabelColumnsFromRs(rs) {
+    const raw = rs && rs.catalogLabelColumns;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.map((c) => String(c || '').trim()).filter(Boolean);
+    if (typeof raw === 'string' && raw.trim()) return [raw.trim()];
+    return [];
+}
+
+function __catalogRecordValueForLabel(record, column) {
+    if (!record || !column) return undefined;
+    try {
+        if (typeof getRecordValue === 'function') return getRecordValue(record, column);
+    } catch (_) {}
+    try {
+        if (record && typeof record === 'object') return record[column];
+    } catch (_) {}
+    return undefined;
+}
+
+function __catalogColumnUnitSuffix(colName) {
+    const key = String(colName || '').trim();
+    if (!key) return '';
+    const tryMap = (map) => {
+        if (!map || typeof map !== 'object') return '';
+        if (map[key]) return String(map[key]).trim();
+        const lk = key.toLowerCase();
+        for (const k of Object.keys(map)) {
+            if (k.toLowerCase() === lk) return String(map[k]).trim();
+        }
+        return '';
+    };
+    const tryColumnsArray = (cols) => {
+        if (!Array.isArray(cols)) return '';
+        const lk = key.toLowerCase();
+        for (const c of cols) {
+            if (!c || typeof c !== 'object') continue;
+            const n = String(c.name || '').trim();
+            if (n.toLowerCase() === lk && c.unit != null) {
+                const u = String(c.unit).trim();
+                if (u) return u;
+            }
+        }
+        return '';
+    };
+    let map = null;
+    let cols = null;
+    try {
+        const m = window.catalogMetadata;
+        if (m && typeof m === 'object') {
+            if (m.column_units) map = m.column_units;
+            if (Array.isArray(m.columns)) cols = m.columns;
+        }
+    } catch (_) {}
+    let u = tryMap(map);
+    if (!u) u = tryColumnsArray(cols);
+    if (!u) {
+        try {
+            if (window.top && window.top !== window) {
+                const m = window.top.catalogMetadata;
+                if (m && typeof m === 'object') {
+                    u = tryMap(m.column_units) || tryColumnsArray(m.columns);
+                }
+            }
+        } catch (_) {}
+    }
+    if (!u) {
+        try {
+            const byCat = window.catalogMetadataByCatalog;
+            if (byCat && typeof byCat === 'object') {
+                for (const h of Object.values(byCat)) {
+                    if (!h || typeof h !== 'object') continue;
+                    u = tryMap(h.column_units);
+                    if (u) break;
+                    u = tryColumnsArray(h.columns);
+                    if (u) break;
+                }
+            }
+        } catch (_) {}
+    }
+    return u || '';
+}
+
+function __catalogLabelFormatDecimals(rs) {
+    const d = parseInt(rs && rs.catalogLabelDecimals, 10);
+    return Number.isFinite(d) ? Math.max(0, Math.min(10, d)) : 2;
+}
+
+function __formatCatalogLabelScalar(raw, rs) {
+    const fmt = String((rs && rs.catalogLabelNumberFormat) || 'auto').toLowerCase();
+    const dec = __catalogLabelFormatDecimals(rs || {});
+
+    if (raw === undefined || raw === null || raw === '') return '—';
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+        if (fmt === 'integer') return String(Math.round(raw));
+        if (fmt === 'fixed') return raw.toFixed(dec);
+        if (fmt === 'scientific') return raw.toExponential(dec);
+        if (fmt === 'compact') {
+            const a = Math.abs(raw);
+            if (a >= 1e4 || (a > 0 && a < 1e-3)) return raw.toExponential(Math.max(1, Math.min(dec, 8)));
+            return raw.toFixed(dec);
+        }
+        // auto
+        const a = Math.abs(raw);
+        if (a >= 1e4 || (a > 0 && a < 1e-3)) return raw.toExponential(3);
+        const t = String(raw);
+        if (t.length > 14) return raw.toPrecision(6);
+        return t;
+    }
+    const s = String(raw);
+    return s.length > 28 ? (s.slice(0, 25) + '…') : s;
+}
+
+function __catalogLabelNormalizedRenderStyle(rs) {
+    let s = String((rs && rs.catalogLabelRenderStyle) || 'halo').toLowerCase();
+    if (s === 'box') s = 'pill';
+    if (s === 'plain') s = 'halo';
+    const ok = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+    return ok.has(s) ? s : 'halo';
+}
+
+function __catalogLabelFillRoundRect(ctx, x, y, w, h, r) {
+    const rad = Math.min(Math.max(0, r), Math.min(w, h) / 2);
+    if (typeof ctx.roundRect === 'function') {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, rad);
+        ctx.fill();
+        return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.lineTo(x + w - rad, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+    ctx.lineTo(x + w, y + h - rad);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+    ctx.lineTo(x + rad, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+    ctx.lineTo(x, y + rad);
+    ctx.quadraticCurveTo(x, y, x + rad, y);
+    ctx.closePath();
+    ctx.fill();
+}
+
+function __catalogLabelStrokeRoundRect(ctx, x, y, w, h, r, lineWidth) {
+    const lw = lineWidth != null ? lineWidth : 1;
+    const rad = Math.min(Math.max(0, r), Math.min(w, h) / 2);
+    ctx.lineWidth = lw;
+    if (typeof ctx.roundRect === 'function') {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, rad);
+        ctx.stroke();
+        return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.lineTo(x + w - rad, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+    ctx.lineTo(x + w, y + h - rad);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+    ctx.lineTo(x + rad, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+    ctx.lineTo(x, y + rad);
+    ctx.quadraticCurveTo(x, y, x + rad, y);
+    ctx.closePath();
+    ctx.stroke();
+}
+
+function __catalogLabelHexToRgba(hex, alpha) {
+    const n = __normalizeCatalogLabelHex(hex, '#1f2937');
+    const r = parseInt(n.slice(1, 3), 16);
+    const g = parseInt(n.slice(3, 5), 16);
+    const b = parseInt(n.slice(5, 7), 16);
+    const a = Math.max(0, Math.min(1, alpha));
+    return `rgba(${r},${g},${b},${a})`;
+}
+
+function __catalogScreenPlacementForOverlay(activeOsViewer, tiledImage, hasTiledImageMethod, hasMultipleImages, source) {
+    if (!source || !activeOsViewer || typeof OpenSeadragon === 'undefined') return null;
+    const radiusInImageCoords = source.radius_pixels || 5;
+    const imagePoint = new OpenSeadragon.Point(source.x, source.y);
+    let viewportPoint;
+    if (hasTiledImageMethod) {
+        viewportPoint = tiledImage.imageToViewportCoordinates(imagePoint);
+    } else if (hasMultipleImages) {
+        return null;
+    } else {
+        viewportPoint = activeOsViewer.viewport.imageToViewportCoordinates(imagePoint);
+    }
+    const center = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+    const sourceCenter = new OpenSeadragon.Point(source.x, source.y);
+    const sourceEdge = new OpenSeadragon.Point(source.x + radiusInImageCoords, source.y);
+    let viewportCenter;
+    let viewportEdge;
+    if (hasTiledImageMethod) {
+        viewportCenter = tiledImage.imageToViewportCoordinates(sourceCenter);
+        viewportEdge = tiledImage.imageToViewportCoordinates(sourceEdge);
+    } else {
+        viewportCenter = activeOsViewer.viewport.imageToViewportCoordinates(sourceCenter);
+        viewportEdge = activeOsViewer.viewport.imageToViewportCoordinates(sourceEdge);
+    }
+    const screenCenter = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportCenter);
+    const screenEdge = activeOsViewer.viewport.viewportToViewerElementCoordinates(viewportEdge);
+    const dx = screenEdge.x - screenCenter.x;
+    const dy = screenEdge.y - screenCenter.y;
+    const radius = Math.sqrt(dx * dx + dy * dy);
+    return { center, radius: Math.max(1, radius) };
+}
+
+function __normalizeCatalogLabelHex(hex, fallback) {
+    const fb = fallback || '#f8fafc';
+    if (typeof hex !== 'string') return fb;
+    let s = hex.trim();
+    if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return fb;
+    if (s.length === 4) {
+        const a = s[1];
+        const b = s[2];
+        const c = s[3];
+        s = `#${a}${a}${b}${b}${c}${c}`;
+    }
+    return s;
+}
+
+/** @returns {'above'|'below'|'left'|'right'} */
+function __normalizeCatalogLabelPosition(rs) {
+    const s = String((rs && rs.catalogLabelPosition) || 'above').toLowerCase();
+    if (s === 'below' || s === 'left' || s === 'right') return s;
+    return 'above';
+}
+
+function __drawCatalogLabelsAtSource(ctx, center, radius, source, previewFastDraw) {
+    if (!ctx || previewFastDraw) return;
+    const baseRs = __resolveRegionStylesForCatalogOverlayCanvas();
+    const ck = __getCatalogKeyFromOverlayRecord(source);
+    const rs = __effectiveCatalogLabelRs(baseRs, ck);
+    const labelColumns = __getCatalogLabelColumnsFromRs(rs);
+    if (!labelColumns.length) return;
+    if (rs.catalogLabelsVisible === false) return;
+
+    const showColNames = rs.catalogLabelShowColumnNames === true;
+    const lines = [];
+    for (let i = 0; i < labelColumns.length; i += 1) {
+        const col = labelColumns[i];
+        const v = __catalogRecordValueForLabel(source, col);
+        let formatted = __formatCatalogLabelScalar(v, rs);
+        const unit = __catalogColumnUnitSuffix(col);
+        if (unit && formatted !== '—') formatted = `${formatted} ${unit}`;
+        lines.push(showColNames ? `${col}: ${formatted}` : formatted);
+    }
+    if (!lines.length) return;
+    ctx.save();
+    const fontSpec = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.font = fontSpec;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const fillHex = __normalizeCatalogLabelHex(rs.catalogLabelTextColor, '#f8fafc');
+    const bgHex = __normalizeCatalogLabelHex(rs.catalogLabelBackgroundColor, '#1f2937');
+    const renderStyle = __catalogLabelNormalizedRenderStyle(rs);
+    const labelPos = __normalizeCatalogLabelPosition(rs);
+    const lineH = 14;
+    const padX = 6;
+    const padY = 4;
+    const rpx = Math.max(4, radius);
+    const edgeGap = 2;
+
+    let maxW = 8;
+    for (let i = 0; i < lines.length; i += 1) {
+        const m = ctx.measureText(lines[i]);
+        maxW = Math.max(maxW, m.width);
+    }
+    const blockW = maxW + padX * 2;
+    const blockH = lines.length * lineH + padY * 2;
+
+    let blockLeft;
+    let blockTop;
+    if (labelPos === 'below') {
+        blockLeft = center.x - blockW / 2;
+        blockTop = center.y + rpx + edgeGap;
+    } else if (labelPos === 'above') {
+        blockLeft = center.x - blockW / 2;
+        blockTop = center.y - rpx - edgeGap - blockH;
+    } else if (labelPos === 'right') {
+        blockLeft = center.x + rpx + edgeGap;
+        blockTop = center.y - blockH / 2;
+    } else {
+        blockLeft = center.x - rpx - edgeGap - blockW;
+        blockTop = center.y - blockH / 2;
+    }
+
+    const textX = blockLeft + blockW / 2;
+    const textY0 = blockTop + padY;
+    const cornerR = 9;
+
+    if (renderStyle === 'pill') {
+        ctx.fillStyle = bgHex;
+        __catalogLabelFillRoundRect(ctx, blockLeft, blockTop, blockW, blockH, cornerR);
+    } else if (renderStyle === 'glass') {
+        ctx.fillStyle = __catalogLabelHexToRgba(bgHex, 0.58);
+        __catalogLabelFillRoundRect(ctx, blockLeft, blockTop, blockW, blockH, cornerR);
+        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+        __catalogLabelStrokeRoundRect(ctx, blockLeft, blockTop, blockW, blockH, cornerR, 1);
+    } else if (renderStyle === 'outline') {
+        ctx.strokeStyle = 'rgba(255,255,255,0.48)';
+        __catalogLabelStrokeRoundRect(ctx, blockLeft, blockTop, blockW, blockH, cornerR, 1.35);
+    }
+
+    const drawOneLine = (t, tx, ty) => {
+        if (renderStyle === 'shadow') {
+            ctx.save();
+            ctx.shadowColor = 'rgba(0,0,0,0.92)';
+            ctx.shadowBlur = 5;
+            ctx.shadowOffsetX = 1;
+            ctx.shadowOffsetY = 1;
+            ctx.fillStyle = fillHex;
+            ctx.fillText(t, tx, ty);
+            ctx.restore();
+        } else if (renderStyle === 'glow') {
+            ctx.save();
+            ctx.shadowColor = fillHex;
+            ctx.shadowBlur = 14;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+            ctx.fillStyle = fillHex;
+            ctx.fillText(t, tx, ty);
+            ctx.restore();
+        } else {
+            ctx.fillStyle = fillHex;
+            ctx.fillText(t, tx, ty);
+        }
+    };
+
+    for (let li = 0; li < lines.length; li += 1) {
+        drawOneLine(lines[li], textX, textY0 + li * lineH);
+    }
+    ctx.restore();
+}
 
 // Function to highlight a selected source
 function canvasHighlightSource(selectedIndex) {
@@ -1642,23 +2025,88 @@ function canvasUpdateOverlay(opts = null) {
             }
             r.draw();
 
-            // Draw selection highlight (yellow border) on the 2D canvas on top of WebGL.
+            // 2D overlay on top of WebGL: region labels + selection highlight
             try {
-                const hi = window.currentHighlightedSourceIndex;
-                const src = (Number.isInteger(hi) && hi >= 0 && catalogData && hi < catalogData.length) ? catalogData[hi] : null;
                 const canvas2d = window.catalogCanvas;
-                if (src && canvas2d) {
+                if (canvas2d) {
                     const ctx2 = canvas2d.getContext('2d');
                     const viewerElement = document.getElementById('openseadragon');
                     const wCss = viewerElement ? viewerElement.clientWidth : canvas2d.width;
                     const hCss = viewerElement ? viewerElement.clientHeight : canvas2d.height;
-                    // Always clear 2D overlay first (otherwise the last highlight can "stick" after deselect).
-                    // Clear in CSS pixels; DPR already handled by __syncCatalogCanvasDprSize()
                     try { ctx2.clearRect(0, 0, wCss, hCss); } catch (_) { try { ctx2.clearRect(0, 0, canvas2d.width, canvas2d.height); } catch (_) {} }
 
                     const tiledImage = activeOsViewer.world && activeOsViewer.world.getItemAt && activeOsViewer.world.getItemAt(0);
                     const hasTiledImageMethod = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function';
-                    if (hasTiledImageMethod) {
+                    let hasMultipleImages = false;
+                    if (activeOsViewer.world) {
+                        if (typeof activeOsViewer.world.getItemsCount === 'function') {
+                            hasMultipleImages = activeOsViewer.world.getItemsCount() > 1;
+                        } else if (activeOsViewer.world.getItemAt) {
+                            hasMultipleImages = !!activeOsViewer.world.getItemAt(1);
+                        }
+                    }
+
+                    // Draw labels during pan (preview) too — avoids empty canvas between frames.
+                    // Cap harder in preview to keep interaction smooth; full pass uses a higher cap.
+                    if (hasTiledImageMethod || !hasMultipleImages) {
+                        const MAX_LABEL_SOURCES = isPreview ? 1000 : 3500;
+                        let numLabeled = 0;
+                        const previewFastDrawLabels = ((catalogData && catalogData.length) || 0) > 20000;
+                        for (let i = 0; i < catalogData.length; i += 1) {
+                            const s = catalogData[i];
+                            if (!s) continue;
+                            if (!passesBooleanFilters(s)) continue;
+                            if (!passesConditionFilters(s)) continue;
+                            if (crossMatchedIndexSet && !crossMatchedIndexSet.has(i)) continue;
+
+                            let imgX = (Number.isFinite(s.x) ? s.x : null);
+                            let imgY = (Number.isFinite(s.y) ? s.y : null);
+                            if (Number.isFinite(imgX) && Number.isFinite(imgY) && imgX === 0 && imgY === 0) {
+                                imgX = null;
+                                imgY = null;
+                            }
+                            if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) {
+                                const px = Number.isFinite(s.x_pixels) ? s.x_pixels : null;
+                                const py = Number.isFinite(s.y_pixels) ? s.y_pixels : null;
+                                if (Number.isFinite(px) && Number.isFinite(py) && !(px === 0 && py === 0)) {
+                                    imgX = px;
+                                    imgY = py;
+                                }
+                            }
+                            if ((!Number.isFinite(imgX) || !Number.isFinite(imgY)) && Number.isFinite(s.ra) && Number.isFinite(s.dec)) {
+                                try {
+                                    if (typeof worldToPixelGeneric === 'function') {
+                                        const p = worldToPixelGeneric(s.ra, s.dec);
+                                        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+                                            imgX = p.x;
+                                            imgY = p.y;
+                                        }
+                                    } else if (window.parsedWCS && window.parsedWCS.hasWCS && typeof window.parsedWCS.worldToPixels === 'function') {
+                                        const p2 = window.parsedWCS.worldToPixels(s.ra, s.dec);
+                                        if (p2 && Number.isFinite(p2.x) && Number.isFinite(p2.y)) {
+                                            imgX = p2.x;
+                                            imgY = p2.y;
+                                        }
+                                    }
+                                } catch (_) {}
+                            }
+                            if (!Number.isFinite(imgX) || !Number.isFinite(imgY)) continue;
+
+                            const pl = __catalogScreenPlacementForOverlay(activeOsViewer, tiledImage, hasTiledImageMethod, hasMultipleImages, {
+                                x: imgX,
+                                y: imgY,
+                                radius_pixels: s.radius_pixels
+                            });
+                            if (!pl) continue;
+                            __drawCatalogLabelsAtSource(ctx2, pl.center, pl.radius, s, previewFastDrawLabels);
+                            numLabeled += 1;
+                            if (numLabeled >= MAX_LABEL_SOURCES) break;
+                        }
+                    }
+
+                    const hi = window.currentHighlightedSourceIndex;
+                    const src = (Number.isInteger(hi) && hi >= 0 && catalogData && hi < catalogData.length) ? catalogData[hi] : null;
+                    if (src && hasTiledImageMethod) {
                         const imgX = Number.isFinite(src.x) ? src.x : (Number.isFinite(src.x_pixels) ? src.x_pixels : null);
                         const imgY = Number.isFinite(src.y) ? src.y : (Number.isFinite(src.y_pixels) ? src.y_pixels : null);
                         if (Number.isFinite(imgX) && Number.isFinite(imgY)) {
@@ -1681,7 +2129,6 @@ function canvasUpdateOverlay(opts = null) {
                             ctx2.strokeStyle = 'yellow';
                             ctx2.lineWidth = 3;
                             ctx2.beginPath();
-                            // Match the underlying marker shape so selection doesn't look like it "turns into a circle".
                             const rs = (() => {
                                 if (window.regionStyles && typeof window.regionStyles === 'object') return window.regionStyles;
                                 try {
@@ -1692,9 +2139,8 @@ function canvasUpdateOverlay(opts = null) {
                             })();
                             const shapeType = (src && src.shape) ? String(src.shape).toLowerCase() : (rs.shape ? String(rs.shape).toLowerCase() : 'circle');
                             if (shapeType === 'hexagon') {
-                                // Flat-top regular hexagon (matches WebGL shader)
                                 const sides = 6;
-                                const angleOffset = 0; // 0 => vertex on +X axis
+                                const angleOffset = 0;
                                 for (let s = 0; s < sides; s++) {
                                     const ang = angleOffset + (s * 2 * Math.PI) / sides;
                                     const px = center.x + radius * Math.cos(ang);
@@ -1711,13 +2157,6 @@ function canvasUpdateOverlay(opts = null) {
                             ctx2.stroke();
                         }
                     }
-                } else if (canvas2d) {
-                    // No selection: still clear the highlight layer so it returns to default.
-                    const ctx2 = canvas2d.getContext('2d');
-                    const viewerElement = document.getElementById('openseadragon');
-                    const wCss = viewerElement ? viewerElement.clientWidth : canvas2d.width;
-                    const hCss = viewerElement ? viewerElement.clientHeight : canvas2d.height;
-                    try { ctx2.clearRect(0, 0, wCss, hCss); } catch (_) { try { ctx2.clearRect(0, 0, canvas2d.width, canvas2d.height); } catch (_) {} }
                 }
             } catch (_) {}
             return;
@@ -1942,7 +2381,8 @@ function canvasUpdateOverlay(opts = null) {
     
     // When there are many points, draw a cheaper representation to keep interaction smooth.
     // (Drawing arcs/strokes for tens of thousands of points will lock up the UI.)
-    const previewFastDraw = (isPreview && visibleSources.length > 4000) || (visibleSources.length > 20000);
+    // Threshold for preview is higher so catalog labels still draw during pan for typical catalogs.
+    const previewFastDraw = (isPreview && visibleSources.length > 12000) || (visibleSources.length > 20000);
 
     visibleSources.forEach((source, visibleIndex) => {
         const imagePoint = new OpenSeadragon.Point(source.x, source.y);
@@ -2063,6 +2503,8 @@ function canvasUpdateOverlay(opts = null) {
         }
         ctx.fill();
         ctx.stroke();
+
+        __drawCatalogLabelsAtSource(ctx, center, radius, source, previewFastDraw);
 
         // Add highlight effect for selected source
         if (overlayIdx === window.currentHighlightedSourceIndex) {
@@ -2315,6 +2757,10 @@ function connectPopupToSedFunctions() {
                     const isPropLinkClicked = (Math.abs(clickX - propLinkX) < 40 && Math.abs(clickY - linkY) < 20);
                     
                     if (isSedLinkClicked) {
+                        const popupContent = window.canvasPopup && window.canvasPopup.content;
+                        if (popupContent && popupContent.source_type === 'region') {
+                            return;
+                        }
                         console.log("SED link clicked in canvas popup");
                         const sourceObj = window.catalogDataForOverlay[window.canvasPopup.sourceIndex];
                     
@@ -3008,7 +3454,17 @@ const regionDrawingState = {
     pointerDownImage: null,
     pointerDownPixel: null,
     selectedShapeId: null,
-    counter: 1
+    counter: 1,
+    /**
+     * Active drag/resize on an existing region (works even when a draw tool is selected).
+     * @type {null | { kind:'move', shapeId:string, lastX:number, lastY:number }
+     *   | { kind:'resize-circle', shapeId:string }
+     *   | { kind:'resize-rect', shapeId:string, corner:'nw'|'ne'|'sw'|'se', anchor:{x:number,y:number} }
+     *   | { kind:'resize-bbox', shapeId:string, corner:'nw'|'ne'|'sw'|'se', anchor:{x:number,y:number} }}
+     */
+    regionPointer: null,
+    /** Ignore region-opening clicks until this time (ms since epoch) after a drag gesture */
+    suppressRegionClickUntil: 0
 };
 
 let regionOverlayContainer = null;
@@ -3017,7 +3473,51 @@ let regionOverlayPixelRatio = window.devicePixelRatio || 1;
 let regionViewerHandlersBound = false;
 let regionResizeTimeoutId = null;
 let regionViewerPollId = null;
-const REGION_CLICK_TOLERANCE_PX = 5;
+const REGION_CLICK_TOLERANCE_PX = 8;
+const REGION_RESIZE_HIT_TOLERANCE_PX = 8;
+const REGION_RESIZE_CORNER_TOLERANCE_PX = 12;
+/** Screen px: press→release within this distance still counts as a tap (opens region popup in one click). */
+const REGION_TAP_SLOP_PX = 14;
+/** Bottom bar button copy (mode id is still `pointer` internally). */
+const REGION_MOUSE_MODE_UI = {
+    pointer: {
+        label: 'Regions',
+        title: 'Draw and edit regions — create, select, move, and resize'
+    },
+    pan: {
+        label: 'Pan',
+        title: 'Pan the map only — does not draw or edit regions'
+    }
+};
+
+/** Bottom bar: shape tools (icons match toolbar region dropdown — toolbar.js). */
+const REGION_SHAPE_BAR_OPTIONS = [
+    {
+        id: 'circle',
+        label: 'Circle',
+        title: 'Circle — click and drag out radius',
+        iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="2"></circle></svg>`
+    },
+    {
+        id: 'rectangle',
+        label: 'Rectangle',
+        title: 'Rectangle — drag diagonal corner',
+        iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="7" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="2"></rect></svg>`
+    },
+    {
+        id: 'ellipse',
+        label: 'Ellipse',
+        title: 'Ellipse — drag bounding box',
+        iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="12" rx="8" ry="5.5" stroke="currentColor" stroke-width="2"></ellipse></svg>`
+    },
+    {
+        id: 'hexagon',
+        label: 'Hexagon',
+        title: 'Hexagon — drag to size a six-sided region',
+        iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4.5h8l4 7-4 7H8l-4-7 4-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path></svg>`
+    }
+];
+
 const regionWorldCache = { header: null, wcs: null };
 
 // -------------------------------------------------------------
@@ -3498,6 +3998,9 @@ function _restoreRegionsFromSerialized(shapes) {
         regionDrawingState.selectedShapeId = null;
         try { if (window.canvasPopup && typeof window.canvasPopup.hide === 'function') window.canvasPopup.hide(); } catch (_) {}
         renderRegionOverlay();
+        try {
+            refreshRegionMouseModeBar();
+        } catch (_) {}
         return cloned.length;
     } catch (_) {
         return 0;
@@ -4019,11 +4522,21 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
         z.display.min = (mn != null && isFinite(mn)) ? mn : null;
         z.display.max = (mx != null && isFinite(mx)) ? mx : null;
         z.display.colorMap = cmap.value || 'grayscale';
-        z.reload && z.reload();
+        if (typeof z.reload === 'function') z.reload();
+    };
+    let _ziInsetDisplayReloadT = null;
+    const applyDisplayDebounced = () => {
+        if (_ziInsetDisplayReloadT) clearTimeout(_ziInsetDisplayReloadT);
+        _ziInsetDisplayReloadT = setTimeout(() => {
+            _ziInsetDisplayReloadT = null;
+            applyDisplay();
+        }, 200);
     };
     minInput.addEventListener('change', applyDisplay);
     maxInput.addEventListener('change', applyDisplay);
     cmap.addEventListener('change', applyDisplay);
+    minInput.addEventListener('input', applyDisplayDebounced);
+    maxInput.addEventListener('input', applyDisplayDebounced);
 
     // Bottom-left buttons: histogram + settings (settings on the right of histogram)
     const bottomLeft = document.createElement('div');
@@ -4224,8 +4737,10 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
         // For "show me the pixels", force nearest downsampling and disable browser smoothing (see CSS below).
         params.set('downsample', 'nearest');
         params.set('v', String(v));
-        if (z.display.min != null && z.display.max != null) {
+        if (z.display.min != null && Number.isFinite(Number(z.display.min))) {
             params.set('min_value', String(z.display.min));
+        }
+        if (z.display.max != null && Number.isFinite(Number(z.display.max))) {
             params.set('max_value', String(z.display.max));
         }
         if (z.display.colorMap) params.set('color_map', z.display.colorMap);
@@ -4423,6 +4938,66 @@ function attachRegionViewerHandlers(viewer) {
         regionDrawingState.pointerDownPixel = event && event.position
             ? { x: event.position.x, y: event.position.y }
             : null;
+        regionDrawingState.regionPointer = null;
+
+        const imagePoint = convertPixelPointToImage(event.position);
+
+        // Existing regions take priority: move / resize even while a draw tool is active.
+        if (imagePoint && regionDrawingState.mouseMode !== 'pan') {
+            const hitExisting = findRegionPointerInteraction(imagePoint, event && event.position);
+            if (hitExisting && hitExisting.shape) {
+                const act = hitExisting.action;
+                if (act) {
+                    regionDrawingState.selectedShapeId = hitExisting.shape.id;
+                    regionDrawingState.isDrawing = false;
+                    regionDrawingState.startImagePoint = null;
+                    regionDrawingState.currentImagePoint = null;
+                    regionDrawingState.previewShape = null;
+
+                    if (act.action === 'move') {
+                        regionDrawingState.regionPointer = {
+                            kind: 'move',
+                            shapeId: hitExisting.shape.id,
+                            lastX: imagePoint.x,
+                            lastY: imagePoint.y
+                        };
+                    } else if (act.action === 'resize-circle') {
+                        regionDrawingState.regionPointer = { kind: 'resize-circle', shapeId: hitExisting.shape.id };
+                    } else if (act.action === 'resize-rect') {
+                        const xMin = Math.min(hitExisting.shape.x1, hitExisting.shape.x2);
+                        const xMax = Math.max(hitExisting.shape.x1, hitExisting.shape.x2);
+                        const yMin = Math.min(hitExisting.shape.y1, hitExisting.shape.y2);
+                        const yMax = Math.max(hitExisting.shape.y1, hitExisting.shape.y2);
+                        regionDrawingState.regionPointer = {
+                            kind: 'resize-rect',
+                            shapeId: hitExisting.shape.id,
+                            handle: act.handle,
+                            anchor: getOppositeAabbHandle(act.handle, xMin, xMax, yMin, yMax)
+                        };
+                    } else if (act.action === 'resize-bbox') {
+                        const cx = hitExisting.shape.center.x;
+                        const cy = hitExisting.shape.center.y;
+                        const rx = Math.max(hitExisting.shape.radiusX || 0, 1);
+                        const ry = Math.max(hitExisting.shape.radiusY || 0, 1);
+                        const bxMin = cx - rx;
+                        const bxMax = cx + rx;
+                        const byMin = cy - ry;
+                        const byMax = cy + ry;
+                        regionDrawingState.regionPointer = {
+                            kind: 'resize-bbox',
+                            shapeId: hitExisting.shape.id,
+                            handle: act.handle,
+                            anchor: getOppositeAabbHandle(act.handle, bxMin, bxMax, byMin, byMax)
+                        };
+                    }
+                    if (event) {
+                        event.preventDefaultAction = true;
+                    }
+                    updateRegionCursor();
+                    return;
+                }
+            }
+        }
 
         if (!regionDrawingState.activeTool) {
             regionDrawingState.isDrawing = false;
@@ -4431,8 +5006,16 @@ function attachRegionViewerHandlers(viewer) {
             regionDrawingState.previewShape = null;
             return;
         }
-        const imagePoint = convertPixelPointToImage(event.position);
         if (!imagePoint) return;
+
+        // Pan mode: only map navigation — do not start a new region stroke.
+        if (regionDrawingState.mouseMode === 'pan') {
+            regionDrawingState.isDrawing = false;
+            regionDrawingState.startImagePoint = null;
+            regionDrawingState.currentImagePoint = null;
+            regionDrawingState.previewShape = null;
+            return;
+        }
 
         regionDrawingState.isDrawing = true;
         regionDrawingState.startImagePoint = imagePoint;
@@ -4445,7 +5028,82 @@ function attachRegionViewerHandlers(viewer) {
     };
 
     const dragHandler = (event) => {
-        if (regionDrawingState.isDrawing && regionDrawingState.activeTool) {
+        if (regionDrawingState.regionPointer) {
+            const imagePointDrag = convertPixelPointToImage(event.position);
+            if (!imagePointDrag) return;
+            const rp = regionDrawingState.regionPointer;
+            const ptrShape = regionDrawingState.shapes.find((s) => s && String(s.id) === String(rp.shapeId));
+            if (!ptrShape) {
+                regionDrawingState.regionPointer = null;
+            } else if (rp.kind === 'move') {
+                const ddx = imagePointDrag.x - rp.lastX;
+                const ddy = imagePointDrag.y - rp.lastY;
+                if (ddx !== 0 || ddy !== 0) {
+                    regionDrawingState.pointerMoved = true;
+                    translateRegionShapeBy(ptrShape, ddx, ddy);
+                    rp.lastX = imagePointDrag.x;
+                    rp.lastY = imagePointDrag.y;
+                    regionDrawingState.suppressRegionClickUntil = Date.now() + 450;
+                    renderRegionOverlay();
+                    syncOpenRegionPopupFromShape(ptrShape);
+                }
+            } else if (rp.kind === 'resize-circle' && ptrShape.type === 'circle' && ptrShape.center) {
+                const nr = Math.hypot(
+                    imagePointDrag.x - ptrShape.center.x,
+                    imagePointDrag.y - ptrShape.center.y
+                );
+                ptrShape.radius = Math.max(REGION_EDIT_MIN_RADIUS, nr);
+                regionDrawingState.pointerMoved = true;
+                regionDrawingState.suppressRegionClickUntil = Date.now() + 450;
+                renderRegionOverlay();
+                syncOpenRegionPopupFromShape(ptrShape);
+            } else if (rp.kind === 'resize-rect' && ptrShape.type === 'rectangle' && rp.anchor) {
+                const nextBox = resizeAabbFromHandle(rp.handle, rp.anchor, imagePointDrag);
+                if (!nextBox) return;
+                const nxMin = nextBox.xMin;
+                const nxMax = nextBox.xMax;
+                const nyMin = nextBox.yMin;
+                const nyMax = nextBox.yMax;
+                if (nxMax - nxMin >= REGION_EDIT_MIN_RECT_SIDE && nyMax - nyMin >= REGION_EDIT_MIN_RECT_SIDE) {
+                    ptrShape.x1 = nxMin;
+                    ptrShape.x2 = nxMax;
+                    ptrShape.y1 = nyMin;
+                    ptrShape.y2 = nyMax;
+                    regionDrawingState.pointerMoved = true;
+                    regionDrawingState.suppressRegionClickUntil = Date.now() + 450;
+                    renderRegionOverlay();
+                    syncOpenRegionPopupFromShape(ptrShape);
+                }
+            } else if (rp.kind === 'resize-bbox'
+                && (ptrShape.type === 'ellipse' || ptrShape.type === 'hexagon')
+                && ptrShape.center
+                && rp.anchor) {
+                const nextBox = resizeAabbFromHandle(rp.handle, rp.anchor, imagePointDrag);
+                if (!nextBox) return;
+                const nxMin = nextBox.xMin;
+                const nxMax = nextBox.xMax;
+                const nyMin = nextBox.yMin;
+                const nyMax = nextBox.yMax;
+                const newW = nxMax - nxMin;
+                const newH = nyMax - nyMin;
+                if (newW >= REGION_EDIT_MIN_RECT_SIDE && newH >= REGION_EDIT_MIN_RECT_SIDE) {
+                    ptrShape.center.x = (nxMin + nxMax) / 2;
+                    ptrShape.center.y = (nyMin + nyMax) / 2;
+                    ptrShape.radiusX = Math.max(REGION_EDIT_MIN_RADIUS, newW / 2);
+                    ptrShape.radiusY = Math.max(REGION_EDIT_MIN_RADIUS, newH / 2);
+                    regionDrawingState.pointerMoved = true;
+                    regionDrawingState.suppressRegionClickUntil = Date.now() + 450;
+                    renderRegionOverlay();
+                    syncOpenRegionPopupFromShape(ptrShape);
+                }
+            }
+            if (event) {
+                event.preventDefaultAction = true;
+            }
+            return;
+        }
+
+        if (regionDrawingState.isDrawing && regionDrawingState.activeTool && regionDrawingState.mouseMode !== 'pan') {
             const imagePoint = convertPixelPointToImage(event.position);
             if (!imagePoint) return;
             regionDrawingState.pointerMoved = true;
@@ -4471,21 +5129,24 @@ function attachRegionViewerHandlers(viewer) {
     const releaseHandler = (event) => {
         const imagePoint = convertPixelPointToImage(event.position);
 
-        if (regionDrawingState.isDrawing && regionDrawingState.activeTool) {
+        if (regionDrawingState.isDrawing && regionDrawingState.activeTool && regionDrawingState.mouseMode !== 'pan') {
             finalizeRegionShape(imagePoint);
             if (event) {
                 event.preventDefaultAction = true;
             }
-        } else if (!regionDrawingState.pointerMoved && imagePoint) {
-            if (regionDrawingState.mouseMode === 'pan') {
-                // In pan mode, ignore region hit-testing/popups.
-                return;
-            }
-            const hitShape = hitTestRegions(imagePoint);
-            if (hitShape) {
-                showRegionPopup(hitShape);
-                if (event) {
-                    event.preventDefaultAction = true;
+        } else if (imagePoint && regionDrawingState.mouseMode !== 'pan') {
+            const down = regionDrawingState.pointerDownPixel;
+            const up = event && event.position;
+            const withinTapSlop = !!(down && up
+                && Math.hypot(up.x - down.x, up.y - down.y) < REGION_TAP_SLOP_PX);
+            const treatAsTap = !regionDrawingState.pointerMoved || withinTapSlop;
+            if (treatAsTap) {
+                const hitShape = hitTestRegions(imagePoint);
+                if (hitShape) {
+                    showRegionPopup(hitShape);
+                    if (event) {
+                        event.preventDefaultAction = true;
+                    }
                 }
             }
         }
@@ -4493,6 +5154,8 @@ function attachRegionViewerHandlers(viewer) {
         regionDrawingState.pointerDownImage = null;
         regionDrawingState.pointerDownPixel = null;
         regionDrawingState.pointerMoved = false;
+        regionDrawingState.regionPointer = null;
+        updateRegionCursor();
     };
 
     const scheduleRedraw = () => {
@@ -4502,10 +5165,16 @@ function attachRegionViewerHandlers(viewer) {
     // Fallback DOM click handler, for cases where OSD canvas-click doesn't fire (e.g. complex layouts)
     const domClickHandler = (ev) => {
         try {
-            if (regionDrawingState.activeTool) return;
+            if (Date.now() < regionDrawingState.suppressRegionClickUntil) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                return;
+            }
             if (regionDrawingState.mouseMode === 'pan') return;
             const viewerElement = document.getElementById('openseadragon');
             if (!viewerElement) return;
+            if (ev.target && ev.target.closest && ev.target.closest('#simple-region-popup')) return;
+            if (!viewerElement.contains(ev.target)) return;
             const rect = viewerElement.getBoundingClientRect();
             const pixelPoint = {
                 x: ev.clientX - rect.left,
@@ -4516,16 +5185,21 @@ function attachRegionViewerHandlers(viewer) {
             const hitShape = hitTestRegions(imagePoint);
             if (hitShape) {
                 showRegionPopup(hitShape);
-                ev.preventDefault();
-                ev.stopPropagation();
+                return;
             }
+            if (regionDrawingState.activeTool) return;
         } catch (err) {
             console.warn('[regions] DOM click handler failed', err);
         }
     };
 
     const clickHandler = (event) => {
-        if (regionDrawingState.activeTool) return;
+        if (Date.now() < regionDrawingState.suppressRegionClickUntil) {
+            if (event) {
+                event.preventDefaultAction = true;
+            }
+            return;
+        }
         if (regionDrawingState.mouseMode === 'pan') return;
         const imagePoint = convertPixelPointToImage(event.position);
         if (!imagePoint) return;
@@ -4535,7 +5209,25 @@ function attachRegionViewerHandlers(viewer) {
             if (event) {
                 event.preventDefaultAction = true;
             }
+            return;
         }
+        if (regionDrawingState.activeTool) return;
+    };
+
+    const domMoveHandler = (ev) => {
+        try {
+            const viewerElement = document.getElementById('openseadragon');
+            if (!viewerElement || !viewerElement.contains(ev.target)) return;
+            const rect = viewerElement.getBoundingClientRect();
+            updateRegionCursorForPixel({
+                x: ev.clientX - rect.left,
+                y: ev.clientY - rect.top
+            });
+        } catch (_) {}
+    };
+
+    const domLeaveHandler = () => {
+        try { updateRegionCursor(); } catch (_) {}
     };
 
     viewer.addHandler('canvas-press', pressHandler);
@@ -4556,6 +5248,11 @@ function attachRegionViewerHandlers(viewer) {
         if (viewerElement && !viewerElement.__regionDomClickBound) {
             document.addEventListener('click', domClickHandler, { capture: true });
             viewerElement.__regionDomClickBound = true;
+        }
+        if (viewerElement && !viewerElement.__regionDomCursorBound) {
+            viewerElement.addEventListener('mousemove', domMoveHandler);
+            viewerElement.addEventListener('mouseleave', domLeaveHandler);
+            viewerElement.__regionDomCursorBound = true;
         }
     } catch (_) {}
 
@@ -4690,12 +5387,17 @@ function finalizeRegionShape(endPoint) {
 
     const index = regionDrawingState.counter++;
     shape.id = `region-${Date.now()}-${index}`;
-    shape.label = `Region ${index}`;
+    // Allow empty labels (user may rename later).
+    shape.label = '';
     shape.createdAt = Date.now();
     regionDrawingState.shapes.push(shape);
-    regionDrawingState.selectedShapeId = shape.id;
+    // Do not auto-select new regions (yellow highlight); selection only on explicit click.
+    regionDrawingState.selectedShapeId = null;
     renderRegionOverlay();
-    showRegionPopup(shape);
+    try {
+        refreshRegionMouseModeBar();
+    } catch (_) {}
+    showRegionPopup(shape, { select: false });
 }
 
 function hitTestRegions(imagePoint) {
@@ -4753,8 +5455,15 @@ function renderRegionOverlay() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(regionOverlayPixelRatio, 0, 0, regionOverlayPixelRatio, 0, 0);
 
+    // Pan mode: map navigation only. Pointer mode highlights the active region in yellow,
+    // while preserving the editable line style and thickness chosen in the popup.
+    const effectiveSelectedId = (regionDrawingState.mouseMode === 'pan')
+        ? null
+        : regionDrawingState.selectedShapeId;
     regionDrawingState.shapes.forEach((shape) => {
-        drawRegionShape(ctx, shape, { highlight: shape.id === regionDrawingState.selectedShapeId });
+        const hi = shape.id === effectiveSelectedId;
+        drawRegionShape(ctx, shape, { highlight: hi });
+        drawRegionLabel(ctx, shape, { highlight: hi });
     });
 
     if (regionDrawingState.previewShape) {
@@ -4846,7 +5555,7 @@ function renderRegionOverlay() {
                                 const x1 = Math.max(topLeft.x, bottomRight.x);
                                 const y0 = Math.min(topLeft.y, bottomRight.y);
                                 const y1 = Math.max(topLeft.y, bottomRight.y);
-                                const xSide = useLeft ? x0 : x1;
+                                const xSide = useLeft ? x1 : x0;
                                 // Use corners on that side (matches the trapezoid look)
                                 return [
                                     { x: xSide, y: y0 },
@@ -4860,8 +5569,8 @@ function renderRegionOverlay() {
                                     .filter(Boolean);
                                 if (verts.length < 3) return null;
                                 const extremeX = useLeft
-                                    ? Math.min(...verts.map(v => v.x))
-                                    : Math.max(...verts.map(v => v.x));
+                                    ? Math.max(...verts.map(v => v.x))
+                                    : Math.min(...verts.map(v => v.x));
                                 const near = verts.filter(v => Math.abs(v.x - extremeX) < 2.5);
                                 const pool = near.length ? near : verts;
                                 const topV = pool.reduce((a, b) => (a.y < b.y ? a : b));
@@ -4948,9 +5657,32 @@ function drawRegionShape(ctx, shape, options = {}) {
 
     ctx.save();
     ctx.globalAlpha = isPreview ? 0.5 : 0.85;
-    ctx.lineWidth = highlight ? 3 : (isPreview ? 1.5 : 2);
-    ctx.strokeStyle = highlight ? '#FBBF24' : '#38BDF8';
-    ctx.fillStyle = highlight ? 'rgba(251,191,36,0.15)' : 'rgba(56,189,248,0.12)';
+    const baseWidth = (() => {
+        const w = Number(shape.borderWidth);
+        return Number.isFinite(w) && w > 0 ? Math.max(0.5, Math.min(16, w)) : 2;
+    })();
+    ctx.lineWidth = isPreview ? Math.max(1, baseWidth * 0.85) : baseWidth;
+    ctx.strokeStyle = highlight ? '#FBBF24' : (shape.borderColor || '#38BDF8');
+    // Always keep region interior transparent (per request).
+    ctx.fillStyle = 'rgba(0,0,0,0)';
+    try {
+        const style = String(shape.borderStyle || 'solid').toLowerCase();
+        if (style === 'solid') {
+            ctx.setLineDash([]);
+        } else if (style === 'dashed') {
+            ctx.setLineDash([7, 5]);
+        } else if (style === 'dotted') {
+            ctx.setLineDash([1.2, 4.2]);
+        } else if (style === 'dashdot' || style === 'dash-dot') {
+            ctx.setLineDash([8, 4, 1.2, 4]);
+        } else if (style === 'longdash' || style === 'long-dash') {
+            ctx.setLineDash([12, 6]);
+        } else if (style === 'twodash' || style === 'two-dash') {
+            ctx.setLineDash([10, 3, 3, 3]);
+        } else {
+            ctx.setLineDash([]);
+        }
+    } catch (_) {}
 
     if (shape.type === 'circle') {
         const centerScreen = imagePointToScreen(shape.center);
@@ -4962,7 +5694,6 @@ function drawRegionShape(ctx, shape, options = {}) {
         const radius = Math.sqrt(Math.pow(edgeScreen.x - centerScreen.x, 2) + Math.pow(edgeScreen.y - centerScreen.y, 2));
         ctx.beginPath();
         ctx.arc(centerScreen.x, centerScreen.y, radius, 0, Math.PI * 2);
-        ctx.fill();
         ctx.stroke();
         ctx.restore();
         return;
@@ -4981,7 +5712,6 @@ function drawRegionShape(ctx, shape, options = {}) {
         const height = Math.abs(bottomRight.y - topLeft.y);
         ctx.beginPath();
         ctx.rect(x, y, width, height);
-        ctx.fill();
         ctx.stroke();
         ctx.restore();
         return;
@@ -4999,7 +5729,6 @@ function drawRegionShape(ctx, shape, options = {}) {
         const radiusY = Math.sqrt(Math.pow(yAxisPoint.x - centerScreen.x, 2) + Math.pow(yAxisPoint.y - centerScreen.y, 2));
         ctx.beginPath();
         ctx.ellipse(centerScreen.x, centerScreen.y, radiusX, radiusY, 0, 0, Math.PI * 2);
-        ctx.fill();
         ctx.stroke();
         ctx.restore();
         return;
@@ -5019,12 +5748,128 @@ function drawRegionShape(ctx, shape, options = {}) {
             ctx.lineTo(vertices[i].x, vertices[i].y);
         }
         ctx.closePath();
-        ctx.fill();
         ctx.stroke();
         ctx.restore();
         return;
     }
 
+    ctx.restore();
+}
+
+function canvasRoundRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(Math.max(0, r), w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+    ctx.closePath();
+}
+
+function getShapeLabelAnchorScreen(shape) {
+    if (!shape) return null;
+    const samples = [];
+    if (shape.type === 'circle' && shape.center && Number.isFinite(shape.radius)) {
+        const n = 16;
+        for (let i = 0; i < n; i += 1) {
+            const a = (i / n) * Math.PI * 2;
+            samples.push({
+                x: shape.center.x + shape.radius * Math.cos(a),
+                y: shape.center.y + shape.radius * Math.sin(a)
+            });
+        }
+    } else if (shape.type === 'rectangle') {
+        samples.push(
+            { x: shape.x1, y: shape.y1 },
+            { x: shape.x2, y: shape.y1 },
+            { x: shape.x1, y: shape.y2 },
+            { x: shape.x2, y: shape.y2 }
+        );
+    } else if ((shape.type === 'ellipse' || shape.type === 'hexagon') && shape.center) {
+        const rx = Math.max(shape.radiusX || 0, 1);
+        const ry = Math.max(shape.radiusY || 0, 1);
+        if (shape.type === 'hexagon') {
+            const verts = buildHexagonVertices(shape.center, rx, ry) || [];
+            verts.forEach((v) => samples.push({ x: v.x, y: v.y }));
+        } else {
+            const n = 24;
+            for (let i = 0; i < n; i += 1) {
+                const a = (i / n) * Math.PI * 2;
+                samples.push({
+                    x: shape.center.x + rx * Math.cos(a),
+                    y: shape.center.y + ry * Math.sin(a)
+                });
+            }
+        }
+    }
+    if (!samples.length) return null;
+    const screen = samples.map(imagePointToScreen).filter(Boolean);
+    if (!screen.length) return null;
+    const minY = Math.min(...screen.map((p) => p.y));
+    let sumX = 0;
+    let cnt = 0;
+    const tol = 2;
+    for (let i = 0; i < screen.length; i += 1) {
+        const p = screen[i];
+        if (p.y <= minY + tol) {
+            sumX += p.x;
+            cnt += 1;
+        }
+    }
+    return { x: sumX / Math.max(1, cnt), y: minY };
+}
+
+function drawRegionLabel(ctx, shape, options = {}) {
+    if (!shape || options.preview) return;
+    const raw = typeof shape.label === 'string' ? shape.label.trim() : '';
+    if (!raw) return;
+    const text = raw;
+    const highlight = !!options.highlight;
+    const anchor = getShapeLabelAnchorScreen(shape);
+    if (!anchor) return;
+
+    const canvas = ctx.canvas;
+    const dpr = regionOverlayPixelRatio || 1;
+    const cw = canvas && canvas.width > 0 ? canvas.width / dpr : 400;
+    const ch = canvas && canvas.height > 0 ? canvas.height / dpr : 300;
+
+    ctx.save();
+    ctx.font = '600 11px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    const maxTextW = 176;
+    let display = text;
+    let guard = 0;
+    while (display.length > 0 && guard < 400) {
+        guard += 1;
+        const useEll = display.length < text.length;
+        const w = ctx.measureText(useEll ? `${display}…` : display).width;
+        if (w <= maxTextW) break;
+        display = display.slice(0, -1);
+    }
+    if (display.length < text.length) display += '…';
+    const tw = ctx.measureText(display).width;
+    const padX = 8;
+    const boxW = Math.min(Math.ceil(tw + padX * 2), cw - 8);
+    const boxH = 22;
+    let bx = anchor.x - boxW / 2;
+    let by = anchor.y - boxH - 6;
+    bx = Math.max(4, Math.min(bx, cw - boxW - 4));
+    by = Math.max(4, Math.min(by, ch - boxH - 4));
+
+    ctx.fillStyle = highlight ? 'rgba(30, 27, 75, 0.94)' : 'rgba(15, 23, 42, 0.92)';
+    ctx.strokeStyle = highlight ? 'rgba(251, 191, 36, 0.95)' : 'rgba(56, 189, 248, 0.85)';
+    ctx.lineWidth = highlight ? 1.5 : 1;
+    canvasRoundRectPath(ctx, bx, by, boxW, boxH, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = highlight ? '#FEF3C7' : '#e2e8f0';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(display, bx + boxW / 2, by + boxH / 2);
     ctx.restore();
 }
 
@@ -5092,24 +5937,431 @@ function getWorldCoordinatesFromImage(x, y) {
     return null;
 }
 
+function findLinkedToolbarRegionShape(content) {
+    if (!content || content.source_type !== 'region' || content.region_id == null || content.region_id === '') {
+        return null;
+    }
+    const id = String(content.region_id);
+    return regionDrawingState.shapes.find((s) => s && String(s.id) === id) || null;
+}
+
+function refreshToolbarRegionContentFromShape(content, shape) {
+    if (!content || !shape) return;
+    try {
+        const next = computeRegionPopupContent(shape);
+        Object.assign(content, next);
+    } catch (_) {}
+}
+
+const REGION_EDIT_MIN_RADIUS = 3;
+const REGION_EDIT_MIN_RECT_SIDE = 4;
+
+function translateRegionShapeBy(shape, dx, dy) {
+    if (!shape || (dx === 0 && dy === 0)) return;
+    if (shape.type === 'circle' && shape.center) {
+        shape.center.x += dx;
+        shape.center.y += dy;
+        return;
+    }
+    if ((shape.type === 'ellipse' || shape.type === 'hexagon') && shape.center) {
+        shape.center.x += dx;
+        shape.center.y += dy;
+        return;
+    }
+    if (shape.type === 'rectangle') {
+        shape.x1 += dx;
+        shape.x2 += dx;
+        shape.y1 += dy;
+        shape.y2 += dy;
+    }
+}
+
+function getOppositeAabbCorner(corner, xMin, xMax, yMin, yMax) {
+    switch (corner) {
+        case 'nw':
+            return { x: xMax, y: yMax };
+        case 'se':
+            return { x: xMin, y: yMin };
+        case 'ne':
+            return { x: xMin, y: yMax };
+        case 'sw':
+            return { x: xMax, y: yMin };
+        default:
+            return { x: xMin, y: yMin };
+    }
+}
+
+function getOppositeAabbHandle(handle, xMin, xMax, yMin, yMax) {
+    switch (handle) {
+        case 'n':
+            return { handle, xMin, xMax, y: yMax };
+        case 's':
+            return { handle, xMin, xMax, y: yMin };
+        case 'w':
+            return { handle, x: xMax, yMin, yMax };
+        case 'e':
+            return { handle, x: xMin, yMin, yMax };
+        case 'nw':
+        case 'ne':
+        case 'sw':
+        case 'se':
+            return Object.assign({ handle }, getOppositeAabbCorner(handle, xMin, xMax, yMin, yMax));
+        default:
+            return { handle: 'se', x: xMin, y: yMin };
+    }
+}
+
+function resizeAabbFromHandle(handle, anchor, p) {
+    if (!handle || !anchor || !p) return null;
+    if (handle === 'n' || handle === 's') {
+        return {
+            xMin: anchor.xMin,
+            xMax: anchor.xMax,
+            yMin: Math.min(anchor.y, p.y),
+            yMax: Math.max(anchor.y, p.y)
+        };
+    }
+    if (handle === 'w' || handle === 'e') {
+        return {
+            xMin: Math.min(anchor.x, p.x),
+            xMax: Math.max(anchor.x, p.x),
+            yMin: anchor.yMin,
+            yMax: anchor.yMax
+        };
+    }
+    if (anchor.x == null || anchor.y == null) return null;
+    return {
+        xMin: Math.min(anchor.x, p.x),
+        xMax: Math.max(anchor.x, p.x),
+        yMin: Math.min(anchor.y, p.y),
+        yMax: Math.max(anchor.y, p.y)
+    };
+}
+
+function isPixelNearSegment(p, a, b, tolerancePx) {
+    if (!p || !a || !b) return false;
+    const vx = b.x - a.x;
+    const vy = b.y - a.y;
+    const lenSq = vx * vx + vy * vy;
+    if (!lenSq) return Math.hypot(p.x - a.x, p.y - a.y) <= tolerancePx;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / lenSq));
+    const px = a.x + t * vx;
+    const py = a.y + t * vy;
+    return Math.hypot(p.x - px, p.y - py) <= tolerancePx;
+}
+
+function classifyAabbResizeHandleFromPixels(corners, pixelPoint) {
+    if (!corners || !pixelPoint) return null;
+    const cornerHits = [
+        ['nw', corners.nw],
+        ['ne', corners.ne],
+        ['sw', corners.sw],
+        ['se', corners.se]
+    ];
+    let bestCorner = null;
+    let bestD = Infinity;
+    cornerHits.forEach(([name, c]) => {
+        if (!c) return;
+        const d = Math.hypot(pixelPoint.x - c.x, pixelPoint.y - c.y);
+        if (d < bestD) {
+            bestD = d;
+            bestCorner = name;
+        }
+    });
+    if (bestCorner && bestD <= REGION_RESIZE_CORNER_TOLERANCE_PX) return bestCorner;
+    if (isPixelNearSegment(pixelPoint, corners.nw, corners.ne, REGION_RESIZE_HIT_TOLERANCE_PX)) return 'n';
+    if (isPixelNearSegment(pixelPoint, corners.sw, corners.se, REGION_RESIZE_HIT_TOLERANCE_PX)) return 's';
+    if (isPixelNearSegment(pixelPoint, corners.nw, corners.sw, REGION_RESIZE_HIT_TOLERANCE_PX)) return 'w';
+    if (isPixelNearSegment(pixelPoint, corners.ne, corners.se, REGION_RESIZE_HIT_TOLERANCE_PX)) return 'e';
+    return null;
+}
+
+function getResizeCursorForHandle(handle) {
+    switch (handle) {
+        case 'nw':
+        case 'se':
+            return 'nwse-resize';
+        case 'ne':
+        case 'sw':
+            return 'nesw-resize';
+        case 'n':
+        case 's':
+            return 'ns-resize';
+        case 'e':
+        case 'w':
+            return 'ew-resize';
+        default:
+            return 'default';
+    }
+}
+
+function getRegionPointerCursor(action) {
+    if (!action) return null;
+    if (action.action === 'move') return 'move';
+    if (action.action === 'resize-circle') return 'nwse-resize';
+    return getResizeCursorForHandle(action.handle);
+}
+
+function findRegionPointerInteraction(imagePoint, pixelPoint) {
+    if (!imagePoint) return null;
+    for (let i = regionDrawingState.shapes.length - 1; i >= 0; i -= 1) {
+        const shape = regionDrawingState.shapes[i];
+        const action = classifyRegionPointerAction(shape, imagePoint, pixelPoint);
+        if (action) return { shape, action };
+    }
+    return null;
+}
+
+/** @returns {null | { action:'move' } | { action:'resize-circle' } | { action:'resize-rect', handle:'n'|'s'|'e'|'w'|'nw'|'ne'|'sw'|'se' } | { action:'resize-bbox', handle:'n'|'s'|'e'|'w'|'nw'|'ne'|'sw'|'se' }} */
+function classifyRegionPointerAction(shape, p, pixelPoint) {
+    if (!shape || !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+
+    if (shape.type === 'circle' && shape.center) {
+        if (!pixelPoint) return isPointInsideShape(shape, p) ? { action: 'move' } : null;
+        const centerPx = imagePointToScreen(shape.center);
+        const edgePx = imagePointToScreen({ x: shape.center.x + Math.max(shape.radius || 0, REGION_EDIT_MIN_RADIUS), y: shape.center.y });
+        if (!centerPx || !edgePx) return isPointInsideShape(shape, p) ? { action: 'move' } : null;
+        const rPx = Math.hypot(edgePx.x - centerPx.x, edgePx.y - centerPx.y);
+        const dPx = Math.hypot(pixelPoint.x - centerPx.x, pixelPoint.y - centerPx.y);
+        if (Math.abs(dPx - rPx) <= REGION_RESIZE_HIT_TOLERANCE_PX) return { action: 'resize-circle' };
+        if (dPx < rPx - REGION_RESIZE_HIT_TOLERANCE_PX) return { action: 'move' };
+        return null;
+    }
+
+    if (shape.type === 'rectangle') {
+        const xMin = Math.min(shape.x1, shape.x2);
+        const xMax = Math.max(shape.x1, shape.x2);
+        const yMin = Math.min(shape.y1, shape.y2);
+        const yMax = Math.max(shape.y1, shape.y2);
+        const pixelCorners = {
+            nw: imagePointToScreen({ x: xMin, y: yMin }),
+            ne: imagePointToScreen({ x: xMax, y: yMin }),
+            sw: imagePointToScreen({ x: xMin, y: yMax }),
+            se: imagePointToScreen({ x: xMax, y: yMax })
+        };
+        const handle = classifyAabbResizeHandleFromPixels(pixelCorners, pixelPoint);
+        if (handle) return { action: 'resize-rect', handle };
+        if (p.x >= xMin && p.x <= xMax && p.y >= yMin && p.y <= yMax) {
+            return { action: 'move' };
+        }
+        return null;
+    }
+
+    if ((shape.type === 'ellipse' || shape.type === 'hexagon') && shape.center) {
+        const cx = shape.center.x;
+        const cy = shape.center.y;
+        const rx = Math.max(shape.radiusX || 0, 1);
+        const ry = Math.max(shape.radiusY || 0, 1);
+        const xMin = cx - rx;
+        const xMax = cx + rx;
+        const yMin = cy - ry;
+        const yMax = cy + ry;
+        const pixelCorners = {
+            nw: imagePointToScreen({ x: xMin, y: yMin }),
+            ne: imagePointToScreen({ x: xMax, y: yMin }),
+            sw: imagePointToScreen({ x: xMin, y: yMax }),
+            se: imagePointToScreen({ x: xMax, y: yMax })
+        };
+        const handle = classifyAabbResizeHandleFromPixels(pixelCorners, pixelPoint);
+        if (handle) return { action: 'resize-bbox', handle };
+        if (isPointInsideShape(shape, p)) {
+            return { action: 'move' };
+        }
+        return null;
+    }
+
+    return null;
+}
+
+function syncOpenRegionPopupFromShape(shape) {
+    if (!shape) return;
+    try {
+        const box = document.getElementById('simple-region-popup');
+        if (!box || box.style.display === 'none') return;
+        if (String(box.dataset.regionId || '') !== String(shape.id || '')) return;
+        const content = window.__regionPopupContent;
+        if (!content || String(content.region_id || '') !== String(shape.id || '')) return;
+        refreshToolbarRegionContentFromShape(content, shape);
+        if (box.querySelector('#srp-inp-x')) {
+            fillRegionPopupGeometryInputs(box, content, shape, 'all');
+        }
+    } catch (_) {}
+}
+
+function applyToolbarRegionCenterFromImageInputs(shape, xBottomLeft, yBottomLeft) {
+    const cx = Number(xBottomLeft);
+    const ybl = Number(yBottomLeft);
+    if (!Number.isFinite(cx) || !Number.isFinite(ybl)) return false;
+    const h = getImageHeight();
+    if (h == null || !Number.isFinite(h)) return false;
+    const cy = (h - 1) - ybl;
+    if (!Number.isFinite(cy)) return false;
+
+    const oc = getShapeCenter(shape);
+    if (!oc) return false;
+    const dx = cx - oc.x;
+    const dy = cy - oc.y;
+
+    if (shape.type === 'circle') {
+        shape.center.x = cx;
+        shape.center.y = cy;
+        return true;
+    }
+    if (shape.type === 'ellipse' || shape.type === 'hexagon') {
+        shape.center.x = cx;
+        shape.center.y = cy;
+        return true;
+    }
+    if (shape.type === 'rectangle') {
+        shape.x1 += dx;
+        shape.x2 += dx;
+        shape.y1 += dy;
+        shape.y2 += dy;
+        return true;
+    }
+    return false;
+}
+
+function applyToolbarRegionSizeFromInputs(shape, fields) {
+    if (!shape || !fields) return false;
+    if (shape.type === 'circle') {
+        const rad = Number(fields.r);
+        if (!Number.isFinite(rad) || rad <= 0) return false;
+        shape.radius = rad;
+        return true;
+    }
+    const ww = Number(fields.w);
+    const hh = Number(fields.h);
+    if (!Number.isFinite(ww) || !Number.isFinite(hh) || ww <= 0 || hh <= 0) return false;
+    if (shape.type === 'rectangle') {
+        const c = getShapeCenter(shape);
+        if (!c) return false;
+        shape.x1 = c.x - ww / 2;
+        shape.x2 = c.x + ww / 2;
+        shape.y1 = c.y - hh / 2;
+        shape.y2 = c.y + hh / 2;
+        return true;
+    }
+    if (shape.type === 'ellipse' || shape.type === 'hexagon') {
+        shape.radiusX = ww / 2;
+        shape.radiusY = hh / 2;
+        return true;
+    }
+    return false;
+}
+
+/** @param {'all'|'imageSize'|'radec'} [partialMode] all = default; imageSize = x,y,size only; radec = RA/Dec only */
+function fillRegionPopupGeometryInputs(box, content, shape, partialMode) {
+    if (!box || !content) return;
+    const mode = partialMode || 'all';
+    const fillImage = mode !== 'radec';
+    const fillRaDec = mode !== 'imageSize';
+
+    const ix = box.querySelector('#srp-inp-x');
+    const iy = box.querySelector('#srp-inp-y');
+    const ira = box.querySelector('#srp-inp-ra');
+    const idec = box.querySelector('#srp-inp-dec');
+    const ir = box.querySelector('#srp-inp-r');
+    const iw = box.querySelector('#srp-inp-w');
+    const ih = box.querySelector('#srp-inp-h');
+
+    if (fillImage) {
+        const c = shape ? getShapeCenter(shape) : null;
+        const xbl = c && Number.isFinite(c.x) ? c.x : content.x_bottom_left;
+        const yTop = c && Number.isFinite(c.y) ? c.y : null;
+        const ybl = (yTop != null && Number.isFinite(yTop))
+            ? convertYToBottomOrigin(yTop)
+            : content.y_bottom_left;
+
+        if (ix && xbl != null && Number.isFinite(Number(xbl))) ix.value = String(Number(xbl).toFixed(4));
+        if (iy && ybl != null && Number.isFinite(Number(ybl))) iy.value = String(Number(ybl).toFixed(4));
+
+        if (shape) {
+            if (ir && shape.type === 'circle' && Number.isFinite(shape.radius)) {
+                ir.value = String(Number(shape.radius).toFixed(4));
+            }
+            if (iw && ih && shape.type === 'rectangle') {
+                const w = Math.abs(shape.x2 - shape.x1);
+                const h = Math.abs(shape.y2 - shape.y1);
+                iw.value = String(Number(w).toFixed(4));
+                ih.value = String(Number(h).toFixed(4));
+            }
+            if (iw && ih && (shape.type === 'ellipse' || shape.type === 'hexagon')) {
+                iw.value = String(Number(shape.radiusX * 2).toFixed(4));
+                ih.value = String(Number(shape.radiusY * 2).toFixed(4));
+            }
+        }
+    }
+
+    if (fillRaDec) {
+        const rRa = Number.isFinite(content.ra) ? content.ra : null;
+        const rDec = Number.isFinite(content.dec) ? content.dec : null;
+        if (ira) ira.value = rRa != null ? String(rRa) : '';
+        if (idec) idec.value = rDec != null ? String(rDec) : '';
+    }
+
+    const ilab = box.querySelector('#srp-inp-label');
+    if (ilab) {
+        const lab = (shape && typeof shape.label === 'string')
+            ? shape.label
+            : (content && typeof content.region_label === 'string' ? content.region_label : '');
+        ilab.value = lab;
+    }
+
+    // Border appearance (editable regions only)
+    try {
+        const bc = box.querySelector('#srp-inp-border-color');
+        const bw = box.querySelector('#srp-inp-border-width');
+        const bs = box.querySelector('#srp-inp-border-style');
+        if (shape) {
+            const col = (typeof shape.borderColor === 'string' && /^#([0-9a-fA-F]{6})$/.test(shape.borderColor.trim()))
+                ? shape.borderColor.trim()
+                : '#38BDF8';
+            if (bc) bc.value = col;
+            const w = Number(shape.borderWidth);
+            if (bw) bw.value = String(Number.isFinite(w) && w > 0 ? Math.max(0.5, Math.min(16, w)) : 2);
+            const st = String(shape.borderStyle || 'solid').toLowerCase();
+            if (bs) bs.value = (st === 'dashed') ? 'dashed' : 'solid';
+        }
+    } catch (_) {}
+}
+
+function resolveWorldToPixelForToolbarRegion(raDeg, decDeg) {
+    try {
+        if (typeof worldToPixelGeneric === 'function') {
+            return worldToPixelGeneric(raDeg, decDeg);
+        }
+    } catch (_) {}
+    try {
+        const top = window.top;
+        if (top && top !== window && typeof top.worldToPixelGeneric === 'function') {
+            return top.worldToPixelGeneric(raDeg, decDeg);
+        }
+    } catch (_) {}
+    return null;
+}
+
 function showSimpleRegionPopup(content, anchor) {
     try {
+        try {
+            window.__regionPopupContent = content;
+        } catch (_) {}
+
         let box = document.getElementById('simple-region-popup');
         const viewerElement = document.getElementById('openseadragon');
         if (!box) {
             box = document.createElement('div');
             box.id = 'simple-region-popup';
+            box.className = 'simple-region-popup';
             Object.assign(box.style, {
                 position: viewerElement ? 'absolute' : 'fixed',
-                maxWidth: '380px',
-                background: 'rgba(42,42,42,0.95)',
-                color: '#fff',
+                maxWidth: '420px',
+                minWidth: '280px',
                 padding: '0',
                 borderRadius: '8px',
-                boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
-                fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
-                fontSize: '14px',
-                zIndex: '6500'
+                zIndex: '6500',
+                fontFamily: 'Arial, sans-serif',
+                fontSize: '14px'
             });
             // Make the simple popup draggable by its header area
             (function makeDraggable(el) {
@@ -5153,6 +6405,12 @@ function showSimpleRegionPopup(content, anchor) {
                 document.body.appendChild(box);
             }
         }
+        try {
+            box.classList.add('simple-region-popup');
+            box.style.background = '';
+            box.style.boxShadow = '';
+            box.style.color = '';
+        } catch (_) {}
         const ra = typeof content.ra === 'number' ? content.ra.toFixed(6) : (content.ra ?? 'N/A');
         const dec = typeof content.dec === 'number' ? content.dec.toFixed(6) : (content.dec ?? 'N/A');
         // Display coordinates using bottom-left origin (to match coords overlay).
@@ -5185,19 +6443,48 @@ function showSimpleRegionPopup(content, anchor) {
         const x = (typeof resolvedXBottomLeft === 'number' && Number.isFinite(resolvedXBottomLeft)) ? resolvedXBottomLeft.toFixed(2) : (resolvedXBottomLeft ?? 'N/A');
         const y = (typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft)) ? resolvedYBottomLeft.toFixed(2) : (resolvedYBottomLeft ?? 'N/A');
         const isRegion = content.source_type === 'region';
+        const linkedShape = findLinkedToolbarRegionShape(content);
+        const useEditableRegionGeometry = !!(isRegion && linkedShape);
         // Track which region this popup is showing (so deletes can close it)
         try {
             box.dataset.regionId = (isRegion && content.region_id) ? String(content.region_id) : '';
         } catch (_) {}
+        try {
+            box.classList.toggle('simple-region-popup--editable', useEditableRegionGeometry);
+            box.classList.toggle('simple-region-popup--region', isRegion);
+        } catch (_) {}
+
+        let sizeFieldsHtml = '';
+        if (useEditableRegionGeometry && linkedShape.type === 'circle') {
+            sizeFieldsHtml = `
+                <div class="srp-section">
+                    <label class="srp-field-label" for="srp-inp-r">Radius <span class="srp-hint">pixels</span></label>
+                    <input type="number" step="0.0001" id="srp-inp-r" class="srp-input" />
+                </div>`;
+        } else if (useEditableRegionGeometry && (linkedShape.type === 'rectangle' || linkedShape.type === 'ellipse' || linkedShape.type === 'hexagon')) {
+            sizeFieldsHtml = `
+                <div class="srp-section">
+                    <label class="srp-field-label">Width × height <span class="srp-hint">pixels</span></label>
+                    <div class="srp-grid srp-grid--size">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-w">Width</label>
+                            <input type="number" step="0.0001" id="srp-inp-w" class="srp-input" placeholder="w" />
+                        </div>
+                        <span class="srp-size-x" aria-hidden="true">×</span>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-h">Height</label>
+                            <input type="number" step="0.0001" id="srp-inp-h" class="srp-input" placeholder="h" />
+                        </div>
+                    </div>
+                </div>`;
+        }
 
         box.innerHTML = `
-            <div id="simple-region-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.2);">
-              <div style="font-weight:bold;font-size:14px;">Source Information</div>
-              <button type="button" id="simple-region-close-btn" style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:20px;line-height:1;padding:0 2px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;" aria-label="Close">
-                &times;
-              </button>
+            <div id="simple-region-header" class="srp-header">
+              <div class="srp-title">Source Information</div>
+              <button type="button" id="simple-region-close-btn" class="srp-close" aria-label="Close">&times;</button>
             </div>
-            <div id="simple-region-content" style="padding:12px;"></div>
+            <div id="simple-region-content" class="srp-content"></div>
         `;
 
         const headerEl = box.querySelector('#simple-region-header');
@@ -5208,25 +6495,83 @@ function showSimpleRegionPopup(content, anchor) {
         const contentElement = box.querySelector('#simple-region-content');
         if (contentElement) {
             let html = '';
-            html += `
-                <div style="margin-bottom:8px;">
-                    <span style="color:#aaa;">Position (image x, y):</span> ${x}, ${y}
-                </div>
-            `;
-            // Always show RA/Dec row. Some maps (e.g. RA---SIN/DEC--SIN) may need header/backend fallback.
-            html += `
-                <div style="margin-bottom:8px;">
-                    <span style="color:#aaa;">Coordinates (RA, Dec):</span>
-                    <span id="simple-region-radec-value">${(ra !== 'N/A' && dec !== 'N/A') ? `${ra}°, ${dec}°` : 'Calculating…'}</span>
-                </div>
-            `;
-            if (typeof content.radius_pixels === 'number') {
-                const radius = content.radius_pixels.toFixed(2);
+            if (useEditableRegionGeometry) {
                 html += `
-                    <div style="margin-bottom:8px;">
-                        <span style="color:#aaa;">Region Radius:</span> ${radius} pixels
+                <div class="srp-section">
+                    <label class="srp-field-label" for="srp-inp-label">Region label</label>
+                    <input type="text" id="srp-inp-label" class="srp-input" maxlength="160" autocomplete="off" placeholder="e.g. Field A, SNR" />
+                </div>
+                <div class="srp-section">
+                    <label class="srp-field-label">Border style</label>
+                    <div class="srp-grid srp-grid--3">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-border-color">Color</label>
+                            <input type="color" id="srp-inp-border-color" class="srp-input" style="height: 34px; padding: 0; width: 100%;" />
+                        </div>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-border-style">Line</label>
+                            <select id="srp-inp-border-style" class="srp-input">
+                                <option value="solid">Solid</option>
+                                <option value="dashed">Dashed</option>
+                                <option value="dotted">Dotted</option>
+                                <option value="dashdot">Dash-dot</option>
+                                <option value="longdash">Long dash</option>
+                                <option value="twodash">Two-dash</option>
+                            </select>
+                        </div>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-border-width">Thickness</label>
+                            <input type="number" step="0.5" min="0.5" max="16" id="srp-inp-border-width" class="srp-input" />
+                        </div>
                     </div>
-                `;
+                </div>
+                <div class="srp-section">
+                    <label class="srp-field-label">Image position <span class="srp-hint">pixels, bottom-left origin</span></label>
+                    <div class="srp-grid srp-grid--2">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-x">x</label>
+                            <input type="number" step="0.0001" id="srp-inp-x" class="srp-input" />
+                        </div>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-y">y</label>
+                            <input type="number" step="0.0001" id="srp-inp-y" class="srp-input" />
+                        </div>
+                    </div>
+                </div>
+                <div class="srp-section">
+                    <label class="srp-field-label">Sky position <span class="srp-hint">degrees</span></label>
+                    <div class="srp-grid srp-grid--2">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-ra">RA</label>
+                            <input type="number" step="0.000001" id="srp-inp-ra" class="srp-input" placeholder="RA" />
+                        </div>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-dec">Dec</label>
+                            <input type="number" step="0.000001" id="srp-inp-dec" class="srp-input" placeholder="Dec" />
+                        </div>
+                    </div>
+                </div>
+                ${sizeFieldsHtml}`;
+            } else {
+                html += `
+                <div class="srp-section">
+                    <div class="srp-readonly-row">
+                        <span class="srp-k">Position</span>
+                        <span class="srp-v">${x}, ${y}</span>
+                    </div>
+                    <div class="srp-readonly-row">
+                        <span class="srp-k">RA / Dec</span>
+                        <span class="srp-v" id="simple-region-radec-value">${(ra !== 'N/A' && dec !== 'N/A') ? `${ra}°, ${dec}°` : 'Calculating…'}</span>
+                    </div>`;
+                if (typeof content.radius_pixels === 'number') {
+                    const radius = content.radius_pixels.toFixed(2);
+                    html += `
+                    <div class="srp-readonly-row">
+                        <span class="srp-k">Radius</span>
+                        <span class="srp-v">${radius} px</span>
+                    </div>`;
+                }
+                html += `</div>`;
             }
 
             // Galaxy name resolution (similar to canvasPopup)
@@ -5245,19 +6590,26 @@ function showSimpleRegionPopup(content, anchor) {
                 galaxyName = window.galaxyNameFromSearch.trim();
             }
 
-            // Action buttons (identical set: SED, Properties, RGB, Cutout/Delete for regions)
+            // Action buttons (catalog: SED + Properties + RGB; regions: no SED)
             html += `
-                <div style="margin-top:12px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;">
-                    <button id="simple-show-sed-btn" style="padding:6px 12px;background-color:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Show SED</button>
-                    <button id="simple-show-properties-btn" style="padding:6px 12px;background-color:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;">Show Properties</button>
-                    <button id="simple-show-rgb-btn" style="padding:6px 12px;background-color:#FF9800;color:white;border:none;border-radius:4px;cursor:pointer;">Show RGB</button>
-                    ${isRegion ? '<button id="simple-cutout-region-btn" style="padding:6px 12px;background-color:#9C27B0;color:white;border:none;border-radius:4px;cursor:pointer;">Cutout</button>' : ''}
-                    ${isRegion ? '<button id="simple-zoom-inset-btn" style="padding:6px 12px;background-color:#111827;color:white;border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;">Zoom inset</button>' : ''}
-                    ${isRegion ? '<button id="simple-delete-region-btn" style="padding:6px 12px;background-color:#DC2626;color:white;border:none;border-radius:4px;cursor:pointer;">Delete Region</button>' : ''}
+                <div class="srp-actions">
+                    ${!isRegion ? '<button type="button" id="simple-show-sed-btn" class="srp-btn srp-btn--sed">Show SED</button>' : ''}
+                    <button type="button" id="simple-show-properties-btn" class="srp-btn srp-btn--properties">Show Properties</button>
+                    <button type="button" id="simple-show-rgb-btn" class="srp-btn srp-btn--rgb">Show RGB</button>
+                    ${isRegion ? '<button type="button" id="simple-cutout-region-btn" class="srp-btn srp-btn--cutout">Cutout</button>' : ''}
+                    ${isRegion ? '<button type="button" id="simple-zoom-inset-btn" class="srp-btn srp-btn--inset">Zoom inset</button>' : ''}
+                    ${isRegion ? '<button type="button" id="simple-delete-region-btn" class="srp-btn srp-btn--delete">Delete Region</button>' : ''}
                 </div>
             `;
 
             contentElement.innerHTML = html;
+
+            if (useEditableRegionGeometry) {
+                try {
+                    refreshToolbarRegionContentFromShape(content, linkedShape);
+                    fillRegionPopupGeometryInputs(box, content, linkedShape);
+                } catch (_) {}
+            }
 
             // Wire up buttons (using same logic as canvasPopup.show but without "this")
             setTimeout(() => {
@@ -5266,6 +6618,7 @@ function showSimpleRegionPopup(content, anchor) {
                     closeBtn.onclick = (e) => {
                         e.stopPropagation();
                         try { box.style.display = 'none'; } catch (_) {}
+                        try { window.__regionPopupContent = null; } catch (_) {}
                     };
                 }
 
@@ -5326,21 +6679,166 @@ function showSimpleRegionPopup(content, anchor) {
                     }
                 }
 
-                // If RA/Dec are missing, resolve them and update the displayed row.
+                // If RA/Dec are missing, resolve them and update the display / inputs.
                 try {
-                    const raDecEl = box.querySelector('#simple-region-radec-value');
-                    if (raDecEl && (!Number.isFinite(content.ra) || !Number.isFinite(content.dec))) {
+                    const needWorld = !Number.isFinite(content.ra) || !Number.isFinite(content.dec);
+                    if (needWorld) {
                         ensureRegionWorldCoords().then((ok) => {
                             if (!ok) return;
                             try {
-                                const el2 = box.querySelector('#simple-region-radec-value');
-                                if (el2 && Number.isFinite(content.ra) && Number.isFinite(content.dec)) {
-                                    el2.textContent = `${Number(content.ra).toFixed(6)}°, ${Number(content.dec).toFixed(6)}°`;
+                                if (useEditableRegionGeometry) {
+                                    fillRegionPopupGeometryInputs(box, content, linkedShape);
+                                } else {
+                                    const el2 = box.querySelector('#simple-region-radec-value');
+                                    if (el2 && Number.isFinite(content.ra) && Number.isFinite(content.dec)) {
+                                        el2.textContent = `${Number(content.ra).toFixed(6)}°, ${Number(content.dec).toFixed(6)}°`;
+                                    }
                                 }
                             } catch (_) {}
                         });
                     }
                 } catch (_) {}
+
+                if (useEditableRegionGeometry && linkedShape) {
+                    const GEOM_INPUT_MS = 40;
+                    let imageGeomTimer = null;
+                    let skyGeomTimer = null;
+
+                    const runFromImageFields = () => {
+                        const ix = box.querySelector('#srp-inp-x');
+                        const iy = box.querySelector('#srp-inp-y');
+                        const ira = box.querySelector('#srp-inp-ra');
+                        const idec = box.querySelector('#srp-inp-dec');
+                        const ir = box.querySelector('#srp-inp-r');
+                        const iw = box.querySelector('#srp-inp-w');
+                        const ih = box.querySelector('#srp-inp-h');
+                        const fields = {
+                            r: ir && ir.value !== '' ? ir.value : null,
+                            w: iw && iw.value !== '' ? iw.value : null,
+                            h: ih && ih.value !== '' ? ih.value : null
+                        };
+                        const hasSize = linkedShape.type === 'circle'
+                            ? (fields.r != null && fields.r !== '')
+                            : ((fields.w != null && fields.w !== '') && (fields.h != null && fields.h !== ''));
+                        if (hasSize && !applyToolbarRegionSizeFromInputs(linkedShape, fields)) return;
+                        if (!applyToolbarRegionCenterFromImageInputs(linkedShape, ix && ix.value, iy && iy.value)) return;
+                        refreshToolbarRegionContentFromShape(content, linkedShape);
+                        const c = getShapeCenter(linkedShape);
+                        if (c) {
+                            const w = getWorldCoordinatesFromImage(c.x, c.y);
+                            if (w && Number.isFinite(w.ra) && Number.isFinite(w.dec)) {
+                                content.ra = w.ra;
+                                content.dec = w.dec;
+                                if (ira) ira.value = String(w.ra);
+                                if (idec) idec.value = String(w.dec);
+                            }
+                        }
+                        try { renderRegionOverlay(); } catch (_) {}
+                    };
+
+                    const runFromSkyFields = () => {
+                        const ira = box.querySelector('#srp-inp-ra');
+                        const idec = box.querySelector('#srp-inp-dec');
+                        const raV = ira && ira.value !== '' ? Number(ira.value) : NaN;
+                        const decV = idec && idec.value !== '' ? Number(idec.value) : NaN;
+                        if (!Number.isFinite(raV) || !Number.isFinite(decV)) return;
+                        const px = resolveWorldToPixelForToolbarRegion(raV, decV);
+                        if (!px || !Number.isFinite(px.x) || !Number.isFinite(px.y)) return;
+                        const oc = getShapeCenter(linkedShape);
+                        if (!oc) return;
+                        const dx = px.x - oc.x;
+                        const dy = px.y - oc.y;
+                        if (linkedShape.type === 'circle') {
+                            linkedShape.center.x = px.x;
+                            linkedShape.center.y = px.y;
+                        } else if (linkedShape.type === 'ellipse' || linkedShape.type === 'hexagon') {
+                            linkedShape.center.x = px.x;
+                            linkedShape.center.y = px.y;
+                        } else if (linkedShape.type === 'rectangle') {
+                            linkedShape.x1 += dx;
+                            linkedShape.x2 += dx;
+                            linkedShape.y1 += dy;
+                            linkedShape.y2 += dy;
+                        }
+                        content.ra = raV;
+                        content.dec = decV;
+                        refreshToolbarRegionContentFromShape(content, linkedShape);
+                        fillRegionPopupGeometryInputs(box, content, linkedShape, 'imageSize');
+                        try { renderRegionOverlay(); } catch (_) {}
+                    };
+
+                    const scheduleImageGeom = () => {
+                        clearTimeout(imageGeomTimer);
+                        imageGeomTimer = setTimeout(() => {
+                            try { runFromImageFields(); } catch (_) {}
+                        }, GEOM_INPUT_MS);
+                    };
+                    const scheduleSkyGeom = () => {
+                        clearTimeout(skyGeomTimer);
+                        skyGeomTimer = setTimeout(() => {
+                            try { runFromSkyFields(); } catch (_) {}
+                        }, GEOM_INPUT_MS);
+                    };
+
+                    const onGeomInput = (e) => {
+                        e.stopPropagation();
+                    };
+                    ['srp-inp-x', 'srp-inp-y', 'srp-inp-r', 'srp-inp-w', 'srp-inp-h'].forEach((id) => {
+                        const el = box.querySelector(`#${id}`);
+                        if (el) {
+                            el.addEventListener('input', scheduleImageGeom);
+                            el.addEventListener('pointerdown', onGeomInput);
+                        }
+                    });
+                    ['srp-inp-ra', 'srp-inp-dec'].forEach((id) => {
+                        const el = box.querySelector(`#${id}`);
+                        if (el) {
+                            el.addEventListener('input', scheduleSkyGeom);
+                            el.addEventListener('pointerdown', onGeomInput);
+                        }
+                    });
+
+                    const ilab = box.querySelector('#srp-inp-label');
+                    if (ilab) {
+                        ilab.addEventListener('input', () => {
+                            const v = ilab.value;
+                            linkedShape.label = v;
+                            content.region_label = v;
+                            try {
+                                renderRegionOverlay();
+                            } catch (_) {}
+                        });
+                        ilab.addEventListener('pointerdown', onGeomInput);
+                    }
+
+                    const borderColor = box.querySelector('#srp-inp-border-color');
+                    if (borderColor) {
+                        borderColor.addEventListener('input', () => {
+                            try { linkedShape.borderColor = borderColor.value; } catch (_) {}
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        borderColor.addEventListener('pointerdown', onGeomInput);
+                    }
+                    const borderStyle = box.querySelector('#srp-inp-border-style');
+                    if (borderStyle) {
+                        borderStyle.addEventListener('change', () => {
+                            try { linkedShape.borderStyle = borderStyle.value; } catch (_) {}
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        borderStyle.addEventListener('pointerdown', onGeomInput);
+                    }
+                    const borderWidth = box.querySelector('#srp-inp-border-width');
+                    if (borderWidth) {
+                        borderWidth.addEventListener('input', () => {
+                            const w = Number(borderWidth.value);
+                            if (Number.isFinite(w) && w > 0) {
+                                try { linkedShape.borderWidth = Math.max(0.5, Math.min(16, w)); } catch (_) {}
+                                try { renderRegionOverlay(); } catch (_) {}
+                            }
+                        });
+                        borderWidth.addEventListener('pointerdown', onGeomInput);
+                    }
+                }
 
                 if (sedButton) {
                     sedButton.onclick = (e) => {
@@ -5649,7 +7147,7 @@ function computeRegionPopupContent(shape) {
     const content = {
         source_type: 'region',
         region_type: shape?.type || 'unknown',
-        region_label: shape?.label || 'Region',
+        region_label: (typeof shape?.label === 'string') ? shape.label : '',
         region_id: shape?.id || null,
         x_bottom_left: center && Number.isFinite(center.x) ? Number(center.x.toFixed(2)) : undefined,
         y_bottom_left: center && Number.isFinite(center.y)
@@ -5692,14 +7190,26 @@ function computeRegionPopupContent(shape) {
     return content;
 }
 
-function showRegionPopup(shape) {
+function showRegionPopup(shape, options) {
     if (!shape) return;
+    options = options || {};
     const center = getShapeCenter(shape);
-    const screenPoint = center ? imagePointToScreen(center) : null;
-    if (!screenPoint) return;
+    let screenPoint = center ? imagePointToScreen(center) : null;
+    if (!screenPoint) {
+        const viewerElement = document.getElementById('openseadragon');
+        if (viewerElement) {
+            const w = viewerElement.clientWidth || 0;
+            const h = viewerElement.clientHeight || 0;
+            screenPoint = { x: Math.max(0, w / 2), y: Math.max(0, h / 2) };
+        } else {
+            return;
+        }
+    }
 
-    // Mark selection for highlight
-    regionDrawingState.selectedShapeId = shape.id;
+    // Yellow highlight only when opening from an explicit region click (default), not when e.g. finishing a draw.
+    if (options.select !== false) {
+        regionDrawingState.selectedShapeId = shape.id;
+    }
     const content = computeRegionPopupContent(shape);
 
     // Use unified DOM popup implementation for regions (works in single + multi-panel)
@@ -5713,22 +7223,302 @@ try { window.showSimpleRegionPopup = showSimpleRegionPopup; } catch (_) {}
 function updateRegionCursor() {
     const viewerElement = document.getElementById('openseadragon');
     if (!viewerElement) return;
-    const tool = REGION_TOOLS.find(t => t.id === regionDrawingState.activeTool);
-    if (tool) {
-        viewerElement.style.cursor = tool.cursor || 'crosshair';
+    if (regionDrawingState.regionPointer) {
+        const rp = regionDrawingState.regionPointer;
+        viewerElement.style.cursor = rp.kind === 'move'
+            ? 'move'
+            : (rp.kind === 'resize-circle' ? 'nwse-resize' : getResizeCursorForHandle(rp.handle));
         return;
     }
-    viewerElement.style.cursor = (regionDrawingState.mouseMode === 'pan') ? 'grab' : '';
+    const tool = REGION_TOOLS.find(t => t.id === regionDrawingState.activeTool);
+    if (tool) {
+        viewerElement.style.cursor = (regionDrawingState.mouseMode === 'pan')
+            ? 'default'
+            : (tool.cursor || 'crosshair');
+        return;
+    }
+    viewerElement.style.cursor = (regionDrawingState.mouseMode === 'pan') ? 'default' : '';
+}
+
+function updateRegionCursorForPixel(pixelPoint) {
+    const viewerElement = document.getElementById('openseadragon');
+    if (!viewerElement) return;
+    if (regionDrawingState.mouseMode === 'pan') {
+        viewerElement.style.cursor = 'default';
+        return;
+    }
+    if (regionDrawingState.regionPointer) {
+        updateRegionCursor();
+        return;
+    }
+    const imagePoint = convertPixelPointToImage(pixelPoint);
+    const interaction = findRegionPointerInteraction(imagePoint, pixelPoint);
+    const cursor = interaction ? getRegionPointerCursor(interaction.action) : null;
+    if (cursor) {
+        viewerElement.style.cursor = cursor;
+        return;
+    }
+    updateRegionCursor();
+}
+
+function positionRegionMouseModeBar(bar) {
+    if (!bar) return;
+    const viewerEl = document.getElementById('openseadragon');
+    if (!viewerEl) return;
+    const r = viewerEl.getBoundingClientRect();
+    try {
+        const doc = bar.ownerDocument || document;
+        const win = doc.defaultView || window;
+        const centerX = r.left + r.width / 2;
+        let bottomPx = Math.max(12, win.innerHeight - r.bottom + 12);
+        const getVisiblePanelRect = (id) => {
+            try {
+                const panel = doc.getElementById(id);
+                if (!panel) return null;
+                const cs = win.getComputedStyle ? win.getComputedStyle(panel) : null;
+                if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.05)) return null;
+                const pr = panel.getBoundingClientRect();
+                return (pr.width && pr.height) ? pr : null;
+            } catch (_) {
+                return null;
+            }
+        };
+        const segmentRect = getVisiblePanelRect('segment-overlay-controls');
+        const catalogRect = getVisiblePanelRect('catalog-overlay-controls');
+        if (segmentRect && catalogRect) {
+            const br = bar.getBoundingClientRect();
+            const barW = Math.max(1, br.width || bar.offsetWidth || 0);
+            const segmentW = Math.max(1, segmentRect.width || 0);
+
+
+            const gap = 12;
+            const margin = 12;
+            const groupW = segmentW + gap + barW;
+            const groupLeft = Math.min(
+                Math.max(centerX - (groupW / 2), margin),
+                Math.max(margin, win.innerWidth - groupW - margin)
+            );
+            const bottom = Math.max(12, win.innerHeight - segmentRect.bottom);
+            const segmentPanel = doc.getElementById('segment-overlay-controls');
+            if (segmentPanel) {
+                segmentPanel.style.left = `${groupLeft + (segmentW / 2)}px`;
+                segmentPanel.style.bottom = `${bottom}px`;
+                segmentPanel.style.transform = 'translateX(-50%)';
+            }
+            bar.style.left = `${groupLeft + segmentW + gap}px`;
+            bar.style.bottom = `${bottom}px`;
+            bar.style.transform = 'none';
+            return;
+        }
+        ['segment-overlay-controls', 'catalog-overlay-controls'].forEach((id) => {
+            try {
+                const pr = getVisiblePanelRect(id);
+                if (!pr) return;
+                const horizontallyNearRegionBar = centerX >= (pr.left - 80) && centerX <= (pr.right + 80);
+                if (!horizontallyNearRegionBar) return;
+                bottomPx = Math.max(bottomPx, win.innerHeight - pr.top + 10);
+            } catch (_) {}
+        });
+        bar.style.left = `${r.left + r.width / 2}px`;
+        bar.style.bottom = `${bottomPx}px`;
+        bar.style.transform = 'translateX(-50%)';
+    } catch (_) {}
+}
+
+function syncRegionMouseModeBarButtons(bar) {
+    if (!bar) return;
+    const mode = regionDrawingState.mouseMode;
+    bar.querySelectorAll('.region-mouse-mode-bar-btn').forEach((btn) => {
+        const m = btn.dataset.mode;
+        const on = (m === 'pointer' && mode === 'pointer') || (m === 'pan' && mode === 'pan');
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.classList.toggle('region-mouse-mode-bar-btn--active', on);
+        const ui = m && REGION_MOUSE_MODE_UI[m];
+        if (ui) {
+            btn.textContent = ui.label;
+            btn.title = ui.title;
+        }
+    });
+    let cap = bar.querySelector('#region-mouse-mode-bar-caption');
+    if (!cap && bar.firstElementChild && String(bar.firstElementChild.tagName).toLowerCase() === 'span') {
+        bar.firstElementChild.id = 'region-mouse-mode-bar-caption';
+        cap = bar.firstElementChild;
+    }
+    if (cap) {
+        cap.textContent = 'Mode';
+        try {
+            cap.style.fontSize = '11px';
+            cap.style.letterSpacing = '0.02em';
+        } catch (_) {}
+    }
+    bar.querySelectorAll('.region-mouse-mode-shape-btn').forEach((btn) => {
+        const tid = btn.dataset.shapeTool;
+        const on = !!tid && regionDrawingState.activeTool === tid;
+        btn.classList.toggle('region-mouse-mode-shape-btn--active', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+}
+
+function ensureRegionShapeToolRow(bar) {
+    if (!bar || bar.querySelector('#region-mouse-mode-shapes')) return;
+    const sep = document.createElement('div');
+    sep.className = 'region-mouse-mode-bar-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    const wrap = document.createElement('div');
+    wrap.id = 'region-mouse-mode-shapes';
+    wrap.setAttribute('role', 'group');
+    wrap.setAttribute('aria-label', 'Region shape tools');
+    REGION_SHAPE_BAR_OPTIONS.forEach((opt) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'region-mouse-mode-shape-btn';
+        btn.dataset.shapeTool = opt.id;
+        btn.title = opt.title;
+        btn.setAttribute('aria-label', opt.label);
+        btn.innerHTML = opt.iconSvg;
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setRegionDrawingTool(opt.id);
+        });
+        wrap.appendChild(btn);
+    });
+    bar.appendChild(sep);
+    bar.appendChild(wrap);
+}
+
+function ensureRegionMouseModeBar() {
+    let bar = document.getElementById('region-mouse-mode-bar');
+    if (bar) {
+        ensureRegionShapeToolRow(bar);
+        return bar;
+    }
+
+    bar = document.createElement('div');
+    bar.id = 'region-mouse-mode-bar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'Region tools: mode, shapes, and pan');
+    Object.assign(bar.style, {
+        position: 'fixed',
+        zIndex: '60040',
+        display: 'none',
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: '10px',
+        rowGap: '8px',
+        padding: '8px 14px',
+        background: 'rgba(17,24,39,0.95)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '12px',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.45)',
+        color: '#f9fafb',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        fontSize: '12px',
+        pointerEvents: 'auto',
+        boxSizing: 'border-box'
+    });
+
+    const label = document.createElement('span');
+    label.id = 'region-mouse-mode-bar-caption';
+    label.textContent = 'Mode';
+    label.style.opacity = '0.9';
+    label.style.fontWeight = '600';
+    label.style.whiteSpace = 'nowrap';
+    label.style.fontSize = '11px';
+    label.style.letterSpacing = '0.02em';
+
+    const toggle = document.createElement('div');
+    Object.assign(toggle.style, {
+        display: 'flex',
+        gap: '6px',
+        alignItems: 'center'
+    });
+
+    const makeBtn = (mode, text, title) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'region-mouse-mode-bar-btn';
+        b.dataset.mode = mode;
+        b.textContent = text;
+        b.title = title;
+        b.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setRegionMouseMode(mode);
+        });
+        return b;
+    };
+
+    toggle.appendChild(makeBtn('pointer', REGION_MOUSE_MODE_UI.pointer.label, REGION_MOUSE_MODE_UI.pointer.title));
+    toggle.appendChild(makeBtn('pan', REGION_MOUSE_MODE_UI.pan.label, REGION_MOUSE_MODE_UI.pan.title));
+
+    bar.appendChild(label);
+    bar.appendChild(toggle);
+    ensureRegionShapeToolRow(bar);
+    document.body.appendChild(bar);
+
+    const reposition = () => {
+        if (bar.style.display !== 'none' && regionDrawingState.shapes.length) {
+            positionRegionMouseModeBar(bar);
+        }
+    };
+    window.addEventListener('resize', reposition);
+    try {
+        window.addEventListener('scroll', reposition, true);
+    } catch (_) {}
+    try {
+        document.addEventListener('overlay-controls-positioned', reposition);
+    } catch (_) {}
+
+    return bar;
+}
+
+function notifyRegionMouseModeBarLayoutChanged() {
+    try {
+        if (typeof window.repositionSegmentOverlayControls === 'function') {
+            requestAnimationFrame(() => {
+                try { window.repositionSegmentOverlayControls(); } catch (_) {}
+            });
+        }
+    } catch (_) {}
+    try {
+        document.dispatchEvent(new CustomEvent('region-mouse-mode-bar-visibility-changed'));
+    } catch (_) {}
+}
+
+function refreshRegionMouseModeBar() {
+    const bar = ensureRegionMouseModeBar();
+    if (!regionDrawingState.shapes.length) {
+        bar.style.display = 'none';
+        notifyRegionMouseModeBarLayoutChanged();
+        return;
+    }
+    bar.style.display = 'flex';
+    positionRegionMouseModeBar(bar);
+    syncRegionMouseModeBarButtons(bar);
+    notifyRegionMouseModeBarLayoutChanged();
 }
 
 function setRegionMouseMode(mode) {
     const normalized = (mode === 'pan') ? 'pan' : 'pointer';
     if (regionDrawingState.mouseMode === normalized) return;
     regionDrawingState.mouseMode = normalized;
+    if (normalized === 'pan') {
+        regionDrawingState.isDrawing = false;
+        regionDrawingState.startImagePoint = null;
+        regionDrawingState.currentImagePoint = null;
+        regionDrawingState.previewShape = null;
+        try {
+            renderRegionOverlay();
+        } catch (_) {}
+    }
     updateRegionCursor();
     try {
         document.dispatchEvent(new CustomEvent('region-mouse-mode-changed', { detail: { mode: normalized } }));
     } catch (_) {}
+    refreshRegionMouseModeBar();
 }
 
 function setRegionDrawingTool(toolId) {
@@ -5745,11 +7535,27 @@ function setRegionDrawingTool(toolId) {
     }
     updateRegionCursor();
     document.dispatchEvent(new CustomEvent('region-tool-changed', { detail: { toolId: regionDrawingState.activeTool } }));
+    try {
+        refreshRegionMouseModeBar();
+    } catch (_) {}
 }
 
 function clearRegionSelections() {
     regionDrawingState.selectedShapeId = null;
     renderRegionOverlay();
+}
+
+/** After the last region is removed, default mouse mode back to pan (map navigation). */
+function resetRegionMouseModeToPanIfNoShapes() {
+    if (regionDrawingState.shapes.length > 0) return;
+    if (regionDrawingState.mouseMode !== 'pan') {
+        setRegionMouseMode('pan');
+    } else {
+        updateRegionCursor();
+        try {
+            refreshRegionMouseModeBar();
+        } catch (_) {}
+    }
 }
 
 function clearAllRegions() {
@@ -5763,6 +7569,9 @@ function clearAllRegions() {
         }
     } catch (_) {}
     renderRegionOverlay();
+    try {
+        resetRegionMouseModeToPanIfNoShapes();
+    } catch (_) {}
     return 0;
 }
 
@@ -5792,6 +7601,9 @@ document.addEventListener('keydown', (event) => {
                         regionDrawingState.shapes.splice(idx, 1);
                         regionDrawingState.selectedShapeId = null;
                         renderRegionOverlay();
+                        try {
+                            resetRegionMouseModeToPanIfNoShapes();
+                        } catch (_) {}
                     }
                 }
             }
@@ -5800,6 +7612,14 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('resize', scheduleRegionCanvasResize);
+
+try {
+    document.addEventListener('region-tool-changed', () => {
+        try {
+            refreshRegionMouseModeBar();
+        } catch (_) {}
+    });
+} catch (_) {}
 
 window.setRegionDrawingTool = setRegionDrawingTool;
 window.clearRegionDrawingTool = () => setRegionDrawingTool(null);
@@ -5831,7 +7651,11 @@ window.deleteRegionById = (regionId) => {
             const shownId = box && box.dataset ? box.dataset.regionId : '';
             if (box && (String(shownId || '') === String(regionId))) {
                 box.style.display = 'none';
+                try { window.__regionPopupContent = null; } catch (_) {}
             }
+        } catch (_) {}
+        try {
+            resetRegionMouseModeToPanIfNoShapes();
         } catch (_) {}
     }
 };

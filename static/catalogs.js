@@ -989,6 +989,17 @@ function _catalogKey(name) {
     return `catalogs/${base}`;
 }
 
+/** Hide the on-screen catalog legend when no catalog overlays remain (independent from map/scaling color bar). */
+function nelouraHideCatalogLegendIfNoOverlays() {
+    try {
+        _ensureCatalogOverlayStore();
+        if (Object.keys(window.catalogOverlaysByCatalog || {}).length) return;
+        if (typeof window.hideNelouraCatalogLegendColorBar === 'function') {
+            window.hideNelouraCatalogLegendColorBar();
+        }
+    } catch (_) {}
+}
+
 function rebuildCombinedCatalogOverlay() {
     _ensureCatalogOverlayStore();
     if (!window.catalogVisibilityByCatalog || typeof window.catalogVisibilityByCatalog !== 'object') {
@@ -1017,6 +1028,26 @@ function rebuildCombinedCatalogOverlay() {
         // Keep `index` as-is (some UIs display it), but provide a stable global index above.
     }
     window.catalogDataForOverlay = combined;
+
+    // Ensure each loaded catalog has its own source-label settings (multi-catalog overlays).
+    try {
+        if (keys.length && typeof __snapshotGlobalCatalogLabelFields === 'function'
+            && typeof __normalizeRegionStyleCatalogLabelFields === 'function') {
+            window.regionStyles = window.regionStyles || {};
+            if (!window.regionStyles.catalogLabelByCatalog || typeof window.regionStyles.catalogLabelByCatalog !== 'object') {
+                window.regionStyles.catalogLabelByCatalog = {};
+            }
+            const lblMap = window.regionStyles.catalogLabelByCatalog;
+            for (let ki = 0; ki < keys.length; ki += 1) {
+                const ck = keys[ki];
+                if (!ck) continue;
+                if (!lblMap[ck] || typeof lblMap[ck] !== 'object') {
+                    lblMap[ck] = __snapshotGlobalCatalogLabelFields(window.regionStyles);
+                    __normalizeRegionStyleCatalogLabelFields(lblMap[ck]);
+                }
+            }
+        }
+    } catch (_) {}
 
     // Build a simple spatial grid index in image-pixel space.
     // This speeds up drawing and hit-testing for very large catalogs by letting the renderer
@@ -1190,6 +1221,7 @@ function removeCatalogOverlayByKey(catalogKeyOrName) {
             if (!Object.keys(window.catalogOverlaysByCatalog || {}).length) {
                 try { clearCatalogOverlay(); } catch (_) {}
                 try { if (typeof removeCatalogOverlayControls === 'function') removeCatalogOverlayControls(true); } catch (_) {}
+                nelouraHideCatalogLegendIfNoOverlays();
             }
         } catch (_) {}
     } catch (_) {}
@@ -1241,6 +1273,7 @@ function clearCatalog() {
         _ensureCatalogOverlayStore();
         if (!Object.keys(window.catalogOverlaysByCatalog || {}).length) {
             clearCatalogOverlay();
+            nelouraHideCatalogLegendIfNoOverlays();
         }
     } catch (_) {}
     
@@ -1934,7 +1967,30 @@ let regionStyles = {
     opacity: 0.7, // Default opacity
     shape: 'circle', // Default shape
     colorCodeColumn: null,
-    colorMapName: 'viridis'
+    colorMapName: 'viridis',
+    /** Optional numeric color scale overrides (null = use column data min/max). */
+    colorCodeMin: null,
+    colorCodeMax: null,
+    /** Columns whose values are drawn as text above each catalog marker on the image. */
+    catalogLabelColumns: [],
+    /** Fill color for on-image catalog labels (hex). */
+    catalogLabelTextColor: '#f8fafc',
+    /** 'above' | 'below' | 'left' | 'right' (side labels are drawn rotated). */
+    catalogLabelPosition: 'above',
+    /** When false, label text is hidden (columns stay configured). */
+    catalogLabelsVisible: true,
+    /** When false, only formatted values are shown (no "COLUMN: value" prefix). */
+    catalogLabelShowColumnNames: false,
+    /** Number display: auto | integer | fixed | scientific | compact */
+    catalogLabelNumberFormat: 'auto',
+    /** Decimals for fixed/scientific (0–10). */
+    catalogLabelDecimals: 2,
+    /** halo | shadow | glow | pill | glass | outline — legacy box/plain normalized on load */
+    catalogLabelRenderStyle: 'halo',
+    /** Background for tag (pill) style (hex). */
+    catalogLabelBackgroundColor: '#1f2937',
+    /** Per normalized catalog key: on-map label columns + appearance (multi-catalog overlays). */
+    catalogLabelByCatalog: {}
 };
 
 const REGION_COLOR_MAPS = [
@@ -2015,6 +2071,12 @@ function hexToRgba(hex, alpha = 0.4) {
     return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
 }
 
+function normalizeCatalogLabelPositionValue(p) {
+    const s = String(p || 'above').toLowerCase();
+    if (s === 'below' || s === 'left' || s === 'right') return s;
+    return 'above';
+}
+
 function findValueCaseInsensitive(target, column) {
     if (!target || !column) return undefined;
     if (Object.prototype.hasOwnProperty.call(target, column)) return target[column];
@@ -2076,6 +2138,23 @@ function coerceScalarValue(raw) {
     } catch (_) {
         return raw;
     }
+}
+
+function __columnsToAttachForOverlayStyles(styles) {
+    const out = [];
+    if (!styles || typeof styles !== 'object') return out;
+    if (styles.colorCodeColumn) {
+        const c = String(styles.colorCodeColumn).trim();
+        if (c) out.push(c);
+    }
+    if (Array.isArray(styles.catalogLabelColumns)) {
+        for (const col of styles.catalogLabelColumns) {
+            const c = String(col || '').trim();
+            if (!c || out.indexOf(c) !== -1) continue;
+            out.push(c);
+        }
+    }
+    return out;
 }
 
 async function __attachColumnValuesToRawRecords(catalogApiName, records, columns) {
@@ -2160,10 +2239,57 @@ async function __attachColumnValuesToRawRecords(catalogApiName, records, columns
     }
 }
 
-function buildColorCoder(records, column, colorMapName) {
+function computeCatalogColumnNumericRange(records, column) {
+    if (!Array.isArray(records) || !column) return { hasNumeric: false, min: 0, max: 1, numericCount: 0 };
+    const numericValues = [];
+    records.forEach((rec) => {
+        if (!rec) return;
+        const raw = coerceScalarValue(getRecordValue(rec, column));
+        if (raw === undefined || raw === null || raw === '') return;
+        const num = Number(raw);
+        if (typeof raw === 'number' || (isFinite(num) && raw !== '')) numericValues.push(num);
+    });
+    if (numericValues.length < 1) {
+        return { hasNumeric: false, min: 0, max: 1, numericCount: 0 };
+    }
+    let min = Math.min(...numericValues);
+    let max = Math.max(...numericValues);
+    if (min === max) {
+        const a = Math.abs(min);
+        const eps = a > 1e-300 ? Math.max(a * 1e-9, Number.EPSILON * 10) : 1e-9;
+        min -= eps;
+        max += eps;
+    }
+    return {
+        hasNumeric: true,
+        min,
+        max,
+        numericCount: numericValues.length
+    };
+}
+
+if (typeof window !== 'undefined') {
+    window.computeCatalogColumnNumericRange = computeCatalogColumnNumericRange;
+}
+
+/** RGB 0–255 for region-style palette at parameter t in [0,1]. */
+function nelouraRegionPaletteRgbAt(mapName, t) {
+    const mapDef = getColorMapDefinition(mapName);
+    const hex = interpolatePaletteColor(mapDef.colors, t);
+    const { r, g, b } = hexToRgb(hex);
+    return [r, g, b];
+}
+
+if (typeof window !== 'undefined') {
+    window.nelouraRegionPaletteRgbAt = nelouraRegionPaletteRgbAt;
+}
+
+function buildColorCoder(records, column, colorMapName, styleForRange) {
     if (!Array.isArray(records) || !column) return null;
     const mapDef = getColorMapDefinition(colorMapName);
     if (!mapDef || !Array.isArray(mapDef.colors) || mapDef.colors.length === 0) return null;
+    const overrideMin = styleForRange && Number.isFinite(styleForRange.colorCodeMin) ? styleForRange.colorCodeMin : null;
+    const overrideMax = styleForRange && Number.isFinite(styleForRange.colorCodeMax) ? styleForRange.colorCodeMax : null;
     try {
         console.log('[ColorCoder] building palette', {
             column,
@@ -2205,12 +2331,29 @@ function buildColorCoder(records, column, colorMapName) {
         });
     } catch (_) {}
     if (numericValues.length >= 2) {
-        const minVal = Math.min(...numericValues);
-        const maxVal = Math.max(...numericValues);
+        const dataMin = Math.min(...numericValues);
+        const dataMax = Math.max(...numericValues);
+        let minVal = overrideMin != null ? overrideMin : dataMin;
+        let maxVal = overrideMax != null ? overrideMax : dataMax;
+        if (minVal > maxVal) {
+            const s = minVal;
+            minVal = maxVal;
+            maxVal = s;
+        }
         if (maxVal === minVal) {
             const staticColor = interpolatePaletteColor(mapDef.colors, 0.5);
             return () => staticColor;
         }
+        return (rawValue) => {
+            const num = Number(rawValue);
+            if (!isFinite(num)) return interpolatePaletteColor(mapDef.colors, 0);
+            const t = (num - minVal) / (maxVal - minVal);
+            return interpolatePaletteColor(mapDef.colors, Math.max(0, Math.min(1, t)));
+        };
+    }
+    if (numericValues.length === 1 && overrideMin != null && overrideMax != null && overrideMin !== overrideMax) {
+        let minVal = Math.min(overrideMin, overrideMax);
+        let maxVal = Math.max(overrideMin, overrideMax);
         return (rawValue) => {
             const num = Number(rawValue);
             if (!isFinite(num)) return interpolatePaletteColor(mapDef.colors, 0);
@@ -2233,6 +2376,41 @@ function buildColorCoder(records, column, colorMapName) {
         };
     }
     return null;
+}
+
+/**
+ * Re-apply color coding to overlay objects from current region styles (e.g. after min/max or colormap edits in the style popup).
+ */
+function refreshCatalogOverlayColorCoding() {
+    try {
+        const styles = typeof getEffectiveRegionStylesForOverlay === 'function'
+            ? getEffectiveRegionStylesForOverlay()
+            : window.regionStyles;
+        if (!styles || !styles.colorCodeColumn || !window.catalogDataForOverlay || !Array.isArray(window.catalogDataForOverlay)) return;
+        const coder = buildColorCoder(window.catalogDataForOverlay, styles.colorCodeColumn, styles.colorMapName, styles);
+        if (!coder) return;
+        const col = styles.colorCodeColumn;
+        let key = null;
+        try {
+            key = _catalogKey(window.activeCatalog || window.currentCatalogName || '');
+        } catch (_) {}
+        window.catalogDataForOverlay.forEach((obj) => {
+            if (!obj) return;
+            if (key && obj.__catalogName && obj.__catalogName !== key) return;
+            const valueForColor = coerceScalarValue(getRecordValue(obj, col));
+            const colorHex = coder(valueForColor);
+            if (colorHex) {
+                const opacityVal = styles.opacity || obj.opacity || 0.8;
+                obj.color = colorHex;
+                obj.fillColor = hexToRgba(colorHex, 0.3);
+                obj.opacity = opacityVal;
+                obj.useTransparentFill = false;
+            }
+        });
+        try { rebuildCombinedCatalogOverlay(); } catch (_) {}
+        if (typeof canvasUpdateOverlay === 'function' && window.catalogCanvas) canvasUpdateOverlay();
+        else if (typeof updateOverlay === 'function') updateOverlay();
+    } catch (_) {}
 }
 
 function resolveCatalogStyle(catalogName, explicitStyles) {
@@ -2447,6 +2625,52 @@ function applyStylesToRegions(catalogName, styles) {
         const hasOwn = (obj, k) => Object.prototype.hasOwnProperty.call(obj || {}, k);
         if (!hasOwn(styles, 'colorCodeColumn')) nextStyle.colorCodeColumn = previousStyles.colorCodeColumn || null;
         if (!hasOwn(styles, 'colorMapName')) nextStyle.colorMapName = previousStyles.colorMapName || null;
+        if (!hasOwn(styles, 'colorCodeMin')) nextStyle.colorCodeMin = previousStyles.colorCodeMin ?? null;
+        if (!hasOwn(styles, 'colorCodeMax')) nextStyle.colorCodeMax = previousStyles.colorCodeMax ?? null;
+        if (!hasOwn(styles, 'catalogLabelColumns')) {
+            nextStyle.catalogLabelColumns = Array.isArray(previousStyles.catalogLabelColumns)
+                ? previousStyles.catalogLabelColumns.slice()
+                : [];
+        }
+        if (!hasOwn(styles, 'catalogLabelTextColor')) {
+            nextStyle.catalogLabelTextColor = previousStyles.catalogLabelTextColor || '#f8fafc';
+        }
+        if (!hasOwn(styles, 'catalogLabelPosition')) {
+            nextStyle.catalogLabelPosition = previousStyles.catalogLabelPosition || 'above';
+        }
+        if (!hasOwn(styles, 'catalogLabelsVisible')) {
+            nextStyle.catalogLabelsVisible = (previousStyles.catalogLabelsVisible !== false);
+        }
+        if (!hasOwn(styles, 'catalogLabelShowColumnNames')) {
+            nextStyle.catalogLabelShowColumnNames = (typeof previousStyles.catalogLabelShowColumnNames === 'boolean')
+                ? previousStyles.catalogLabelShowColumnNames
+                : false;
+        }
+        if (!hasOwn(styles, 'catalogLabelNumberFormat')) {
+            nextStyle.catalogLabelNumberFormat = previousStyles.catalogLabelNumberFormat || 'auto';
+        }
+        if (!hasOwn(styles, 'catalogLabelDecimals')) {
+            const d = parseInt(previousStyles.catalogLabelDecimals, 10);
+            nextStyle.catalogLabelDecimals = Number.isFinite(d) ? Math.max(0, Math.min(10, d)) : 2;
+        }
+        if (!hasOwn(styles, 'catalogLabelRenderStyle')) {
+            let rs = String(previousStyles.catalogLabelRenderStyle || 'halo').toLowerCase();
+            if (rs === 'box') rs = 'pill';
+            if (rs === 'plain') rs = 'halo';
+            const ok = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+            nextStyle.catalogLabelRenderStyle = ok.has(rs) ? rs : 'halo';
+        }
+        if (!hasOwn(styles, 'catalogLabelBackgroundColor')) {
+            nextStyle.catalogLabelBackgroundColor = previousStyles.catalogLabelBackgroundColor || '#1f2937';
+        }
+    } catch (_) {}
+    try {
+        let rs = String(nextStyle.catalogLabelRenderStyle || 'halo').toLowerCase();
+        if (rs === 'box') rs = 'pill';
+        if (rs === 'plain') rs = 'halo';
+        const okRs = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+        nextStyle.catalogLabelRenderStyle = okRs.has(rs) ? rs : 'halo';
+        nextStyle.catalogLabelPosition = normalizeCatalogLabelPositionValue(nextStyle.catalogLabelPosition);
     } catch (_) {}
     window.catalogData[catalogIndex].style = nextStyle;
     
@@ -2471,7 +2695,87 @@ function applyStylesToRegions(catalogName, styles) {
             : (window.regionStyles?.colorCodeColumn || null),
         colorMapName: (Object.prototype.hasOwnProperty.call(styles || {}, 'colorMapName'))
             ? (styles.colorMapName || null)
-            : (window.regionStyles?.colorMapName || REGION_COLOR_MAPS[0].value)
+            : (window.regionStyles?.colorMapName || REGION_COLOR_MAPS[0].value),
+        colorCodeMin: Object.prototype.hasOwnProperty.call(styles || {}, 'colorCodeMin')
+            ? styles.colorCodeMin
+            : (window.regionStyles?.colorCodeMin ?? null),
+        colorCodeMax: Object.prototype.hasOwnProperty.call(styles || {}, 'colorCodeMax')
+            ? styles.colorCodeMax
+            : (window.regionStyles?.colorCodeMax ?? null),
+        catalogLabelColumns: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelColumns')
+            ? (Array.isArray(styles.catalogLabelColumns) ? styles.catalogLabelColumns.map(String).filter(Boolean) : [])
+            : (Array.isArray(window.regionStyles?.catalogLabelColumns) ? window.regionStyles.catalogLabelColumns.slice() : []),
+        catalogLabelTextColor: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelTextColor')
+            ? (styles.catalogLabelTextColor || '#f8fafc')
+            : (window.regionStyles?.catalogLabelTextColor || '#f8fafc'),
+        catalogLabelPosition: normalizeCatalogLabelPositionValue(
+            Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelPosition')
+                ? styles.catalogLabelPosition
+                : window.regionStyles?.catalogLabelPosition
+        ),
+        catalogLabelsVisible: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelsVisible')
+            ? !!styles.catalogLabelsVisible
+            : (window.regionStyles?.catalogLabelsVisible !== false),
+        catalogLabelShowColumnNames: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelShowColumnNames')
+            ? !!styles.catalogLabelShowColumnNames
+            : (window.regionStyles?.catalogLabelShowColumnNames === true),
+        catalogLabelNumberFormat: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelNumberFormat')
+            ? String(styles.catalogLabelNumberFormat || 'auto')
+            : (window.regionStyles?.catalogLabelNumberFormat || 'auto'),
+        catalogLabelDecimals: (() => {
+            const src = Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelDecimals')
+                ? styles.catalogLabelDecimals
+                : window.regionStyles?.catalogLabelDecimals;
+            const d = parseInt(src, 10);
+            return Number.isFinite(d) ? Math.max(0, Math.min(10, d)) : 2;
+        })(),
+        catalogLabelRenderStyle: (() => {
+            const raw = Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelRenderStyle')
+                ? String(styles.catalogLabelRenderStyle || 'halo')
+                : String(window.regionStyles?.catalogLabelRenderStyle || 'halo');
+            let s = raw.toLowerCase();
+            if (s === 'box') s = 'pill';
+            if (s === 'plain') s = 'halo';
+            const ok = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+            return ok.has(s) ? s : 'halo';
+        })(),
+        catalogLabelBackgroundColor: Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelBackgroundColor')
+            ? (styles.catalogLabelBackgroundColor || '#1f2937')
+            : (window.regionStyles?.catalogLabelBackgroundColor || '#1f2937'),
+        catalogLabelByCatalog: (() => {
+            const prev = window.regionStyles && window.regionStyles.catalogLabelByCatalog;
+            if (Object.prototype.hasOwnProperty.call(styles || {}, 'catalogLabelByCatalog')
+                && styles.catalogLabelByCatalog && typeof styles.catalogLabelByCatalog === 'object') {
+                const src = styles.catalogLabelByCatalog;
+                const out = {};
+                Object.keys(src).forEach((k) => {
+                    const slot = src[k];
+                    if (!slot || typeof slot !== 'object') return;
+                    out[k] = {
+                        ...slot,
+                        catalogLabelColumns: Array.isArray(slot.catalogLabelColumns)
+                            ? slot.catalogLabelColumns.map(String).filter(Boolean)
+                            : []
+                    };
+                });
+                return out;
+            }
+            if (prev && typeof prev === 'object') {
+                const out = {};
+                Object.keys(prev).forEach((k) => {
+                    const slot = prev[k];
+                    if (!slot || typeof slot !== 'object') return;
+                    out[k] = {
+                        ...slot,
+                        catalogLabelColumns: Array.isArray(slot.catalogLabelColumns)
+                            ? slot.catalogLabelColumns.map(String).filter(Boolean)
+                            : []
+                    };
+                });
+                return out;
+            }
+            return {};
+        })()
     };
     
     console.log('Updated global regionStyles:', window.regionStyles);
@@ -2484,8 +2788,8 @@ function applyStylesToRegions(catalogName, styles) {
         // If we have overlay data, update the styles for immediate visual feedback
         if (window.catalogDataForOverlay && Array.isArray(window.catalogDataForOverlay)) {
         console.log('Updating overlay data with new styles...');
-        const overlayColorCoder = styles.colorCodeColumn
-            ? buildColorCoder(window.catalogDataForOverlay, styles.colorCodeColumn, styles.colorMapName)
+        const overlayColorCoder = nextStyle.colorCodeColumn
+            ? buildColorCoder(window.catalogDataForOverlay, nextStyle.colorCodeColumn, nextStyle.colorMapName, nextStyle)
             : null;
         // Apply styles to each object in the overlay
         window.catalogDataForOverlay.forEach((obj) => {
@@ -2497,7 +2801,7 @@ function applyStylesToRegions(catalogName, styles) {
                 } catch (_) {}
             let colorApplied = false;
             if (overlayColorCoder) {
-                const colorHex = overlayColorCoder(obj[styles.colorCodeColumn]);
+                const colorHex = overlayColorCoder(coerceScalarValue(getRecordValue(obj, nextStyle.colorCodeColumn)));
                 if (colorHex) {
                     const opacityVal = styles.opacity || obj.opacity || 0.8;
                     obj.color = colorHex;
@@ -2535,6 +2839,9 @@ function applyStylesToRegions(catalogName, styles) {
             console.log('Triggering DOM overlay update...');
             updateOverlay();
         }
+        try {
+            if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
+        } catch (_) {}
     }
 
     console.log('=== applyStylesToRegions END ===');
@@ -2715,6 +3022,30 @@ function setCatalogOverlayOpacity(opacity) {
         // Preserve color-coding config if present (do not clear on opacity-only changes)
         colorCodeColumn: baseStyles.colorCodeColumn,
         colorMapName: baseStyles.colorMapName,
+        colorCodeMin: baseStyles.colorCodeMin,
+        colorCodeMax: baseStyles.colorCodeMax,
+        catalogLabelColumns: Array.isArray(baseStyles.catalogLabelColumns) ? baseStyles.catalogLabelColumns.slice() : [],
+        catalogLabelTextColor: (typeof baseStyles.catalogLabelTextColor === 'string' && baseStyles.catalogLabelTextColor) ? baseStyles.catalogLabelTextColor : '#f8fafc',
+        catalogLabelPosition: normalizeCatalogLabelPositionValue(baseStyles.catalogLabelPosition),
+        catalogLabelsVisible: (baseStyles.catalogLabelsVisible !== false),
+        catalogLabelShowColumnNames: (baseStyles.catalogLabelShowColumnNames === true),
+        catalogLabelNumberFormat: (typeof baseStyles.catalogLabelNumberFormat === 'string' && baseStyles.catalogLabelNumberFormat)
+            ? baseStyles.catalogLabelNumberFormat
+            : 'auto',
+        catalogLabelDecimals: (() => {
+            const d = parseInt(baseStyles.catalogLabelDecimals, 10);
+            return Number.isFinite(d) ? Math.max(0, Math.min(10, d)) : 2;
+        })(),
+        catalogLabelRenderStyle: (() => {
+            let s = String(baseStyles.catalogLabelRenderStyle || 'halo').toLowerCase();
+            if (s === 'box') s = 'pill';
+            if (s === 'plain') s = 'halo';
+            const ok = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+            return ok.has(s) ? s : 'halo';
+        })(),
+        catalogLabelBackgroundColor: (typeof baseStyles.catalogLabelBackgroundColor === 'string' && baseStyles.catalogLabelBackgroundColor)
+            ? baseStyles.catalogLabelBackgroundColor
+            : '#1f2937',
         opacity: clamped
     };
     try {
@@ -3332,14 +3663,15 @@ function loadCatalogBinary(catalogName, styles = null) {
             throw new Error('No catalog data found or invalid format.');
         }
         
-        // If color-coding needs a column not included in the binary payload,
-        // fetch it via /catalog-column-values/ and attach to raw records before styling.
+        // If color-coding or on-image labels need columns not included in the binary payload,
+        // fetch via /catalog-column-values/ and attach to raw records before styling.
         try {
-            if (styles && styles.colorCodeColumn) {
-                await __attachColumnValuesToRawRecords(catalogNameForApi, catalogData.records, [styles.colorCodeColumn]);
+            const colsAttach = __columnsToAttachForOverlayStyles(styles);
+            if (colsAttach.length) {
+                await __attachColumnValuesToRawRecords(catalogNameForApi, catalogData.records, colsAttach);
             }
         } catch (e) {
-            console.warn('[loadCatalogBinary] Failed to fetch color-code column values; color coding may be disabled.', e);
+            console.warn('[loadCatalogBinary] Failed to fetch extra column values; color coding / labels may be incomplete.', e);
         }
 
         // Store the complete catalog data and build styled overlay entries
@@ -3603,14 +3935,15 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
         
         // Parse the complete buffer
         const catalogData = parseBinaryCatalog(fullBuffer);
-        // Attach color-coding columns if needed (binary payload may omit them)
+        // Attach color-coding / label columns if needed (binary payload may omit them)
         try {
-            if (styles && styles.colorCodeColumn) {
+            const colsAttach = __columnsToAttachForOverlayStyles(styles);
+            if (colsAttach.length) {
                 const apiName = String(catalogName || '').replace(/^catalogs\//, '').split('/').pop().split('\\').pop();
-                await __attachColumnValuesToRawRecords(apiName, catalogData.records, [styles.colorCodeColumn]);
+                await __attachColumnValuesToRawRecords(apiName, catalogData.records, colsAttach);
             }
         } catch (e) {
-            console.warn('[loadCatalogBinaryStream] Failed to fetch color-code column values; color coding may be disabled.', e);
+            console.warn('[loadCatalogBinaryStream] Failed to fetch extra column values; color coding / labels may be incomplete.', e);
         }
         
         // Process and display as before
@@ -3666,7 +3999,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
             : 5;
         const transparentFill = !(styles && styles.backgroundColor && styles.backgroundColor !== 'transparent');
         const colorCoder = (styles && styles.colorCodeColumn)
-            ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName)
+            ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName, styles)
             : null;
 
         for (let i = 0; i < records.length; i += 1) {
@@ -3726,7 +4059,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
         }
     } catch (_) {}
     const colorCoder = (styles && styles.colorCodeColumn)
-        ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName)
+        ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName, styles)
         : null;
     if (colorCoder) {
         try {
@@ -3893,13 +4226,15 @@ function showStyleCustomizerPopup(catalogName) {
         }
     }
 
-    // Default styles
+    // Default styles (merge with current globals so colormap / colors match the active catalog)
+    const wrsInit = (window.regionStyles && typeof window.regionStyles === 'object') ? window.regionStyles : {};
     const regionStyles = {
-        borderColor: '#FF0000',
-        backgroundColor: 'transparent',
-        borderWidth: 2,
-        opacity: 0.8,
-        shape: (window.regionStyles && window.regionStyles.shape) ? window.regionStyles.shape : 'circle',
+        borderColor: wrsInit.borderColor || '#FF0000',
+        backgroundColor: wrsInit.backgroundColor ?? 'transparent',
+        borderWidth: typeof wrsInit.borderWidth === 'number' ? wrsInit.borderWidth : 2,
+        opacity: typeof wrsInit.opacity === 'number' ? wrsInit.opacity : 0.8,
+        shape: wrsInit.shape || 'circle',
+        colorMapName: wrsInit.colorMapName || REGION_COLOR_MAPS[0].value
     };
 
     // Extract the API-compatible catalog name (remove catalogs/ prefix if present)
@@ -3982,6 +4317,10 @@ function showStyleCustomizerPopup(catalogName) {
         position: 'fixed', top: '50%', left: '50%', transform: baseTransform,
         backgroundColor: '#333', border: '1px solid #555', borderRadius: '5px',
         padding: '15px', zIndex: '3600', width: '700px',
+        maxHeight: 'calc(100vh - 24px)',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
         boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)', boxSizing: 'border-box'
     });
     
@@ -4015,7 +4354,7 @@ function showStyleCustomizerPopup(catalogName) {
 
     const title = document.createElement('h3');
     title.innerHTML = 'Region Style Settings';
-    Object.assign(title.style, { margin: '0 0 15px 0', color: '#fff', fontFamily: 'Arial, sans-serif', fontSize: '18px', fontWeight: 'bold', borderBottom: '1px solid #555', paddingBottom: '10px', cursor: 'grab' });
+    Object.assign(title.style, { margin: '0 0 15px 0', color: '#fff', fontFamily: 'Arial, sans-serif', fontSize: '18px', fontWeight: 'bold', borderBottom: '1px solid #555', paddingBottom: '10px', cursor: 'grab', flex: '0 0 auto' });
 
     const catalogNameDisplay = document.createElement('div');
     catalogNameDisplay.textContent = `Catalog: ${catalogNameForApi}`; // Show the API name to user
@@ -4048,12 +4387,29 @@ function showStyleCustomizerPopup(catalogName) {
     closeButton.addEventListener('click', () => { try { animateOut(); } catch (_) { if (popup && popup.parentNode) popup.parentNode.removeChild(popup); } });
 
     const columnsContainer = document.createElement('div');
-    Object.assign(columnsContainer.style, { display: 'flex', flexDirection: 'row', gap: '20px', marginBottom: '15px' });
+    Object.assign(columnsContainer.style, {
+        display: 'flex',
+        flexDirection: 'row',
+        gap: '20px',
+        marginBottom: '15px',
+        flex: '1 1 auto',
+        minHeight: '0',
+        maxHeight: 'calc(100vh - 230px)',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        paddingRight: '6px'
+    });
 
     const leftColumn = document.createElement('div');
     Object.assign(leftColumn.style, { flex: '1', display: 'flex', flexDirection: 'column', gap: '15px' });
     const rightColumn = document.createElement('div');
-    Object.assign(rightColumn.style, { flex: '1', display: 'flex', flexDirection: 'column', gap: '15px' });
+    Object.assign(rightColumn.style, {
+        flex: '1',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '15px',
+        minWidth: '0'
+    });
     
     function createFieldSet(legendText) {
         const fieldset = document.createElement('fieldset');
@@ -4096,6 +4452,24 @@ function showStyleCustomizerPopup(catalogName) {
         container.appendChild(dropdownList);
         container.appendChild(hiddenSelect);
         return { container, searchInput, dropdownList, hiddenSelect };
+    }
+
+    function bindSearchableDropdownOption(dropdown, value, text) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        dropdown.hiddenSelect.appendChild(option);
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.textContent = text;
+        item.dataset.value = value;
+        item.addEventListener('click', () => {
+            dropdown.hiddenSelect.value = value;
+            dropdown.searchInput.value = text;
+            dropdown.dropdownList.style.display = 'none';
+            dropdown.hiddenSelect.dispatchEvent(new Event('change'));
+        });
+        dropdown.dropdownList.appendChild(item);
     }
     
     function createStyledDropdown(label, options) {
@@ -4365,6 +4739,157 @@ function showStyleCustomizerPopup(catalogName) {
     coordsFieldSet.appendChild(sizeInfo);
     coordsFieldSet.appendChild(radiusGroup);
     coordsFieldSet.appendChild(colorCodeDropdown.container);
+
+    const regionLabelsWrap = document.createElement('div');
+    Object.assign(regionLabelsWrap.style, { marginTop: '10px', width: '100%', boxSizing: 'border-box' });
+    const regionLabelsTitle = document.createElement('div');
+    regionLabelsTitle.textContent = 'Region labels';
+    Object.assign(regionLabelsTitle.style, {
+        display: 'block',
+        marginBottom: '4px',
+        color: '#aaa',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '13px',
+        fontWeight: '600'
+    });
+    const regionLabelsRowsHost = document.createElement('div');
+    Object.assign(regionLabelsRowsHost.style, { display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' });
+    const addRegionLabelColBtn = document.createElement('button');
+    addRegionLabelColBtn.type = 'button';
+    addRegionLabelColBtn.textContent = '+ Add label column';
+    Object.assign(addRegionLabelColBtn.style, {
+        alignSelf: 'flex-start',
+        padding: '6px 12px',
+        border: '1px solid #555',
+        borderRadius: '4px',
+        backgroundColor: '#3a3a3a',
+        color: '#e5e5e5',
+        cursor: 'pointer',
+        fontSize: '12px',
+        fontFamily: 'Arial, sans-serif'
+    });
+
+    const regionLabelDropdownRows = [];
+    let cachedCatalogColumnsForPopup = [];
+
+    function syncRegionLabelColumnsFromGlobals() {
+        try {
+            window.regionStyles = window.regionStyles || {};
+            const cols = [];
+            regionLabelDropdownRows.forEach(({ dropdown }) => {
+                const v = String(dropdown.hiddenSelect.value || '').trim();
+                if (v && cols.indexOf(v) === -1) cols.push(v);
+            });
+            window.regionStyles.catalogLabelColumns = cols;
+        } catch (_) {}
+    }
+
+    function refreshRegionLabelRemoveVisibility() {
+        regionLabelDropdownRows.forEach(({ removeBtn }) => {
+            removeBtn.style.visibility = regionLabelDropdownRows.length > 1 ? 'visible' : 'hidden';
+        });
+    }
+
+    function repopulateAllRegionLabelDropdowns() {
+        const prev = regionLabelDropdownRows.map(({ dropdown }) => String(dropdown.hiddenSelect.value || ''));
+        const cols = cachedCatalogColumnsForPopup || [];
+        regionLabelDropdownRows.forEach(({ dropdown }, idx) => {
+            dropdown.dropdownList.innerHTML = '';
+            dropdown.hiddenSelect.innerHTML = '';
+            bindSearchableDropdownOption(dropdown, '', 'None');
+            cols.forEach((colName) => bindSearchableDropdownOption(dropdown, colName, colName));
+            const want = prev[idx] || '';
+            const ok = want && Array.from(dropdown.hiddenSelect.options).some((o) => o.value === want);
+            const val = ok ? want : '';
+            dropdown.hiddenSelect.value = val;
+            const o0 = Array.from(dropdown.hiddenSelect.options).find((o) => o.value === val);
+            dropdown.searchInput.value = o0 ? o0.textContent : 'None';
+        });
+    }
+
+    function onAnyRegionLabelChange(changedDropdown) {
+        syncRegionLabelColumnsFromGlobals();
+        const v = String(changedDropdown.hiddenSelect.value || '').trim();
+        const finish = () => {
+            try {
+                if (typeof canvasUpdateOverlay === 'function') canvasUpdateOverlay();
+            } catch (_) {}
+        };
+        if (v && typeof __attachColumnValuesToRawRecords === 'function'
+            && Array.isArray(window.catalogDataForOverlay) && window.catalogDataForOverlay.length) {
+            (async () => {
+                try {
+                    await __attachColumnValuesToRawRecords(catalogNameForApi, window.catalogDataForOverlay, [v]);
+                } catch (_) {}
+                finish();
+            })();
+        } else {
+            finish();
+        }
+    }
+
+    function addRegionLabelRow(prefill) {
+        const rowWrap = document.createElement('div');
+        Object.assign(rowWrap.style, { display: 'flex', alignItems: 'flex-start', gap: '6px', width: '100%' });
+        const dd = createSearchableDropdown('Label column:');
+        dd.container.style.flex = '1';
+        dd.container.style.minWidth = '0';
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.textContent = '×';
+        rm.title = 'Remove this label column';
+        Object.assign(rm.style, {
+            flex: '0 0 auto',
+            width: '30px',
+            height: '32px',
+            marginTop: '22px',
+            border: '1px solid #555',
+            borderRadius: '4px',
+            background: '#444',
+            color: '#fff',
+            cursor: 'pointer',
+            fontSize: '16px',
+            lineHeight: '1',
+            padding: '0'
+        });
+        rm.addEventListener('click', () => {
+            if (regionLabelDropdownRows.length <= 1) return;
+            rowWrap.remove();
+            const ix = regionLabelDropdownRows.findIndex((x) => x.rowWrap === rowWrap);
+            if (ix >= 0) regionLabelDropdownRows.splice(ix, 1);
+            syncRegionLabelColumnsFromGlobals();
+            refreshRegionLabelRemoveVisibility();
+            try {
+                if (typeof canvasUpdateOverlay === 'function') canvasUpdateOverlay();
+            } catch (_) {}
+        });
+        rowWrap.appendChild(dd.container);
+        rowWrap.appendChild(rm);
+        regionLabelsRowsHost.appendChild(rowWrap);
+        regionLabelDropdownRows.push({ rowWrap, dropdown: dd, removeBtn: rm });
+        dd.hiddenSelect.addEventListener('change', () => onAnyRegionLabelChange(dd));
+        repopulateAllRegionLabelDropdowns();
+        if (prefill) {
+            const p = String(prefill);
+            if (Array.from(dd.hiddenSelect.options).some((o) => o.value === p)) {
+                dd.hiddenSelect.value = p;
+                dd.searchInput.value = p;
+            }
+        }
+        refreshRegionLabelRemoveVisibility();
+        return dd;
+    }
+
+    addRegionLabelColBtn.addEventListener('click', () => {
+        addRegionLabelRow('');
+        syncRegionLabelColumnsFromGlobals();
+    });
+
+    regionLabelsWrap.appendChild(regionLabelsTitle);
+    regionLabelsWrap.appendChild(regionLabelsRowsHost);
+    regionLabelsWrap.appendChild(addRegionLabelColBtn);
+    coordsFieldSet.appendChild(regionLabelsWrap);
+
     leftColumn.appendChild(coordsFieldSet);
 
     const styleFieldSet = createFieldSet('Region Style');
@@ -4455,6 +4980,105 @@ function showStyleCustomizerPopup(catalogName) {
         setTimeout(() => colorMapDropdown.hiddenSelect.dispatchEvent(new Event('change')), 0);
     } catch (_) {}
     styleFieldSet.appendChild(colorMapDropdown.container);
+
+    let regionStyleScreenColorBarWrap = null;
+    let regionStyleScreenColorBarControl = null;
+    if (typeof window.createScreenColorBarControls === 'function') {
+        regionStyleScreenColorBarWrap = document.createElement('div');
+        regionStyleScreenColorBarWrap.style.display = 'none';
+        Object.assign(regionStyleScreenColorBarWrap.style, { marginTop: '12px', width: '100%', boxSizing: 'border-box' });
+        const regionStyleScreenColorBarHeading = document.createElement('div');
+        regionStyleScreenColorBarHeading.textContent = 'Catalog legend (screen)';
+        Object.assign(regionStyleScreenColorBarHeading.style, {
+            display: 'block',
+            marginBottom: '6px',
+            color: '#aaa',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '13px'
+        });
+        regionStyleScreenColorBarWrap.appendChild(regionStyleScreenColorBarHeading);
+        regionStyleScreenColorBarControl = window.createScreenColorBarControls({
+            idPrefix: 'region-style',
+            defaultLeftWhenEnabling: true,
+            bindCatalog: true
+        });
+        regionStyleScreenColorBarWrap.appendChild(regionStyleScreenColorBarControl);
+        styleFieldSet.appendChild(regionStyleScreenColorBarWrap);
+    }
+
+    const codeColumnRangeWrap = document.createElement('div');
+    codeColumnRangeWrap.style.display = 'none';
+    Object.assign(codeColumnRangeWrap.style, { marginTop: '10px', width: '100%', boxSizing: 'border-box' });
+    const codeRangeTitle = document.createElement('div');
+    codeRangeTitle.textContent = 'Color column scale (numeric)';
+    Object.assign(codeRangeTitle.style, {
+        display: 'block',
+        marginBottom: '6px',
+        color: '#aaa',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '13px'
+    });
+    codeColumnRangeWrap.appendChild(codeRangeTitle);
+    const codeRangeHint = document.createElement('div');
+    codeRangeHint.textContent = 'Optional. Blank min/max uses the data range of the Color Code column.';
+    Object.assign(codeRangeHint.style, {
+        fontSize: '11px',
+        color: '#888',
+        marginBottom: '8px',
+        fontFamily: 'Arial, sans-serif'
+    });
+    codeColumnRangeWrap.appendChild(codeRangeHint);
+    const mkCodeRangeRow = (labelText, inp) => {
+        const row = document.createElement('div');
+        Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' });
+        const lab = document.createElement('label');
+        lab.textContent = labelText;
+        Object.assign(lab.style, {
+            flex: '0 0 148px',
+            color: '#c5c5ce',
+            fontSize: '12px',
+            fontFamily: 'Arial, sans-serif'
+        });
+        Object.assign(inp.style, { ...inputStyle, flex: '1', minWidth: '0' });
+        row.appendChild(lab);
+        row.appendChild(inp);
+        return row;
+    };
+    const codeColumnMinInput = document.createElement('input');
+    codeColumnMinInput.type = 'text';
+    codeColumnMinInput.autocomplete = 'off';
+    codeColumnMinInput.placeholder = 'auto';
+    const codeColumnMaxInput = document.createElement('input');
+    codeColumnMaxInput.type = 'text';
+    codeColumnMaxInput.autocomplete = 'off';
+    codeColumnMaxInput.placeholder = 'auto';
+    if (Number.isFinite(wrsInit.colorCodeMin)) codeColumnMinInput.value = String(wrsInit.colorCodeMin);
+    if (Number.isFinite(wrsInit.colorCodeMax)) codeColumnMaxInput.value = String(wrsInit.colorCodeMax);
+    codeColumnRangeWrap.appendChild(mkCodeRangeRow('Min value:', codeColumnMinInput));
+    codeColumnRangeWrap.appendChild(mkCodeRangeRow('Max value:', codeColumnMaxInput));
+    styleFieldSet.appendChild(codeColumnRangeWrap);
+
+    function parseOptionalFloatStr(s) {
+        const t = String(s ?? '').trim();
+        if (t === '') return null;
+        const v = parseFloat(t);
+        return Number.isFinite(v) ? v : null;
+    }
+    function applyLiveColorCodingFromPopup() {
+        const has = !!colorCodeDropdown.hiddenSelect.value;
+        window.regionStyles = window.regionStyles || {};
+        if (!has) {
+            if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
+            return;
+        }
+        window.regionStyles.colorCodeColumn = colorCodeDropdown.hiddenSelect.value;
+        window.regionStyles.colorMapName = colorMapDropdown.hiddenSelect.value || REGION_COLOR_MAPS[0].value;
+        window.regionStyles.colorCodeMin = parseOptionalFloatStr(codeColumnMinInput.value);
+        window.regionStyles.colorCodeMax = parseOptionalFloatStr(codeColumnMaxInput.value);
+        refreshCatalogOverlayColorCoding();
+        if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
+    }
+
     const borderWidthContainer = document.createElement('div');
     Object.assign(borderWidthContainer.style, { display: 'flex', alignItems: 'center', gap: '10px' });
     const borderWidthSlider = document.createElement('input');
@@ -4529,26 +5153,10 @@ function showStyleCustomizerPopup(catalogName) {
             })
             .then(data => {
                 const allColumns = data.columns || [];
+                cachedCatalogColumnsForPopup = allColumns.slice();
                 dropdowns.forEach(dd => dd.dropdownList.innerHTML = '');
 
-                const addOption = (dropdown, value, text) => {
-                    const option = document.createElement('option');
-                    option.value = value;
-                    option.textContent = text;
-                    dropdown.hiddenSelect.appendChild(option);
-
-                    const item = document.createElement('div');
-                    item.className = 'dropdown-item';
-                    item.textContent = text;
-                    item.dataset.value = value;
-                    item.addEventListener('click', () => {
-                        dropdown.hiddenSelect.value = value;
-                        dropdown.searchInput.value = text;
-                        dropdown.dropdownList.style.display = 'none';
-                        dropdown.hiddenSelect.dispatchEvent(new Event('change'));
-                    });
-                    dropdown.dropdownList.appendChild(item);
-                };
+                const addOption = (dropdown, value, text) => bindSearchableDropdownOption(dropdown, value, text);
 
             addOption(sizeDropdown, '', 'No size column');
             addOption(colorCodeDropdown, '', 'No color coding');
@@ -4591,6 +5199,23 @@ function showStyleCustomizerPopup(catalogName) {
                 sizeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
             }
 
+                try {
+                    window.regionStyles = window.regionStyles || {};
+                    if (!Array.isArray(window.regionStyles.catalogLabelColumns)) window.regionStyles.catalogLabelColumns = [];
+                } catch (_) {}
+                const savedLabels = (Array.isArray(window.regionStyles.catalogLabelColumns)
+                    ? window.regionStyles.catalogLabelColumns.map(String).filter(Boolean)
+                    : []);
+                regionLabelsRowsHost.innerHTML = '';
+                regionLabelDropdownRows.length = 0;
+                if (savedLabels.length) {
+                    savedLabels.forEach((c) => addRegionLabelRow(c));
+                } else {
+                    addRegionLabelRow('');
+                }
+                repopulateAllRegionLabelDropdowns();
+                syncRegionLabelColumnsFromGlobals();
+
             colorCodeDropdown.searchInput.value = 'No color coding';
             colorCodeDropdown.hiddenSelect.value = '';
             colorCodeDropdown.hiddenSelect.dispatchEvent(new Event('change'));
@@ -4600,6 +5225,12 @@ function showStyleCustomizerPopup(catalogName) {
                 dropdowns.forEach(dd => {
                     dd.dropdownList.innerHTML = '<div class="dropdown-item">Error loading</div>';
                 });
+                try {
+                    cachedCatalogColumnsForPopup = [];
+                    regionLabelsRowsHost.innerHTML = '';
+                    regionLabelDropdownRows.length = 0;
+                    addRegionLabelRow('');
+                } catch (_) {}
             });
     }
     
@@ -4618,7 +5249,14 @@ function showStyleCustomizerPopup(catalogName) {
     colorCodeDropdown.hiddenSelect.addEventListener('change', () => {
         updateColorModeUI();
     });
-    colorMapDropdown.hiddenSelect.addEventListener('change', updatePreview);
+    colorMapDropdown.hiddenSelect.addEventListener('change', () => {
+        updatePreview();
+        applyLiveColorCodingFromPopup();
+    });
+    [codeColumnMinInput, codeColumnMaxInput].forEach((inp) => {
+        inp.addEventListener('change', applyLiveColorCodingFromPopup);
+        inp.addEventListener('blur', applyLiveColorCodingFromPopup);
+    });
     updateColorModeUI();
     
     function updateColorModeUI() {
@@ -4631,7 +5269,16 @@ function showStyleCustomizerPopup(catalogName) {
         });
         transparentCheckbox.disabled = hasColorCode;
         colorMapDropdown.container.style.display = hasColorCode ? '' : 'none';
+        if (regionStyleScreenColorBarWrap) {
+            regionStyleScreenColorBarWrap.style.display = hasColorCode ? '' : 'none';
+            if (hasColorCode && regionStyleScreenColorBarControl && typeof regionStyleScreenColorBarControl.syncFromGlobals === 'function') {
+                regionStyleScreenColorBarControl.syncFromGlobals();
+            }
+        }
+        codeColumnRangeWrap.style.display = hasColorCode ? '' : 'none';
         updatePreview();
+        if (hasColorCode) applyLiveColorCodingFromPopup();
+        else if (typeof window.updateScreenColorBar === 'function') window.updateScreenColorBar();
     }
 
     function updatePreview() {
@@ -4705,7 +5352,7 @@ function showStyleCustomizerPopup(catalogName) {
     [borderColorInput, bgColorInput, transparentCheckbox, borderWidthSlider, opacitySlider].forEach(el => el.addEventListener('input', updatePreview));
 
     const actionsContainer = document.createElement('div');
-    Object.assign(actionsContainer.style, { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '15px', borderTop: '1px solid #555' });
+    Object.assign(actionsContainer.style, { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '15px', borderTop: '1px solid #555', flex: '0 0 auto' });
     
     const viewCatalogButton = document.createElement('button');
     viewCatalogButton.textContent = 'View Catalog';
@@ -4788,6 +5435,34 @@ function showStyleCustomizerPopup(catalogName) {
         newStyles.colorCodeColumn = colorCodeDropdown.hiddenSelect.value || null;
         if (newStyles.colorCodeColumn) {
             newStyles.colorMapName = colorMapDropdown.hiddenSelect.value || REGION_COLOR_MAPS[0].value;
+            newStyles.colorCodeMin = parseOptionalFloatStr(codeColumnMinInput.value);
+            newStyles.colorCodeMax = parseOptionalFloatStr(codeColumnMaxInput.value);
+        }
+        try {
+            syncRegionLabelColumnsFromGlobals();
+            const labelCols = Array.isArray(window.regionStyles.catalogLabelColumns)
+                ? window.regionStyles.catalogLabelColumns.map(String).filter(Boolean)
+                : [];
+            newStyles.catalogLabelColumns = labelCols.slice();
+            window.regionStyles = window.regionStyles || {};
+            window.regionStyles.catalogLabelColumns = labelCols.slice();
+            try {
+                newStyles.catalogLabelTextColor = window.regionStyles.catalogLabelTextColor || '#f8fafc';
+                newStyles.catalogLabelPosition = normalizeCatalogLabelPositionValue(window.regionStyles.catalogLabelPosition);
+                newStyles.catalogLabelsVisible = (window.regionStyles.catalogLabelsVisible !== false);
+                newStyles.catalogLabelShowColumnNames = (window.regionStyles.catalogLabelShowColumnNames === true);
+                newStyles.catalogLabelNumberFormat = window.regionStyles.catalogLabelNumberFormat || 'auto';
+                const d = parseInt(window.regionStyles.catalogLabelDecimals, 10);
+                newStyles.catalogLabelDecimals = Number.isFinite(d) ? Math.max(0, Math.min(10, d)) : 2;
+                let rsApply = String(window.regionStyles.catalogLabelRenderStyle || 'halo').toLowerCase();
+                if (rsApply === 'box') rsApply = 'pill';
+                if (rsApply === 'plain') rsApply = 'halo';
+                const okApply = new Set(['halo', 'shadow', 'pill', 'glass', 'outline', 'glow']);
+                newStyles.catalogLabelRenderStyle = okApply.has(rsApply) ? rsApply : 'halo';
+                newStyles.catalogLabelBackgroundColor = window.regionStyles.catalogLabelBackgroundColor || '#1f2937';
+            } catch (_) {}
+        } catch (_) {
+            newStyles.catalogLabelColumns = [];
         }
         
         console.log('[Apply Styles] Detailed style values:');
@@ -5399,6 +6074,8 @@ function clearAllCatalogs() {
 
     // Remove catalog controls panel (best-effort)
     try { if (typeof removeCatalogOverlayControls === 'function') removeCatalogOverlayControls(true); } catch (_) {}
+
+    nelouraHideCatalogLegendIfNoOverlays();
 
     console.log("All catalogs cleared.");
 }

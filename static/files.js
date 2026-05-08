@@ -1729,18 +1729,24 @@ function createItemElement(item, currentPath) {
     const contentContainer = document.createElement('div');
     Object.assign(contentContainer.style, {
         display: 'flex', flexDirection: 'column', justifyContent: 'center',
-        flexGrow: '1', overflow: 'hidden', marginRight: '5px'
+        flexGrow: '1', minWidth: '0', marginRight: '5px'
     });
 
     const nameElement = document.createElement('div');
     nameElement.className = 'file-name';
     nameElement.title = item.name;
     nameElement.style.fontWeight = 'bold';
-    Object.assign(nameElement.style, { display: 'flex', alignItems: 'center', gap: '8px' });
+    Object.assign(nameElement.style, { display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0' });
 
     const nameText = document.createElement('div');
     nameText.textContent = item.name;
-    Object.assign(nameText.style, { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+    Object.assign(nameText.style, {
+        flex: '1 1 auto',
+        minWidth: '0',
+        whiteSpace: 'normal',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word'
+    });
     nameElement.appendChild(nameText);
     contentContainer.appendChild(nameElement);
 
@@ -2349,7 +2355,7 @@ function createFileBrowserContainer() {
         position: 'fixed', top: '0', right: '-520px', width: '520px', height: '100vh',
         backgroundColor: 'rgba(0, 0, 0, 0.9)', color: 'white', padding: '0',
         boxSizing: 'border-box', boxShadow: '-2px 0 10px rgba(0, 0, 0, 0.5)',
-        zIndex: '10000', transition: 'transform 0.3s ease-in-out',overflowX: 'hidden',
+        zIndex: '65080', transition: 'transform 0.3s ease-in-out',overflowX: 'hidden',
         overflowY: 'auto', fontFamily: 'Raleway, Arial, sans-serif'
     });
 

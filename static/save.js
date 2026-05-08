@@ -239,6 +239,120 @@
         }
     }
 
+    function computeExportUnionRect(targetWin, containerRect) {
+        let left = containerRect.left;
+        let top = containerRect.top;
+        let right = containerRect.right;
+        let bottom = containerRect.bottom;
+        try {
+            const bars = [
+                { visible: !!targetWin.screenColorBarVisible, id: 'neloura-screen-colorbar' },
+                { visible: !!(targetWin.catalogScreenColorBarVisible && targetWin.regionStyles && targetWin.regionStyles.colorCodeColumn), id: 'neloura-catalog-colorbar' }
+            ];
+            for (const item of bars) {
+                if (!item.visible) continue;
+                const bar = targetWin.document.getElementById(item.id);
+                if (bar) {
+                    const cs = targetWin.getComputedStyle(bar);
+                    if (cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity || '1') > 0.02) {
+                        const r = bar.getBoundingClientRect();
+                        if (r.width > 2 && r.height > 2) {
+                            left = Math.min(left, r.left);
+                            top = Math.min(top, r.top);
+                            right = Math.max(right, r.right);
+                            bottom = Math.max(bottom, r.bottom);
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
+        return {
+            left,
+            top,
+            right,
+            bottom,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top)
+        };
+    }
+
+    function drawScreenColorBarFromDom(targetWin, ctx, exportRect, dpr) {
+        try {
+            const ox = exportRect.left;
+            const oy = exportRect.top;
+
+            const drawTextEl = (el, opts = {}) => {
+                if (!el) return;
+                const t = (el.textContent || '').trim();
+                if (!t) return;
+                const r = el.getBoundingClientRect();
+                const st = targetWin.getComputedStyle(el);
+                if (st.display === 'none' || r.width < 1 || r.height < 1) return;
+                const rawAlign = String(opts.align || st.textAlign || 'left').toLowerCase();
+                const align = (rawAlign === 'center')
+                    ? 'center'
+                    : ((rawAlign === 'right' || rawAlign === 'end') ? 'right' : 'left');
+                const xCss = align === 'center'
+                    ? (r.left + r.width / 2)
+                    : (align === 'right' ? r.right : r.left);
+                const x = (xCss - ox) * dpr;
+                const y = (r.top - oy) * dpr;
+                const fs = parseFloat(st.fontSize) || 11;
+                const fw = st.fontWeight && st.fontWeight !== 'normal' ? st.fontWeight : '400';
+                const fam = (st.fontFamily || 'Arial,sans-serif').split(',')[0].replace(/['"]/g, '').trim();
+                ctx.save();
+                ctx.font = `${fw} ${Math.round(fs * dpr)}px ${fam || 'sans-serif'}`;
+                ctx.fillStyle = st.color || '#eaeaea';
+                ctx.textBaseline = 'top';
+                ctx.textAlign = align;
+                if (ctx.measureText(t).width > 0) {
+                    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+                    ctx.shadowBlur = 3 * dpr;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 1 * dpr;
+                    ctx.fillText(t, x, y);
+                }
+                ctx.restore();
+            };
+
+            const drawOneBar = (id, visible) => {
+                if (!visible) return;
+                const root = targetWin.document.getElementById(id);
+                if (!root) return;
+                const cs = targetWin.getComputedStyle(root);
+                if (cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.05) return;
+                const rr = root.getBoundingClientRect();
+                const isHorizontalBar = rr.width > rr.height * 2;
+
+                const stripCv = root.querySelector('.neloura-cbar-strip canvas');
+                if (stripCv && stripCv.width > 0 && stripCv.height > 0) {
+                    const sr = stripCv.getBoundingClientRect();
+                    const dx = (sr.left - ox) * dpr;
+                    const dy = (sr.top - oy) * dpr;
+                    const dw = sr.width * dpr;
+                    const dh = sr.height * dpr;
+                    if (dw > 1 && dh > 1) {
+                        ctx.drawImage(stripCv, 0, 0, stripCv.width, stripCv.height, dx, dy, dw, dh);
+                        ctx.save();
+                        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                        ctx.lineWidth = Math.max(1, dpr);
+                        ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+                        ctx.restore();
+                    }
+                }
+
+                drawTextEl(root.querySelector('.neloura-cbar-unit'), { align: 'center' });
+                root.querySelectorAll('.neloura-cbar-ticks > div').forEach(drawTextEl);
+            };
+
+            drawOneBar('neloura-screen-colorbar', !!targetWin.screenColorBarVisible);
+            drawOneBar(
+                'neloura-catalog-colorbar',
+                !!(targetWin.catalogScreenColorBarVisible && targetWin.regionStyles && targetWin.regionStyles.colorCodeColumn)
+            );
+        } catch (_) {}
+    }
+
     function isVisibleCanvas(el) {
         const style = getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.01) return false;
@@ -261,8 +375,9 @@
         return true;
       }
 
-    function drawAllViewerCanvases(targetWin, container, ctx, dpr) {
+    function drawAllViewerCanvases(targetWin, container, ctx, dpr, originRect) {
         const containerRect = container.getBoundingClientRect();
+        const ox = originRect || containerRect;
         const canvases = Array.from(container.querySelectorAll('canvas')).filter(isVisibleCanvas);
 
         let drawerCanvas = null;
@@ -277,8 +392,8 @@
 
         for (const c of list) {
             const r = c.getBoundingClientRect();
-            const dx = (r.left - containerRect.left) * dpr;
-            const dy = (r.top - containerRect.top) * dpr;
+            const dx = (r.left - ox.left) * dpr;
+            const dy = (r.top - ox.top) * dpr;
             const dw = r.width * dpr;
             const dh = r.height * dpr;
             // WebGL overlay canvas may export blank with preserveDrawingBuffer=false.
@@ -312,8 +427,9 @@
         }
     }
 
-    function drawDomDots(targetWin, container, ctx, dpr) {
+    function drawDomDots(targetWin, container, ctx, dpr, originRect) {
         const containerRect = container.getBoundingClientRect();
+        const ox = originRect || containerRect;
 
         let domDots = [];
         if (Array.isArray(targetWin.catalogDots) && targetWin.catalogDots.length) {
@@ -329,8 +445,8 @@
                 if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.01) continue;
 
                 const rect = el.getBoundingClientRect();
-                const cx = (rect.left - containerRect.left + rect.width / 2) * dpr;
-                const cy = (rect.top - containerRect.top + rect.height / 2) * dpr;
+                const cx = (rect.left - ox.left + rect.width / 2) * dpr;
+                const cy = (rect.top - ox.top + rect.height / 2) * dpr;
                 const r = Math.max(1, (Math.min(rect.width, rect.height) / 2) * dpr);
 
                 const fill = style.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)'
@@ -375,8 +491,9 @@
         }
     }
 
-    async function drawZoomInsets(targetWin, container, ctx, dpr) {
+    async function drawZoomInsets(targetWin, container, ctx, dpr, originRect) {
         const containerRect = container.getBoundingClientRect();
+        const ox = originRect || containerRect;
         const insets = Array.from(container.querySelectorAll('.region-zoom-inset[data-zoom-inset="true"]'));
         if (!insets.length) return;
 
@@ -412,8 +529,8 @@
         for (const inset of insets) {
             try {
                 const r = inset.getBoundingClientRect();
-                const dx = (r.left - containerRect.left) * dpr;
-                const dy = (r.top - containerRect.top) * dpr;
+                const dx = (r.left - ox.left) * dpr;
+                const dy = (r.top - ox.top) * dpr;
                 const dw = r.width * dpr;
                 const dh = r.height * dpr;
                 if (!(dw > 2 && dh > 2)) continue;
@@ -489,8 +606,8 @@
                 const titleEl = inset.querySelector('[data-zoom-inset-title="true"]');
                 if (titlePill && titleEl) {
                     const pr = titlePill.getBoundingClientRect();
-                    const px = (pr.left - containerRect.left) * dpr;
-                    const py = (pr.top - containerRect.top) * dpr;
+                    const px = (pr.left - ox.left) * dpr;
+                    const py = (pr.top - ox.top) * dpr;
                     const pw = pr.width * dpr;
                     const ph = pr.height * dpr;
                     const pillBg = (() => { try { return getComputedStyle(titlePill).backgroundColor || 'rgba(20,20,20,0.55)'; } catch (_) { return 'rgba(20,20,20,0.55)'; } })();
@@ -633,23 +750,27 @@
               }
           });
 
-          const rect = container.getBoundingClientRect();
-          const dpr = computeBestExportDpr(targetWin, container, rect);
-          const outW = Math.max(1, Math.round(rect.width * dpr));
-          const outH = Math.max(1, Math.round(rect.height * dpr));
+          const containerRect = container.getBoundingClientRect();
+          const exportRect = computeExportUnionRect(targetWin, containerRect);
+          const dpr = computeBestExportDpr(targetWin, container, containerRect);
+          const outW = Math.max(1, Math.round(exportRect.width * dpr));
+          const outH = Math.max(1, Math.round(exportRect.height * dpr));
 
           const out = targetDoc.createElement('canvas');
           out.width = outW;
           out.height = outH;
           const ctx = out.getContext('2d', { willReadFrequently: true });
           ctx.imageSmoothingEnabled = false;
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, outW, outH);
 
-          drawAllViewerCanvases(targetWin, container, ctx, dpr);
-          drawDomDots(targetWin, container, ctx, dpr);
-          await drawZoomInsets(targetWin, container, ctx, dpr);
+          drawAllViewerCanvases(targetWin, container, ctx, dpr, exportRect);
+          drawDomDots(targetWin, container, ctx, dpr, exportRect);
+          await drawZoomInsets(targetWin, container, ctx, dpr, exportRect);
+          drawScreenColorBarFromDom(targetWin, ctx, exportRect, dpr);
 
           const filename = buildFilename(targetWin);
-          return { out, filename, targetDoc, restore, dpr, rect };
+          return { out, filename, targetDoc, restore, dpr, rect: exportRect };
         } catch (e) {
           console.error('Capture PNG failed:', e);
           notify('Failed to capture PNG', 'error');

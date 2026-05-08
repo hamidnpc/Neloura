@@ -65,7 +65,227 @@ function getActiveFitsPath() {
     return p;
 }
 
-function runPeakFinder(filepath, customParams = {}) {
+const PEAK_FINDER_NON_ADMIN_MAX_IMAGE_SIDE = 3000;
+
+function getPeakFinderImageSize(win = window) {
+    const readPair = (obj) => {
+        if (!obj) return null;
+        const width = Number(obj.width || obj.imageWidth || obj.naxis1 || obj.NAXIS1 || obj.x);
+        const height = Number(obj.height || obj.imageHeight || obj.naxis2 || obj.NAXIS2 || obj.y);
+        return (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)
+            ? { width: Math.round(width), height: Math.round(height) }
+            : null;
+    };
+    try {
+        const fromFits = readPair(win.fitsData);
+        if (fromFits) return fromFits;
+    } catch (_) {}
+    try {
+        const fromTiles = readPair(win.currentTileInfo);
+        if (fromTiles) return fromTiles;
+    } catch (_) {}
+    try {
+        const viewer = win.tiledViewer || win.viewer;
+        const item = viewer && viewer.world && viewer.world.getItemAt ? viewer.world.getItemAt(0) : null;
+        const size = item && item.getContentSize ? item.getContentSize() : null;
+        const fromViewer = readPair(size);
+        if (fromViewer) return fromViewer;
+    } catch (_) {}
+    return null;
+}
+
+async function isPeakFinderAdminModeEnabled() {
+    try {
+        if (typeof window.__peakFinderAdminMode === 'boolean') return window.__peakFinderAdminMode;
+        const response = await fetch('/settings/me');
+        const me = await response.json();
+        window.__peakFinderAdminMode = !!(me && me.admin);
+        return window.__peakFinderAdminMode;
+    } catch (_) {
+        window.__peakFinderAdminMode = false;
+        return false;
+    }
+}
+
+function showPeakFinderResourceLimitPopup(imageSize) {
+    try {
+        const existing = document.getElementById('peak-finder-resource-limit-popup');
+        if (existing) existing.remove();
+    } catch (_) {}
+
+    const overlay = document.createElement('div');
+    overlay.id = 'peak-finder-resource-limit-popup';
+    Object.assign(overlay.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: '70020',
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '18px',
+        boxSizing: 'border-box'
+    });
+
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+        position: 'relative',
+        width: 'min(92vw, 500px)',
+        backgroundColor: '#333',
+        border: '1px solid #555',
+        borderRadius: '5px',
+        padding: '15px',
+        boxSizing: 'border-box',
+        boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)',
+        color: '#fff',
+        fontFamily: 'Arial, sans-serif'
+    });
+
+    const body = document.createElement('div');
+    Object.assign(body.style, { padding: '0' });
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.textContent = '×';
+    Object.assign(closeButton.style, {
+        position: 'absolute',
+        top: '10px',
+        right: '10px',
+        backgroundColor: 'transparent',
+        border: 'none',
+        color: '#aaa',
+        fontSize: '20px',
+        cursor: 'pointer',
+        padding: '0',
+        width: '24px',
+        height: '24px',
+        lineHeight: '24px',
+        textAlign: 'center',
+        borderRadius: '12px'
+    });
+    closeButton.addEventListener('mouseover', () => {
+        closeButton.style.backgroundColor = '#555';
+        closeButton.style.color = '#fff';
+    });
+    closeButton.addEventListener('mouseout', () => {
+        closeButton.style.backgroundColor = 'transparent';
+        closeButton.style.color = '#aaa';
+    });
+
+    const badge = document.createElement('div');
+    badge.textContent = 'Admin mode is off';
+    Object.assign(badge.style, {
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '4px 8px',
+        borderRadius: '3px',
+        backgroundColor: '#444',
+        border: '1px solid #555',
+        color: '#ddd',
+        fontSize: '12px',
+        marginBottom: '10px'
+    });
+
+    const title = document.createElement('div');
+    title.textContent = 'Peak Finder needs more resources';
+    Object.assign(title.style, {
+        margin: '0 0 15px 0',
+        color: '#fff',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '18px',
+        fontWeight: 'normal',
+        borderBottom: '1px solid #555',
+        paddingBottom: '10px',
+        paddingRight: '28px'
+    });
+
+    const dims = imageSize ? `${imageSize.width.toLocaleString()} x ${imageSize.height.toLocaleString()} px` : 'larger than the hosted limit';
+    const message = document.createElement('p');
+    message.textContent = `This image is ${dims}. Peak Finder can use too much RAM and CPU at this size, so it cannot run here while admin mode is off.`;
+    Object.assign(message.style, {
+        margin: '0 0 12px',
+        color: '#ddd',
+        fontSize: '14px',
+        lineHeight: '1.5',
+        fontFamily: 'Arial, sans-serif'
+    });
+
+    const suggestion = document.createElement('p');
+    suggestion.textContent = 'Install Neloura locally, or use the CANFAR version, so Peak Finder can use all available RAM and CPU for this task.';
+    Object.assign(suggestion.style, {
+        margin: '0',
+        color: '#aaa',
+        fontSize: '14px',
+        lineHeight: '1.5',
+        fontFamily: 'Arial, sans-serif'
+    });
+
+    const actions = document.createElement('div');
+    Object.assign(actions.style, {
+        display: 'flex',
+        justifyContent: 'flex-end',
+        gap: '10px',
+        marginTop: '20px'
+    });
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.textContent = 'OK';
+    Object.assign(ok.style, {
+        border: 'none',
+        borderRadius: '3px',
+        padding: '8px 15px',
+        backgroundColor: '#007bff',
+        color: '#fff',
+        cursor: 'pointer',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '14px'
+    });
+    ok.addEventListener('mouseover', () => ok.style.backgroundColor = '#0056b3');
+    ok.addEventListener('mouseout', () => ok.style.backgroundColor = '#007bff');
+    const close = () => {
+        try { overlay.remove(); } catch (_) { overlay.style.display = 'none'; }
+    };
+    ok.addEventListener('click', close);
+    closeButton.addEventListener('click', close);
+    overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) close();
+    });
+    document.addEventListener('keydown', function onKey(ev) {
+        if (ev.key !== 'Escape') return;
+        document.removeEventListener('keydown', onKey);
+        close();
+    });
+
+    body.appendChild(badge);
+    body.appendChild(title);
+    body.appendChild(message);
+    body.appendChild(suggestion);
+    actions.appendChild(ok);
+    card.appendChild(closeButton);
+    card.appendChild(body);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    try { ok.focus(); } catch (_) {}
+}
+
+async function shouldBlockPeakFinderForResourceLimits() {
+    const imageSize = getPeakFinderImageSize(window);
+    if (!imageSize) return false;
+    const tooLarge = imageSize.width > PEAK_FINDER_NON_ADMIN_MAX_IMAGE_SIDE
+        || imageSize.height > PEAK_FINDER_NON_ADMIN_MAX_IMAGE_SIDE;
+    if (!tooLarge) return false;
+    const isAdmin = await isPeakFinderAdminModeEnabled();
+    if (isAdmin) return false;
+    showPeakFinderResourceLimitPopup(imageSize);
+    try {
+        showNotification('Peak Finder blocked: admin mode is off for this large image.', 4500, 'warning');
+    } catch (_) {}
+    return true;
+}
+
+async function runPeakFinder(filepath, customParams = {}) {
     console.log('[DEBUG PeakFinder] Starting job with params:', customParams);
     
 
@@ -73,6 +293,10 @@ function runPeakFinder(filepath, customParams = {}) {
 
     if (!filepath) {
         showNotification("No FITS file is currently loaded.", 3000, 'error');
+        return;
+    }
+
+    if (await shouldBlockPeakFinderForResourceLimits()) {
         return;
     }
     
