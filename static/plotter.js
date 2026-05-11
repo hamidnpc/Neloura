@@ -5510,7 +5510,31 @@ function createScatterPlot(plotArea, processedData, xAxisName, yAxisName, catego
                     try {
                         const sourceObj = catalogData && catalogData[closestSourceIndex] ? catalogData[closestSourceIndex] : null;
                         if (targetWin && targetWin.canvasPopup && typeof targetWin.canvasPopup.show === 'function' && sourceObj) {
-                            targetWin.canvasPopup.show(closestSourceIndex, screenX, screenY, sourceObj);
+                            const toFiniteNumber = (value) => {
+                                if (value === null || value === undefined || value === '') return undefined;
+                                const num = Number(value);
+                                return Number.isFinite(num) ? num : undefined;
+                            };
+                            const sourceImageX =
+                                toFiniteNumber(imgX) ??
+                                toFiniteNumber(sourceObj.imageX) ??
+                                toFiniteNumber(sourceObj.x_pixels) ??
+                                toFiniteNumber(sourceObj.x);
+                            const sourceImageY =
+                                toFiniteNumber(imgY) ??
+                                toFiniteNumber(sourceObj.imageY) ??
+                                toFiniteNumber(sourceObj.y_pixels) ??
+                                toFiniteNumber(sourceObj.y);
+                            const popupSourceObj = {
+                                ...sourceObj,
+                                imageX: sourceImageX,
+                                imageY: sourceImageY,
+                                x: sourceImageX,
+                                y: sourceImageY,
+                                screenX,
+                                screenY
+                            };
+                            targetWin.canvasPopup.show(closestSourceIndex, screenX, screenY, popupSourceObj);
                         }
                     } catch (_) {}
 

@@ -5379,7 +5379,7 @@ function showNotification(message, duration = 1000, type = 'info') {
         notificationContainer.style.bottom = '20px';
         notificationContainer.style.right = 'auto';
         notificationContainer.style.top = 'auto';
-        notificationContainer.style.width = '320px';
+        notificationContainer.style.width = '420px';
         notificationContainer.style.maxWidth = 'calc(100vw - 40px)';
         notificationContainer.style.zIndex = '20000000000';
         notificationContainer.style.display = 'flex';
@@ -5407,7 +5407,8 @@ function showNotification(message, duration = 1000, type = 'info') {
     notification.className = 'notification';
     notification.style.position = 'relative';
     notification.style.width = '100%';
-    notification.style.height = '60px';
+    notification.style.minHeight = '72px';
+    notification.style.height = 'auto';
     notification.style.backgroundColor = 'rgba(33, 33, 33, 0.95)';
     notification.style.color = 'white';
     notification.style.display = 'flex';
@@ -5554,6 +5555,9 @@ function showNotification(message, duration = 1000, type = 'info') {
     messageContainer.style.flex = '1';
     messageContainer.style.padding = '0 20px';
     messageContainer.style.fontWeight = '500';
+    messageContainer.style.whiteSpace = 'normal';
+    messageContainer.style.overflowWrap = 'anywhere';
+    messageContainer.style.lineHeight = '1.35';
     messageContainer.textContent = message;
     
     // Create close button
@@ -7494,6 +7498,12 @@ if (typeof window !== 'undefined') {
 // PASTE THE FOLLOWING CODE INTO static/main.js, REPLACING THE EXISTING showDynamicRangePopup function
 
 function showDynamicRangePopup(options = {}) {
+    if (window.__rgbModeActive) {
+        if (typeof showNotification === 'function') {
+            showNotification('Use RGB Image controls for RGB mode.', 2200, 'info');
+        }
+        return;
+    }
     const opts = options || {};
     console.log("showDynamicRangePopup called.");
     const isTiledViewActive = !!(window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen());
@@ -10933,6 +10943,14 @@ document.addEventListener("DOMContentLoaded", function () {
 function createWelcomeScreen() {
     const container = document.getElementById('openseadragon');
     if (!container) return;
+    try {
+        const sp = new URLSearchParams(window.location.search || '');
+        if (sp.get('rgb') === '1' || (window.fitsData && window.fitsData.rgb_mode) || window.__rgbModeActive) {
+            return;
+        }
+    } catch (_) {
+        if ((window.fitsData && window.fitsData.rgb_mode) || window.__rgbModeActive) return;
+    }
     
     // Clear any content
     container.innerHTML = '';
@@ -11315,6 +11333,15 @@ async function initializeTiledViewer() {
             console.warn('[initializeTiledViewer] Received null/invalid tileInfo; defaulting to empty object');
             tileInfo = {};
         }
+        // If backend issued/used a session during tile-info fetch, persist it so
+        // tile XHR requests include auth consistently.
+        try {
+            const sidFromInfo = tileInfo.session_id ? String(tileInfo.session_id) : null;
+            if (sidFromInfo) {
+                window.__nelouraSid = sidFromInfo;
+                sessionStorage.setItem('sid', sidFromInfo);
+            }
+        } catch (_) {}
 
         currentTileInfo = tileInfo;
         console.log("Tile info received:", tileInfo);
@@ -15417,6 +15444,7 @@ function drawHistogramLines(targetMinVal, targetMaxVal, animate = false) {
 
 // Modify requestHistogramUpdate
 function requestHistogramUpdate() {
+    if (window.__rgbModeActive) return;
     // If an update is already queued or running, do nothing for now
     // The finally block of updateHistogramBackground will handle queuing.
     // We might need more sophisticated debouncing/throttling here if needed.

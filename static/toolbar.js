@@ -3,8 +3,8 @@
     'use strict';
 
     // Order after Files; Plotter and Local Coding always visible; others only when image is loaded
-    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'settings', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
-    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings']);
+    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'settings', 'rgb', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
+    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings', 'rgb']);
     const WHEN_LOADED = new Set();
 
     // Admin flag (fetched once on init)
@@ -52,7 +52,8 @@
             'local-coding': 'local-coding-button',
             'catalog': 'catalog-button',
             'peak': 'peak-finder-button',
-            'settings': 'settings-button'
+            'settings': 'settings-button',
+            'rgb': 'rgb-composer-button'
             , 'segments': 'segments-button'
             , 'regions': 'region-tools-button'
         };
@@ -129,6 +130,7 @@
         if (id === 'zoom-out-button') return 'zoom-out';
         if (id === 'reset-button') return 'reset';
         if (id === 'histogram-button') return 'histogram';
+        if (id === 'rgb-composer-button') return 'rgb';
         if (id === 'catalog-button') return 'catalog';
         if (id === 'peak-finder-button') return 'peak';
         if (id === 'region-tools-button') return 'regions';
@@ -571,7 +573,8 @@
             'segments': 'segments-button',
             'peak': 'peak-finder-button',
             'regions': 'region-tools-button',
-            'settings': 'settings-button'
+            'settings': 'settings-button',
+            'rgb': 'rgb-composer-button'
         };
 
         ORDER.forEach(type => {
@@ -676,7 +679,7 @@
             peak.dataset.bound = '1';
         }
 
-        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'histogram-button', 'catalog-button', 'peak-finder-button', 'settings-button', 'save-png-toolbar-btn', 'region-tools-button']
+        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'histogram-button', 'catalog-button', 'peak-finder-button', 'settings-button', 'rgb-composer-button', 'save-png-toolbar-btn', 'region-tools-button']
             .forEach(id => { const el = document.getElementById(id); if (el) inheritAnchorClasses(el); });
     }
 
@@ -696,7 +699,8 @@
             'segments-button',
             'region-tools-button',
             'peak-finder-button',
-            'settings-button'
+            'settings-button',
+            'rgb-composer-button'
         ].forEach(id => {
             const el = document.getElementById(id);
             if (!el) return;
@@ -742,7 +746,8 @@
             'segments-button',
             'region-tools-button',
             'peak-finder-button',
-            'settings-button'
+            'settings-button',
+            'rgb-composer-button'
         ];
         setInterval(() => {
             try {
@@ -2421,40 +2426,12 @@
                 try { s.regions = (typeof window.listDrawnRegions === 'function') ? window.listDrawnRegions() : []; } catch (_) { s.regions = []; }
                 try { s.zoomInsets = (typeof window.serializeZoomInsets === 'function') ? window.serializeZoomInsets() : []; } catch (_) { s.zoomInsets = []; }
                 try {
-                    if (typeof window.getActiveCatalogState === 'function') s.catalog = window.getActiveCatalogState();
-                    else s.catalog = { name: window.currentCatalogName || window.activeCatalog || null, styles: null };
-                } catch (_) { s.catalog = { name: null, styles: null }; }
-
-                // Preserve ALL loaded catalogs (multi-catalog overlays) for the single → multi-panel transition.
-                try {
-                    s.activeCatalog = (window.currentCatalogName || window.activeCatalog) ? String(window.currentCatalogName || window.activeCatalog) : null;
-                    const loaded = (typeof window.getLoadedCatalogOverlays === 'function') ? window.getLoadedCatalogOverlays() : [];
-                    const stylesByName = window.__catalogStylesByName || {};
-                    const overridesByCatalog = window.catalogOverridesByCatalog || null;
-
-                    const mergeOverridesIntoStyles = (name, styles) => {
-                        try {
-                            if (!overridesByCatalog || !name) return styles;
-                            const apiName = (name || '').toString().split('/').pop().split('\\').pop();
-                            const overrides = overridesByCatalog[name] || overridesByCatalog[apiName] || null;
-                            if (!overrides) return styles;
-                            const out = (styles && typeof styles === 'object') ? { ...styles } : {};
-                            if (overrides.ra_col && !out.raColumn) out.raColumn = overrides.ra_col;
-                            if (overrides.dec_col && !out.decColumn) out.decColumn = overrides.dec_col;
-                            if (overrides.size_col && !out.sizeColumn) out.sizeColumn = overrides.size_col;
-                            return out;
-                        } catch (_) { return styles; }
-                    };
-
-                    s.catalogs = (Array.isArray(loaded) ? loaded : []).map((entry) => {
-                        const key = entry && entry.key ? String(entry.key) : '';
-                        if (!key) return null;
-                        const apiKey = key.split('/').pop().split('\\').pop();
-                        let styles = stylesByName[key] || stylesByName[apiKey] || null;
-                        styles = mergeOverridesIntoStyles(key, styles);
-                        return { name: key, styles, visible: entry.visible !== false };
-                    }).filter(Boolean);
-                } catch (_) { s.catalogs = []; s.activeCatalog = null; }
+                    Object.assign(s, captureNelouraCatalogRestoreSnapshot());
+                } catch (_) {
+                    s.catalog = { name: null, styles: null };
+                    s.catalogs = [];
+                    s.activeCatalog = null;
+                }
                 try {
                     const meta = window.segmentOverlayMetadata || null;
                     const prefs = window.segmentOverlayPreferences || null;
@@ -2542,9 +2519,9 @@
             if (currentCount < want) {
                 for (let i = currentCount; i < want; i++) {
                     const sid = (i === 0 && transitioningFromBase) ? (getTopLevelSid && getTopLevelSid()) : null;
-                    const opts = (i === 0 && transitioningFromBase && mirrorState && mirrorState.filepath)
-                        ? { initialFilepath: mirrorState.filepath, initialHdu: mirrorState.hdu, restoreState }
-                        : ((i === 0 && transitioningFromBase && restoreState) ? { restoreState } : undefined);
+                    const opts = (i === 0 && transitioningFromBase)
+                        ? buildMirrorPaneOptions(mirrorState, restoreState)
+                        : undefined;
                     const h = addPaneWithSid(sid, opts);
                     if (!firstHolder && h) firstHolder = h;
                 }
@@ -2661,9 +2638,12 @@
             try { s.regions = (typeof window.listDrawnRegions === 'function') ? window.listDrawnRegions() : []; } catch (_) { s.regions = []; }
             try { s.zoomInsets = (typeof window.serializeZoomInsets === 'function') ? window.serializeZoomInsets() : []; } catch (_) { s.zoomInsets = []; }
             try {
-                if (typeof window.getActiveCatalogState === 'function') s.catalog = window.getActiveCatalogState();
-                else s.catalog = { name: window.currentCatalogName || window.activeCatalog || null, styles: null };
-            } catch (_) { s.catalog = { name: null, styles: null }; }
+                Object.assign(s, captureNelouraCatalogRestoreSnapshot());
+            } catch (_) {
+                s.catalog = { name: null, styles: null };
+                s.catalogs = [];
+                s.activeCatalog = null;
+            }
             try {
                 const meta = window.segmentOverlayMetadata || null;
                 const prefs = window.segmentOverlayPreferences || null;
@@ -2732,9 +2712,7 @@
             return s;
         })();
         
-        const mirrorOpts = (viewerState && viewerState.filepath) 
-            ? { initialFilepath: viewerState.filepath, initialHdu: viewerState.hdu, restoreState }
-            : { restoreState };
+        const mirrorOpts = buildMirrorPaneOptions(viewerState, restoreState);
         const holders = [];
         try {
             const sid = getTopLevelSid && getTopLevelSid();
@@ -2877,9 +2855,12 @@
             try { s.regions = (typeof window.listDrawnRegions === 'function') ? window.listDrawnRegions() : []; } catch (_) { s.regions = []; }
             try { s.zoomInsets = (typeof window.serializeZoomInsets === 'function') ? window.serializeZoomInsets() : []; } catch (_) { s.zoomInsets = []; }
             try {
-                if (typeof window.getActiveCatalogState === 'function') s.catalog = window.getActiveCatalogState();
-                else s.catalog = { name: window.currentCatalogName || window.activeCatalog || null, styles: null };
-            } catch (_) { s.catalog = { name: null, styles: null }; }
+                Object.assign(s, captureNelouraCatalogRestoreSnapshot());
+            } catch (_) {
+                s.catalog = { name: null, styles: null };
+                s.catalogs = [];
+                s.activeCatalog = null;
+            }
             try {
                 const meta = window.segmentOverlayMetadata || null;
                 const prefs = window.segmentOverlayPreferences || null;
@@ -2948,9 +2929,7 @@
             return s;
         })();
         
-        const mirrorOpts = (viewerState && viewerState.filepath) 
-            ? { initialFilepath: viewerState.filepath, initialHdu: viewerState.hdu, restoreState }
-            : { restoreState };
+        const mirrorOpts = buildMirrorPaneOptions(viewerState, restoreState);
         const sid = getTopLevelSid && getTopLevelSid();
         const columnNames = ['left', 'mid', 'right'];
         const topXs = [0, 32, 68, 100];
@@ -3064,6 +3043,59 @@
             // If we don't mirror the correct sid, "Add panel" creates a brand-new session and everything resets.
             return (window.__forcedSid) || (window.__sid) || sp.get('sid') || sp.get('pane_sid') || (sessionStorage.getItem('sid') || null);
         } catch (_) { try { return sessionStorage.getItem('sid'); } catch (__) { return null; } }
+    }
+
+    /** Catalog fields for multi-panel restore (active + all loaded overlays + styles/overrides). */
+    function captureNelouraCatalogRestoreSnapshot() {
+        const out = {
+            catalog: { name: null, styles: null },
+            catalogs: [],
+            activeCatalog: null
+        };
+        try {
+            if (typeof window.getActiveCatalogState === 'function') {
+                out.catalog = window.getActiveCatalogState();
+            } else {
+                out.catalog = { name: window.currentCatalogName || window.activeCatalog || null, styles: null };
+            }
+        } catch (_) {
+            out.catalog = { name: null, styles: null };
+        }
+        try {
+            out.activeCatalog = (window.currentCatalogName || window.activeCatalog)
+                ? String(window.currentCatalogName || window.activeCatalog)
+                : null;
+            const loaded = (typeof window.getLoadedCatalogOverlays === 'function') ? window.getLoadedCatalogOverlays() : [];
+            const stylesByName = window.__catalogStylesByName || {};
+            const overridesByCatalog = window.catalogOverridesByCatalog || null;
+            const mergeOverridesIntoStyles = function (name, styles) {
+                try {
+                    if (!overridesByCatalog || !name) return styles;
+                    const apiName = (name || '').toString().split('/').pop().split('\\').pop();
+                    const overrides = overridesByCatalog[name] || overridesByCatalog[apiName] || null;
+                    if (!overrides) return styles;
+                    const sty = (styles && typeof styles === 'object') ? Object.assign({}, styles) : {};
+                    if (overrides.ra_col && !sty.raColumn) sty.raColumn = overrides.ra_col;
+                    if (overrides.dec_col && !sty.decColumn) sty.decColumn = overrides.dec_col;
+                    if (overrides.size_col && !sty.sizeColumn) sty.sizeColumn = overrides.size_col;
+                    return sty;
+                } catch (_) {
+                    return styles;
+                }
+            };
+            out.catalogs = (Array.isArray(loaded) ? loaded : []).map(function (entry) {
+                const key = entry && entry.key ? String(entry.key) : '';
+                if (!key) return null;
+                const apiKey = key.split('/').pop().split('\\').pop();
+                let styles = stylesByName[key] || stylesByName[apiKey] || null;
+                styles = mergeOverridesIntoStyles(key, styles);
+                return { name: key, styles: styles, visible: entry.visible !== false };
+            }).filter(Boolean);
+        } catch (_) {
+            out.catalogs = [];
+            out.activeCatalog = null;
+        }
+        return out;
     }
 
     function mergeNelouraOverlayColorBarSnapshotInto(s) {
@@ -3267,8 +3299,10 @@
                     }
                 } catch (_) {}
                 
-                // Best-effort apply to backend generator and refresh tiles
-                if (typeof w.apiFetch === 'function' && Number.isFinite(d.min) && Number.isFinite(d.max)) {
+                // Best-effort apply to backend generator and refresh tiles.
+                // RGB compositor uses /rgb-tile/; reopening with /fits-tile/ replaces the pyramid and drops catalogs/overlays.
+                const skipFitsDynamicRangeTileRefresh = !!(w.fitsData && w.fitsData.rgb_mode);
+                if (!skipFitsDynamicRangeTileRefresh && typeof w.apiFetch === 'function' && Number.isFinite(d.min) && Number.isFinite(d.max)) {
                     const fileId = w.currentLoadedFitsFileId || w.currentLoadedFitsFileID || (w.currentTileInfo && (w.currentTileInfo.file_id || w.currentTileInfo.fileId)) || null;
                     try {
                         const response = await w.apiFetch('/update-dynamic-range/', {
@@ -3510,12 +3544,20 @@
     } catch (_) { }
 
     function getPaneViewerState(holder) {
-        const state = { filepath: null, hdu: null };
+        const state = { filepath: null, hdu: null, rgbMode: false, rgbTileInfo: null };
         if (!holder) return state;
         try {
             const frame = holder.querySelector && holder.querySelector('iframe');
             const w = frame && frame.contentWindow;
             if (!w) return state;
+            if (w.fitsData && w.fitsData.rgb_mode) {
+                state.rgbMode = true;
+                try {
+                    state.rgbTileInfo = (typeof w.getRgbTileInfo === 'function') ? w.getRgbTileInfo() : (w.currentTileInfo || null);
+                } catch (_) {
+                    state.rgbTileInfo = w.currentTileInfo || null;
+                }
+            }
             state.filepath = w.currentFitsFile ||
                 (w.fitsData && (w.fitsData.filepath || w.fitsData.filePath || w.fitsData.filename)) ||
                 null;
@@ -3528,6 +3570,7 @@
         return state;
     }
     function getBaseViewerState() {
+        const state = { filepath: null, hdu: null, rgbMode: false, rgbTileInfo: null };
         let filepath = null;
         let hdu = null;
         try {
@@ -3536,12 +3579,34 @@
         try {
             if (typeof window.currentHduIndex === 'number') hdu = window.currentHduIndex;
         } catch (_) { }
-        return { filepath, hdu };
+        state.filepath = filepath;
+        state.hdu = hdu;
+        try {
+            if (window.fitsData && window.fitsData.rgb_mode) {
+                state.rgbMode = true;
+                state.rgbTileInfo = (typeof window.getRgbTileInfo === 'function') ? window.getRgbTileInfo() : (window.currentTileInfo || null);
+            }
+        } catch (_) { }
+        return state;
     }
     function getCurrentViewerStateForMirroring() {
         const paneState = getPaneViewerState(window.__activePaneHolder);
         if (paneState && paneState.filepath) return paneState;
         return getBaseViewerState();
+    }
+
+    function buildMirrorPaneOptions(viewerState, restoreState, extra) {
+        const opts = Object.assign({}, extra || {});
+        if (restoreState) opts.restoreState = restoreState;
+        if (viewerState && viewerState.rgbMode && viewerState.rgbTileInfo) {
+            opts.initialRgbInfo = viewerState.rgbTileInfo;
+            return opts;
+        }
+        if (viewerState && viewerState.filepath) {
+            opts.initialFilepath = viewerState.filepath;
+            opts.initialHdu = viewerState.hdu;
+        }
+        return opts;
     }
 
     function addPaneWithSid(sid, options) {
@@ -3562,7 +3627,8 @@
                 }
                 // Mark panes as multi-panel via query param so the iframe can detect this *early*
                 // (before any parent->iframe window property seeding happens).
-                frame.src = paneSid ? `/?pane_sid=${encodeURIComponent(paneSid)}&mp=1` : '/?mp=1';
+                const rgbParam = options && options.initialRgbInfo ? '&rgb=1' : '';
+                frame.src = paneSid ? `/?pane_sid=${encodeURIComponent(paneSid)}&mp=1${rgbParam}` : `/?mp=1${rgbParam}`;
             } catch (_) {
                 frame.src = '/?mp=1';
             }
@@ -3814,6 +3880,7 @@
                     } catch (_) { }
                     const initialFilepath = options.initialFilepath || null;
                     const initialHdu = (typeof options.initialHdu === 'number') ? options.initialHdu : null;
+                    const initialRgbInfo = options.initialRgbInfo || null;
                     const restoreState = options.restoreState || null;
                     const preserveCatalogs = options.preserveCatalogs || false;
                     
@@ -3846,7 +3913,29 @@
                         } catch (_) {}
                     }
                     
-                    if (initialFilepath) {
+                    if (initialRgbInfo) {
+                        try {
+                            let attempts = 0;
+                            const maxAttempts = 60;
+                            const tryInitialRgbMirror = () => {
+                                attempts++;
+                                try {
+                                    const innerWin = frame.contentWindow;
+                                    if (!innerWin) return false;
+                                    if (typeof innerWin.restoreRgbTiles === 'function') {
+                                        innerWin.restoreRgbTiles(initialRgbInfo, { preserveView: false }).catch(() => { });
+                                        return true;
+                                    }
+                                } catch (_) { }
+                                return attempts >= maxAttempts;
+                            };
+                            if (!tryInitialRgbMirror()) {
+                                const ivRgb = setInterval(() => {
+                                    if (tryInitialRgbMirror()) clearInterval(ivRgb);
+                                }, 250);
+                            }
+                        } catch (_) { }
+                    } else if (initialFilepath) {
                         try {
                             let attempts = 0;
                             const maxAttempts = 60;
@@ -3891,7 +3980,7 @@
                                         innerWin.currentFitsFile ||
                                         (innerWin.fitsData && (innerWin.fitsData.filepath || innerWin.fitsData.filename)) ||
                                         null;
-                                    const okFile = !initialFilepath || (loadedFile && String(loadedFile) === String(initialFilepath));
+                                    const okFile = initialRgbInfo || !initialFilepath || (loadedFile && String(loadedFile) === String(initialFilepath));
                                     // Be permissive: some panes don't expose isOpen() but still have the image loaded.
                                     const viewerOpen = !!(
                                         (innerWin.tiledViewer && typeof innerWin.tiledViewer.isOpen === 'function' && innerWin.tiledViewer.isOpen()) ||
@@ -3956,9 +4045,12 @@
                 try { s.regions = (typeof window.listDrawnRegions === 'function') ? window.listDrawnRegions() : []; } catch (_) { s.regions = []; }
                 try { s.zoomInsets = (typeof window.serializeZoomInsets === 'function') ? window.serializeZoomInsets() : []; } catch (_) { s.zoomInsets = []; }
                 try {
-                    if (typeof window.getActiveCatalogState === 'function') s.catalog = window.getActiveCatalogState();
-                    else s.catalog = { name: window.currentCatalogName || window.activeCatalog || null, styles: null };
-                } catch (_) { s.catalog = { name: null, styles: null }; }
+                    Object.assign(s, captureNelouraCatalogRestoreSnapshot());
+                } catch (_) {
+                    s.catalog = { name: null, styles: null };
+                    s.catalogs = [];
+                    s.activeCatalog = null;
+                }
                 try {
                     // Segment overlay state (avoid relying on main.js modifications)
                     if (typeof window.getSegmentOverlayState === 'function') {
@@ -4064,9 +4156,7 @@
             const state = getCurrentViewerStateForMirroring && getCurrentViewerStateForMirroring();
             const leftHolder = addPaneWithSid(
                 sid,
-                (state && state.filepath)
-                    ? { initialFilepath: state.filepath, initialHdu: state.hdu, restoreState: baseOverlayState, preserveCatalogs: true }
-                    : { restoreState: baseOverlayState, preserveCatalogs: true }
+                buildMirrorPaneOptions(state, baseOverlayState, { preserveCatalogs: true })
             );
             // Right pane is a fresh session
             const rightHolder = addPaneWithSid(null);

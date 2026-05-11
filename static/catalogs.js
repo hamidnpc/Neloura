@@ -3488,14 +3488,107 @@ try {
     };
 } catch (_) {}
 
-// Binary catalog loader with fast parsing
-function loadCatalogBinary(catalogName, styles = null) {
+function resolveStylesForCatalogKey(catalogKey) {
+    let styles = null;
+    try {
+        if (window.__catalogStylesByName && window.__catalogStylesByName[catalogKey]) {
+            styles = window.__catalogStylesByName[catalogKey];
+        }
+        if (!styles && window.__catalogStylesByName) {
+            const apiName = (catalogKey || '').toString().split('/').pop().split('\\').pop();
+            if (apiName !== catalogKey && window.__catalogStylesByName[apiName]) {
+                styles = window.__catalogStylesByName[apiName];
+            }
+        }
+    } catch (_) {}
+    try {
+        if (catalogKey && window.catalogOverridesByCatalog) {
+            const apiName = (catalogKey || '').toString().split('/').pop().split('\\').pop();
+            const overrides = window.catalogOverridesByCatalog[catalogKey] || window.catalogOverridesByCatalog[apiName] || null;
+            if (overrides) {
+                if (!styles) styles = {};
+                if (overrides.ra_col && !styles.raColumn) styles.raColumn = overrides.ra_col;
+                if (overrides.dec_col && !styles.decColumn) styles.decColumn = overrides.dec_col;
+                if (overrides.size_col && !styles.sizeColumn) styles.sizeColumn = overrides.size_col;
+            }
+        }
+    } catch (_) {}
+    const effectiveStyles = resolveCatalogStyle(catalogKey, styles);
+    if (!styles && effectiveStyles) styles = effectiveStyles;
+    return styles;
+}
+
+async function waitForViewerAndApplyCatalogOverlay(styles) {
+    const start = Date.now();
+    for (;;) {
+        const activeViewer = window.viewer || window.tiledViewer;
+        if (activeViewer) {
+            if (typeof canvasAddCatalogOverlay === 'function') {
+                const addedCount = canvasAddCatalogOverlay(window.catalogDataForOverlay);
+                console.log(`[loadCatalogBinary] Canvas overlay added ${addedCount} objects`);
+                return true;
+            }
+            if (typeof addCatalogOverlay === 'function') {
+                addCatalogOverlay(window.catalogDataForOverlay, styles);
+                return true;
+            }
+            console.warn('[loadCatalogBinary] No overlay function available');
+            return false;
+        }
+        if (Date.now() - start > 30000) {
+            console.warn('[loadCatalogBinary] Viewer not ready after 30s');
+            return false;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+    }
+}
+
+/**
+ * Re-project all loaded catalog overlays onto the current RGB composite after the WCS/pixel frame changes
+ * (e.g. new channel, different image size, or visibility toggles that change the union canvas).
+ */
+async function refreshCatalogOverlaysAfterRgbFrameChange() {
+    const isRgb = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
+    if (!isRgb) return;
+    _ensureCatalogOverlayStore();
+    const keys = Object.keys(window.catalogOverlaysByCatalog || {}).filter((k) => {
+        const arr = window.catalogOverlaysByCatalog[k];
+        return Array.isArray(arr) && arr.length > 0;
+    });
+    if (!keys.length) return;
+    const prevName = window.currentCatalogName;
+    let prevActive = null;
+    try { prevActive = typeof activeCatalog !== 'undefined' ? activeCatalog : null; } catch (_) { prevActive = null; }
+    for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        const styles = resolveStylesForCatalogKey(key);
+        try {
+            await loadCatalogBinaryAsync(key, styles, { quiet: true, skipCatalogRename: true });
+        } catch (e) {
+            try { console.warn('[refreshCatalogOverlaysAfterRgbFrameChange] reload failed', key, e); } catch (_) {}
+        }
+    }
+    try {
+        if (prevName != null) window.currentCatalogName = prevName;
+    } catch (_) {}
+    try {
+        if (prevActive != null) activeCatalog = prevActive;
+    } catch (_) {}
+}
+try { window.refreshCatalogOverlaysAfterRgbFrameChange = refreshCatalogOverlaysAfterRgbFrameChange; } catch (_) {}
+
+// Binary catalog loader with fast parsing (async core + thin wrapper for backward compatibility)
+async function loadCatalogBinaryAsync(catalogName, styles = null, options = null) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const quiet = !!opts.quiet;
+    const skipCatalogRename = !!opts.skipCatalogRename;
+
     console.log(`[DEBUG] loadCatalogBinary called with:`, { catalogName, styles });
     console.log(`[loadCatalogBinary] Function started with catalog: ${catalogName}`);
-    
+
     if (!catalogName) {
         console.error('[loadCatalogBinary] No catalog name provided, exiting.');
-        showNotification('Please select a catalog first', 3000);
+        if (!quiet) showNotification('Please select a catalog first', 3000);
         return;
     }
 
@@ -3503,7 +3596,6 @@ function loadCatalogBinary(catalogName, styles = null) {
     if (!styles && effectiveStyles) {
         styles = effectiveStyles;
     }
-    // If we resolved styles from another pane, mirror them locally so subsequent reloads keep them.
     try {
         if (!window.__catalogStylesByName) window.__catalogStylesByName = {};
         if (styles && typeof styles === 'object') {
@@ -3512,7 +3604,6 @@ function loadCatalogBinary(catalogName, styles = null) {
             window.__catalogStylesByName[catalogName] = JSON.parse(JSON.stringify(styles));
             if (apiKey) window.__catalogStylesByName[apiKey] = window.__catalogStylesByName[catalogName];
             if (normKey) window.__catalogStylesByName[normKey] = window.__catalogStylesByName[catalogName];
-            // Mirror to top as well
             try {
                 const topWin = (window.top && window.top !== window) ? window.top : null;
                 if (topWin) {
@@ -3536,30 +3627,25 @@ function loadCatalogBinary(catalogName, styles = null) {
     } else {
         try { console.log('[loadCatalogBinary] No styles available (falling back to defaults)'); } catch (_) {}
     }
-    
-    // Initialize catalogData if needed
+
     if (!window.catalogData || !Array.isArray(window.catalogData)) {
         window.catalogData = [];
     }
-    
-    // Store the current catalog name globally
-    window.currentCatalogName = catalogName;
-    activeCatalog = catalogName;
-    try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
-    
-    // Show loading indicator
-    showNotification(true, 'Loading catalog...');
-    
-    // NOTE: We no longer clear existing overlays here. Neloura supports multiple catalogs at once.
-    
-    // Clear any existing flag data
+
+    if (!skipCatalogRename) {
+        window.currentCatalogName = catalogName;
+        activeCatalog = catalogName;
+        try { window.dispatchEvent(new CustomEvent('catalog:changed', { detail: { name: activeCatalog } })); } catch (_) {}
+    }
+
+    if (!quiet) {
+        showNotification(true, 'Loading catalog...');
+    }
+
     window.catalogDataWithFlags = null;
-    
-    // Normalize to API name (server expects basename inside catalogs dir)
+
     const catalogNameForApi = (catalogName || '').toString().split('/').pop().split('\\').pop();
-    // We log final URL after building query
-    
-    // Prepare optional RA/DEC/size overrides from UI styles or persisted overrides if present
+
     const urlParams = new URLSearchParams();
     const persistedBin = (window.catalogOverridesByCatalog && (
         window.catalogOverridesByCatalog[catalogName] ||
@@ -3568,7 +3654,6 @@ function loadCatalogBinary(catalogName, styles = null) {
     const raColBin = (styles && styles.raColumn) || (persistedBin && persistedBin.ra_col);
     const decColBin = (styles && styles.decColumn) || (persistedBin && persistedBin.dec_col);
     const sizeColBin = (styles && styles.sizeColumn) || (persistedBin && persistedBin.size_col);
-    // Optional size unit (deep-link or persisted). Used by backend to interpret size_col correctly.
     let sizeUnitBin = (styles && (styles.sizeUnit || styles.size_unit)) || (persistedBin && (persistedBin.size_unit || persistedBin.sizeUnit)) || null;
     if (!sizeUnitBin) {
         try {
@@ -3583,16 +3668,12 @@ function loadCatalogBinary(catalogName, styles = null) {
     if (sizeUnitBin) urlParams.set('size_unit', sizeUnitBin);
     if (colorColBin) urlParams.set('color_col', colorColBin);
 
-    const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
-    // Build final URL explicitly (guarantee ra_col/dec_col in URL if present)
     const finalQuery = urlParams.toString();
     const finalUrl = `/catalog-binary/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`;
 
-    // Fetch binary catalog data from server
     console.log(`[loadCatalogBinary] Request URL: ${finalUrl}`);
     console.log('[loadCatalogBinary] Overrides resolved:', { ra: raColBin, dec: decColBin, size: sizeColBin, persisted: !!persistedBin });
 
-    // Build headers for overrides (scoped to this function)
     const extraHeadersBin = {};
     if (raColBin) extraHeadersBin['X-RA-Col'] = raColBin;
     if (decColBin) extraHeadersBin['X-DEC-Col'] = decColBin;
@@ -3600,148 +3681,123 @@ function loadCatalogBinary(catalogName, styles = null) {
     if (sizeUnitBin) extraHeadersBin['X-Size-Unit'] = sizeUnitBin;
     if (colorColBin) extraHeadersBin['X-Color-Col'] = colorColBin;
     console.log('[loadCatalogBinary] Headers to send:', extraHeadersBin);
-    apiFetch(finalUrl, {
+
+    let response = await apiFetch(finalUrl, {
         method: 'GET',
         headers: { ...extraHeadersBin }
-    })
-    .then(async response => {
-        if (!response.ok) {
-            // Fallback for sessions without WCS: try raw endpoint
-            if (response.status === 500) {
-                console.warn('[loadCatalogBinary] /catalog-binary failed (likely no WCS). Falling back to /catalog-binary-raw');
-                const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}` , {
-                    method: 'GET',
-                    headers: { ...extraHeadersBin }
-                });
-                if (!rawResp.ok) {
-                    throw new Error(`Failed to load catalog (raw): ${rawResp.statusText}`);
-                }
-                return rawResp.arrayBuffer();
+    });
+    let arrayBuffer;
+    if (!response.ok) {
+        if (response.status === 500) {
+            console.warn('[loadCatalogBinary] /catalog-binary failed (likely no WCS). Falling back to /catalog-binary-raw');
+            const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`, {
+                method: 'GET',
+                headers: { ...extraHeadersBin }
+            });
+            if (!rawResp.ok) {
+                throw new Error(`Failed to load catalog (raw): ${rawResp.statusText}`);
             }
+            arrayBuffer = await rawResp.arrayBuffer();
+        } else {
             throw new Error(`Failed to load catalog: ${response.statusText}`);
         }
-        return response.arrayBuffer();
-    })
-    .then(async arrayBuffer => {
-        console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength);
-        
-        // Parse binary data
-        let catalogData = parseBinaryCatalog(arrayBuffer);
-        console.log('[loadCatalogBinary] Header from primary endpoint:', catalogData && catalogData.header);
-        console.log(`[loadCatalogBinary] Parsed ${catalogData.records.length} objects from binary data (primary).`);
-        
-        // If no records from session/WCS-scoped endpoint, fall back to raw
-        if (!catalogData.records || catalogData.records.length === 0) {
-            console.warn('[loadCatalogBinary] Primary endpoint returned 0 records. Falling back to /catalog-binary-raw ...');
-            try {
-                const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`, {
-                    method: 'GET',
-                    headers: { ...extraHeadersBin }
-                });
-                if (!rawResp.ok) {
-                    throw new Error(`Fallback /catalog-binary-raw failed: ${rawResp.status} ${rawResp.statusText}`);
-                }
-                const rawBuf = await rawResp.arrayBuffer();
-                console.log('[loadCatalogBinary] Received fallback raw binary, size:', rawBuf.byteLength);
-                const parsedRaw = parseBinaryCatalog(rawBuf);
-                console.log('[loadCatalogBinary] Header from fallback endpoint:', parsedRaw && parsedRaw.header);
-                console.log(`[loadCatalogBinary] Parsed ${parsedRaw.records.length} objects from binary data (fallback).`);
-                catalogData = parsedRaw;
-            } catch (fallbackErr) {
-                console.error('[loadCatalogBinary] Fallback to /catalog-binary-raw failed:', fallbackErr);
-            }
-        }
-        
-        // Track current in-memory flags dataset name to avoid using stale data across catalogs
-        try {
-            const activeName = (catalogData && catalogData.header && catalogData.header.catalog_name) ? catalogData.header.catalog_name : null;
-            window.catalogDataWithFlagsName = activeName;
-        } catch(_) { window.catalogDataWithFlagsName = null; }
-        
-        if (!catalogData.records || catalogData.records.length === 0) {
-            console.error('[loadCatalogBinary] No records even after fallback. Header was:', catalogData && catalogData.header);
-            throw new Error('No catalog data found or invalid format.');
-        }
-        
-        // If color-coding or on-image labels need columns not included in the binary payload,
-        // fetch via /catalog-column-values/ and attach to raw records before styling.
-        try {
-            const colsAttach = __columnsToAttachForOverlayStyles(styles);
-            if (colsAttach.length) {
-                await __attachColumnValuesToRawRecords(catalogNameForApi, catalogData.records, colsAttach);
-            }
-        } catch (e) {
-            console.warn('[loadCatalogBinary] Failed to fetch extra column values; color coding / labels may be incomplete.', e);
-        }
+    } else {
+        arrayBuffer = await response.arrayBuffer();
+    }
 
-        // Store the complete catalog data and build styled overlay entries
-        window.catalogDataWithFlags = catalogData.records;
-        _ensureCatalogOverlayStore();
-        const key = _catalogKey(catalogName);
-        window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData.records, styles, key);
-        rebuildCombinedCatalogOverlay();
-        
-        console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:',
-                    window.catalogOverlaysByCatalog[key]?.[0]);
-        
-        // Store metadata (global + per-catalog)
+    console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength);
+
+    let catalogData = parseBinaryCatalog(arrayBuffer);
+    console.log('[loadCatalogBinary] Header from primary endpoint:', catalogData && catalogData.header);
+    console.log(`[loadCatalogBinary] Parsed ${catalogData.records.length} objects from binary data (primary).`);
+
+    if (!catalogData.records || catalogData.records.length === 0) {
+        console.warn('[loadCatalogBinary] Primary endpoint returned 0 records. Falling back to /catalog-binary-raw ...');
         try {
-            window.catalogMetadata = catalogData.header;
-            window.catalogMetadataByCatalog = window.catalogMetadataByCatalog || {};
-            window.catalogMetadataByCatalog[key] = catalogData.header;
-            // Multi-pane: also publish to top window so catalog-overlay-controls can see it.
-            try {
-                if (window.top && window.top !== window) {
-                    window.top.catalogMetadata = catalogData.header;
-                    window.top.catalogMetadataByCatalog = window.top.catalogMetadataByCatalog || {};
-                    window.top.catalogMetadataByCatalog[key] = catalogData.header;
-                }
-            } catch (_) {}
-        } catch (_) {}
-        
-        // Wait for viewer to be ready and add overlay
-        function safeAddOverlay() {
-            const activeViewer = window.viewer || window.tiledViewer;
-            console.log('[loadCatalogBinary] Checking for active viewer:', !!activeViewer);
-            
-            if (activeViewer) {
-                console.log('[loadCatalogBinary] Viewer ready, adding canvas overlay');
-                
-                // Use canvas overlay system
-                if (typeof canvasAddCatalogOverlay === 'function') {
-                    const addedCount = canvasAddCatalogOverlay(window.catalogDataForOverlay);
-                    console.log(`[loadCatalogBinary] Canvas overlay added ${addedCount} objects`);
-                } else {
-                    console.error('[loadCatalogBinary] canvasAddCatalogOverlay function not found');
-                    // Fallback to DOM overlay
-                    if (typeof addCatalogOverlay === 'function') {
-                        addCatalogOverlay(window.catalogDataForOverlay, styles);
-                    }
-                }
-                
-                // Create flag filter button if boolean columns exist
-                if (catalogData.header.boolean_columns && catalogData.header.boolean_columns.length > 0) {
-                    // createFlagFilterButton();
-                }
-                
-                showNotification(false);
-                showNotification(`Catalog loaded.`, 2000, 'success');
-                
-            } else {
-                console.log('[loadCatalogBinary] Viewer not ready, retrying...');
-                setTimeout(safeAddOverlay, 100);
+            const rawResp = await apiFetch(`/catalog-binary-raw/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`, {
+                method: 'GET',
+                headers: { ...extraHeadersBin }
+            });
+            if (!rawResp.ok) {
+                throw new Error(`Fallback /catalog-binary-raw failed: ${rawResp.status} ${rawResp.statusText}`);
             }
+            const rawBuf = await rawResp.arrayBuffer();
+            console.log('[loadCatalogBinary] Received fallback raw binary, size:', rawBuf.byteLength);
+            const parsedRaw = parseBinaryCatalog(rawBuf);
+            console.log('[loadCatalogBinary] Header from fallback endpoint:', parsedRaw && parsedRaw.header);
+            console.log(`[loadCatalogBinary] Parsed ${parsedRaw.records.length} objects from binary data (fallback).`);
+            catalogData = parsedRaw;
+        } catch (fallbackErr) {
+            console.error('[loadCatalogBinary] Fallback to /catalog-binary-raw failed:', fallbackErr);
         }
-        
-        safeAddOverlay();
-    })
-    .catch(error => {
-        console.error('[loadCatalogBinary] Error loading catalog:', error);
+    }
+
+    try {
+        const activeName = (catalogData && catalogData.header && catalogData.header.catalog_name) ? catalogData.header.catalog_name : null;
+        window.catalogDataWithFlagsName = activeName;
+    } catch (_) { window.catalogDataWithFlagsName = null; }
+
+    if (!catalogData.records || catalogData.records.length === 0) {
+        console.error('[loadCatalogBinary] No records even after fallback. Header was:', catalogData && catalogData.header);
+        throw new Error('No catalog data found or invalid format.');
+    }
+
+    try {
+        const colsAttach = __columnsToAttachForOverlayStyles(styles);
+        if (colsAttach.length) {
+            await __attachColumnValuesToRawRecords(catalogNameForApi, catalogData.records, colsAttach);
+        }
+    } catch (e) {
+        console.warn('[loadCatalogBinary] Failed to fetch extra column values; color coding / labels may be incomplete.', e);
+    }
+
+    window.catalogDataWithFlags = catalogData.records;
+    _ensureCatalogOverlayStore();
+    const key = _catalogKey(catalogName);
+    window.catalogOverlaysByCatalog[key] = prepareCatalogOverlayData(catalogData.records, styles, key);
+    rebuildCombinedCatalogOverlay();
+
+    console.log('[loadCatalogBinary] Prepared overlay data with styles. Sample object:',
+        window.catalogOverlaysByCatalog[key]?.[0]);
+
+    try {
+        window.catalogMetadata = catalogData.header;
+        window.catalogMetadataByCatalog = window.catalogMetadataByCatalog || {};
+        window.catalogMetadataByCatalog[key] = catalogData.header;
+        try {
+            if (window.top && window.top !== window) {
+                window.top.catalogMetadata = catalogData.header;
+                window.top.catalogMetadataByCatalog = window.top.catalogMetadataByCatalog || {};
+                window.top.catalogMetadataByCatalog[key] = catalogData.header;
+            }
+        } catch (_) {}
+    } catch (_) {}
+
+    console.log('[loadCatalogBinary] Checking for active viewer:', !!(window.viewer || window.tiledViewer));
+    await waitForViewerAndApplyCatalogOverlay(styles);
+
+    if (catalogData.header.boolean_columns && catalogData.header.boolean_columns.length > 0) {
+        // createFlagFilterButton();
+    }
+
+    if (!quiet) {
         showNotification(false);
-        showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000, 'error');
+        showNotification(`Catalog loaded.`, 2000, 'success');
+    }
+}
+
+function loadCatalogBinary(catalogName, styles = null, options = null) {
+    return loadCatalogBinaryAsync(catalogName, styles, options).catch((error) => {
+        console.error('[loadCatalogBinary] Error loading catalog:', error);
+        const quiet = options && typeof options === 'object' && options.quiet;
+        if (!quiet) {
+            showNotification(false);
+            showNotification(`Error: ${error.message || 'Failed to load catalog'}`, 3000, 'error');
+        }
         window.catalogDataWithFlags = null;
     });
 }
+try { window.loadCatalogBinaryAsync = loadCatalogBinaryAsync; } catch (_) {}
 
 // Parse binary catalog format
 function parseBinaryCatalog(arrayBuffer) {

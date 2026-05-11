@@ -588,26 +588,30 @@ window.canvasPopup = {
         // Display coordinates using bottom-left origin (to match the coords overlay readout).
         // Some call sites mistakenly pass OSD/top-left `imageY` into `y_bottom_left`, so prefer
         // deriving bottom-left from `imageY` when available.
+        const getFiniteNumber = (value) => {
+            if (value === null || value === undefined || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        };
         const resolvedXBottomLeft =
-            (typeof this.content.x_bottom_left === 'number' && Number.isFinite(this.content.x_bottom_left))
-                ? this.content.x_bottom_left
-                : ((typeof this.content.imageX === 'number' && Number.isFinite(this.content.imageX))
-                    ? this.content.imageX
-                    : ((typeof this.content.x === 'number' && Number.isFinite(this.content.x)) ? this.content.x : this.content.x_bottom_left));
+            getFiniteNumber(this.content.x_bottom_left) ??
+            getFiniteNumber(this.content.imageX) ??
+            getFiniteNumber(this.content.x_pixels) ??
+            getFiniteNumber(this.content.x) ??
+            this.content.x_bottom_left;
 
         let resolvedYBottomLeft =
-            (typeof this.content.y_bottom_left === 'number' && Number.isFinite(this.content.y_bottom_left))
-                ? this.content.y_bottom_left
-                : ((typeof this.content.imageY === 'number' && Number.isFinite(this.content.imageY))
-                    ? convertYToBottomOrigin(this.content.imageY)
-                    : ((typeof this.content.y === 'number' && Number.isFinite(this.content.y))
-                        ? convertYToBottomOrigin(this.content.y)
-                        : this.content.y_bottom_left));
+            getFiniteNumber(this.content.y_bottom_left) ??
+            ((getFiniteNumber(this.content.imageY) !== null) ? convertYToBottomOrigin(getFiniteNumber(this.content.imageY)) : null) ??
+            ((getFiniteNumber(this.content.y_pixels) !== null) ? convertYToBottomOrigin(getFiniteNumber(this.content.y_pixels)) : null) ??
+            ((getFiniteNumber(this.content.y) !== null) ? convertYToBottomOrigin(getFiniteNumber(this.content.y)) : null) ??
+            this.content.y_bottom_left;
 
         // If we have imageY, ensure the displayed Y matches its bottom-left conversion.
         // This fixes cases where y_bottom_left was accidentally set to the raw top-left imageY.
-        if (typeof this.content.imageY === 'number' && Number.isFinite(this.content.imageY)) {
-            const yFromImage = convertYToBottomOrigin(this.content.imageY);
+        const imageYNumber = getFiniteNumber(this.content.imageY);
+        if (imageYNumber !== null) {
+            const yFromImage = convertYToBottomOrigin(imageYNumber);
             if (typeof yFromImage === 'number' && Number.isFinite(yFromImage) &&
                 typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft) &&
                 Math.abs(yFromImage - resolvedYBottomLeft) > 1e-3) {
@@ -615,8 +619,8 @@ window.canvasPopup = {
             }
         }
 
-        const x = (typeof resolvedXBottomLeft === 'number' && Number.isFinite(resolvedXBottomLeft)) ? resolvedXBottomLeft.toFixed(2) : resolvedXBottomLeft;
-        const y = (typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft)) ? resolvedYBottomLeft.toFixed(2) : resolvedYBottomLeft;
+        const x = (typeof resolvedXBottomLeft === 'number' && Number.isFinite(resolvedXBottomLeft)) ? resolvedXBottomLeft.toFixed(2) : 'Unavailable';
+        const y = (typeof resolvedYBottomLeft === 'number' && Number.isFinite(resolvedYBottomLeft)) ? resolvedYBottomLeft.toFixed(2) : 'Unavailable';
         html += `
             <div style="margin-bottom: 8px;">
                 <span style="color: #aaa;">Position (image x, y):</span> ${x}, ${y}
@@ -2025,7 +2029,8 @@ function canvasUpdateOverlay(opts = null) {
     // -------------------------------------------------------------
     try {
         const r = window.__catalogWebgl;
-        if (r && typeof r.draw === 'function') {
+        const rgbModeActive = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
+        if (r && typeof r.draw === 'function' && !rgbModeActive) {
             // Viewer can be replaced (e.g. dynamic range); keep renderer synced.
             try { r.viewer = activeOsViewer; } catch (_) {}
 
@@ -3308,6 +3313,8 @@ function canvasAddCatalogOverlay(catalogData) {
     container.style.width = '100%';
     container.style.height = '100%';
     container.style.pointerEvents = 'none'; // Container doesn't block events
+    // Above OSD tiles, below navigator (999), toolbar/dropdown (1000/1001), and source popups (6000+).
+    container.style.zIndex = '850';
     
     // Create a dedicated WebGL canvas (keeps 2D canvas free for highlights/popup UI).
     const webglCanvas = document.createElement('canvas');
@@ -3318,6 +3325,7 @@ function canvasAddCatalogOverlay(catalogData) {
     webglCanvas.style.width = '100%';
     webglCanvas.style.height = '100%';
     webglCanvas.style.pointerEvents = 'none';
+    webglCanvas.style.zIndex = '1';
 
     // Create 2D canvas element (fallback renderer + highlight layer)
     const canvas = document.createElement('canvas');
@@ -3328,6 +3336,7 @@ function canvasAddCatalogOverlay(catalogData) {
     canvas.style.width = '100%';
     canvas.style.height = '100%';
     canvas.style.pointerEvents = 'none'; // Canvas doesn't block events
+    canvas.style.zIndex = '2';
     
     // Set canvas size
     const viewerElement = document.getElementById('openseadragon');
@@ -3368,7 +3377,11 @@ function canvasAddCatalogOverlay(catalogData) {
     // Initialize WebGL renderer for ALL catalogs (fallback to 2D if WebGL unavailable).
     try {
         console.log('[WebGL] init attempt. CatalogWebGLRenderer=', typeof window.CatalogWebGLRenderer, 'dataLen=', (window.catalogDataForOverlay ? window.catalogDataForOverlay.length : 0));
-        if (!window.CatalogWebGLRenderer) {
+        const rgbModeActive = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
+        if (rgbModeActive) {
+            window.__catalogWebgl = null;
+            console.log('[WebGL] Skipping catalog WebGL renderer in RGB mode; using 2D overlay.');
+        } else if (!window.CatalogWebGLRenderer) {
             console.warn('[WebGL] catalog_webgl.js not loaded (CatalogWebGLRenderer missing) — using 2D');
         } else {
             const r = new window.CatalogWebGLRenderer(webglCanvas, activeOsViewer);
