@@ -3062,8 +3062,9 @@ class SimpleTileGenerator:
                 else:
                     tile_data = sampled_region
 
-            # Handle NaN and infinity values
-            tile_data = np.nan_to_num(tile_data, nan=0, posinf=self.max_value, neginf=self.min_value)
+            # Blank FITS regions are often NaN. Render them at the display floor instead of
+            # as data value 0, which can be visibly colored when the stretch minimum is negative.
+            tile_data = np.nan_to_num(tile_data, nan=self.min_value, posinf=self.max_value, neginf=self.min_value)
 
             # Normalize to 0-1 range using selected scaling function (vectorized)
             sf = self.scaling_function
@@ -3137,6 +3138,603 @@ class SimpleTileGenerator:
         for i in range(256):
             self.lut[i] = color_map_func(i)
         print(f"Colormap LUT updated for '{self.color_map}'")
+
+
+class RGBTileGenerator:
+    """Compose three independently scaled FITS channels into live RGB tiles."""
+
+    CHANNELS = ("r", "g", "b", "c4", "c5")
+    WCS_MISMATCH_PREFIX = "RGB_WCS_MISMATCH:"
+
+    def __init__(self):
+        self.tile_size = IMAGE_TILE_SIZE_PX
+        self.channels = {name: None for name in self.CHANNELS}
+        self.channel_meta = {name: {} for name in self.CHANNELS}
+        self.base_channel = None
+
+    def _max_level_for_dimensions(self, width, height):
+        return max(0, int(np.ceil(np.log2(max(int(width), int(height)) / self.tile_size))))
+
+    def _normalize_generator_tile_geometry(self, generator):
+        if generator is None:
+            return
+        generator.tile_size = self.tile_size
+        generator.max_level = self._max_level_for_dimensions(generator.width, generator.height)
+
+    @staticmethod
+    def _hdu_name_from_header(header, hdu_index):
+        try:
+            extname = header.get("EXTNAME")
+            if extname is not None:
+                label = str(extname).strip()
+                if label:
+                    return label
+        except Exception:
+            pass
+        try:
+            if int(hdu_index) == 0:
+                return "PRIMARY"
+        except Exception:
+            pass
+        return None
+
+    def set_channel(self, channel, generator, filepath, hdu_index):
+        channel = str(channel or "").lower()
+        if channel not in self.CHANNELS:
+            raise ValueError("RGB channel must be one of r, g, b, c4, c5")
+
+        self._ensure_wcs_overlap_or_raise(generator, target_channel=channel)
+        self._normalize_generator_tile_geometry(generator)
+        generator.ensure_dynamic_range_calculated()
+        self._normalize_generator_tile_geometry(generator)
+        previous_generator = self.channels.get(channel)
+        previous_meta = dict(self.channel_meta.get(channel) or {})
+        self.channels[channel] = generator
+        self.channel_meta[channel] = {
+            "filepath": filepath,
+            "hdu": int(hdu_index),
+            "hdu_name": self._hdu_name_from_header(generator.header, hdu_index),
+            "width": int(generator.width),
+            "height": int(generator.height),
+            "bunit": generator.header.get("BUNIT"),
+            "visible": bool(previous_meta.get("visible", True)),
+        }
+        if self.base_channel is None or self.channels.get(self.base_channel) is None:
+            self.base_channel = channel
+        if previous_generator is not None and previous_generator is not generator:
+            try:
+                previous_generator.cleanup()
+            except Exception:
+                pass
+
+    def _loaded_generators(self):
+        return [gen for gen in self.channels.values() if gen is not None]
+
+    def _channel_footprint_score(self, channel):
+        gen = self.channels.get(channel)
+        if gen is None:
+            return -1.0
+        pixel_area = float(max(0, int(gen.width)) * max(0, int(gen.height)))
+        try:
+            if gen.wcs is not None:
+                scales = proj_plane_pixel_scales(gen.wcs)
+                scales = np.asarray(scales, dtype=float)
+                if scales.size >= 2 and np.all(np.isfinite(scales[:2])) and np.all(scales[:2] > 0):
+                    return pixel_area * float(abs(scales[0] * scales[1]))
+        except Exception:
+            pass
+        return pixel_area
+
+    def _base_channel(self):
+        if self.base_channel in self.CHANNELS and self.channels.get(self.base_channel) is not None:
+            return self.base_channel
+        loaded = [name for name in self.CHANNELS if self.channels.get(name) is not None]
+        self.base_channel = loaded[0] if loaded else None
+        return self.base_channel
+
+    def _base_generator(self):
+        base_channel = self._base_channel()
+        return self.channels.get(base_channel) if base_channel else None
+
+    def _loaded_channel_items(self):
+        return [(name, self.channels.get(name)) for name in self.CHANNELS if self.channels.get(name) is not None]
+
+    def _visible_channel_items(self):
+        return [
+            (name, self.channels.get(name))
+            for name in self.CHANNELS
+            if self.channels.get(name) is not None
+            and bool((self.channel_meta.get(name) or {}).get("visible", True))
+        ]
+
+    def _wcs_overlap_fraction(self, src_gen, dst_gen, sample_count=11):
+        """Approximate source footprint overlap in destination image space."""
+        if src_gen is None or dst_gen is None or src_gen.wcs is None or dst_gen.wcs is None:
+            return None
+        try:
+            x_edge = np.linspace(-0.5, float(src_gen.width) - 0.5, sample_count)
+            y_edge = np.linspace(-0.5, float(src_gen.height) - 0.5, sample_count)
+            sx = np.concatenate([
+                x_edge,
+                x_edge,
+                np.full(sample_count, -0.5),
+                np.full(sample_count, float(src_gen.width) - 0.5),
+            ])
+            sy = np.concatenate([
+                np.full(sample_count, -0.5),
+                np.full(sample_count, float(src_gen.height) - 0.5),
+                y_edge,
+                y_edge,
+            ])
+            src_wcs_x, src_wcs_y = self._display_to_wcs_pixels(src_gen, sx, sy)
+            world = src_gen.wcs.all_pix2world(src_wcs_x, src_wcs_y, 0)
+            dst_wcs_x, dst_wcs_y = dst_gen.wcs.all_world2pix(world[0], world[1], 0)
+            dx, dy = self._wcs_to_display_pixels(dst_gen, dst_wcs_x, dst_wcs_y)
+            finite = np.isfinite(dx) & np.isfinite(dy)
+            if not np.any(finite):
+                return 0.0
+            dx = np.asarray(dx)[finite]
+            dy = np.asarray(dy)[finite]
+            inside = (
+                (dx >= -0.5) & (dx <= float(dst_gen.width) - 0.5) &
+                (dy >= -0.5) & (dy <= float(dst_gen.height) - 0.5)
+            )
+            return float(np.count_nonzero(inside)) / float(dx.size)
+        except Exception:
+            return None
+
+    def _ensure_wcs_overlap_or_raise(self, candidate_gen, target_channel=None):
+        """
+        Reject channels that are clearly from a different sky field.
+        Requires a minimal WCS-overlap with at least one already loaded WCS channel.
+        """
+        if candidate_gen is None or candidate_gen.wcs is None:
+            return
+        target_channel = str(target_channel or "").lower()
+        loaded_with_wcs = [
+            gen for name, gen in self._loaded_channel_items()
+            if gen is not None and gen.wcs is not None and name != target_channel
+        ]
+        if not loaded_with_wcs:
+            return
+        min_required_fraction = 0.01
+        for gen in loaded_with_wcs:
+            fwd = self._wcs_overlap_fraction(candidate_gen, gen)
+            rev = self._wcs_overlap_fraction(gen, candidate_gen)
+            if (fwd is not None and fwd >= min_required_fraction) or (rev is not None and rev >= min_required_fraction):
+                return
+        raise ValueError(
+            f"{self.WCS_MISMATCH_PREFIX} Selected FITS appears to target a different sky area "
+            f"(no meaningful WCS overlap with current RGB channels)."
+        )
+
+    def _rgb_frame(self):
+        visible = self._visible_channel_items()
+        loaded = self._loaded_channel_items()
+        frame_channels = visible if visible else loaded
+        if not frame_channels:
+            return None
+
+        base_channel = self._base_channel()
+        if base_channel not in [name for name, _ in frame_channels]:
+            base_channel = frame_channels[0][0]
+        base = self.channels.get(base_channel) if base_channel else None
+        if base is None:
+            return None
+
+        frame = {
+            "base_channel": base_channel,
+            "base": base,
+            "width": int(base.width),
+            "height": int(base.height),
+            "max_level": self._max_level_for_dimensions(base.width, base.height),
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+            "use_wcs_union": False,
+        }
+
+        if len(frame_channels) <= 1:
+            return frame
+        if any(gen.wcs is None for _, gen in frame_channels) or base.wcs is None:
+            return frame
+
+        xs = []
+        ys = []
+        try:
+            for _, gen in frame_channels:
+                sample_count = 17
+                x_edge = np.linspace(-0.5, float(gen.width) - 0.5, sample_count)
+                y_edge = np.linspace(-0.5, float(gen.height) - 0.5, sample_count)
+                edge_x = np.concatenate([
+                    x_edge,
+                    x_edge,
+                    np.full(sample_count, -0.5),
+                    np.full(sample_count, float(gen.width) - 0.5),
+                ])
+                edge_y = np.concatenate([
+                    np.full(sample_count, -0.5),
+                    np.full(sample_count, float(gen.height) - 0.5),
+                    y_edge,
+                    y_edge,
+                ])
+                gen_wcs_x, gen_wcs_y = self._display_to_wcs_pixels(gen, edge_x, edge_y)
+                world = gen.wcs.all_pix2world(gen_wcs_x, gen_wcs_y, 0)
+                base_wcs_x, base_wcs_y = base.wcs.all_world2pix(world[0], world[1], 0)
+                base_display_x, base_display_y = self._wcs_to_display_pixels(base, base_wcs_x, base_wcs_y)
+                finite = np.isfinite(base_display_x) & np.isfinite(base_display_y)
+                if np.any(finite):
+                    xs.extend(np.asarray(base_display_x)[finite].tolist())
+                    ys.extend(np.asarray(base_display_y)[finite].tolist())
+        except Exception as exc:
+            logger.debug("RGB WCS union frame failed; using base channel canvas: %s", exc)
+            return frame
+
+        if not xs or not ys:
+            return frame
+
+        pad = 2.0
+        min_x = float(np.floor(np.min(xs) - pad))
+        max_x = float(np.ceil(np.max(xs) + pad))
+        min_y = float(np.floor(np.min(ys) - pad))
+        max_y = float(np.ceil(np.max(ys) + pad))
+        width = max(1, int(np.ceil(max_x - min_x + 1.0)))
+        height = max(1, int(np.ceil(max_y - min_y + 1.0)))
+        frame.update({
+            "width": width,
+            "height": height,
+            "max_level": max(0, int(np.ceil(np.log2(max(width, height) / self.tile_size)))),
+            "offset_x": min_x,
+            "offset_y": min_y,
+            "use_wcs_union": True,
+        })
+        return frame
+
+    def clear_except(self, keep_channel):
+        keep_channel = str(keep_channel or "").lower()
+        for name, gen in list(self.channels.items()):
+            if name == keep_channel:
+                continue
+            if gen is not None:
+                try:
+                    gen.cleanup()
+                except Exception:
+                    pass
+            self.channels[name] = None
+            self.channel_meta[name] = {}
+        if keep_channel not in self.CHANNELS or self.channels.get(self.base_channel) is None:
+            self.base_channel = keep_channel if keep_channel in self.CHANNELS and self.channels.get(keep_channel) is not None else None
+
+    def _validate_same_grid(self):
+        loaded = self._loaded_generators()
+        if not loaded:
+            return
+        width = int(loaded[0].width)
+        height = int(loaded[0].height)
+        for gen in loaded[1:]:
+            if int(gen.width) != width or int(gen.height) != height:
+                raise ValueError(
+                    "RGB channels must have identical pixel dimensions. "
+                    "Regridding is intentionally not performed."
+                )
+
+    def update_channel(self, channel, settings):
+        channel = str(channel or "").lower()
+        if channel not in self.CHANNELS:
+            raise ValueError("RGB channel must be one of r, g, b, c4, c5")
+        gen = self.channels.get(channel)
+        if gen is None:
+            raise ValueError(f"No file loaded for channel {channel.upper()}")
+
+        if "min_value" in settings and settings["min_value"] is not None:
+            gen.min_value = float(settings["min_value"])
+        if "max_value" in settings and settings["max_value"] is not None:
+            gen.max_value = float(settings["max_value"])
+        if "color_map" in settings and settings["color_map"] is not None:
+            resolved = resolve_color_map_key(str(settings["color_map"])) or "grayscale"
+            if gen.color_map != resolved:
+                gen.color_map = resolved
+                gen._update_colormap_lut()
+        if "scaling_function" in settings and settings["scaling_function"] is not None:
+            gen.scaling_function = str(settings["scaling_function"])
+        if "invert_colormap" in settings:
+            gen.invert_colormap = bool(settings["invert_colormap"])
+        if "visible" in settings:
+            meta = self.channel_meta.setdefault(channel, {})
+            meta["visible"] = bool(settings["visible"])
+
+    def get_tile_info(self):
+        frame = self._rgb_frame()
+        if frame is None:
+            raise ValueError("No RGB channels are loaded")
+        base = frame["base"]
+        info = base.get_minimal_tile_info()
+        info["width"] = int(frame["width"])
+        info["height"] = int(frame["height"])
+        info["tileSize"] = int(self.tile_size)
+        info["maxLevel"] = int(frame["max_level"])
+        info["minLevel"] = 0
+        info["rgb_wcs_union"] = bool(frame.get("use_wcs_union"))
+        info["rgb_wcs_offset_x"] = float(frame.get("offset_x", 0.0))
+        info["rgb_wcs_offset_y"] = float(frame.get("offset_y", 0.0))
+        base_channel = frame["base_channel"]
+        if base_channel:
+            base_meta = self.channel_meta.get(base_channel) or {}
+            info["filepath"] = base_meta.get("filepath")
+            info["hdu"] = base_meta.get("hdu")
+            info["base_channel"] = base_channel
+        info["channels"] = {}
+        for name in self.CHANNELS:
+            gen = self.channels.get(name)
+            meta = dict(self.channel_meta.get(name) or {})
+            if gen is not None:
+                gen.ensure_dynamic_range_calculated()
+                meta.update({
+                    "loaded": True,
+                    "initial_display_min": float(gen.min_value) if gen.min_value is not None else None,
+                    "initial_display_max": float(gen.max_value) if gen.max_value is not None else None,
+                    "color_map": gen.color_map,
+                    "scaling_function": gen.scaling_function,
+                    "invert_colormap": bool(gen.invert_colormap),
+                    "visible": bool(meta.get("visible", True)),
+                    "bunit": meta.get("bunit") or gen.header.get("BUNIT"),
+                })
+            else:
+                meta["loaded"] = False
+            info["channels"][name] = meta
+        return info
+
+    def _normalized_rgb_tile(self, gen, tile_data):
+        finite_mask = np.isfinite(tile_data)
+        tile_data = np.nan_to_num(tile_data, nan=gen.min_value, posinf=gen.max_value, neginf=gen.min_value)
+        vmin, vmax = gen.min_value, gen.max_value
+        delta = None if (vmin is None or vmax is None) else float(vmax - vmin)
+        if delta is None or not np.isfinite(delta) or delta <= 0.0:
+            norm = np.full((self.tile_size, self.tile_size), 0.5, dtype=float)
+        else:
+            clipped = np.clip(tile_data, vmin, vmax)
+            t = (clipped - vmin) / delta
+            sf = gen.scaling_function
+            if sf == 'logarithmic':
+                norm = np.log1p(LOG_STRETCH_K * t) / np.log1p(LOG_STRETCH_K)
+            elif sf == 'sqrt':
+                norm = np.sqrt(t)
+            elif sf == 'power':
+                norm = t ** POWER_GAMMA
+            elif sf == 'asinh' and ASINH_BETA > 0:
+                norm = np.arcsinh(ASINH_BETA * t) / np.arcsinh(ASINH_BETA)
+            else:
+                norm = t
+        img_data_8bit = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
+        if getattr(gen, "invert_colormap", False):
+            img_data_8bit = 255 - img_data_8bit
+        rgb = np.asarray(gen.lut[img_data_8bit], dtype=np.uint16)
+        rgb[~finite_mask] = 0
+        return rgb
+
+    def _generator_tile_rgb(self, gen, level, x, y):
+        tile_bytes = gen.get_tile(level, x, y)
+        if tile_bytes is None:
+            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
+        with Image.open(io.BytesIO(tile_bytes)) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.uint16)
+        if arr.shape[:2] != (self.tile_size, self.tile_size):
+            padded = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
+            h, w = arr.shape[:2]
+            padded[:min(h, self.tile_size), :min(w, self.tile_size)] = arr[:self.tile_size, :self.tile_size]
+            return padded
+        return arr
+
+    def _display_to_wcs_pixels(self, gen, x_pixels, y_pixels):
+        x_arr = np.asarray(x_pixels, dtype=float)
+        y_arr = np.asarray(y_pixels, dtype=float)
+        if getattr(gen, "_flip_required", False):
+            y_arr = (float(gen.height) - 1.0) - y_arr
+        return x_arr, y_arr
+
+    def _wcs_to_display_pixels(self, gen, x_pixels, y_pixels):
+        x_arr = np.asarray(x_pixels, dtype=float)
+        y_arr = np.asarray(y_pixels, dtype=float)
+        if getattr(gen, "_flip_required", False):
+            y_arr = (float(gen.height) - 1.0) - y_arr
+        return x_arr, y_arr
+
+    def _render_channel_tile_wcs(self, gen, frame, level, x, y):
+        base = frame["base"]
+        if gen is None:
+            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
+        if gen is base and not frame.get("use_wcs_union"):
+            return self._render_channel_tile_scaled(gen, base, level, x, y)
+        if base.wcs is None or gen.wcs is None:
+            return None
+        try:
+            gen._ensure_image_data_loaded()
+            gen.ensure_dynamic_range_calculated()
+            base_scale = 2 ** (int(frame["max_level"]) - int(level))
+            T = self.tile_size
+
+            # Sample a 3x3 grid of probe points (9 pts) instead of all T*T pixels.
+            # For any reasonable projection, the WCS mapping over a 256px tile is
+            # locally affine to sub-pixel accuracy, so we fit an affine and apply it.
+            steps = np.array([0.0, 0.5, 1.0])
+            probe_col, probe_row = np.meshgrid(steps * (T - 1), steps * (T - 1))  # shape (3,3)
+            probe_col = probe_col.ravel()   # x within tile  (9,)
+            probe_row = probe_row.ravel()   # y within tile  (9,)
+
+            base_display_x = float(frame.get("offset_x", 0.0)) + (x * T + probe_col + 0.5) * base_scale - 0.5
+            base_display_y = float(frame.get("offset_y", 0.0)) + (y * T + probe_row + 0.5) * base_scale - 0.5
+            base_wcs_x, base_wcs_y = self._display_to_wcs_pixels(base, base_display_x, base_display_y)
+
+            # Only 9 WCS calls instead of T*T (65 536)
+            world = base.wcs.all_pix2world(base_wcs_x, base_wcs_y, 0)
+            tgt_x, tgt_y = gen.wcs.all_world2pix(world[0], world[1], 0)
+            tgt_x, tgt_y = self._wcs_to_display_pixels(gen, tgt_x, tgt_y)
+
+            if not (np.all(np.isfinite(tgt_x)) and np.all(np.isfinite(tgt_y))):
+                raise ValueError("Non-finite WCS probe values; cannot fit affine")
+
+            # Fit affine: [tgt] = [probe_col, probe_row, 1] @ A  (least squares, 9 pts -> 2 unknowns each)
+            A_src = np.column_stack([probe_col, probe_row, np.ones(9)])  # (9, 3)
+            cx, _, _, _ = np.linalg.lstsq(A_src, tgt_x, rcond=None)    # coeffs for target-x
+            cy, _, _, _ = np.linalg.lstsq(A_src, tgt_y, rcond=None)    # coeffs for target-y
+
+            # Build full-tile source coordinates via the fitted affine (no WCS calls here)
+            all_col, all_row = np.meshgrid(np.arange(T, dtype=float), np.arange(T, dtype=float))
+            all_col = all_col.ravel()
+            all_row = all_row.ravel()
+            src_x = cx[0] * all_col + cx[1] * all_row + cx[2]   # target image col
+            src_y = cy[0] * all_col + cy[1] * all_row + cy[2]   # target image row
+
+            valid = (
+                np.isfinite(src_x) & np.isfinite(src_y) &
+                (src_x >= 0) & (src_x < int(gen.width)) &
+                (src_y >= 0) & (src_y < int(gen.height))
+            )
+            tile_data = np.full(T * T, np.nan, dtype=float)
+            if np.any(valid):
+                img_arr = np.asarray(gen.image_data)
+                ix = np.rint(src_x[valid]).astype(np.int64)
+                iy = np.rint(src_y[valid]).astype(np.int64)
+                tile_data[valid] = img_arr[iy, ix]
+            tile_data = tile_data.reshape(T, T)
+            return self._normalized_rgb_tile(gen, tile_data)
+        except Exception as exc:
+            logger.debug("RGB WCS tile alignment failed; falling back to scaled sampling: %s", exc)
+            return None
+
+    def _render_channel_tile_scaled(self, gen, base, level, x, y):
+        gen._ensure_image_data_loaded()
+        gen.ensure_dynamic_range_calculated()
+        base_scale = 2 ** (int(base.max_level) - int(level))
+
+        if gen is base:
+            start_x = x * self.tile_size * base_scale
+            start_y = y * self.tile_size * base_scale
+            end_x = min(start_x + self.tile_size * base_scale, gen.width)
+            end_y = min(start_y + self.tile_size * base_scale, gen.height)
+            x0, y0 = int(start_x), int(start_y)
+            x1, y1 = int(end_x), int(end_y)
+            if x0 >= x1 or y0 >= y1:
+                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+            elif base_scale <= 1:
+                region = np.asarray(gen.image_data[y0:y1, x0:x1])
+                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+                if region.size:
+                    h, w = region.shape[:2]
+                    tile_data[:h, :w] = region
+            else:
+                stride = max(1, int(base_scale))
+                sampled = np.asarray(gen.image_data[y0:y1:stride, x0:x1:stride])
+                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+                if sampled.size:
+                    h, w = sampled.shape[:2]
+                    tile_data[:min(h, self.tile_size), :min(w, self.tile_size)] = sampled[:self.tile_size, :self.tile_size]
+        else:
+            base_x0 = x * self.tile_size * base_scale
+            base_y0 = y * self.tile_size * base_scale
+            base_x1 = base_x0 + self.tile_size * base_scale
+            base_y1 = base_y0 + self.tile_size * base_scale
+
+            x_ratio = float(gen.width) / float(base.width) if base.width else 1.0
+            y_ratio = float(gen.height) / float(base.height) if base.height else 1.0
+            src_x0 = base_x0 * x_ratio
+            src_y0 = base_y0 * y_ratio
+            src_x1 = base_x1 * x_ratio
+            src_y1 = base_y1 * y_ratio
+
+            ix0 = int(np.floor(max(0, src_x0)))
+            iy0 = int(np.floor(max(0, src_y0)))
+            ix1 = int(np.ceil(min(gen.width, src_x1)))
+            iy1 = int(np.ceil(min(gen.height, src_y1)))
+
+            if ix0 >= ix1 or iy0 >= iy1:
+                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+            else:
+                region = np.asarray(gen.image_data[iy0:iy1, ix0:ix1])
+                if region.size == 0:
+                    tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+                else:
+                    tile_data = resize(
+                        region,
+                        (self.tile_size, self.tile_size),
+                        order=0,
+                        preserve_range=True,
+                        anti_aliasing=False,
+                        mode='constant',
+                        cval=np.nan
+                    )
+        return self._normalized_rgb_tile(gen, tile_data)
+
+    def _render_channel_tile(self, gen, frame, level, x, y):
+        if gen is None:
+            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
+        base = frame["base"]
+        if gen is base and not frame.get("use_wcs_union"):
+            return self._generator_tile_rgb(gen, level, x, y)
+        aligned = self._render_channel_tile_wcs(gen, frame, level, x, y)
+        if aligned is not None:
+            return aligned
+        if frame.get("use_wcs_union"):
+            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
+        return self._render_channel_tile_scaled(gen, base, level, x, y)
+
+    def get_tile(self, level, x, y):
+        frame = self._rgb_frame()
+        if frame is None:
+            return None
+        active = [
+            (name, self.channels[name])
+            for name in self.CHANNELS
+            if self.channels.get(name) is not None
+            and bool((self.channel_meta.get(name) or {}).get("visible", True))
+        ]
+        if not active:
+            return None
+
+        def _render(name_gen):
+            return self._render_channel_tile(name_gen[1], frame, level, x, y)
+
+        with ThreadPoolExecutor(max_workers=len(active)) as pool:
+            results = list(pool.map(_render, active))
+
+        composed = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
+        for r in results:
+            composed += r
+        composed = np.clip(composed, 0, 255).astype(np.uint8)
+        img = Image.fromarray(composed, "RGB")
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG", optimize=False, compress_level=0)
+        return buffer.getvalue()
+
+    def channel_histogram(self, channel, bins=256, min_val=None, max_val=None):
+        channel = str(channel or "").lower()
+        if channel not in self.CHANNELS:
+            raise ValueError("RGB channel must be one of r, g, b, c4, c5")
+        gen = self.channels.get(channel)
+        if gen is None:
+            raise ValueError(f"No file loaded for channel {channel.upper()}")
+        gen._ensure_image_data_loaded()
+        data_arr = np.asarray(gen.image_data)
+        if data_arr.size > MAX_POINTS_FOR_FULL_HISTOGRAM and data_arr.ndim >= 2:
+            ratio = data_arr.size / MAX_POINTS_FOR_FULL_HISTOGRAM
+            stride = max(1, int(np.sqrt(ratio)))
+            sampled_arr = data_arr[::stride, ::stride]
+        else:
+            sampled_arr = data_arr
+        sample = sampled_arr[np.isfinite(sampled_arr)]
+        if sample.size == 0:
+            raise ValueError("Channel image has no finite pixels")
+        lo = float(min_val) if min_val is not None else float(np.min(sample))
+        hi = float(max_val) if max_val is not None else float(np.max(sample))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo = float(np.min(sample))
+            hi = float(np.max(sample))
+        counts, edges = np.histogram(sample, bins=max(8, min(int(bins), 4096)), range=(lo, hi))
+        return {
+            "counts": counts.astype(int).tolist(),
+            "bin_edges": [float(v) for v in edges],
+            "data_min": float(np.min(sample)),
+            "data_max": float(np.max(sample)),
+        }
 
 
 class SegmentTileGenerator:
@@ -6066,6 +6664,13 @@ async def get_fits_tile_information(request: Request):
         # If overview already available, include it
         if getattr(tile_generator, "overview_image", None):
             info["overview"] = tile_generator.overview_image
+        # Surface effective session id so frontend can persist it and authorize
+        # subsequent tile XHR requests.
+        try:
+            if session is not None and getattr(session, "session_id", None):
+                info["session_id"] = session.session_id
+        except Exception:
+            pass
         return JSONResponse(content=info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get tile info: {str(e)}")
@@ -6133,6 +6738,259 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         return Response(content=tile_data, media_type="image/png", headers=no_store_headers)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to get tile: {str(e)}"})
+
+
+def _resolve_browser_fits_path(filepath: str) -> Path:
+    raw = str(filepath or "").replace("\\", "/").lstrip("/")
+    if not raw or "\x00" in raw or ".." in Path(raw).parts:
+        raise HTTPException(status_code=400, detail="Invalid FITS filepath")
+    path = Path(FILES_DIRECTORY) / raw
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    return path
+
+
+def _pick_first_image_hdu(path: Path, requested_hdu=None) -> int:
+    with fits.open(str(path), ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+        if requested_hdu is not None:
+            hdu_index = int(requested_hdu)
+            if hdu_index < 0 or hdu_index >= len(hdul):
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+            data = hdul[hdu_index].data
+            if data is None or getattr(data, "ndim", 0) < 2:
+                raise HTTPException(status_code=400, detail=f"HDU {hdu_index} is not an image HDU.")
+            return hdu_index
+        for idx, hdu in enumerate(hdul):
+            data = getattr(hdu, "data", None)
+            if data is not None and getattr(data, "ndim", 0) >= 2:
+                return idx
+    raise HTTPException(status_code=400, detail="No image HDU found in FITS file.")
+
+
+def _get_rgb_generator(session_data: dict, create: bool = False) -> RGBTileGenerator | None:
+    rgb_generator = session_data.get("rgb_tile_generator")
+    if rgb_generator is None and create:
+        rgb_generator = RGBTileGenerator()
+        session_data["rgb_tile_generator"] = rgb_generator
+    return rgb_generator
+
+
+def _rgb_tile_info_with_session(rgb_generator: RGBTileGenerator, session: SessionContext) -> dict:
+    info = rgb_generator.get_tile_info()
+    try:
+        if session is not None and getattr(session, "session_id", None):
+            info["session_id"] = session.session_id
+    except Exception:
+        pass
+    return info
+
+
+@app.post("/rgb/set-channel/")
+async def rgb_set_channel(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+    data = await request.json()
+
+    channel = str(data.get("channel", "")).lower()
+    filepath = data.get("filepath")
+    hdu_index = _pick_first_image_hdu(_resolve_browser_fits_path(filepath), data.get("hdu"))
+    path = _resolve_browser_fits_path(filepath)
+
+    loop = asyncio.get_running_loop()
+    generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, str(path), hdu_index)
+    try:
+        flip_y, _, _ = analyze_wcs_orientation(generator.header, None)
+        if flip_y:
+            setattr(generator, "_flip_required", True)
+    except Exception:
+        pass
+    try:
+        settings = {
+            "color_map": data.get("color_map"),
+            "scaling_function": data.get("scaling_function"),
+            "invert_colormap": data.get("invert_colormap"),
+        }
+        if data.get("min_value") is not None:
+            settings["min_value"] = data.get("min_value")
+        if data.get("max_value") is not None:
+            settings["max_value"] = data.get("max_value")
+        _apply_display_settings_to_generator(generator, settings)
+    except Exception:
+        pass
+
+    rgb_generator = _get_rgb_generator(session_data, create=True)
+    started_new_rgb = False
+    try:
+        rgb_generator.set_channel(channel, generator, str(filepath), hdu_index)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith(RGBTileGenerator.WCS_MISMATCH_PREFIX):
+            try:
+                generator.cleanup()
+            except Exception:
+                pass
+            detail = msg[len(RGBTileGenerator.WCS_MISMATCH_PREFIX):].strip() or msg
+            raise HTTPException(status_code=400, detail=detail)
+        if data.get("replace_incompatible"):
+            try:
+                rgb_generator.clear_except(channel)
+                rgb_generator.set_channel(channel, generator, str(filepath), hdu_index)
+                started_new_rgb = True
+            except ValueError:
+                try:
+                    generator.cleanup()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=400, detail=msg)
+        else:
+            try:
+                generator.cleanup()
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=msg)
+
+    if started_new_rgb:
+        try:
+            rgb_generator.channel_meta[channel]["started_new_rgb"] = True
+        except Exception:
+            pass
+
+    # Pre-warm: load image data + dynamic range in background so the first tile
+    # request doesn't block on it. generator is already bound in this scope.
+    def _prewarm(gen):
+        try:
+            gen._ensure_image_data_loaded()
+            gen.ensure_dynamic_range_calculated()
+        except Exception:
+            pass
+    threading.Thread(target=_prewarm, args=(generator,), daemon=True).start()
+
+    return JSONResponse(content=_rgb_tile_info_with_session(rgb_generator, session))
+
+@app.post("/rgb/clear/")
+async def rgb_clear(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    rgb_generator = _get_rgb_generator(session.data, create=False)
+    if rgb_generator is not None:
+        rgb_generator.clear_except("")
+    return JSONResponse(content={"status": "success"})
+
+
+@app.post("/rgb/update-channel/")
+async def rgb_update_channel(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+    data = await request.json()
+    rgb_generator = _get_rgb_generator(session_data, create=False)
+    if rgb_generator is None:
+        raise HTTPException(status_code=404, detail="RGB image is not initialized")
+    try:
+        rgb_generator.update_channel(data.get("channel"), data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(content=_rgb_tile_info_with_session(rgb_generator, session))
+
+
+@app.post("/rgb/channel-histogram/")
+async def rgb_channel_histogram(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    data = await request.json()
+    rgb_generator = _get_rgb_generator(session.data, create=False)
+    if rgb_generator is None:
+        raise HTTPException(status_code=404, detail="RGB image is not initialized")
+    try:
+        hist = rgb_generator.channel_histogram(
+            data.get("channel"),
+            bins=int(data.get("bins", 256)),
+            min_val=data.get("min_val"),
+            max_val=data.get("max_val"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(content=hist)
+
+
+@app.post("/rgb/channel-percentile/")
+async def rgb_channel_percentile(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    data = await request.json()
+    channel = str(data.get("channel", "")).lower()
+    q = float(data.get("percentile", 0.99))
+    if q <= 0 or q > 1:
+        raise HTTPException(status_code=400, detail="Percentile must be in the range (0, 1].")
+    rgb_generator = _get_rgb_generator(session.data, create=False)
+    if rgb_generator is None or channel not in rgb_generator.channels or rgb_generator.channels.get(channel) is None:
+        raise HTTPException(status_code=404, detail="RGB channel is not loaded")
+    gen = rgb_generator.channels[channel]
+    gen._ensure_image_data_loaded()
+    data_arr = np.asarray(gen.image_data)
+    if data_arr.size == 0:
+        raise HTTPException(status_code=400, detail="Channel image has no pixels")
+    if data_arr.size > MAX_POINTS_FOR_FULL_HISTOGRAM and data_arr.ndim >= 2:
+        ratio = data_arr.size / MAX_POINTS_FOR_FULL_HISTOGRAM
+        stride = max(1, int(np.sqrt(ratio)))
+        data_arr = data_arr[::stride, ::stride]
+    sample = data_arr[np.isfinite(data_arr)]
+    if sample.size == 0:
+        raise HTTPException(status_code=400, detail="Channel image has no finite pixels")
+    min_value = float(np.min(sample))
+    max_value = float(np.percentile(sample, q * 100.0))
+    if not np.isfinite(min_value) or not np.isfinite(max_value) or max_value <= min_value:
+        max_value = float(np.max(sample))
+    return JSONResponse(content={"min_value": min_value, "max_value": max_value})
+
+
+@app.get("/rgb/tile-info/")
+async def rgb_tile_info(request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    rgb_generator = _get_rgb_generator(session.data, create=False)
+    if rgb_generator is None:
+        raise HTTPException(status_code=404, detail="RGB image is not initialized")
+    try:
+        return JSONResponse(content=_rgb_tile_info_with_session(rgb_generator, session))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/rgb-tile/{level}/{x}/{y}")
+async def rgb_tile(level: int, x: int, y: int, request: Request):
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    session_data = session.data
+    rgb_generator = _get_rgb_generator(session_data, create=False)
+    if rgb_generator is None:
+        raise HTTPException(status_code=404, detail="RGB image is not initialized")
+
+    no_store_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
+    render_sem = getattr(app.state, "tile_render_semaphore", None)
+    if render_sem is None:
+        render_sem = asyncio.Semaphore(3)
+        app.state.tile_render_semaphore = render_sem
+    try:
+        async with render_sem:
+            loop = asyncio.get_running_loop()
+            tile_data = await loop.run_in_executor(app.state.thread_executor, rgb_generator.get_tile, level, x, y)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if tile_data is None:
+        raise HTTPException(status_code=404, detail="RGB tile unavailable")
+    return Response(content=tile_data, media_type="image/png", headers=no_store_headers)
 
 # Add this new endpoint to list available files in the "files" directory
 @app.get("/list-files-for-frontend/")
@@ -9428,7 +10286,27 @@ async def catalog_binary(
                 session_data = session.data if session is not None else None
                 fits_file = (session_data.get("current_fits_file") if session_data else getattr(app.state, "current_fits_file", None))
                 hdu_index = int(session_data.get("current_hdu_index", 0) if session_data else getattr(app.state, "current_hdu_index", 0))
-                if not fits_file:
+                rgb_frame = None
+                rgb_generator = _get_rgb_generator(session_data, create=False) if session_data is not None else None
+                if rgb_generator is not None:
+                    try:
+                        rgb_frame = rgb_generator._rgb_frame()
+                    except Exception:
+                        rgb_frame = None
+                if rgb_frame is not None and rgb_frame.get("base") is not None:
+                    base = rgb_frame["base"]
+                    image_wcs = getattr(base, "wcs", None)
+                    image_height = int(rgb_frame.get("height") or base.height)
+                    image_width = int(rgb_frame.get("width") or base.width)
+                    flip_y = False
+                    try:
+                        base_meta = rgb_generator.channel_meta.get(rgb_frame.get("base_channel")) or {}
+                        if base_meta.get("filepath"):
+                            fits_file = str(_resolve_browser_fits_path(base_meta.get("filepath")))
+                            hdu_index = int(base_meta.get("hdu", getattr(base, "hdu_index", 0)))
+                    except Exception:
+                        pass
+                elif not fits_file:
                     fast_result = {"error": "No FITS file currently selected", "records": [], "total": 0, "pagination": (page, limit)}
                 else:
                     # Build image WCS and dimensions without touching image data
@@ -9580,11 +10458,18 @@ async def catalog_binary(
                             if image_wcs is None or not getattr(image_wcs, 'has_celestial', False) or not (image_width and image_height):
                                 use_fast_path = False
                             else:
-                                x_pix, y_pix = image_wcs.all_world2pix(ra_deg, dec_deg, 0)
-                                x_pix = np.array(x_pix, dtype=float)
-                                y_pix = np.array(y_pix, dtype=float)
-                                if flip_y and image_height is not None:
-                                    y_pix = (float(image_height) - y_pix - 1.0)
+                                if rgb_frame is not None and rgb_frame.get("base") is not None and rgb_generator is not None:
+                                    base = rgb_frame["base"]
+                                    x_wcs, y_wcs = image_wcs.all_world2pix(ra_deg, dec_deg, 0)
+                                    base_x, base_y = rgb_generator._wcs_to_display_pixels(base, x_wcs, y_wcs)
+                                    x_pix = np.array(base_x, dtype=float) - float(rgb_frame.get("offset_x", 0.0))
+                                    y_pix = np.array(base_y, dtype=float) - float(rgb_frame.get("offset_y", 0.0))
+                                else:
+                                    x_pix, y_pix = image_wcs.all_world2pix(ra_deg, dec_deg, 0)
+                                    x_pix = np.array(x_pix, dtype=float)
+                                    y_pix = np.array(y_pix, dtype=float)
+                                    if flip_y and image_height is not None:
+                                        y_pix = (float(image_height) - y_pix - 1.0)
                                 # In-bounds mask
                                 inb = (
                                     np.isfinite(x_pix) & np.isfinite(y_pix) &
@@ -9672,6 +10557,24 @@ async def catalog_binary(
             if not catalog_data:
                 logger.warning(f"/catalog-binary: No in-bounds objects for {catalog_name}; returning empty result")
                 catalog_data = []
+
+        # Fast mode can remain enabled while still not producing a usable row payload
+        # (for example, RGB/session state may not expose a current image WCS yet). In
+        # that case, explicitly fall back before the legacy serializer touches
+        # catalog_data. This prevents len(None) 500s and lets the frontend draw the
+        # catalog using the raw/legacy path.
+        if not (use_fast_path and fast_result and 'ra_page' in fast_result):
+            use_fast_path = False
+            if catalog_data is None:
+                full_path = (Path(str(catalogs_dir)) / catalog_name)
+                loop = asyncio.get_running_loop()
+                catalog_data = await loop.run_in_executor(
+                    None,
+                    lambda: load_catalog_data(str(full_path), request=request)
+                )
+                if not catalog_data:
+                    logger.warning(f"/catalog-binary: No in-bounds objects for {catalog_name}; returning empty result")
+                    catalog_data = []
 
         # Prepare binary data (same on both paths)
         binary_buffer = BytesIO()
@@ -10760,72 +11663,93 @@ def load_catalog_data(catalog_path_str, request: Request = None):
 
         fits_file = (session_data.get("current_fits_file") if session_data else getattr(app.state, "current_fits_file", None))
         hdu_index = int(session_data.get("current_hdu_index", 0) if session_data else getattr(app.state, "current_hdu_index", 0))
-        if not fits_file:
+        rgb_generator = _get_rgb_generator(session_data, create=False) if session_data is not None else None
+        rgb_frame = None
+        if rgb_generator is not None:
+            try:
+                rgb_frame = rgb_generator._rgb_frame()
+            except Exception:
+                rgb_frame = None
+
+        if rgb_frame is not None and rgb_frame.get("base") is not None:
+            base = rgb_frame["base"]
+            image_wcs = getattr(base, "wcs", None)
+            image_height = int(rgb_frame.get("height") or base.height)
+            image_width = int(rgb_frame.get("width") or base.width)
+            flip_y = False
+            try:
+                base_meta = rgb_generator.channel_meta.get(rgb_frame.get("base_channel")) or {}
+                if base_meta.get("filepath"):
+                    fits_file = str(_resolve_browser_fits_path(base_meta.get("filepath")))
+                    hdu_index = int(base_meta.get("hdu", getattr(base, "hdu_index", 0)))
+            except Exception:
+                pass
+        elif not fits_file:
             print("No FITS file currently selected")
             return []
+        else:
+            # Prefer exact viewer WCS if present
+            image_wcs = (session_data.get("current_wcs_object") if session_data else getattr(app.state, "current_wcs_object", None))
+            image_height: int | None = None
+            image_width: int | None = None
+            flip_y = False
 
-        # Prefer exact viewer WCS if present
-        image_wcs = (session_data.get("current_wcs_object") if session_data else getattr(app.state, "current_wcs_object", None))
-        image_height: int | None = None
-        image_width: int | None = None
-        flip_y = False
-
-        # Determine flip_y and image_height from the displayed image
-        try:
-            with fits.open(fits_file) as hdul:
-                if not (0 <= hdu_index < len(hdul)):
-                    hdu_index = 0
-
-                # IMPORTANT PERFORMANCE NOTE:
-                # Avoid touching `hdu.data` here — for large FITS images it forces reading the full array
-                # from disk/network, which can take minutes. We only need header + NAXIS sizing.
-                def _is_image_hdu(h) -> bool:
-                    try:
-                        hdr = getattr(h, 'header', None)
-                        if hdr is None:
-                            return False
-                        naxis = int(hdr.get('NAXIS', 0) or 0)
-                        if naxis < 2:
-                            return False
-                        n1 = hdr.get('NAXIS1', None)
-                        n2 = hdr.get('NAXIS2', None)
-                        return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
-                    except Exception:
-                        return False
-
-                image_hdu = hdul[hdu_index]
-                if not _is_image_hdu(image_hdu):
-                    image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
-                if image_hdu is None:
-                    print("No image HDU found in FITS file")
-                    return []
-
-                fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
-                flip_y = bool(fy)
-                # IMPORTANT: vertical flip uses the number of rows (height)
-                image_height = int(image_hdu.header.get('NAXIS2', 0))
-                image_width = int(image_hdu.header.get('NAXIS1', 0))
-
-                if image_wcs is None:
-                    try:
-                        wcs_header = _prepare_jwst_header_for_wcs(image_hdu.header)
-                    except Exception:
-                        wcs_header = image_hdu.header
-                    image_wcs = WCS(wcs_header)
-            # Reduce to celestial (2D) WCS if header contains extra axes (e.g., spectral, Stokes)
+            # Determine flip_y and image_height from the displayed image
             try:
-                if image_wcs is not None:
-                    if hasattr(image_wcs, 'celestial'):
-                        image_wcs = image_wcs.celestial
-                    else:
-                        # Fallback for older astropy
-                        image_wcs = image_wcs.sub(['celestial'])
+                with fits.open(fits_file) as hdul:
+                    if not (0 <= hdu_index < len(hdul)):
+                        hdu_index = 0
+
+                    # IMPORTANT PERFORMANCE NOTE:
+                    # Avoid touching `hdu.data` here — for large FITS images it forces reading the full array
+                    # from disk/network, which can take minutes. We only need header + NAXIS sizing.
+                    def _is_image_hdu(h) -> bool:
+                        try:
+                            hdr = getattr(h, 'header', None)
+                            if hdr is None:
+                                return False
+                            naxis = int(hdr.get('NAXIS', 0) or 0)
+                            if naxis < 2:
+                                return False
+                            n1 = hdr.get('NAXIS1', None)
+                            n2 = hdr.get('NAXIS2', None)
+                            return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
+                        except Exception:
+                            return False
+
+                    image_hdu = hdul[hdu_index]
+                    if not _is_image_hdu(image_hdu):
+                        image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
+                    if image_hdu is None:
+                        print("No image HDU found in FITS file")
+                        return []
+
+                    fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
+                    flip_y = bool(fy)
+                    # IMPORTANT: vertical flip uses the number of rows (height)
+                    image_height = int(image_hdu.header.get('NAXIS2', 0))
+                    image_width = int(image_hdu.header.get('NAXIS1', 0))
+
+                    if image_wcs is None:
+                        try:
+                            wcs_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                        except Exception:
+                            wcs_header = image_hdu.header
+                        image_wcs = WCS(wcs_header)
+                # Reduce to celestial (2D) WCS if header contains extra axes (e.g., spectral, Stokes)
+                try:
+                    if image_wcs is not None:
+                        if hasattr(image_wcs, 'celestial'):
+                            image_wcs = image_wcs.celestial
+                        else:
+                            # Fallback for older astropy
+                            image_wcs = image_wcs.sub(['celestial'])
+                except Exception:
+                    # If subsetting fails, leave image_wcs as-is; downstream guard handles errors
+                    pass
             except Exception:
-                # If subsetting fails, leave image_wcs as-is; downstream guard handles errors
-                pass
-        except Exception as e:
-            print(f"WCS/init error: {e}")
-            image_wcs = None
+                print(f"WCS/init error: {e}")
+                image_wcs = None
 
         # Pixel scale for converting angular radii -> pixels (if needed)
         arcsec_per_pixel = None
@@ -11288,6 +12212,11 @@ def load_catalog_data(catalog_path_str, request: Request = None):
 
                 def _project_chunk(start, end):
                     sub_px, sub_py = image_wcs.all_world2pix(ra_arr[start:end], dec_arr[start:end], 0)
+                    if rgb_frame is not None and rgb_frame.get("base") is not None and rgb_generator is not None:
+                        base = rgb_frame["base"]
+                        sub_px, sub_py = rgb_generator._wcs_to_display_pixels(base, sub_px, sub_py)
+                        sub_px = np.asarray(sub_px, dtype=float) - float(rgb_frame.get("offset_x", 0.0))
+                        sub_py = np.asarray(sub_py, dtype=float) - float(rgb_frame.get("offset_y", 0.0))
                     px[start:end] = sub_px
                     py[start:end] = sub_py
 
