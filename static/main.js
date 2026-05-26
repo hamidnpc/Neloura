@@ -3536,7 +3536,17 @@ function renderCatalogOverlayControls() {
             } catch (_) {}
             return [];
         })();
-        if (selected.length && typeof __attachColumnValuesToRawRecords === 'function'
+        if (selected.length && typeof __ensureCatalogColumnsLoaded === 'function') {
+            __ensureCatalogColumnsLoaded(apiKey, selected)
+                .then(() => {
+                    redrawing();
+                    scheduleCatalogOverlayControlsRefresh();
+                })
+                .catch(() => {
+                    redrawing();
+                    scheduleCatalogOverlayControlsRefresh();
+                });
+        } else if (selected.length && typeof __attachColumnValuesToRawRecords === 'function'
             && recordsForApi.length) {
             __attachColumnValuesToRawRecords(apiKey, recordsForApi, selected)
                 .then(() => {

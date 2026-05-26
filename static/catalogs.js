@@ -2160,6 +2160,7 @@ function __columnsToAttachForOverlayStyles(styles) {
 async function __attachColumnValuesToRawRecords(catalogApiName, records, columns) {
     const cols = Array.isArray(columns) ? columns.map(String).filter(Boolean) : [String(columns || '')].filter(Boolean);
     if (!catalogApiName || !Array.isArray(records) || !records.length || !cols.length) return;
+    const apiName = String(catalogApiName || '').replace(/^catalogs\//, '');
 
     // Only fetch columns that are missing from the raw record payload.
     const missingCols = cols.filter((c) => {
@@ -2187,7 +2188,7 @@ async function __attachColumnValuesToRawRecords(catalogApiName, records, columns
         const resp = await apiFetch('/catalog-column-values/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ catalog_name: catalogApiName, row_indices: chunkIdxs, columns: missingCols })
+            body: JSON.stringify({ catalog_name: apiName, row_indices: chunkIdxs, columns: missingCols })
         });
         const data = await resp.json();
         if (!resp.ok) {
