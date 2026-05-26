@@ -8893,11 +8893,21 @@ async def fits_preview(
         raise HTTPException(status_code=401, detail="Missing session")
     session_data = session.data
 
-    # Resolve path safely under FILES_DIRECTORY
+    # Resolve path safely under FILES_DIRECTORY. Keep the logical path check so
+    # deliberate symlinks inside files/ can point to mounted data directories.
     base_dir = Path(FILES_DIRECTORY).resolve()
+    raw_filepath = str(filepath or "").replace("\\", "/")
+    if "\x00" in raw_filepath or any(part == ".." for part in raw_filepath.split("/")):
+        raise HTTPException(status_code=400, detail="Invalid filepath")
+
     # filepath coming from file browser is expected to be relative (e.g. "uploads/foo.fits")
-    candidate = (base_dir / filepath).resolve()
-    if not str(candidate).startswith(str(base_dir)):
+    logical_candidate = base_dir / raw_filepath
+    candidate = logical_candidate.resolve()
+    try:
+        logical_is_under_files = logical_candidate.is_relative_to(base_dir)
+    except Exception:
+        logical_is_under_files = False
+    if not (logical_is_under_files or str(candidate).startswith(str(base_dir))):
         raise HTTPException(status_code=400, detail="Invalid filepath")
     if not candidate.exists():
         raise HTTPException(status_code=404, detail=f"FITS file not found: {filepath}")
