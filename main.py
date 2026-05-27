@@ -7026,41 +7026,66 @@ async def list_files_for_frontend(path: str = "", search: str = Query(None)):
         items = []
 
         if search and str(search).strip():
-            # Recursive, case-insensitive search (matches name/path regardless of upper/lower case)
+            # Recursive, case-insensitive search. Use os.walk(..., followlinks=True)
+            # so deliberate aliases/symlinks inside files/ are searchable.
             needle = str(search).strip().casefold()
-            for entry in current_dir.rglob('*'):
+            seen_dirs = set()
+            for root, dirnames, filenames in os.walk(current_dir, topdown=True, followlinks=True):
+                root_path = Path(root)
                 try:
-                    if any(part.startswith('.') for part in entry.parts):
+                    root_stat = root_path.stat()
+                    root_key = (root_stat.st_dev, root_stat.st_ino)
+                    if root_key in seen_dirs:
+                        dirnames[:] = []
                         continue
+                    seen_dirs.add(root_key)
                 except Exception:
                     pass
 
-                try:
-                    rel_path = str(entry.relative_to(base_dir))
-                except Exception:
-                    continue
+                # Do not descend into hidden directories.
+                dirnames[:] = [d for d in dirnames if not str(d).startswith('.')]
 
-                # Match is intentionally against the *name* only (not full path),
-                # so searching "3627" won't return unrelated files that just live
-                # under a directory named "...3627...".
-                hay = f"{entry.name}".casefold()
-                if needle not in hay:
-                    continue
-
-                if entry.is_dir():
+                for dirname in list(dirnames):
+                    entry = root_path / dirname
+                    try:
+                        rel_path = str(entry.relative_to(base_dir))
+                    except Exception:
+                        continue
+                    hay = f"{entry.name}".casefold()
+                    if needle not in hay:
+                        continue
+                    try:
+                        st = entry.stat()
+                    except Exception:
+                        continue
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
                         "type": "directory",
-                        "modified": entry.stat().st_mtime
+                        "modified": st.st_mtime
                     })
-                elif entry.is_file() and entry.suffix.lower() in ['.fits', '.fit']:
+
+                for filename in filenames:
+                    entry = root_path / filename
+                    try:
+                        if entry.suffix.lower() not in ['.fits', '.fit']:
+                            continue
+                        rel_path = str(entry.relative_to(base_dir))
+                    except Exception:
+                        continue
+                    hay = f"{entry.name}".casefold()
+                    if needle not in hay:
+                        continue
+                    try:
+                        st = entry.stat()
+                    except Exception:
+                        continue
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
                         "type": "file",
-                        "size": entry.stat().st_size,
-                        "modified": entry.stat().st_mtime
+                        "size": st.st_size,
+                        "modified": st.st_mtime
                     })
         else:
             # Original behavior: list contents of the current directory
