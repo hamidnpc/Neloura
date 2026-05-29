@@ -21,6 +21,7 @@
         version: Date.now(),
         openRequestId: 0,
         tileInfo: null,
+        channelLabels: {},
         channels: {
             r: { color_map: 'red', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
             g: { color_map: 'green', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
@@ -52,6 +53,47 @@
         try {
             if (typeof window.showNotification === 'function') window.showNotification(message, ms, type);
         } catch (_) { /* noop */ }
+    }
+
+    function defaultChannelLabel(channel) {
+        const id = typeof channel === 'string' ? channel : (channel && channel.id);
+        const found = CHANNELS.find((ch) => ch.id === id);
+        return found ? found.label : 'Channel';
+    }
+
+    function sanitizeChannelLabel(value, fallback) {
+        const label = String(value || '').replace(/\s+/g, ' ').trim();
+        return (label || fallback || 'Channel').slice(0, 32);
+    }
+
+    function channelLabel(channel) {
+        const id = typeof channel === 'string' ? channel : (channel && channel.id);
+        return (state.channelLabels && state.channelLabels[id]) || defaultChannelLabel(id);
+    }
+
+    function channelBadgeText(channel) {
+        const fallback = defaultChannelLabel(channel).replace(/^Channel\s*/i, '').trim();
+        const label = channelLabel(channel);
+        if (label === defaultChannelLabel(channel)) return fallback || label.slice(0, 3);
+        const words = label.match(/[A-Za-z0-9]+/g) || [];
+        const compact = words.length > 1
+            ? words.map((word) => word.charAt(0)).join('')
+            : label.replace(/\s+/g, '');
+        return (compact || label).slice(0, 4);
+    }
+
+    function saveChannelLabel(channel, value) {
+        if (!CHANNELS.some((ch) => ch.id === channel)) return;
+        const fallback = defaultChannelLabel(channel);
+        const label = sanitizeChannelLabel(value, fallback);
+        if (!state.channelLabels) state.channelLabels = {};
+        if (label === fallback) delete state.channelLabels[channel];
+        else state.channelLabels[channel] = label;
+        updateChannelLabelUi();
+    }
+
+    function updateChannelLabelUi() {
+        updateRgbVisibilityControl();
     }
 
     function hideWelcomeOverlays() {
@@ -671,7 +713,12 @@
                 circle.setAttribute('stroke-dasharray', visible ? '' : '4 3');
             }
             const text = group.querySelector('text');
-            if (text) text.removeAttribute('title');
+            if (text) {
+                const badge = channelBadgeText(ch);
+                text.removeAttribute('title');
+                text.textContent = badge;
+                text.setAttribute('font-size', badge.length > 3 ? '8' : (badge.length > 2 ? '9' : '11'));
+            }
 
             // Also keep a JS-tooltip copy for instant hover (no native delay).
             group.dataset.tooltip = tooltip;
@@ -680,6 +727,7 @@
             .filter((ch) => (state.channels[ch.id] || {}).loaded && (state.channels[ch.id] || {}).visible !== false)
             .map((ch) => ch.label);
         control.title = activeNames.length ? `Visible RGB channels: ${activeNames.join(', ')}` : 'All RGB channels are hidden';
+        updateRgbChannelNameEditorState();
     }
 
     function ensureRgbVisibilityTooltip() {
@@ -746,12 +794,151 @@
         tooltip.style.transform = 'translate(-9999px, -9999px)';
     }
 
+    function ensureRgbChannelNameEditor() {
+        const doc = hostDocument();
+        let editor = doc.getElementById('rgb-channel-name-editor');
+        if (editor) return editor;
+
+        editor = doc.createElement('div');
+        editor.id = 'rgb-channel-name-editor';
+        editor.className = 'mp-interactive';
+        Object.assign(editor.style, {
+            position: 'fixed',
+            transform: 'translate(-9999px, -9999px)',
+            width: '180px',
+            padding: '8px',
+            borderRadius: '10px',
+            background: 'rgba(24,24,24,0.96)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+            color: '#fff',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '12px',
+            zIndex: '3510',
+            display: 'none',
+            boxSizing: 'border-box'
+        });
+
+        const label = doc.createElement('label');
+        label.textContent = 'Channel name';
+        label.setAttribute('for', 'rgb-channel-name-input');
+        Object.assign(label.style, { display: 'block', marginBottom: '5px', color: '#ccc' });
+
+        const input = doc.createElement('input');
+        input.id = 'rgb-channel-name-input';
+        input.type = 'text';
+        input.maxLength = 32;
+        Object.assign(input.style, {
+            width: '100%',
+            boxSizing: 'border-box',
+            background: '#2b2b2b',
+            color: '#fff',
+            border: '1px solid #555',
+            borderRadius: '6px',
+            padding: '6px 7px',
+            fontSize: '12px',
+            outline: 'none'
+        });
+
+        const row = doc.createElement('label');
+        Object.assign(row.style, {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            marginTop: '7px',
+            color: '#ddd',
+            cursor: 'pointer',
+            userSelect: 'none'
+        });
+        const visible = doc.createElement('input');
+        visible.id = 'rgb-channel-name-visible';
+        visible.type = 'checkbox';
+        visible.style.margin = '0';
+        row.appendChild(visible);
+        row.appendChild(doc.createTextNode('Visible'));
+
+        const hint = doc.createElement('div');
+        hint.textContent = 'Enter saves, Esc closes';
+        Object.assign(hint.style, { marginTop: '6px', color: '#888', fontSize: '11px' });
+
+        input.addEventListener('input', () => saveChannelLabel(editor.dataset.channel, input.value));
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveChannelLabel(editor.dataset.channel, input.value);
+                hideRgbChannelNameEditor();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                hideRgbChannelNameEditor();
+            }
+        });
+        visible.addEventListener('change', () => {
+            const channel = editor.dataset.channel;
+            const data = state.channels[channel] || {};
+            if (!data.loaded || visible.checked === (data.visible !== false)) return;
+            toggleRgbChannelVisibility(channel);
+        });
+        editor.addEventListener('pointerdown', (event) => event.stopPropagation());
+
+        editor.appendChild(label);
+        editor.appendChild(input);
+        editor.appendChild(row);
+        editor.appendChild(hint);
+        doc.body.appendChild(editor);
+        return editor;
+    }
+
+    function updateRgbChannelNameEditorState() {
+        const doc = hostDocument();
+        const editor = doc.getElementById('rgb-channel-name-editor');
+        if (!editor || editor.style.display === 'none') return;
+        const channel = editor.dataset.channel;
+        const input = doc.getElementById('rgb-channel-name-input');
+        const visible = doc.getElementById('rgb-channel-name-visible');
+        if (input && doc.activeElement !== input) input.value = channelLabel(channel);
+        if (visible) visible.checked = (state.channels[channel] || {}).visible !== false;
+    }
+
+    function hideRgbChannelNameEditor() {
+        const doc = hostDocument();
+        const editor = doc.getElementById('rgb-channel-name-editor');
+        if (!editor) return;
+        editor.style.display = 'none';
+        editor.style.transform = 'translate(-9999px, -9999px)';
+    }
+
+    function showRgbChannelNameEditor(channel, anchor) {
+        if (!CHANNELS.some((ch) => ch.id === channel)) return;
+        const editor = ensureRgbChannelNameEditor();
+        const doc = hostDocument();
+        const input = doc.getElementById('rgb-channel-name-input');
+        const visible = doc.getElementById('rgb-channel-name-visible');
+        const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+        const win = rootWindow();
+        const vw = (win && Number.isFinite(win.innerWidth)) ? win.innerWidth : window.innerWidth;
+        const vh = (win && Number.isFinite(win.innerHeight)) ? win.innerHeight : window.innerHeight;
+        const x = rect ? Math.min(Math.max(8, rect.left - 58), Math.max(8, vw - 188)) : 8;
+        const y = rect ? Math.min(Math.max(8, rect.top - 108), Math.max(8, vh - 116)) : 8;
+
+        editor.dataset.channel = channel;
+        if (input) input.value = channelLabel(channel);
+        if (visible) visible.checked = (state.channels[channel] || {}).visible !== false;
+        editor.style.display = 'block';
+        editor.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+        hideRgbVisibilityTooltip();
+        if (input) {
+            input.focus();
+            input.select();
+        }
+    }
+
     function renderRgbVisibilityControl(show) {
         const doc = hostDocument();
         let control = doc.getElementById('rgb-channel-visibility-toggle');
         if (!show) {
             if (control) control.style.display = 'none';
             hideRgbVisibilityTooltip();
+            hideRgbChannelNameEditor();
             return;
         }
         if (!control) {
@@ -825,14 +1012,14 @@
                 const target = event.target && event.target.closest ? event.target.closest('[data-channel]') : null;
                 if (!target) return;
                 event.preventDefault();
-                toggleRgbChannelVisibility(target.getAttribute('data-channel'));
+                showRgbChannelNameEditor(target.getAttribute('data-channel'), target);
             });
             control.addEventListener('keydown', (event) => {
                 if (event.key !== 'Enter' && event.key !== ' ') return;
                 const target = event.target && event.target.closest ? event.target.closest('[data-channel]') : null;
                 if (!target) return;
                 event.preventDefault();
-                toggleRgbChannelVisibility(target.getAttribute('data-channel'));
+                showRgbChannelNameEditor(target.getAttribute('data-channel'), target);
             });
 
             // Instant hover tooltip (no native delay).
@@ -851,6 +1038,22 @@
             });
             control.addEventListener('pointerleave', () => hideRgbVisibilityTooltip());
             control.addEventListener('blur', () => hideRgbVisibilityTooltip(), true);
+            const closeNameEditorOnOutsideEvent = (event) => {
+                const editor = doc.getElementById('rgb-channel-name-editor');
+                if (!editor || editor.style.display === 'none') return;
+                const path = event.composedPath ? event.composedPath() : [];
+                if (editor.contains(event.target) || path.includes(editor)) return;
+                hideRgbChannelNameEditor();
+            };
+            [doc, document].forEach((targetDoc, idx, docs) => {
+                if (!targetDoc || docs.indexOf(targetDoc) !== idx) return;
+                targetDoc.addEventListener('pointerdown', closeNameEditorOnOutsideEvent, true);
+                targetDoc.addEventListener('mousedown', closeNameEditorOnOutsideEvent, true);
+                targetDoc.addEventListener('touchstart', closeNameEditorOnOutsideEvent, true);
+            });
+            doc.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') hideRgbChannelNameEditor();
+            });
 
             doc.body.appendChild(control);
         }
@@ -1442,6 +1645,7 @@
         const fileRow = doc.createElement('div');
         Object.assign(fileRow.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '15px' });
         const load = doc.createElement('button');
+        load.id = `rgb-${ch.id}-load`;
         load.textContent = `Load ${ch.label} File`;
         styleButton(load, '#007bff');
         load.addEventListener('click', () => loadChannelFile(ch.id));

@@ -6,8 +6,10 @@
     window.initializeSaveButton = init;
     // Expose stable APIs for other windows to trigger capture/save in THIS window.
     // (Used by multi-panel/grid mode where the toolbar lives in the top window.)
-    window.__nelouraSavePng = () => savePngFromWindow(window);
-    window.__nelouraCapturePngBlob = () => capturePngBlobFromWindow(window);
+    window.__nelouraSavePng = (options) => savePngFromWindow(window, options || {});
+    window.__nelouraSaveImage = (options) => saveImageFromWindow(window, options || {});
+    window.__nelouraCapturePngBlob = (options) => capturePngBlobFromWindow(window, options || {});
+    const DEFAULT_SAVE_DPI = 300;
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
@@ -45,7 +47,7 @@
 
         const btn = document.createElement('button');
         btn.id = 'save-png-toolbar-btn';
-        btn.title = 'Save PNG';
+        btn.title = 'Save image';
         btn.type = 'button';
         // Styling should come from CSS (.toolbar button in static/style.css).
         // Do not apply inline styles here.
@@ -62,7 +64,11 @@
         `;
         btn.onmouseover = function () { btn.querySelector('svg').style.stroke = '#ffffff'; };
         btn.onmouseout  = function () { btn.querySelector('svg').style.stroke = '#cccccc'; };
-        btn.addEventListener('click', onSaveClick);
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleSaveDropdown(btn);
+        });
 
         // Insert immediately after the Files button
         let filesBtn = toolbar.querySelector('#files-button');
@@ -79,6 +85,143 @@
         } else {
             toolbar.appendChild(btn); // fallback
         }
+        ensureSaveDropdown();
+    }
+
+    function ensureSaveDropdown() {
+        let menu = document.getElementById('save-export-dropdown');
+        if (menu) return menu;
+
+        menu = document.createElement('div');
+        menu.id = 'save-export-dropdown';
+        menu.className = 'mp-interactive';
+        Object.assign(menu.style, {
+            position: 'fixed',
+            transform: 'translate(-9999px, -9999px)',
+            display: 'none',
+            width: '190px',
+            padding: '10px',
+            borderRadius: '10px',
+            background: 'rgba(28,28,28,0.97)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+            color: '#fff',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '12px',
+            zIndex: '65150',
+            boxSizing: 'border-box'
+        });
+
+        const title = document.createElement('div');
+        title.textContent = 'Save image';
+        Object.assign(title.style, { fontWeight: '700', marginBottom: '8px' });
+
+        const formatLabel = document.createElement('label');
+        formatLabel.textContent = 'Format';
+        formatLabel.setAttribute('for', 'save-export-format');
+        Object.assign(formatLabel.style, { display: 'block', color: '#ccc', marginBottom: '4px' });
+
+        const format = document.createElement('select');
+        format.id = 'save-export-format';
+        Object.assign(format.style, saveDropdownInputStyle());
+        [
+            { value: 'png', label: 'PNG' },
+            { value: 'pdf', label: 'PDF' }
+        ].forEach((opt) => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.label;
+            format.appendChild(option);
+        });
+
+        const dpiLabel = document.createElement('label');
+        dpiLabel.textContent = 'DPI';
+        dpiLabel.setAttribute('for', 'save-export-dpi');
+        Object.assign(dpiLabel.style, { display: 'block', color: '#ccc', margin: '8px 0 4px' });
+
+        const dpi = document.createElement('input');
+        dpi.id = 'save-export-dpi';
+        dpi.type = 'number';
+        dpi.inputMode = 'numeric';
+        dpi.value = String(DEFAULT_SAVE_DPI);
+        dpi.placeholder = String(DEFAULT_SAVE_DPI);
+        Object.assign(dpi.style, saveDropdownInputStyle());
+
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.textContent = 'Save';
+        Object.assign(action.style, {
+            width: '100%',
+            marginTop: '10px',
+            padding: '7px 8px',
+            borderRadius: '7px',
+            border: '1px solid #2f8cff',
+            background: '#007bff',
+            color: '#fff',
+            cursor: 'pointer',
+            fontSize: '12px'
+        });
+        action.addEventListener('click', () => {
+            const selectedFormat = (format.value || 'png').toLowerCase();
+            const selectedDpi = normalizeSaveDpi(dpi.value);
+            hideSaveDropdown();
+            executeToolbarSave({ format: selectedFormat, dpi: selectedDpi });
+        });
+
+        menu.addEventListener('pointerdown', (event) => event.stopPropagation());
+        menu.appendChild(title);
+        menu.appendChild(formatLabel);
+        menu.appendChild(format);
+        menu.appendChild(dpiLabel);
+        menu.appendChild(dpi);
+        menu.appendChild(action);
+        document.body.appendChild(menu);
+
+        document.addEventListener('pointerdown', (event) => {
+            const btn = document.getElementById('save-png-toolbar-btn');
+            if (menu.style.display === 'none') return;
+            if (menu.contains(event.target) || (btn && btn.contains(event.target))) return;
+            hideSaveDropdown();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') hideSaveDropdown();
+        });
+
+        return menu;
+    }
+
+    function saveDropdownInputStyle() {
+        return {
+            width: '100%',
+            boxSizing: 'border-box',
+            background: '#2b2b2b',
+            color: '#fff',
+            border: '1px solid #555',
+            borderRadius: '6px',
+            padding: '6px 7px',
+            fontSize: '12px',
+            outline: 'none'
+        };
+    }
+
+    function toggleSaveDropdown(anchor) {
+        const menu = ensureSaveDropdown();
+        if (menu.style.display !== 'none') {
+            hideSaveDropdown();
+            return;
+        }
+        const rect = anchor.getBoundingClientRect();
+        const x = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 198));
+        const y = Math.min(Math.max(8, rect.bottom + 8), Math.max(8, window.innerHeight - 170));
+        menu.style.display = 'block';
+        menu.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    }
+
+    function hideSaveDropdown() {
+        const menu = document.getElementById('save-export-dropdown');
+        if (!menu) return;
+        menu.style.display = 'none';
+        menu.style.transform = 'translate(-9999px, -9999px)';
     }
 
     // (Removed) styleToolbarButton: inline styles for #save-png-toolbar-btn are no longer applied.
@@ -671,11 +814,13 @@
       }
 
    
-      async function onSaveClick() {
+      async function executeToolbarSave(options = {}) {
+        const format = String(options.format || 'png').toLowerCase() === 'pdf' ? 'pdf' : 'png';
+        const dpi = normalizeSaveDpi(options.dpi);
         const targetWin = getSaveTargetWindow();
 
         // If we're in multi-panel/grid mode (2+ iframes visible), save a composite
-        // PNG of the entire grid as currently displayed.
+        // image of the entire grid as currently displayed.
         try {
             if (window.self === window.top) {
                 const grid = document.getElementById('multi-panel-grid');
@@ -683,7 +828,7 @@
                 const holders = grid ? Array.from(grid.children || []).filter(h => h && h.querySelector && h.querySelector('iframe')) : [];
                 const gridVisible = !!(wrap && (wrap.style.display !== 'none') && (getComputedStyle(wrap).display !== 'none'));
                 if (gridVisible && holders.length >= 2) {
-                    return saveGridCompositePng({ gridEl: grid, holders });
+                    return saveGridCompositeImage({ gridEl: grid, holders, format, dpi });
                 }
             }
         } catch (_) {}
@@ -691,34 +836,35 @@
         // Otherwise (single-panel or no grid), if we're in grid mode and the active pane
         // has its own saver, prefer that. This keeps all DOM querying strictly within the pane document.
         try {
-            if (targetWin && targetWin !== window && typeof targetWin.__nelouraSavePng === 'function') {
-                return targetWin.__nelouraSavePng();
+            if (targetWin && targetWin !== window && typeof targetWin.__nelouraSaveImage === 'function') {
+                return targetWin.__nelouraSaveImage({ format, dpi });
+            }
+            if (targetWin && targetWin !== window && format === 'png' && typeof targetWin.__nelouraSavePng === 'function') {
+                return targetWin.__nelouraSavePng({ dpi });
             }
         } catch (_) {}
 
-        return savePngFromWindow(targetWin);
+        return saveImageFromWindow(targetWin, { format, dpi });
       }
 
-      async function savePngFromWindow(targetWin) {
-        const result = await capturePngCanvasFromWindow(targetWin);
+      function normalizeSaveDpi(value) {
+        const dpi = Number(value);
+        if (!Number.isFinite(dpi)) return DEFAULT_SAVE_DPI;
+        return Math.max(0.01, dpi);
+      }
+
+      async function saveImageFromWindow(targetWin, options = {}) {
+        const format = String(options.format || 'png').toLowerCase() === 'pdf' ? 'pdf' : 'png';
+        if (format === 'pdf') return savePdfFromWindow(targetWin, options);
+        return savePngFromWindow(targetWin, options);
+      }
+
+      async function savePngFromWindow(targetWin, options = {}) {
+        const result = await capturePngCanvasFromWindow(targetWin, options);
         if (!result) return;
         const { out, filename, targetDoc, restore } = result;
         try {
-            out.toBlob((blob) => {
-                if (!blob) {
-                    const a = targetDoc.createElement('a');
-                    a.href = out.toDataURL('image/png');
-                    a.download = filename;
-                    a.click();
-                    return;
-                }
-                const url = URL.createObjectURL(blob);
-                const a = targetDoc.createElement('a');
-                a.href = url;
-                a.download = filename;
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            }, 'image/png');
+            await downloadCanvasAsPng(out, filename, targetDoc);
             notify('PNG saved', 'success');
         } catch (e) {
             console.error('Save PNG failed:', e);
@@ -728,7 +874,109 @@
         }
       }
 
-      async function capturePngCanvasFromWindow(targetWin) {
+      async function savePdfFromWindow(targetWin, options = {}) {
+        const result = await capturePngCanvasFromWindow(targetWin, options);
+        if (!result) return;
+        const { out, filename, targetDoc, restore } = result;
+        try {
+            await downloadCanvasAsPdf(out, filenameWithExtension(filename, 'pdf'), targetDoc, normalizeSaveDpi(options.dpi));
+            notify('PDF saved', 'success');
+        } catch (e) {
+            console.error('Save PDF failed:', e);
+            notify('Failed to save PDF', 'error');
+        } finally {
+            try { restore && restore(); } catch (_) {}
+        }
+      }
+
+      function canvasToBlob(canvas, type, quality) {
+        return new Promise((resolve) => {
+            try {
+                canvas.toBlob((blob) => resolve(blob || null), type, quality);
+            } catch (_) {
+                resolve(null);
+            }
+        });
+      }
+
+      async function downloadCanvasAsPng(canvas, filename, targetDoc = document) {
+        const blob = await canvasToBlob(canvas, 'image/png');
+        if (!blob) {
+            const a = targetDoc.createElement('a');
+            a.href = canvas.toDataURL('image/png');
+            a.download = filenameWithExtension(filename, 'png');
+            a.click();
+            return;
+        }
+        downloadBlob(blob, filenameWithExtension(filename, 'png'), targetDoc);
+      }
+
+      async function downloadCanvasAsPdf(canvas, filename, targetDoc = document, dpi = DEFAULT_SAVE_DPI) {
+        const jpeg = await canvasToBlob(canvas, 'image/jpeg', 0.95);
+        if (!jpeg) throw new Error('Failed to encode PDF image');
+        const bytes = new Uint8Array(await jpeg.arrayBuffer());
+        const widthPt = Math.max(1, canvas.width / normalizeSaveDpi(dpi) * 72);
+        const heightPt = Math.max(1, canvas.height / normalizeSaveDpi(dpi) * 72);
+        const pdf = buildSingleImagePdf(bytes, canvas.width, canvas.height, widthPt, heightPt);
+        downloadBlob(pdf, filenameWithExtension(filename, 'pdf'), targetDoc);
+      }
+
+      function downloadBlob(blob, filename, targetDoc = document) {
+        const url = URL.createObjectURL(blob);
+        const a = targetDoc.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function filenameWithExtension(filename, extension) {
+        return String(filename || `image.${extension}`).replace(/\.[^.\\/]+$/, '') + `.${extension}`;
+      }
+
+      function buildSingleImagePdf(imageBytes, imageWidth, imageHeight, pageWidthPt, pageHeightPt) {
+        const encoder = new TextEncoder();
+        const chunks = [];
+        let offset = 0;
+        const offsets = [0];
+        const pushText = (text) => {
+            const bytes = encoder.encode(text);
+            chunks.push(bytes);
+            offset += bytes.length;
+        };
+        const pushBytes = (bytes) => {
+            chunks.push(bytes);
+            offset += bytes.length;
+        };
+        const addObject = (bodyWriter) => {
+            offsets.push(offset);
+            pushText(`${offsets.length - 1} 0 obj\n`);
+            bodyWriter();
+            pushText('\nendobj\n');
+        };
+
+        pushText('%PDF-1.4\n');
+        addObject(() => pushText('<< /Type /Catalog /Pages 2 0 R >>'));
+        addObject(() => pushText('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'));
+        addObject(() => pushText(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt.toFixed(2)} ${pageHeightPt.toFixed(2)}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`));
+        addObject(() => {
+            pushText(`<< /Type /XObject /Subtype /Image /Width ${imageWidth} /Height ${imageHeight} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`);
+            pushBytes(imageBytes);
+            pushText('\nendstream');
+        });
+        const content = `q\n${pageWidthPt.toFixed(2)} 0 0 ${pageHeightPt.toFixed(2)} 0 0 cm\n/Im0 Do\nQ\n`;
+        addObject(() => pushText(`<< /Length ${encoder.encode(content).length} >>\nstream\n${content}endstream`));
+
+        const xrefOffset = offset;
+        pushText(`xref\n0 ${offsets.length}\n0000000000 65535 f \n`);
+        for (let i = 1; i < offsets.length; i++) {
+            pushText(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
+        }
+        pushText(`trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+        return new Blob(chunks, { type: 'application/pdf' });
+      }
+
+      async function capturePngCanvasFromWindow(targetWin, options = {}) {
         if (!isImageLoaded(targetWin)) { notify('No image loaded to save', 'warning'); return null; }
 
         const container = getViewerContainer(targetWin);
@@ -756,7 +1004,7 @@
 
           const containerRect = container.getBoundingClientRect();
           const exportRect = computeExportUnionRect(targetWin, containerRect);
-          const dpr = computeBestExportDpr(targetWin, container, containerRect);
+          const dpr = computeBestExportDpr(targetWin, container, containerRect, options);
           const outW = Math.max(1, Math.round(exportRect.width * dpr));
           const outH = Math.max(1, Math.round(exportRect.height * dpr));
 
@@ -783,7 +1031,9 @@
         }
       }
 
-      function computeBestExportDpr(targetWin, container, containerRect) {
+      function computeBestExportDpr(targetWin, container, containerRect, options = {}) {
+        const hasRequestedDpi = options && options.dpi !== undefined && options.dpi !== null;
+        if (hasRequestedDpi) return Math.max(0.01, normalizeSaveDpi(options.dpi) / 96);
         // PNG is lossless; "quality" here means resolution.
         // Prefer the viewer's internal canvas pixel density if it exceeds devicePixelRatio.
         let dpr = Math.max(1, (targetWin && targetWin.devicePixelRatio) || window.devicePixelRatio || 1);
@@ -797,12 +1047,12 @@
             }
         } catch (_) {}
         // Cap to avoid accidental gigantic exports on extreme DPI setups
-        dpr = Math.min(4, Math.max(1, dpr));
+        dpr = Math.max(1, dpr);
         return dpr;
       }
 
-      async function capturePngBlobFromWindow(targetWin) {
-        const result = await capturePngCanvasFromWindow(targetWin);
+      async function capturePngBlobFromWindow(targetWin, options = {}) {
+        const result = await capturePngCanvasFromWindow(targetWin, options);
         if (!result) return null;
         const { out, restore } = result;
         return new Promise((resolve) => {
@@ -866,7 +1116,7 @@
         }
       }
 
-      async function saveGridCompositePng({ gridEl, holders }) {
+      async function saveGridCompositeImage({ gridEl, holders, format = 'png', dpi = DEFAULT_SAVE_DPI }) {
         // Capture each pane as a PNG and stitch into one canvas based on the holder layout.
         const gridRect = gridEl.getBoundingClientRect();
 
@@ -894,7 +1144,7 @@
                     const w = frame && frame.contentWindow;
                     if (!w) return null;
                     if (typeof w.__nelouraCapturePngBlob === 'function') {
-                        const blob = await w.__nelouraCapturePngBlob();
+                        const blob = await w.__nelouraCapturePngBlob({ dpi });
                         if (!blob) return null;
                         const bitmap = await createImageBitmap(blob);
                         return { holder, frame, bitmap };
@@ -920,7 +1170,7 @@
                     if (Number.isFinite(sy) && sy > dpr) dpr = sy;
                 }
             } catch (_) {}
-            dpr = Math.min(4, Math.max(1, dpr));
+            dpr = Math.max(0.01, normalizeSaveDpi(dpi) / 96);
 
             const outW = Math.max(1, Math.round(gridRect.width * dpr));
             const outH = Math.max(1, Math.round(gridRect.height * dpr));
@@ -977,26 +1227,17 @@
                 }
             }
 
-            const filename = `grid_${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-            out.toBlob((blob) => {
-                if (!blob) {
-                    const a = document.createElement('a');
-                    a.href = out.toDataURL('image/png');
-                    a.download = filename;
-                    a.click();
-                    return;
-                }
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename;
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            }, 'image/png');
-            notify('PNG saved', 'success');
+            const filename = `grid_${new Date().toISOString().replace(/[:.]/g, '-')}.${format === 'pdf' ? 'pdf' : 'png'}`;
+            if (format === 'pdf') {
+                await downloadCanvasAsPdf(out, filename, document, dpi);
+                notify('PDF saved', 'success');
+            } else {
+                await downloadCanvasAsPng(out, filename, document);
+                notify('PNG saved', 'success');
+            }
         } catch (e) {
-            console.error('Save grid PNG failed:', e);
-            notify('Failed to save PNG', 'error');
+            console.error('Save grid image failed:', e);
+            notify(`Failed to save ${format === 'pdf' ? 'PDF' : 'PNG'}`, 'error');
         } finally {
             try { restoreTop && restoreTop(); } catch (_) {}
             try {
