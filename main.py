@@ -257,7 +257,7 @@ IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', '1').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', '0').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
