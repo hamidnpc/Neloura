@@ -15834,16 +15834,19 @@ async function fetchRgbCutouts(ra, dec, catalogName, galaxyName = "UnknownGalaxy
     }
 }
 async function fetchAllRgbCutouts(catalogName, count = 10, rowsPerPage = 5) {
-    if (!catalogName) {
+    const apiCatalogName = (typeof window.resolveSedCatalogApiName === 'function')
+        ? window.resolveSedCatalogApiName(catalogName)
+        : catalogName;
+    if (!apiCatalogName) {
         showNotification("Catalog Name is missing. Cannot generate stacked RGB cutouts.", 3000, "error");
         console.error("All RGB Cutouts: Missing catalogName", { catalogName, count });
         return null;
     }
 
     showNotification(true, "Generating stacked RGB panels...");
-    console.log(`Fetching stacked RGB cutouts for Catalog: ${catalogName}, Count: ${count}, Rows/Page: ${rowsPerPage}`);
+    console.log(`Fetching stacked RGB cutouts for Catalog: ${apiCatalogName}, Count: ${count}, Rows/Page: ${rowsPerPage}`);
 
-    const endpointUrl = `/generate-all-rgb-cutouts/?catalog_name=${encodeURIComponent(catalogName)}&count=${encodeURIComponent(count)}&rows_per_page=${encodeURIComponent(rowsPerPage)}`;
+    const endpointUrl = `/generate-all-rgb-cutouts/?catalog_name=${encodeURIComponent(apiCatalogName)}&count=${encodeURIComponent(count)}&rows_per_page=${encodeURIComponent(rowsPerPage)}`;
 
     try {
         const response = await apiFetch(endpointUrl);

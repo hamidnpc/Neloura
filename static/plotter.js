@@ -6073,11 +6073,11 @@ function createSedTab(container) {
         marginTop: '5px',
         width: 'auto'
     });
-    addConditionButton.addEventListener('click', () => addRangeConditionRow(conditionsContainer, catalogSelect.value));
+    addConditionButton.addEventListener('click', () => addRangeConditionRow(conditionsContainer, getSedCatalogApiName()));
     rangeSearchContainer.appendChild(addConditionButton);
     
     // Initial single condition row
-    addRangeConditionRow(conditionsContainer, catalogSelect.value, false); // Don't show remove button for the first row
+    addRangeConditionRow(conditionsContainer, getSedCatalogApiName(), false); // Don't show remove button for the first row
 
     wrapper.appendChild(rangeSearchContainer);
 
@@ -6232,7 +6232,7 @@ function createSedTab(container) {
         // Populate the dropdown in the first condition row, if it exists
         const firstRow = document.querySelector('.sed-range-condition-row');
         if (firstRow) {
-            populateSedColumnDropdown(firstRow.querySelector('.sed-range-column-select'), catalogSelect.value);
+            populateSedColumnDropdown(firstRow.querySelector('.sed-range-column-select'), getSedCatalogApiName());
         }
     });
 
@@ -6251,40 +6251,86 @@ function createSedTab(container) {
         } else if (rangeRadio.checked) {
             // If range search is active, populate all existing column dropdowns
             const allColumnSelects = document.querySelectorAll('.sed-range-column-select');
-            allColumnSelects.forEach(select => populateSedColumnDropdown(select, catalogSelect.value));
+            allColumnSelects.forEach(select => populateSedColumnDropdown(select, getSedCatalogApiName()));
         }
     });
 
-    // Populate catalog dropdown
-    apiFetch('/list-catalogs/')
-        .then(response => response.json())
-        .then(data => {
-            console.log("Populating SED catalog dropdown with:", data);
-            catalogSelect.innerHTML = ''; // Clear existing options
-            data.catalogs.forEach(catalog => {
-                const option = document.createElement('option');
-                option.value = catalog.name;
-                option.textContent = catalog.name;
-                if (catalog.name === window.currentCatalogName) {
-                    option.selected = true;
+    let sedCatalogListPromise = null;
+
+    function populateSedCatalogSelect() {
+        if (sedCatalogListPromise) return sedCatalogListPromise;
+
+        const previousValue = catalogSelect.value;
+
+        sedCatalogListPromise = apiFetch(`/list-catalogs/?_=${Date.now()}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log("Populating SED catalog dropdown with:", data);
+                catalogSelect.innerHTML = '';
+                const current = String(window.currentCatalogName || window.activeCatalog || '');
+                const catalogs = Array.isArray(data.catalogs) ? data.catalogs : [];
+                if (!catalogs.length) {
+                    catalogSelect.innerHTML = '<option value="">No catalogs found</option>';
+                    return;
                 }
-                catalogSelect.appendChild(option);
+                catalogs.forEach(catalog => {
+                    const option = document.createElement('option');
+                    const path = String(catalog.path || '').replace(/\\/g, '/');
+                    const isUploaded = path.startsWith('files/uploads/');
+                    const apiValue = isUploaded ? path : catalog.name;
+                    option.value = apiValue;
+                    option.textContent = isUploaded ? `${catalog.name} (uploaded)` : catalog.name;
+                    const prevResolved = resolveSedCatalogApiName(previousValue);
+                    const currentResolved = resolveSedCatalogApiName(current);
+                    if (
+                        apiValue === previousValue ||
+                        apiValue === prevResolved ||
+                        apiValue === currentResolved ||
+                        catalog.name === previousValue ||
+                        catalog.name === current
+                    ) {
+                        option.selected = true;
+                    }
+                    catalogSelect.appendChild(option);
+                });
+                // After populating, if the flag search is active, populate its dropdown too.
+                if (document.getElementById('search-type-flag').checked) {
+                     populateSedFlagDropdown();
+                } else if (document.getElementById('search-type-range').checked) {
+                    const firstRow = document.querySelector('.sed-range-condition-row');
+                    if (firstRow) {
+                        populateSedColumnDropdown(firstRow.querySelector('.sed-range-column-select'), getSedCatalogApiName());
+                    }
+                }
+            })
+            .catch(error => {
+                console.error("Error fetching catalogs for SED tab:", error);
+                catalogSelect.innerHTML = '<option value="">Error loading catalogs</option>';
+            })
+            .finally(() => {
+                sedCatalogListPromise = null;
             });
-            // After populating, if the flag search is active, populate its dropdown too.
-            if (document.getElementById('search-type-flag').checked) {
-                 populateSedFlagDropdown();
-            } else if (document.getElementById('search-type-range').checked) {
-                // If range search is selected, populate the dropdowns in the first row
-                const firstRow = document.querySelector('.sed-range-condition-row');
-                if (firstRow) {
-                    populateSedColumnDropdown(firstRow.querySelector('.sed-range-column-select'), catalogSelect.value);
+
+        return sedCatalogListPromise;
+    }
+
+    const refreshSedCatalogOnOpen = () => populateSedCatalogSelect();
+    catalogSelect.addEventListener('focus', refreshSedCatalogOnOpen);
+    catalogSelect.addEventListener('mousedown', refreshSedCatalogOnOpen);
+
+    try { window.refreshSedCatalogDropdown = populateSedCatalogSelect; } catch (_) {}
+    if (!window.__sedCatalogDropdownRefreshListenerInstalled) {
+        window.addEventListener('catalogs:updated', () => {
+            try {
+                if (document.getElementById('sed-catalog-select') && typeof window.refreshSedCatalogDropdown === 'function') {
+                    window.refreshSedCatalogDropdown();
                 }
-            }
-        })
-        .catch(error => {
-            console.error("Error fetching catalogs for SED tab:", error);
-            catalogSelect.innerHTML = '<option>Error loading catalogs</option>';
+            } catch (_) {}
         });
+        window.__sedCatalogDropdownRefreshListenerInstalled = true;
+    }
+    // Populate catalog dropdown
+    populateSedCatalogSelect();
 
     // Set initial button text
     searchButton.textContent = 'Search Nearby';
@@ -6380,13 +6426,11 @@ function updateLogicalOpVisibility(rangeSearchContainer) {
 
 // Updated function to detect boolean columns - now returns a Promise
 function detectBooleanColumns(catalogName) {
-    if (!catalogName) {
+    const apiName = resolveSedCatalogApiName(catalogName);
+    if (!apiName) {
         return Promise.resolve([]);
     }
 
-    // IMPORTANT: /catalog-with-flags expects an API catalog name (basename). In multi-panel mode we often
-    // track catalogs internally as "catalogs/<file>", which will 500 the endpoint ("catalogs/catalogs/...").
-    const apiName = String(catalogName || '').split('/').pop().split('\\').pop();
     return apiFetch(`/catalog-with-flags/${encodeURIComponent(apiName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
@@ -6442,6 +6486,7 @@ function isStringLikeColumn(columnName, sampleData) {
 
 // Updated function to add range condition row with universal text input
 function addRangeConditionRow(conditionsContainer, catalogName, showRemoveButton = true) {
+    catalogName = resolveSedCatalogApiName(catalogName);
     const conditionRow = document.createElement('div');
     conditionRow.className = 'sed-range-condition-row';
     conditionRow.style.display = 'flex';
@@ -6517,8 +6562,27 @@ function addRangeConditionRow(conditionsContainer, catalogName, showRemoveButton
 }
 
 
+function resolveSedCatalogApiName(catalogName) {
+    const raw = String(catalogName || '').trim().replace(/\\/g, '/');
+    if (!raw) return raw;
+    if (raw.startsWith('files/uploads/') || raw.startsWith('files/') || raw.startsWith('catalogs/')) {
+        return raw;
+    }
+    const base = raw.split('/').pop();
+    if (/^(upload_|injected_catalog_|peak_catalog_)/i.test(base)) {
+        return `files/uploads/${base}`;
+    }
+    return raw;
+}
+
+function getSedCatalogApiName() {
+    const el = document.getElementById('sed-catalog-select');
+    return resolveSedCatalogApiName(el ? el.value : '');
+}
+try { window.resolveSedCatalogApiName = resolveSedCatalogApiName; } catch (_) {}
+
 function populateSedFlagDropdown() {
-    const catalogName = document.getElementById('sed-catalog-select').value;
+    const catalogName = getSedCatalogApiName();
     const flagSelect = document.getElementById('sed-flag-select');
     flagSelect.innerHTML = '<option>Loading flags...</option>';
 
@@ -6527,8 +6591,7 @@ function populateSedFlagDropdown() {
         return;
     }
 
-    // IMPORTANT: /catalog-with-flags expects an API catalog name (basename), not "catalogs/<file>"
-    const apiName = String(catalogName || '').split('/').pop().split('\\').pop();
+    const apiName = resolveSedCatalogApiName(catalogName);
     apiFetch(`/catalog-with-flags/${encodeURIComponent(apiName)}?prevent_auto_load=true`)
         .then(response => {
             if (!response.ok) {
@@ -6593,12 +6656,13 @@ function isKnownStringColumn(columnName) {
 
 // Replace the detectStringColumns function with this improved version:
 function detectStringColumns(catalogName) {
-    if (!catalogName) {
+    const apiCatalogName = resolveSedCatalogApiName(catalogName);
+    if (!apiCatalogName) {
         return Promise.resolve([]);
     }
 
     // First check for known string columns by name
-    return apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+    return apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(apiCatalogName)}`)
         .then(response => {
             if (!response.ok) {
                 console.warn('Failed to load catalog columns for string detection');
@@ -6616,9 +6680,9 @@ function detectStringColumns(catalogName) {
             }
             
             // If no known string columns, try loading sample data
-            const apiName = (catalogName || '').toString().split('/').pop().split('\\').pop();
+            const apiName = apiCatalogName.split('/').pop();
             const persisted = (window.catalogOverridesByCatalog && (
-                window.catalogOverridesByCatalog[catalogName] ||
+                window.catalogOverridesByCatalog[apiCatalogName] ||
                 window.catalogOverridesByCatalog[apiName]
             )) || null;
             const raCol = persisted && persisted.ra_col ? persisted.ra_col : 'ra';
@@ -6688,13 +6752,14 @@ function populateSedColumnDropdown(columnSelectElement, catalogName) {
     const columnSelect = columnSelectElement;
     columnSelect.innerHTML = '<option>Loading...</option>';
 
-    if (!catalogName) {
+    const apiCatalogName = resolveSedCatalogApiName(catalogName);
+    if (!apiCatalogName) {
         columnSelect.innerHTML = '<option>Select catalog</option>';
         return;
     }
 
     // First get all columns
-    apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(catalogName)}`)
+    apiFetch(`/catalog-columns/?catalog_name=${encodeURIComponent(apiCatalogName)}`)
         .then(response => {
             if (!response.ok) {
                 return response.text().then(text => { 
@@ -6713,8 +6778,8 @@ function populateSedColumnDropdown(columnSelectElement, catalogName) {
 
             // Get column type information
             Promise.all([
-                detectBooleanColumns(catalogName),
-                detectStringColumns(catalogName)
+                detectBooleanColumns(apiCatalogName),
+                detectStringColumns(apiCatalogName)
             ]).then(([booleanColumns, stringColumns]) => {
                 columnSelect.innerHTML = '';
 
@@ -6992,7 +7057,7 @@ function validateValueInput(valueInput, operatorSelect, columnType) {
 // Updated performRangeSearch function with all values sent as strings
 function performRangeSearch() {
     console.log("performRangeSearch triggered for multiple conditions.");
-    const catalog = document.getElementById('sed-catalog-select').value;
+    const catalog = getSedCatalogApiName();
     const conditionRows = document.querySelectorAll('.sed-range-condition-row');
     const resultsContainer = document.getElementById('sed-results-container');
     
@@ -7125,7 +7190,7 @@ function performRangeSearch() {
 
 function performFlagSearch() {
     console.log("performFlagSearch triggered.");
-    const catalog = document.getElementById('sed-catalog-select').value;
+    const catalog = getSedCatalogApiName();
     const flagColumn = document.getElementById('sed-flag-select').value;
 
     if (!catalog || !flagColumn || flagColumn === 'No flags available' || flagColumn === 'Error loading flags') {
@@ -7171,7 +7236,7 @@ function performFlagSearch() {
 
 function performSedSearch() {
     console.log("performSedSearch triggered.");
-    const catalog = document.getElementById('sed-catalog-select').value;
+    const catalog = getSedCatalogApiName();
     const ra = document.getElementById('sed-ra-input').value;
     const dec = document.getElementById('sed-dec-input').value;
     const radius = document.getElementById('sed-radius-input').value;
@@ -7235,7 +7300,7 @@ function performSedSearch() {
 
 async function performAllRgbSearch() {
     console.log("performAllRgbSearch triggered.");
-    const catalog = document.getElementById('sed-catalog-select').value;
+    const catalog = getSedCatalogApiName();
     const countInput = document.getElementById('sed-all-count-input');
     const rowsPerPageInput = document.getElementById('sed-all-rows-per-page-input');
     const resultsContainer = document.getElementById('sed-results-container');

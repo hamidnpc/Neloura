@@ -5992,6 +5992,11 @@ async function uploadCatalog() {
                         // Force dropdown to show uploads tab on next render and refresh lists
                         window.__forceCatalogTab = 'uploads';
                         if (typeof refreshCatalogs === 'function') refreshCatalogs();
+                        try {
+                            window.dispatchEvent(new CustomEvent('catalogs:updated', {
+                                detail: { uploaded: true, name: result.filename, path: result.path || result.filepath }
+                            }));
+                        } catch (_) {}
                     } else {
                         let errMsg = 'Upload failed';
                         try { errMsg = (JSON.parse(xhr.responseText || '{}').error) || errMsg; } catch (_) {}
