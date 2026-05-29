@@ -228,7 +228,7 @@ psutil.cpu_percent(interval=None)
 # ------------------------------------------------------------------------------
 UVICORN_HOST = "127.0.0.1"
 UVICORN_PORT = 8000
-UVICORN_RELOAD_MODE = True
+UVICORN_RELOAD_MODE = os.getenv("NELOURA_UVICORN_RELOAD", "0").lower() in {"1", "true", "yes", "on"}
 DEFAULT_EXPORT_FORMAT = 'csv'
 MAX_EXPORT_ROWS = 10000
 CATALOG_COLUMN_ANALYSIS_SAMPLE_SIZE = 1000
@@ -257,7 +257,7 @@ IMAGE_DIR = 'images'
 #
 # Admin mode: When True, the current process treats the caller as admin.
 # You can also set environment variable NELOURA_ADMIN=true to enable.
-ADMIN_MODE = os.getenv('NELOURA_ADMIN', 'false').strip().lower() in ('1','true','yes','on')
+ADMIN_MODE = os.getenv('NELOURA_ADMIN', '1').strip().lower() in ('1','true','yes','on')
 
 # ----------------------------------------------------------------------------
 # Uploads Maintenance Settings (Admin)
@@ -304,7 +304,8 @@ SED_RA_COLUMN_NAMES = RA_COLUMN_NAMES
 SED_DEC_COLUMN_NAMES =DEC_COLUMN_NAMES
 
 
-STATIC_DIRECTORY = 'static'
+STATIC_URL_PATH = 'static'
+STATIC_DIRECTORY = str(Path(os.environ.get("NELOURA_STATIC_DIR", "static")).expanduser().resolve())
 KERNELS_DIRECTORY = 'kernels'
 
 
@@ -406,6 +407,50 @@ TILE_CACHE_MAX_SIZE = int(os.getenv('TILE_CACHE_MAX_SIZE', '300'))
 SED_HST_FILTERS = ['F275W', 'F336W', 'F438W', 'F555W', 'F814W']
 SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
 SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
+RGB_OPEN_HST_FILTERS = SED_HST_FILTERS
+RGB_OPEN_JWST_FILTERS = SED_JWST_NIRCAM_FILTERS + SED_JWST_MIRI_FILTERS
+RGB_OPEN_FILTERS = RGB_OPEN_HST_FILTERS + ['HA'] + RGB_OPEN_JWST_FILTERS
+RGB_OPEN_FILTER_WAVELENGTHS = {
+    'F275W': 0.275,
+    'F336W': 0.336,
+    'F435W': 0.435,
+    'F438W': 0.438,
+    'F555W': 0.555,
+    'HA': 0.6563,
+    'F814W': 0.814,
+    'F200W': 2.0,
+    'F300M': 3.0,
+    'F335M': 3.35,
+    'F360M': 3.6,
+    'F770W': 7.7,
+    'F1000W': 10.0,
+    'F1130W': 11.3,
+    'F2100W': 21.0,
+}
+RGB_OPEN_FILTER_ALIASES = {
+    'F275W': ['F275W'],
+    'F336W': ['F336W'],
+    'F435W': ['F435W', 'F438W'],
+    'F438W': ['F438W', 'F435W'],
+    'F555W': ['F555W'],
+    'HA': ['HA', 'H-alpha', 'Halpha', 'halpha', 'ha-img', 'ha_img', '_ha-img', '_ha_img'],
+    'F814W': ['F814W'],
+    'F200W': ['F200W'],
+    'F300M': ['F300M'],
+    'F335M': ['F335M'],
+    'F360M': ['F360M'],
+    'F770W': ['F770W'],
+    'F1000W': ['F1000W'],
+    'F1130W': ['F1130W'],
+    'F2100W': ['F2100W'],
+}
+RGB_OPEN_CHANNELS_BY_COUNT = {
+    1: ['r'],
+    2: ['g', 'r'],
+    3: ['b', 'g', 'r'],
+    4: ['b', 'g', 'r', 'c4'],
+    5: ['b', 'g', 'r', 'c4', 'c5'],
+}
 
 
 # Panel titles and labels
@@ -783,7 +828,21 @@ IN_MEMORY_FITS_MAX_MB = int(os.getenv('IN_MEMORY_FITS_MAX_MB', '8000'))  # cap p
 IN_MEMORY_FITS_RAM_FRACTION = float(os.getenv('IN_MEMORY_FITS_RAM_FRACTION', '0.7'))
 ENABLE_PAGECACHE_WARMUP = os.getenv('ENABLE_PAGECACHE_WARMUP', '1') in ('1', 'true', 'True')
 PAGECACHE_WARMUP_CHUNK_ROWS = int(os.getenv('PAGECACHE_WARMUP_CHUNK_ROWS', '4096'))
-IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'auto')  # 'auto' | 'always' | 'never'
+def _neloura_is_colab() -> bool:
+    """Detect Google Colab so Colab-only performance defaults can be applied."""
+    if os.getenv('NELOURA_IN_COLAB', '') in ('1', 'true', 'True'):
+        return True
+    try:
+        import google.colab  # type: ignore  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+_NELOURA_IS_COLAB = _neloura_is_colab()
+# On Colab the FITS file usually lives on a slow Drive/FUSE mount, so read it
+# into RAM once instead of paying per-tile random-read latency. Leave other
+# environments (servers, local disk) on the existing 'auto' policy.
+IN_MEMORY_FITS_MODE = os.getenv('IN_MEMORY_FITS_MODE', 'always' if _NELOURA_IS_COLAB else 'auto')  # 'auto' | 'always' | 'never'
 RANDOM_READ_BENCH_SAMPLES = int(os.getenv('RANDOM_READ_BENCH_SAMPLES', '128'))
 RANDOM_READ_CHUNK_BYTES = int(os.getenv('RANDOM_READ_CHUNK_BYTES', '4096'))
 RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '20'))
@@ -791,7 +850,7 @@ RANDOM_READ_THRESHOLD_MBPS = float(os.getenv('RANDOM_READ_THRESHOLD_MBPS', '20')
 
 # Dynamic range and warmup tuning
 FITS_OPTIMIZE_ON_FIRST_ACCESS = os.getenv('FITS_OPTIMIZE_ON_FIRST_ACCESS', '1') in ('1', 'true', 'True')
-FITS_WARMUP_ON_INIT = os.getenv('FITS_WARMUP_ON_INIT', '0') in ('1', 'true', 'True')
+FITS_WARMUP_ON_INIT = os.getenv('FITS_WARMUP_ON_INIT', '1' if _NELOURA_IS_COLAB else '0') in ('1', 'true', 'True')
 
 
 CPU_COUNT = os.cpu_count() or 4
@@ -1174,6 +1233,8 @@ def resolve_color_map_key(name: Optional[str]) -> Optional[str]:
     return None
 
 _COLORCET_DATA_CANDIDATES = [
+    Path.cwd() / 'static' / 'data' / 'colorcet_palettes.json',
+    Path.cwd() / 'static' / 'colorcet_palettes.json',
     Path(__file__).resolve().parent / 'static' / 'data' / 'colorcet_palettes.json',
     Path(__file__).resolve().parent / 'static' / 'colorcet_palettes.json',
 ]
@@ -1248,6 +1309,170 @@ class TileCache:
 # Global tile cache and active generators
 tile_cache = TileCache(max_size=TILE_CACHE_MAX_SIZE)
 active_tile_generators = {}
+
+def _open_rgb_normalize_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _open_rgb_prepare_filter_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?i)(^|[-_,/\s])_?ha[-_]?img(?=$|[-_,/\s])", r"\1ha", text)
+    text = re.sub(r"(?i)(^|[-_,/\s])h[-_]?alpha(?=$|[-_,/\s])", r"\1halpha", text)
+    return text
+
+
+def _open_rgb_galaxy_variants(galaxy: str) -> list[str]:
+    base = _open_rgb_normalize_token(galaxy)
+    variants = [base] if base else []
+    match = re.fullmatch(r"ngc0+(\d+)", base)
+    if match:
+        variants.append(f"ngc{match.group(1)}")
+    match = re.fullmatch(r"ngc(\d{1,3})", base)
+    if match:
+        variants.append(f"ngc{int(match.group(1)):04d}")
+    return list(dict.fromkeys(v for v in variants if v))
+
+
+def _open_rgb_filter_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for canonical, aliases in RGB_OPEN_FILTER_ALIASES.items():
+        for alias in aliases + [canonical]:
+            key = _open_rgb_normalize_token(alias)
+            if key:
+                lookup[key] = canonical
+    return lookup
+
+
+def _parse_open_rgb_filters(value: str) -> list[str]:
+    lookup = _open_rgb_filter_lookup()
+    filters: list[str] = []
+    for token in re.split(r"[-,/_\s]+", _open_rgb_prepare_filter_text(value).strip()):
+        key = _open_rgb_normalize_token(token)
+        if not key:
+            continue
+        canonical = lookup.get(key)
+        if canonical and canonical not in filters:
+            filters.append(canonical)
+    return filters
+
+
+def _parse_open_rgb_spec(spec: str, galaxy: str | None, filters: str | None) -> tuple[str, list[str]]:
+    if galaxy and filters:
+        return str(galaxy).strip(), _parse_open_rgb_filters(filters)
+
+    text = _open_rgb_prepare_filter_text(str(spec or "").strip().strip(".").replace("\\", "/"))
+    if "/" in text and not filters:
+        parts = [p.strip() for p in text.split("/") if p.strip()]
+        if len(parts) >= 2:
+            return parts[0], _parse_open_rgb_filters("-".join(parts[1:]))
+
+    text = re.sub(r"^(hst|jwst|hst-jwst|jwst-hst)?[-_\s]*rgb[-_\s]+", "", text, flags=re.IGNORECASE)
+    tokens = [t for t in re.split(r"[-,\s]+", text) if t]
+    lookup = _open_rgb_filter_lookup()
+    filter_tokens: list[str] = []
+    while tokens:
+        key = _open_rgb_normalize_token(tokens[-1])
+        canonical = lookup.get(key)
+        if not canonical:
+            break
+        if canonical not in filter_tokens:
+            filter_tokens.insert(0, canonical)
+        tokens.pop()
+    parsed_galaxy = str(galaxy or " ".join(tokens)).strip(" -_")
+    return parsed_galaxy, filter_tokens
+
+
+def _open_rgb_filter_group(filter_name: str) -> str:
+    if filter_name == 'HA':
+        return "HST"
+    if filter_name in RGB_OPEN_HST_FILTERS or filter_name in ('F435W',):
+        return "HST"
+    if filter_name in RGB_OPEN_JWST_FILTERS:
+        return "JWST"
+    return "RGB"
+
+
+def _open_rgb_filter_file_keys(filter_name: str) -> list[str]:
+    keys: list[str] = []
+    for alias in RGB_OPEN_FILTER_ALIASES.get(filter_name, [filter_name]):
+        key = _open_rgb_normalize_token(alias)
+        # Keep filename matching strict. Broad aliases like "u", "v", "i", or "b"
+        # can match unrelated products such as masks or "simple" FITS files.
+        if key and (re.fullmatch(r"f\d+[a-z]+", key) or len(key) >= 4):
+            keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def _open_rgb_title(galaxy: str, filters: list[str]) -> str:
+    groups = {_open_rgb_filter_group(f) for f in filters}
+    if groups == {"HST"}:
+        prefix = "HST-RGB"
+    elif groups == {"JWST"}:
+        prefix = "JWST-RGB"
+    elif "HST" in groups and "JWST" in groups:
+        prefix = "HST-JWST-RGB"
+    else:
+        prefix = "RGB"
+    clean_galaxy = re.sub(r"\s+", "-", str(galaxy or "").strip()) or RGB_DEFAULT_GALAXY_NAME
+    return f"{prefix}-{clean_galaxy}"
+
+
+def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
+    galaxy_keys = _open_rgb_galaxy_variants(galaxy)
+    filter_keys = _open_rgb_filter_file_keys(filter_name)
+    if not galaxy_keys or not filter_keys:
+        return None
+
+    candidates: list[tuple[int, str, Path]] = []
+    for pattern in ("*.fits", "*.fit", "*.fits.gz"):
+        try:
+            iterator = FILES_ROOT.rglob(pattern)
+        except Exception:
+            continue
+        for path in iterator:
+            if not path.is_file():
+                continue
+            rel = path.relative_to(FILES_ROOT).as_posix()
+            rel_lower = rel.lower()
+            if any(token in rel_lower for token in ("mask", "segmentation", "segments", "nebulae")):
+                continue
+            haystack = _open_rgb_normalize_token(path.name)
+            rel_haystack = _open_rgb_normalize_token(rel)
+            if not any(g in rel_haystack for g in galaxy_keys):
+                continue
+            if not any(f in haystack for f in filter_keys):
+                continue
+            score = 0
+            if any(g in haystack for g in galaxy_keys):
+                score -= 20
+            if "/uploads/" in f"/{rel.lower()}":
+                score += 30
+            score += len(rel)
+            candidates.append((score, rel, path))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1].lower()))
+    return candidates[0][1]
+
+
+def _open_rgb_channel_plan(filters: list[str]) -> list[tuple[str, str]]:
+    ordered = sorted(
+        filters,
+        key=lambda name: RGB_OPEN_FILTER_WAVELENGTHS.get(name, 999.0)
+    )
+    count = len(ordered)
+    channels_by_count = {
+        1: ['r'],
+        2: ['g', 'r'],
+        3: ['b', 'g', 'r'],
+        4: ['b', 'g', 'r', 'c4'],
+        5: ['b', 'g', 'r', 'c4', 'c5'],
+    }
+    channels = channels_by_count.get(count)
+    if not channels:
+        raise HTTPException(status_code=400, detail="open-rgb supports 1 to 5 filters")
+    return list(zip(channels, ordered))
 
 
 # FastAPI app
@@ -1347,7 +1572,7 @@ class PerSessionMiddleware(BaseHTTPMiddleware):
 
         # Allow pretty "open file" routes without requiring a session.
         # These routes only redirect to "/" and the frontend will bootstrap a session via /session/start.
-        if path.startswith("/open/") or path.startswith("/imager/"):
+        if path.startswith("/open/") or path.startswith("/imager/") or path == "/open-rgb" or path.startswith("/open-rgb/"):
             return await call_next(request)
 
         # Allow file-browser search helper routes without requiring a session.
@@ -1373,7 +1598,7 @@ class PerSessionMiddleware(BaseHTTPMiddleware):
 
         # Allow static and image assets (needed before JS can attach session headers)
         try:
-            static_prefix = f"/{STATIC_DIRECTORY}/"
+            static_prefix = f"/{STATIC_URL_PATH}/"
         except Exception:
             static_prefix = "/static/"
         try:
@@ -1427,8 +1652,11 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
 # Serve simple static HTML pages from repo root (no session required).
 @app.get("/features.html", include_in_schema=False)
 async def features_page():
-    # This file lives in the project root next to main.py
-    target = Path(__file__).resolve().parent / "features.html"
+    # In source checkouts this lives next to main.py; packaged launchers may
+    # expose it from the prepared runtime directory instead.
+    target = Path.cwd() / "features.html"
+    if not target.exists():
+        target = Path(__file__).resolve().parent / "features.html"
     if not target.exists():
         raise HTTPException(status_code=404, detail="features.html not found")
     # Disable caching so edits show immediately during development.
@@ -1465,7 +1693,7 @@ else:
 # Mount settings API
 app.include_router(settings_router)
 # Mount static files directory
-app.mount("/"+STATIC_DIRECTORY, StaticFiles(directory=STATIC_DIRECTORY), name=STATIC_DIRECTORY)
+app.mount("/"+STATIC_URL_PATH, StaticFiles(directory=STATIC_DIRECTORY), name=STATIC_URL_PATH)
 app.mount("/"+IMAGE_DIR, StaticFiles(directory=IMAGE_DIR), name=IMAGE_DIR)
 
 # Create a catalogs directory if it doesn't exist
@@ -1599,6 +1827,87 @@ async def open_fits_viewer(filepath: str, request: Request, hdu: int | None = Qu
     qs = "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in params.items()])
     return RedirectResponse(url=f"/?{qs}", status_code=307)
 
+
+@app.get("/open-rgb")
+@app.get("/open-rgb/")
+@app.get("/open-rgb/{spec:path}")
+async def open_rgb_viewer(
+    request: Request,
+    spec: str = "",
+    galaxy: str | None = Query(default=None),
+    filters: str | None = Query(default=None),
+):
+    """
+    Pretty route for opening an RGB composite by galaxy and filter names.
+
+    Examples:
+      /open-rgb/ngc0628-f336w-f555w-f814w-f770w-f1130w
+      /open-rgb/HST-RGB-ngc0628-f336w-f555w-f814w
+      /open-rgb/?galaxy=ngc0628&filters=f336w-f555w-f814w
+    """
+    parsed_galaxy, parsed_filters = _parse_open_rgb_spec(spec, galaxy, filters)
+    if not parsed_galaxy or not parsed_filters:
+        return JSONResponse(content={
+            "usage": "/open-rgb/{galaxy}-{filter1}-{filter2}-...",
+            "example": "/open-rgb/ngc0628-f336w-f555w-f814w-f770w-f1130w",
+            "hst_filters": RGB_OPEN_HST_FILTERS,
+            "jwst_filters": RGB_OPEN_JWST_FILTERS,
+        })
+    if len(parsed_filters) > 5:
+        raise HTTPException(status_code=400, detail="open-rgb supports up to 5 filters")
+
+    invalid = [f for f in parsed_filters if f not in RGB_OPEN_FILTERS and f != "F435W"]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Unsupported RGB filter(s): {', '.join(invalid)}",
+                "hst_filters": RGB_OPEN_HST_FILTERS,
+                "jwst_filters": RGB_OPEN_JWST_FILTERS,
+            },
+        )
+
+    channel_files = []
+    missing = []
+    for channel, filter_name in _open_rgb_channel_plan(parsed_filters):
+        filepath = _open_rgb_find_file(parsed_galaxy, filter_name)
+        if not filepath:
+            missing.append(filter_name)
+            continue
+        channel_files.append({
+            "channel": channel,
+            "filter": filter_name,
+            "filepath": filepath,
+        })
+
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"No FITS file found for {parsed_galaxy}: {', '.join(missing)}",
+                "galaxy": parsed_galaxy,
+                "missing_filters": missing,
+                "hst_filters": RGB_OPEN_HST_FILTERS,
+                "jwst_filters": RGB_OPEN_JWST_FILTERS,
+            },
+        )
+
+    params: dict[str, str] = {}
+    try:
+        for k, v in request.query_params.multi_items():
+            if not k or k in {"galaxy", "filters", "rgb_galaxy", "rgb_filters", "rgb_files", "rgb_title"}:
+                continue
+            params[str(k)] = str(v)
+    except Exception:
+        params = {}
+
+    params["rgb_galaxy"] = parsed_galaxy
+    params["rgb_filters"] = "-".join(parsed_filters)
+    params["rgb_title"] = _open_rgb_title(parsed_galaxy, parsed_filters)
+    params["rgb_files"] = json.dumps(channel_files, separators=(",", ":"))
+    qs = "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in params.items()])
+    return RedirectResponse(url=f"/?{qs}", status_code=307)
+
 @app.get("/search")
 @app.get("/open-files-search")  # backward-compatible alias
 async def open_files_search(
@@ -1673,13 +1982,33 @@ async def list_catalogs():
     """List available catalog files."""
     try:
         catalogs = []
-        for file_path in catalogs_dir.glob("*.fits"):
-            catalogs.append({
-                "name": file_path.name,
-                "path": str(file_path),
-                "size": file_path.stat().st_size,
-                "modified": file_path.stat().st_mtime
-            })
+        seen = set()
+        roots = [
+            Path(CATALOGS_DIRECTORY),
+            Path(UPLOADS_DIRECTORY),
+        ]
+        for root in roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            for pattern in ("*.fits", "*.fit", "*.fts", "*.csv", "*.ecsv", "*.tsv", "*.txt"):
+                for file_path in root.glob(pattern):
+                    if not file_path.is_file():
+                        continue
+                    try:
+                        rel_path = file_path.relative_to(Path.cwd()).as_posix()
+                    except Exception:
+                        rel_path = str(file_path)
+                    key = rel_path.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    catalogs.append({
+                        "name": file_path.name,
+                        "path": rel_path,
+                        "size": file_path.stat().st_size,
+                        "modified": file_path.stat().st_mtime
+                    })
+        catalogs.sort(key=lambda item: item["name"].lower())
         
         return JSONResponse(content={"catalogs": catalogs})
     except Exception as e:
@@ -2653,6 +2982,7 @@ class SimpleTileGenerator:
         self._update_colormap_lut() # Initialize LUT
         self._overview_lock = threading.Lock() # Lock for overview generation
         self._dynamic_range_lock = threading.Lock() # DEFER: Lock for dynamic range calculation
+        self._image_data_lock = threading.Lock() # Single-flight lock for lazy data load
         
         # Keep the FITS file open with memory mapping. Disable scaling to avoid costly I/O on Ceph
         def _is_ceph_storage(file_path):
@@ -2723,43 +3053,48 @@ class SimpleTileGenerator:
         """Load image data lazily when first needed to avoid heavy I/O on Ceph during fast init."""
         if self._image_data_loaded:
             return
-        hdu = self._hdul[self.hdu_index]
-        data = hdu.data
-        if data is None:
-            raise HTTPException(status_code=400, detail=f"No image data found in HDU {self.hdu_index}.")
-        if getattr(data, "ndim", 0) > 2:
-            if data.ndim == 3:
-                data = data[0, :, :]
-            elif data.ndim == 4:
-                data = data[0, 0, :, :]
-        # Apply pending flip if required
-        if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
-            try:
-                data = np.flipud(data)
-                setattr(self, "_flip_applied", True)
-            except Exception:
-                pass
-        # Optionally optimize access on first touch (promote memmap to RAM or warm page cache)
-        if FITS_OPTIMIZE_ON_FIRST_ACCESS:
-            try:
-                promoted, strategy = optimize_array_io(
-                    data, int(hdu.header.get('NAXIS2', data.shape[-2])), int(hdu.header.get('NAXIS1', data.shape[-1])),
-                    os.path.basename(self.fits_file_path), self.hdu_index
-                )
-                data = promoted
-                self.io_strategy = strategy
-            except Exception:
-                pass
-        elif FITS_WARMUP_ON_INIT and isinstance(data, np.memmap):
-            try:
-                _ = float(np.sum(data[0:PAGECACHE_WARMUP_CHUNK_ROWS, :]))
-            except Exception:
-                pass
-        self.image_data = data
-        self.height, self.width = self.image_data.shape[-2:]
-        # Recompute max_level if width/height were unknown
-        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
-        self._image_data_loaded = True
+        # Single-flight: on slow storage (e.g. Colab Drive/FUSE) a burst of parallel
+        # tile requests must not each trigger a full-file read at the same time.
+        with self._image_data_lock:
+            if self._image_data_loaded:
+                return
+            hdu = self._hdul[self.hdu_index]
+            data = hdu.data
+            if data is None:
+                raise HTTPException(status_code=400, detail=f"No image data found in HDU {self.hdu_index}.")
+            if getattr(data, "ndim", 0) > 2:
+                if data.ndim == 3:
+                    data = data[0, :, :]
+                elif data.ndim == 4:
+                    data = data[0, 0, :, :]
+            # Apply pending flip if required
+            if getattr(self, "_flip_required", False) and not getattr(self, "_flip_applied", False):
+                try:
+                    data = np.flipud(data)
+                    setattr(self, "_flip_applied", True)
+                except Exception:
+                    pass
+            # Optionally optimize access on first touch (promote memmap to RAM or warm page cache)
+            if FITS_OPTIMIZE_ON_FIRST_ACCESS:
+                try:
+                    promoted, strategy = optimize_array_io(
+                        data, int(hdu.header.get('NAXIS2', data.shape[-2])), int(hdu.header.get('NAXIS1', data.shape[-1])),
+                        os.path.basename(self.fits_file_path), self.hdu_index
+                    )
+                    data = promoted
+                    self.io_strategy = strategy
+                except Exception:
+                    pass
+            elif FITS_WARMUP_ON_INIT and isinstance(data, np.memmap):
+                try:
+                    _ = float(np.sum(data[0:PAGECACHE_WARMUP_CHUNK_ROWS, :]))
+                except Exception:
+                    pass
+            self.image_data = data
+            self.height, self.width = self.image_data.shape[-2:]
+            # Recompute max_level if width/height were unknown
+            self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+            self._image_data_loaded = True
     
     def _calculate_initial_dynamic_range(self):
         """Calculates and sets the initial dynamic range (min/max) with Ceph-friendly access."""
@@ -2951,7 +3286,7 @@ class SimpleTileGenerator:
     def get_minimal_tile_info(self):
         """Return minimal tile info without triggering dynamic range (cpah-friendly)."""
         bunit = self.header.get('BUNIT', None)
-        return {
+        info = {
             "width": self.width,
             "height": self.height,
             "tileSize": self.tile_size,
@@ -2961,6 +3296,18 @@ class SimpleTileGenerator:
             "scaling_function": self.scaling_function,
             "invert_colormap": bool(self.invert_colormap)
         }
+        try:
+            datamin = self.header.get("DATAMIN", None)
+            datamax = self.header.get("DATAMAX", None)
+            if datamin is not None and datamax is not None:
+                datamin = float(datamin)
+                datamax = float(datamax)
+                if np.isfinite(datamin) and np.isfinite(datamax) and datamin < datamax:
+                    info["initial_display_min"] = datamin
+                    info["initial_display_max"] = datamax
+        except Exception:
+            pass
+        return info
     def get_tile(self, level, x, y):
         """Generate a tile at the specified level and coordinates."""
         # Ensure data is loaded lazily before slicing
@@ -3151,6 +3498,7 @@ class RGBTileGenerator:
         self.channels = {name: None for name in self.CHANNELS}
         self.channel_meta = {name: {} for name in self.CHANNELS}
         self.base_channel = None
+        self.channel_executor = ThreadPoolExecutor(max_workers=len(self.CHANNELS), thread_name_prefix="rgb-channel")
 
     def _max_level_for_dimensions(self, width, height):
         return max(0, int(np.ceil(np.log2(max(int(width), int(height)) / self.tile_size))))
@@ -3185,7 +3533,10 @@ class RGBTileGenerator:
 
         self._ensure_wcs_overlap_or_raise(generator, target_channel=channel)
         self._normalize_generator_tile_geometry(generator)
-        generator.ensure_dynamic_range_calculated()
+        if _is_colab_drive_path(getattr(generator, "fits_file_path", filepath)):
+            self._ensure_colab_channel_range(generator)
+        else:
+            generator.ensure_dynamic_range_calculated()
         self._normalize_generator_tile_geometry(generator)
         previous_generator = self.channels.get(channel)
         previous_meta = dict(self.channel_meta.get(channel) or {})
@@ -3201,11 +3552,69 @@ class RGBTileGenerator:
         }
         if self.base_channel is None or self.channels.get(self.base_channel) is None:
             self.base_channel = channel
+        # On Colab the channel lives on slow Drive/FUSE storage; start reading it into
+        # RAM right away (channels warm in parallel) so the first RGB tiles don't each
+        # have to wait on a Drive read.
+        if _NELOURA_IS_COLAB or _is_colab_drive_path(getattr(generator, "fits_file_path", filepath)):
+            try:
+                self.channel_executor.submit(generator._ensure_image_data_loaded)
+            except Exception:
+                pass
         if previous_generator is not None and previous_generator is not generator:
             try:
                 previous_generator.cleanup()
             except Exception:
                 pass
+
+    def _ensure_colab_channel_range(self, generator):
+        if generator is None or (generator.min_value is not None and generator.max_value is not None):
+            return
+        vmin, vmax = _header_initial_display_range(generator.header)
+        if vmin is None or vmax is None:
+            try:
+                hdu = generator._hdul[generator.hdu_index]
+                vmin, vmax = _sample_display_range_from_hdu(hdu, int(generator.width), int(generator.height))
+            except Exception:
+                vmin, vmax = None, None
+        if vmin is None or vmax is None:
+            vmin, vmax = 0.0, 1.0
+        generator.min_value = float(vmin)
+        generator.max_value = float(vmax)
+        generator.dynamic_range_calculated = True
+
+    def _channel_sample_for_stats(self, gen):
+        if gen is None:
+            return None
+        if _is_colab_drive_path(getattr(gen, "fits_file_path", "")):
+            try:
+                hdu = gen._hdul[gen.hdu_index]
+                data = hdu.data
+                if data is None:
+                    return None
+                if getattr(data, "ndim", 0) > 2:
+                    if data.ndim == 3:
+                        data = data[0, :, :]
+                    elif data.ndim == 4:
+                        data = data[0, 0, :, :]
+                    else:
+                        data = data.reshape((-1, int(gen.height), int(gen.width)))[0]
+                win = int(os.getenv("COLAB_DRIVE_RGB_HISTOGRAM_SAMPLE_SIZE", "512"))
+                h = int(getattr(gen, "height", 0) or data.shape[-2])
+                w = int(getattr(gen, "width", 0) or data.shape[-1])
+                win_h = max(1, min(h, win))
+                win_w = max(1, min(w, win))
+                y0 = max(0, h // 2 - win_h // 2)
+                x0 = max(0, w // 2 - win_w // 2)
+                return np.asarray(data[y0:y0 + win_h, x0:x0 + win_w])
+            except Exception:
+                return None
+        gen._ensure_image_data_loaded()
+        data_arr = np.asarray(gen.image_data)
+        if data_arr.size > MAX_POINTS_FOR_FULL_HISTOGRAM and data_arr.ndim >= 2:
+            ratio = data_arr.size / MAX_POINTS_FOR_FULL_HISTOGRAM
+            stride = max(1, int(np.sqrt(ratio)))
+            return data_arr[::stride, ::stride]
+        return data_arr
 
     def _loaded_generators(self):
         return [gen for gen in self.channels.values() if gen is not None]
@@ -3404,6 +3813,18 @@ class RGBTileGenerator:
         if keep_channel not in self.CHANNELS or self.channels.get(self.base_channel) is None:
             self.base_channel = keep_channel if keep_channel in self.CHANNELS and self.channels.get(keep_channel) is not None else None
 
+    def cleanup(self):
+        for gen in list(self.channels.values()):
+            if gen is not None:
+                try:
+                    gen.cleanup()
+                except Exception:
+                    pass
+        try:
+            self.channel_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
     def _validate_same_grid(self):
         loaded = self._loaded_generators()
         if not loaded:
@@ -3467,7 +3888,10 @@ class RGBTileGenerator:
             gen = self.channels.get(name)
             meta = dict(self.channel_meta.get(name) or {})
             if gen is not None:
-                gen.ensure_dynamic_range_calculated()
+                if _is_colab_drive_path(getattr(gen, "fits_file_path", "")):
+                    self._ensure_colab_channel_range(gen)
+                else:
+                    gen.ensure_dynamic_range_calculated()
                 meta.update({
                     "loaded": True,
                     "initial_display_min": float(gen.min_value) if gen.min_value is not None else None,
@@ -3511,18 +3935,67 @@ class RGBTileGenerator:
         rgb[~finite_mask] = 0
         return rgb
 
-    def _generator_tile_rgb(self, gen, level, x, y):
-        tile_bytes = gen.get_tile(level, x, y)
-        if tile_bytes is None:
-            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
-        with Image.open(io.BytesIO(tile_bytes)) as img:
-            arr = np.asarray(img.convert("RGB"), dtype=np.uint16)
-        if arr.shape[:2] != (self.tile_size, self.tile_size):
-            padded = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
-            h, w = arr.shape[:2]
-            padded[:min(h, self.tile_size), :min(w, self.tile_size)] = arr[:self.tile_size, :self.tile_size]
-            return padded
-        return arr
+    def _source_array_for_tile(self, gen):
+        # Promote the channel into RAM once (single-flight inside the generator) and
+        # serve every tile from memory. The Colab Drive path previously read straight
+        # from the memmap on each tile, so low-zoom tiles re-read the whole file through
+        # slow Drive/FUSE storage on every request, per channel.
+        gen._ensure_image_data_loaded()
+        if _is_colab_drive_path(getattr(gen, "fits_file_path", "")):
+            self._ensure_colab_channel_range(gen)
+        else:
+            gen.ensure_dynamic_range_calculated()
+        return gen.image_data
+
+    def _extract_direct_tile_data(self, gen, level, x, y, width=None, height=None):
+        data = self._source_array_for_tile(gen)
+        if data is None:
+            return np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+        width = int(width or gen.width)
+        height = int(height or gen.height)
+        scale = 2 ** (int(gen.max_level) - int(level))
+        start_x = int(x * self.tile_size * scale)
+        start_y = int(y * self.tile_size * scale)
+        if start_x >= width or start_y >= height:
+            return np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+
+        end_x = int(min(start_x + self.tile_size * scale, width))
+        end_y = int(min(start_y + self.tile_size * scale, height))
+        if start_x >= end_x or start_y >= end_y:
+            return np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+
+        # image_data is already flipped (when required) by _ensure_image_data_loaded,
+        # so the tile reader must not flip again.
+        flip_y = False
+        src_y0, src_y1 = start_y, end_y
+
+        tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
+        if scale <= 1:
+            region = np.asarray(data[src_y0:src_y1, start_x:end_x])
+            if flip_y:
+                region = np.flipud(region)
+            if scale < 1 and region.size:
+                region = resize(
+                    region,
+                    (self.tile_size, self.tile_size),
+                    order=0,
+                    preserve_range=True,
+                    anti_aliasing=False,
+                    mode='constant',
+                    cval=np.nan
+                )
+            if region.size:
+                h, w = region.shape[:2]
+                tile_data[:min(h, self.tile_size), :min(w, self.tile_size)] = region[:self.tile_size, :self.tile_size]
+        else:
+            stride = max(1, int(scale))
+            sampled = np.asarray(data[src_y0:src_y1:stride, start_x:end_x:stride])
+            if flip_y:
+                sampled = np.flipud(sampled)
+            if sampled.size:
+                h, w = sampled.shape[:2]
+                tile_data[:min(h, self.tile_size), :min(w, self.tile_size)] = sampled[:self.tile_size, :self.tile_size]
+        return tile_data
 
     def _display_to_wcs_pixels(self, gen, x_pixels, y_pixels):
         x_arr = np.asarray(x_pixels, dtype=float)
@@ -3602,66 +4075,49 @@ class RGBTileGenerator:
             return None
 
     def _render_channel_tile_scaled(self, gen, base, level, x, y):
+        if gen is base:
+            return self._normalized_rgb_tile(gen, self._extract_direct_tile_data(gen, level, x, y))
+
         gen._ensure_image_data_loaded()
-        gen.ensure_dynamic_range_calculated()
+        if _is_colab_drive_path(getattr(gen, "fits_file_path", "")):
+            self._ensure_colab_channel_range(gen)
+        else:
+            gen.ensure_dynamic_range_calculated()
         base_scale = 2 ** (int(base.max_level) - int(level))
 
-        if gen is base:
-            start_x = x * self.tile_size * base_scale
-            start_y = y * self.tile_size * base_scale
-            end_x = min(start_x + self.tile_size * base_scale, gen.width)
-            end_y = min(start_y + self.tile_size * base_scale, gen.height)
-            x0, y0 = int(start_x), int(start_y)
-            x1, y1 = int(end_x), int(end_y)
-            if x0 >= x1 or y0 >= y1:
-                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
-            elif base_scale <= 1:
-                region = np.asarray(gen.image_data[y0:y1, x0:x1])
-                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
-                if region.size:
-                    h, w = region.shape[:2]
-                    tile_data[:h, :w] = region
-            else:
-                stride = max(1, int(base_scale))
-                sampled = np.asarray(gen.image_data[y0:y1:stride, x0:x1:stride])
-                tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
-                if sampled.size:
-                    h, w = sampled.shape[:2]
-                    tile_data[:min(h, self.tile_size), :min(w, self.tile_size)] = sampled[:self.tile_size, :self.tile_size]
+        base_x0 = x * self.tile_size * base_scale
+        base_y0 = y * self.tile_size * base_scale
+        base_x1 = base_x0 + self.tile_size * base_scale
+        base_y1 = base_y0 + self.tile_size * base_scale
+
+        x_ratio = float(gen.width) / float(base.width) if base.width else 1.0
+        y_ratio = float(gen.height) / float(base.height) if base.height else 1.0
+        src_x0 = base_x0 * x_ratio
+        src_y0 = base_y0 * y_ratio
+        src_x1 = base_x1 * x_ratio
+        src_y1 = base_y1 * y_ratio
+
+        ix0 = int(np.floor(max(0, src_x0)))
+        iy0 = int(np.floor(max(0, src_y0)))
+        ix1 = int(np.ceil(min(gen.width, src_x1)))
+        iy1 = int(np.ceil(min(gen.height, src_y1)))
+
+        if ix0 >= ix1 or iy0 >= iy1:
+            tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
         else:
-            base_x0 = x * self.tile_size * base_scale
-            base_y0 = y * self.tile_size * base_scale
-            base_x1 = base_x0 + self.tile_size * base_scale
-            base_y1 = base_y0 + self.tile_size * base_scale
-
-            x_ratio = float(gen.width) / float(base.width) if base.width else 1.0
-            y_ratio = float(gen.height) / float(base.height) if base.height else 1.0
-            src_x0 = base_x0 * x_ratio
-            src_y0 = base_y0 * y_ratio
-            src_x1 = base_x1 * x_ratio
-            src_y1 = base_y1 * y_ratio
-
-            ix0 = int(np.floor(max(0, src_x0)))
-            iy0 = int(np.floor(max(0, src_y0)))
-            ix1 = int(np.ceil(min(gen.width, src_x1)))
-            iy1 = int(np.ceil(min(gen.height, src_y1)))
-
-            if ix0 >= ix1 or iy0 >= iy1:
+            region = np.asarray(gen.image_data[iy0:iy1, ix0:ix1])
+            if region.size == 0:
                 tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
             else:
-                region = np.asarray(gen.image_data[iy0:iy1, ix0:ix1])
-                if region.size == 0:
-                    tile_data = np.full((self.tile_size, self.tile_size), np.nan, dtype=float)
-                else:
-                    tile_data = resize(
-                        region,
-                        (self.tile_size, self.tile_size),
-                        order=0,
-                        preserve_range=True,
-                        anti_aliasing=False,
-                        mode='constant',
-                        cval=np.nan
-                    )
+                tile_data = resize(
+                    region,
+                    (self.tile_size, self.tile_size),
+                    order=0,
+                    preserve_range=True,
+                    anti_aliasing=False,
+                    mode='constant',
+                    cval=np.nan
+                )
         return self._normalized_rgb_tile(gen, tile_data)
 
     def _render_channel_tile(self, gen, frame, level, x, y):
@@ -3669,7 +4125,7 @@ class RGBTileGenerator:
             return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
         base = frame["base"]
         if gen is base and not frame.get("use_wcs_union"):
-            return self._generator_tile_rgb(gen, level, x, y)
+            return self._render_channel_tile_scaled(gen, base, level, x, y)
         aligned = self._render_channel_tile_wcs(gen, frame, level, x, y)
         if aligned is not None:
             return aligned
@@ -3693,8 +4149,7 @@ class RGBTileGenerator:
         def _render(name_gen):
             return self._render_channel_tile(name_gen[1], frame, level, x, y)
 
-        with ThreadPoolExecutor(max_workers=len(active)) as pool:
-            results = list(pool.map(_render, active))
+        results = list(self.channel_executor.map(_render, active))
 
         composed = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
         for r in results:
@@ -3712,14 +4167,9 @@ class RGBTileGenerator:
         gen = self.channels.get(channel)
         if gen is None:
             raise ValueError(f"No file loaded for channel {channel.upper()}")
-        gen._ensure_image_data_loaded()
-        data_arr = np.asarray(gen.image_data)
-        if data_arr.size > MAX_POINTS_FOR_FULL_HISTOGRAM and data_arr.ndim >= 2:
-            ratio = data_arr.size / MAX_POINTS_FOR_FULL_HISTOGRAM
-            stride = max(1, int(np.sqrt(ratio)))
-            sampled_arr = data_arr[::stride, ::stride]
-        else:
-            sampled_arr = data_arr
+        sampled_arr = self._channel_sample_for_stats(gen)
+        if sampled_arr is None:
+            raise ValueError("Channel image has no pixels")
         sample = sampled_arr[np.isfinite(sampled_arr)]
         if sample.size == 0:
             raise ValueError("Channel image has no finite pixels")
@@ -4207,9 +4657,20 @@ async def get_fits_histogram(
             file_id = make_file_id(current_file, hdu_index)
             session_generators = session_data.setdefault("active_tile_generators", {})
             gen = session_generators.get(file_id)
-            if gen is not None and hasattr(gen, "image_data") and gen.image_data is not None:
-                image_data_raw = gen.image_data
-                height, width = image_data_raw.shape[-2:]
+            if gen is not None:
+                # Reuse the tile generator's single in-RAM load instead of opening a
+                # second memmap and re-reading the whole file. On slow Colab Drive/FUSE
+                # storage this avoids a duplicate full-file read that competes with the
+                # tile load for bandwidth and roughly doubles first-load time.
+                if getattr(gen, "image_data", None) is None:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(app.state.thread_executor, gen._ensure_image_data_loaded)
+                    except Exception:
+                        pass
+                if getattr(gen, "image_data", None) is not None:
+                    image_data_raw = gen.image_data
+                    height, width = image_data_raw.shape[-2:]
 
         # Fallback: open file if no generator data present
         if image_data_raw is None:
@@ -4333,6 +4794,91 @@ async def get_fits_histogram(
 @app.get("/fits-header/{filepath:path}")
 async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="Index of the HDU to read the header from")):
     """Retrieve the header of a specific HDU from a FITS file."""
+    def _parse_fast_header_card(card: str):
+        key = card[:8].strip()
+        if not key or key == "END" or card[8:10] != "= ":
+            return None
+
+        raw = card[10:].rstrip()
+        in_quote = False
+        slash_index = None
+        for idx, ch in enumerate(raw):
+            if ch == "'":
+                in_quote = not in_quote
+            elif ch == "/" and not in_quote:
+                slash_index = idx
+                break
+
+        value_text = raw[:slash_index].strip() if slash_index is not None else raw.strip()
+        comment = raw[slash_index + 1:].strip() if slash_index is not None else ""
+
+        if value_text.startswith("'"):
+            end = value_text.rfind("'")
+            value = value_text[1:end].strip() if end > 0 else value_text.strip("'").strip()
+        elif value_text in {"T", "F"}:
+            value = value_text == "T"
+        else:
+            try:
+                value = int(value_text)
+            except Exception:
+                try:
+                    value = float(value_text.replace("D", "E"))
+                except Exception:
+                    value = value_text
+        return key, value, comment
+
+    def _skip_fast_fits_data(fh, header: dict) -> None:
+        block_size = 2880
+        try:
+            bitpix = abs(int(header.get("BITPIX", 0) or 0))
+            byte_per_value = bitpix // 8
+            naxis = int(header.get("NAXIS", 0) or 0)
+            values = 1
+            for axis in range(1, naxis + 1):
+                values *= int(header.get(f"NAXIS{axis}", 0) or 0)
+            pcount = int(header.get("PCOUNT", 0) or 0)
+            gcount = int(header.get("GCOUNT", 1) or 1)
+            data_bytes = int(gcount * (pcount + values * byte_per_value)) if naxis > 0 else int(pcount)
+            padded = ((data_bytes + block_size - 1) // block_size) * block_size
+            if padded:
+                fh.seek(padded, os.SEEK_CUR)
+        except Exception:
+            pass
+
+    def _fast_header_from_fits(path: Path, target_hdu: int):
+        block_size = 2880
+        with open(path, "rb") as fh:
+            index = 0
+            while True:
+                header = {}
+                header_list = []
+                found_end = False
+
+                while True:
+                    block = fh.read(block_size)
+                    if not block or len(block) < block_size:
+                        raise HTTPException(status_code=400, detail=f"Invalid HDU index: {target_hdu}. File has {index} HDUs.")
+                    for pos in range(0, block_size, 80):
+                        card = block[pos:pos + 80].decode("ascii", errors="replace")
+                        key = card[:8].strip()
+                        if key == "END":
+                            found_end = True
+                            break
+                        parsed = _parse_fast_header_card(card)
+                        if parsed is None:
+                            continue
+                        k, v, c = parsed
+                        header[k] = v
+                        header_list.append({"key": k, "value": repr(v), "comment": c})
+                    if found_end:
+                        break
+
+                if index == target_hdu:
+                    return header_list
+
+                _skip_fast_fits_data(fh, header)
+                index += 1
+
     try:
         # Construct the full path relative to the workspace or use absolute path
         # This assumes 'files/' directory or allows absolute paths
@@ -4346,7 +4892,11 @@ async def get_fits_header(filepath: str, hdu_index: int = Query(0, description="
         if not full_path.exists():
             raise HTTPException(status_code=404, detail=f"FITS file not found at: {full_path}")
 
-        with fits.open(full_path, memmap=False) as hdul:
+        if _is_colab_drive_path(full_path):
+            header_list = _fast_header_from_fits(full_path, int(hdu_index))
+            return JSONResponse(content={"header": header_list, "hdu_index": hdu_index, "filename": full_path.name, "fast": True})
+
+        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
             if hdu_index < 0 or hdu_index >= len(hdul):
                  raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
 
@@ -4386,8 +4936,170 @@ async def get_fits_hdu_info(filepath: str):
     if not full_path.exists():
         raise HTTPException(status_code=404, detail=f"FITS file not found at: {filepath}")
 
+    def _image_shape_from_header(header):
+        try:
+            naxis = int(header.get("NAXIS", 0) or 0)
+            if naxis <= 0:
+                return None
+            dims = []
+            for axis in range(naxis, 0, -1):
+                value = int(header.get(f"NAXIS{axis}", 0) or 0)
+                if value <= 0:
+                    return None
+                dims.append(value)
+            return tuple(dims)
+        except Exception:
+            return None
+
+    def _dtype_from_header(header):
+        bitpix = int(header.get("BITPIX", 0) or 0)
+        if bitpix == 8:
+            return "uint8"
+        if bitpix == 16:
+            return "int16"
+        if bitpix == 32:
+            return "int32"
+        if bitpix == 64:
+            return "int64"
+        if bitpix == -32:
+            return "float32"
+        if bitpix == -64:
+            return "float64"
+        return "Unknown"
+
+    def _parse_fast_card_value(raw: str):
+        value = raw
+        in_quote = False
+        cut = len(value)
+        for idx, ch in enumerate(value):
+            if ch == "'":
+                in_quote = not in_quote
+            elif ch == "/" and not in_quote:
+                cut = idx
+                break
+        value = value[:cut].strip()
+        if not value:
+            return None
+        if value.startswith("'"):
+            end = value.rfind("'")
+            return value[1:end].strip() if end > 0 else value.strip("'").strip()
+        if value in {"T", "F"}:
+            return value == "T"
+        try:
+            return int(value)
+        except Exception:
+            pass
+        try:
+            return float(value.replace("D", "E"))
+        except Exception:
+            return value
+
+    def _fast_hdu_info_from_fits_headers(path: Path):
+        hdu_list = []
+        recommended_index = -1
+        max_pixels = 0
+        block_size = 2880
+
+        def _data_bytes_from_header(header: dict) -> int:
+            try:
+                bitpix = abs(int(header.get("BITPIX", 0) or 0))
+                byte_per_value = bitpix // 8
+                naxis = int(header.get("NAXIS", 0) or 0)
+                values = 1
+                for axis in range(1, naxis + 1):
+                    values *= int(header.get(f"NAXIS{axis}", 0) or 0)
+                pcount = int(header.get("PCOUNT", 0) or 0)
+                gcount = int(header.get("GCOUNT", 1) or 1)
+                return int(gcount * (pcount + values * byte_per_value)) if naxis > 0 else int(pcount)
+            except Exception:
+                return 0
+
+        with open(path, "rb") as fh:
+            index = 0
+            while True:
+                header = {}
+                found_end = False
+
+                while True:
+                    block = fh.read(block_size)
+                    if not block:
+                        found_end = False
+                        break
+                    if len(block) < block_size:
+                        found_end = False
+                        break
+
+                    for pos in range(0, block_size, 80):
+                        card = block[pos:pos + 80].decode("ascii", errors="replace")
+                        key = card[:8].strip()
+                        if key == "END":
+                            found_end = True
+                            break
+                        if key and card[8:10] == "= ":
+                            header[key] = _parse_fast_card_value(card[10:])
+                    if found_end:
+                        break
+
+                if not found_end:
+                    break
+
+                xtension = str(header.get("XTENSION", "") or "").strip().upper()
+                is_primary = index == 0 and not xtension
+                is_table = "TABLE" in xtension
+                shape = _image_shape_from_header(header)
+                is_image = (not is_table) and bool(shape)
+                if is_image and shape and len(shape) >= 2:
+                    num_pixels = int(np.prod(shape))
+                    if num_pixels > max_pixels:
+                        max_pixels = num_pixels
+                        recommended_index = index
+
+                info = {
+                    "index": index,
+                    "name": header.get("EXTNAME") or ("PRIMARY" if is_primary else f"HDU {index}"),
+                    "type": "Primary" if is_primary else ("Table" if is_table else "Image"),
+                    "isRecommended": False,
+                }
+                if is_image and shape:
+                    info["dimensions"] = shape
+                    info["dataType"] = _dtype_from_header(header)
+                    info["bunit"] = header.get("BUNIT", "Unknown")
+                    info["hasWCS"] = bool(header.get("CTYPE1") and header.get("CTYPE2"))
+                elif is_table:
+                    info["rows"] = int(header.get("NAXIS2", 0) or 0)
+                    info["columns"] = int(header.get("TFIELDS", 0) or 0)
+                hdu_list.append(info)
+
+                data_bytes = _data_bytes_from_header(header)
+
+                try:
+                    padded = ((data_bytes + block_size - 1) // block_size) * block_size
+                    if padded:
+                        fh.seek(padded, os.SEEK_CUR)
+                except Exception:
+                    break
+                index += 1
+
+        for info in hdu_list:
+            info["isRecommended"] = info["index"] == recommended_index
+        return hdu_list
+
     try:
-        with fits.open(full_path) as hdul:
+        if _is_colab_drive_path(full_path):
+            try:
+                file_size = full_path.stat().st_size
+            except Exception:
+                file_size = 0
+            hdu_list = _fast_hdu_info_from_fits_headers(full_path)
+            return JSONResponse(content={
+                "hduList": hdu_list,
+                "filename": full_path.name,
+                "fast": True,
+                "partial": False,
+                "file_size": int(file_size),
+            })
+
+        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
             hdu_list = []
             # Determine which HDU is likely the main science image
             recommended_index = -1
@@ -4395,8 +5107,9 @@ async def get_fits_hdu_info(filepath: str):
             
             # First pass: find the best candidate for the "recommended" HDU
             for i, hdu in enumerate(hdul):
-                if hdu.is_image and hdu.data is not None and hdu.data.ndim >= 2:
-                    num_pixels = hdu.data.size
+                shape = _image_shape_from_header(hdu.header)
+                if hdu.is_image and shape and len(shape) >= 2:
+                    num_pixels = int(np.prod(shape))
                     if num_pixels > max_pixels:
                         max_pixels = num_pixels
                         recommended_index = i
@@ -4412,9 +5125,10 @@ async def get_fits_hdu_info(filepath: str):
                 }
 
                 # Add specific details based on HDU type
-                if hdu.is_image and hdu.data is not None:
-                    info["dimensions"] = hdu.shape
-                    info["dataType"] = str(hdu.data.dtype)
+                shape = _image_shape_from_header(hdu.header)
+                if hdu.is_image and shape:
+                    info["dimensions"] = shape
+                    info["dataType"] = _dtype_from_header(hdu.header)
                     info["bunit"] = hdu.header.get('BUNIT', 'Unknown')
                     try:
                         wcs_info = WCS(hdu.header)
@@ -6038,8 +6752,17 @@ _CLEANER_LAST_RUN_TS: float | None = None
 _CLEANER_LAST_SLEEP_SEC: float | None = None
 _CLEANER_LAST_PATH: str | None = None
 
+def _neloura_quiet() -> bool:
+    return str(os.getenv("NELOURA_QUIET", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _neloura_print(message: str) -> None:
+    if not _neloura_quiet():
+        print(message)
+
+
 def _resolve_uploads_dir() -> Path:
-    base_dir = Path(__file__).parent.resolve()
+    base_dir = Path.cwd().resolve()
     return (base_dir / UPLOADS_DIRECTORY).resolve() if not Path(UPLOADS_DIRECTORY).is_absolute() else Path(UPLOADS_DIRECTORY)
 
 def _clean_uploads_dir_once() -> dict:
@@ -6078,10 +6801,10 @@ async def uploads_auto_clean_worker():
                 # Perform clean if enabled
                 if current_enable:
                     outcome = _clean_uploads_dir_once()
-                    print(f"[uploads_auto_clean] cleaned: {outcome['path']} (removed={outcome['cleaned']}, errors={outcome['errors']})")
+                    _neloura_print(f"[uploads_auto_clean] cleaned: {outcome['path']} (removed={outcome['cleaned']}, errors={outcome['errors']})")
                 # Debug log each cycle
                 try:
-                    print(f"[uploads_auto_clean] sleeping for {sleep_for:.1f}s (enable={current_enable})")
+                    _neloura_print(f"[uploads_auto_clean] sleeping for {sleep_for:.1f}s (enable={current_enable})")
                     global _CLEANER_LAST_SLEEP_SEC
                     _CLEANER_LAST_SLEEP_SEC = sleep_for
                 except Exception:
@@ -6090,11 +6813,11 @@ async def uploads_auto_clean_worker():
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"[uploads_auto_clean] error: {e}")
+                _neloura_print(f"[uploads_auto_clean] error: {e}")
                 # Backoff a bit on error to avoid tight loops
                 await asyncio.sleep(60)
     except Exception as outer_e:
-        print(f"[uploads_auto_clean] worker exited: {outer_e}")
+        _neloura_print(f"[uploads_auto_clean] worker exited: {outer_e}")
 
 # Enhanced proxy endpoint for NED requests
 @app.get("/ned-proxy/")
@@ -6576,6 +7299,143 @@ def _apply_display_settings_to_generator(tile_generator, settings: dict | None) 
             pass
     except Exception:
         pass
+
+
+def _is_colab_drive_path(path_like) -> bool:
+    try:
+        p = Path(path_like)
+        candidates = [str(p)]
+        try:
+            candidates.append(str(p.resolve()))
+        except Exception:
+            pass
+        return any(
+            candidate.startswith("/content/drive/")
+            or candidate.startswith("content/drive/")
+            or candidate.startswith("files/content/drive/")
+            for candidate in candidates
+        )
+    except Exception:
+        return False
+
+
+def _header_shape_2d(header) -> tuple[int, int]:
+    width = int(header.get("NAXIS1", 0) or 0)
+    height = int(header.get("NAXIS2", 0) or 0)
+    return width, height
+
+
+def _header_initial_display_range(header) -> tuple[float | None, float | None]:
+    try:
+        datamin = header.get("DATAMIN", None)
+        datamax = header.get("DATAMAX", None)
+        if datamin is None or datamax is None:
+            return None, None
+        datamin = float(datamin)
+        datamax = float(datamax)
+        if np.isfinite(datamin) and np.isfinite(datamax) and datamin < datamax:
+            return datamin, datamax
+    except Exception:
+        pass
+    return None, None
+
+
+def _sample_display_range_from_hdu(hdu, width: int, height: int) -> tuple[float | None, float | None]:
+    try:
+        data = hdu.data
+        if data is None:
+            return None, None
+        if getattr(data, "ndim", 0) > 2:
+            if data.ndim == 3:
+                data = data[0, :, :]
+            elif data.ndim == 4:
+                data = data[0, 0, :, :]
+            else:
+                data = data.reshape((-1, height, width))[0]
+
+        win_size = int(os.getenv("COLAB_DRIVE_RANGE_SAMPLE_SIZE", "512"))
+        win_h = max(1, min(int(height), win_size))
+        win_w = max(1, min(int(width), win_size))
+        y0 = max(0, int(height) // 2 - win_h // 2)
+        x0 = max(0, int(width) // 2 - win_w // 2)
+        sample = np.asarray(data[y0:y0 + win_h, x0:x0 + win_w])
+        sample = sample[np.isfinite(sample)]
+        if sample.size == 0:
+            return None, None
+        vmin = float(np.percentile(sample, DYNAMIC_RANGE_PERCENTILES["q_min"]))
+        vmax = float(np.percentile(sample, DYNAMIC_RANGE_PERCENTILES["q_max"]))
+        if np.isfinite(vmin) and np.isfinite(vmax) and vmin < vmax:
+            return vmin, vmax
+        vmin = float(np.min(sample))
+        vmax = float(np.max(sample))
+        if np.isfinite(vmin) and np.isfinite(vmax):
+            if vmin == vmax:
+                return vmin - 0.5, vmax + 0.5
+            if vmin < vmax:
+                return vmin, vmax
+    except Exception:
+        pass
+    return None, None
+
+
+def _fast_tile_info_from_header(fits_file: str, hdu_index: int, session_data: dict | None = None) -> dict:
+    with fits.open(fits_file, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+        if not (0 <= hdu_index < len(hdul)):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
+        header = hdul[hdu_index].header
+        width, height = _header_shape_2d(header)
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=400, detail="Selected HDU does not expose 2D image dimensions in its header.")
+
+        tile_size = IMAGE_TILE_SIZE_PX
+        max_level = max(0, int(np.ceil(np.log2(max(width, height) / tile_size))))
+        info = {
+            "width": width,
+            "height": height,
+            "tileSize": tile_size,
+            "maxLevel": max_level,
+            "minLevel": 0,
+            "bunit": header.get("BUNIT", None),
+            "color_map": "grayscale",
+            "scaling_function": "linear",
+            "invert_colormap": False,
+        }
+
+        settings = _get_session_display_settings(session_data or {})
+        if isinstance(settings, dict):
+            if settings.get("color_map") is not None:
+                info["color_map"] = resolve_color_map_key(settings.get("color_map")) or "grayscale"
+            if settings.get("scaling_function") is not None:
+                info["scaling_function"] = str(settings.get("scaling_function"))
+            if "invert_colormap" in settings:
+                info["invert_colormap"] = bool(settings.get("invert_colormap"))
+            if settings.get("min_value") is not None and settings.get("max_value") is not None:
+                try:
+                    info["initial_display_min"] = float(settings.get("min_value"))
+                    info["initial_display_max"] = float(settings.get("max_value"))
+                except Exception:
+                    pass
+
+        if "initial_display_min" not in info or "initial_display_max" not in info:
+            datamin, datamax = _header_initial_display_range(header)
+            if datamin is not None and datamax is not None:
+                info["initial_display_min"] = datamin
+                info["initial_display_max"] = datamax
+            else:
+                sample_min, sample_max = _sample_display_range_from_hdu(hdul[hdu_index], width, height)
+                if sample_min is not None and sample_max is not None:
+                    info["initial_display_min"] = sample_min
+                    info["initial_display_max"] = sample_max
+
+        try:
+            flip_y, _, _ = analyze_wcs_orientation(header, None)
+            info["flip_y"] = bool(flip_y)
+        except Exception:
+            info["flip_y"] = False
+
+        return info
+
+
 @app.post("/request-tiles/")
 async def request_tiles(request: Request):
     """Request prefetching of tiles for a specific region (session-scoped)."""
@@ -6629,6 +7489,17 @@ async def get_fits_tile_information(request: Request):
     session_generators = session_data.setdefault("active_tile_generators", {})
     tile_generator = session_generators.get(file_id)
 
+    if _is_colab_drive_path(fits_file) and not tile_generator:
+        try:
+            info = _fast_tile_info_from_header(fits_file, hdu_index, session_data)
+            if session is not None and getattr(session, "session_id", None):
+                info["session_id"] = session.session_id
+            return JSONResponse(content=info)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read fast tile info: {str(e)}")
+
     if not tile_generator:
         try:
             # Initialize generator using the shared executor
@@ -6645,7 +7516,10 @@ async def get_fits_tile_information(request: Request):
 
     # Always return tile info (even if generator already existed)
     try:
-        info = tile_generator.get_tile_info()
+        if _is_colab_drive_path(fits_file):
+            info = tile_generator.get_minimal_tile_info()
+        else:
+            info = tile_generator.get_tile_info()
         # Expose flip_y to frontend for WCS/overlay correctness
         try:
             info["flip_y"] = bool(getattr(tile_generator, "_flip_required", False))
@@ -6656,7 +7530,7 @@ async def get_fits_tile_information(request: Request):
             info["minLevel"] = 0
         # Fire-and-forget overview generation in background
         try:
-            if not getattr(tile_generator, "overview_generated", False):
+            if (not _is_colab_drive_path(fits_file)) and not getattr(tile_generator, "overview_generated", False):
                 loop = asyncio.get_running_loop()
                 asyncio.create_task(loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_overview_generated))
         except Exception:
@@ -6692,18 +7566,29 @@ async def get_fits_tile(level: int, x: int, y: int, request: Request):
         session_generators = session_data.setdefault("active_tile_generators", {})
         tile_generator = session_generators.get(file_id)
         if not tile_generator:
-            if not Path(fits_file).exists():
-                return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
-            # Initialize generator and dynamic range using shared executor
-            loop = asyncio.get_running_loop()
-            tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
-            await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
-            # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
-            try:
-                _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
-            except Exception:
-                pass
-            session_generators[file_id] = tile_generator
+            # Single-flight generator creation: a burst of parallel tile requests for
+            # the same file must not each build a generator and read the whole file
+            # (critical on slow Colab Drive/FUSE storage).
+            gen_locks = session_data.setdefault("_tile_generator_locks", {})
+            gen_lock = gen_locks.get(file_id)
+            if gen_lock is None:
+                gen_lock = asyncio.Lock()
+                gen_locks[file_id] = gen_lock
+            async with gen_lock:
+                tile_generator = session_generators.get(file_id)
+                if not tile_generator:
+                    if not Path(fits_file).exists():
+                        return JSONResponse(status_code=404, content={"error": f"FITS file path not found: {fits_file}"})
+                    # Initialize generator and dynamic range using shared executor
+                    loop = asyncio.get_running_loop()
+                    tile_generator = await loop.run_in_executor(app.state.thread_executor, SimpleTileGenerator, fits_file, hdu_index)
+                    await loop.run_in_executor(app.state.thread_executor, tile_generator.ensure_dynamic_range_calculated)
+                    # IMPORTANT: apply session display settings so zoomed-in tiles match the current min/max/colormap.
+                    try:
+                        _apply_display_settings_to_generator(tile_generator, _get_session_display_settings(session_data))
+                    except Exception:
+                        pass
+                    session_generators[file_id] = tile_generator
 
         # Per-session tile cache
         session_tile_cache = session_data.setdefault("tile_cache", TileCache(max_size=TILE_CACHE_MAX_SIZE))
@@ -6751,18 +7636,26 @@ def _resolve_browser_fits_path(filepath: str) -> Path:
 
 
 def _pick_first_image_hdu(path: Path, requested_hdu=None) -> int:
-    with fits.open(str(path), ignore_missing_end=True, memmap=True, lazy_load_hdus=True) as hdul:
+    with fits.open(str(path), ignore_missing_end=True, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+        def _is_image_header(hdu) -> bool:
+            try:
+                header = hdu.header
+                naxis = int(header.get("NAXIS", 0) or 0)
+                width = int(header.get("NAXIS1", 0) or 0)
+                height = int(header.get("NAXIS2", 0) or 0)
+                return naxis >= 2 and width > 0 and height > 0
+            except Exception:
+                return False
+
         if requested_hdu is not None:
             hdu_index = int(requested_hdu)
             if hdu_index < 0 or hdu_index >= len(hdul):
                 raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}. File has {len(hdul)} HDUs.")
-            data = hdul[hdu_index].data
-            if data is None or getattr(data, "ndim", 0) < 2:
+            if not _is_image_header(hdul[hdu_index]):
                 raise HTTPException(status_code=400, detail=f"HDU {hdu_index} is not an image HDU.")
             return hdu_index
         for idx, hdu in enumerate(hdul):
-            data = getattr(hdu, "data", None)
-            if data is not None and getattr(data, "ndim", 0) >= 2:
+            if _is_image_header(hdu):
                 return idx
     raise HTTPException(status_code=400, detail="No image HDU found in FITS file.")
 
@@ -6857,17 +7750,23 @@ async def rgb_set_channel(request: Request):
         except Exception:
             pass
 
-    # Pre-warm: load image data + dynamic range in background so the first tile
-    # request doesn't block on it. generator is already bound in this scope.
-    def _prewarm(gen):
-        try:
-            gen._ensure_image_data_loaded()
-            gen.ensure_dynamic_range_calculated()
-        except Exception:
-            pass
-    threading.Thread(target=_prewarm, args=(generator,), daemon=True).start()
+    # Pre-warm local files only. On Colab Drive this competes with tile/histogram
+    # requests and can make startup much slower.
+    if not _is_colab_drive_path(path):
+        def _prewarm(gen):
+            try:
+                gen._ensure_image_data_loaded()
+                gen.ensure_dynamic_range_calculated()
+            except Exception:
+                pass
+        threading.Thread(target=_prewarm, args=(generator,), daemon=True).start()
 
     return JSONResponse(content=_rgb_tile_info_with_session(rgb_generator, session))
+
+
+@app.get("/rgb/set-channel/")
+async def rgb_set_channel_get_hint():
+    raise HTTPException(status_code=405, detail="/rgb/set-channel/ is a POST API used by the RGB UI. Open the Neloura app instead of this URL directly.")
 
 @app.post("/rgb/clear/")
 async def rgb_clear(request: Request):
@@ -6876,7 +7775,8 @@ async def rgb_clear(request: Request):
         raise HTTPException(status_code=401, detail="Missing session")
     rgb_generator = _get_rgb_generator(session.data, create=False)
     if rgb_generator is not None:
-        rgb_generator.clear_except("")
+        rgb_generator.cleanup()
+        session.data.pop("rgb_tile_generator", None)
     return JSONResponse(content={"status": "success"})
 
 
@@ -6918,6 +7818,11 @@ async def rgb_channel_histogram(request: Request):
     return JSONResponse(content=hist)
 
 
+@app.get("/rgb/channel-histogram/")
+async def rgb_channel_histogram_get_hint():
+    raise HTTPException(status_code=405, detail="/rgb/channel-histogram/ is a POST API used by the RGB UI. Open the Neloura app instead of this URL directly.")
+
+
 @app.post("/rgb/channel-percentile/")
 async def rgb_channel_percentile(request: Request):
     session = getattr(request.state, "session", None)
@@ -6932,14 +7837,9 @@ async def rgb_channel_percentile(request: Request):
     if rgb_generator is None or channel not in rgb_generator.channels or rgb_generator.channels.get(channel) is None:
         raise HTTPException(status_code=404, detail="RGB channel is not loaded")
     gen = rgb_generator.channels[channel]
-    gen._ensure_image_data_loaded()
-    data_arr = np.asarray(gen.image_data)
-    if data_arr.size == 0:
+    data_arr = rgb_generator._channel_sample_for_stats(gen)
+    if data_arr is None or data_arr.size == 0:
         raise HTTPException(status_code=400, detail="Channel image has no pixels")
-    if data_arr.size > MAX_POINTS_FOR_FULL_HISTOGRAM and data_arr.ndim >= 2:
-        ratio = data_arr.size / MAX_POINTS_FOR_FULL_HISTOGRAM
-        stride = max(1, int(np.sqrt(ratio)))
-        data_arr = data_arr[::stride, ::stride]
     sample = data_arr[np.isfinite(data_arr)]
     if sample.size == 0:
         raise HTTPException(status_code=400, detail="Channel image has no finite pixels")
@@ -7026,66 +7926,41 @@ async def list_files_for_frontend(path: str = "", search: str = Query(None)):
         items = []
 
         if search and str(search).strip():
-            # Recursive, case-insensitive search. Use os.walk(..., followlinks=True)
-            # so deliberate aliases/symlinks inside files/ are searchable.
+            # Recursive, case-insensitive search (matches name/path regardless of upper/lower case)
             needle = str(search).strip().casefold()
-            seen_dirs = set()
-            for root, dirnames, filenames in os.walk(current_dir, topdown=True, followlinks=True):
-                root_path = Path(root)
+            for entry in current_dir.rglob('*'):
                 try:
-                    root_stat = root_path.stat()
-                    root_key = (root_stat.st_dev, root_stat.st_ino)
-                    if root_key in seen_dirs:
-                        dirnames[:] = []
+                    if any(part.startswith('.') for part in entry.parts):
                         continue
-                    seen_dirs.add(root_key)
                 except Exception:
                     pass
 
-                # Do not descend into hidden directories.
-                dirnames[:] = [d for d in dirnames if not str(d).startswith('.')]
+                try:
+                    rel_path = str(entry.relative_to(base_dir))
+                except Exception:
+                    continue
 
-                for dirname in list(dirnames):
-                    entry = root_path / dirname
-                    try:
-                        rel_path = str(entry.relative_to(base_dir))
-                    except Exception:
-                        continue
-                    hay = f"{entry.name}".casefold()
-                    if needle not in hay:
-                        continue
-                    try:
-                        st = entry.stat()
-                    except Exception:
-                        continue
+                # Match is intentionally against the *name* only (not full path),
+                # so searching "3627" won't return unrelated files that just live
+                # under a directory named "...3627...".
+                hay = f"{entry.name}".casefold()
+                if needle not in hay:
+                    continue
+
+                if entry.is_dir():
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
                         "type": "directory",
-                        "modified": st.st_mtime
+                        "modified": entry.stat().st_mtime
                     })
-
-                for filename in filenames:
-                    entry = root_path / filename
-                    try:
-                        if entry.suffix.lower() not in ['.fits', '.fit']:
-                            continue
-                        rel_path = str(entry.relative_to(base_dir))
-                    except Exception:
-                        continue
-                    hay = f"{entry.name}".casefold()
-                    if needle not in hay:
-                        continue
-                    try:
-                        st = entry.stat()
-                    except Exception:
-                        continue
+                elif entry.is_file() and entry.suffix.lower() in ['.fits', '.fit']:
                     items.append({
                         "name": entry.name,
                         "path": rel_path,
                         "type": "file",
-                        "size": st.st_size,
-                        "modified": st.st_mtime
+                        "size": entry.stat().st_size,
+                        "modified": entry.stat().st_mtime
                     })
         else:
             # Original behavior: list contents of the current directory
@@ -7452,12 +8327,14 @@ async def list_files(path: str = ""):
         path: Relative path within the allowed directories (optional)
     """
     try:
-        # Base directory is project root
-        base_dir = Path(__file__).parent.resolve()
+        # Base directory is the prepared runtime directory. In pip/Jupyter/Colab
+        # launches, uploads live under Path.cwd()/files/uploads, not beside the
+        # installed main.py module.
+        base_dir = Path.cwd().resolve()
         
         if not path:
             # For the root, list key directories
-            key_dirs = ["files", CATALOGS_DIR, "kernels"]
+            key_dirs = ["files", CATALOGS_DIRECTORY, "kernels"]
             items = []
             for dir_name in key_dirs:
                 dir_path = base_dir / dir_name
@@ -7523,7 +8400,8 @@ async def list_files(path: str = ""):
                     if is_files_context:
                         # In files directory, only show FITS files
                         file_ext = item_path.suffix.lower()
-                        if file_ext in ['.fits', '.fit']:
+                        allowed_exts = ['.fits', '.fit', '.fts', '.csv', '.ecsv', '.tsv', '.txt']
+                        if file_ext in allowed_exts:
                             item_data = {
                                 "name": item_path.name,
                                 "path": str(item_path.relative_to(base_dir)),
@@ -7625,6 +8503,21 @@ async def load_file(request: Request, filepath: str, hdu: int = Query(DEFAULT_HD
             print("[load_file] Failed to initialize tile generator:", e)
             print(traceback.format_exc())
             return JSONResponse(status_code=500, content={"error": f"Failed to initialize tile generator: {type(e).__name__}: {str(e)}"})
+
+        # On Colab the file lives on slow Drive/FUSE storage; kick off the one-time
+        # full read into RAM right away so the first tiles/histogram don't each have
+        # to wait for (and duplicate) that read.
+        if _NELOURA_IS_COLAB:
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(
+                    loop.run_in_executor(
+                        app.state.thread_executor,
+                        session_generators[file_id]._ensure_image_data_loaded,
+                    )
+                )
+            except Exception:
+                pass
 
         return JSONResponse(content={"message": f"File {filepath} set as active, HDU: {hdu}", "filepath": filepath, "hdu": hdu})
     except Exception as e:
@@ -8918,24 +9811,33 @@ async def fits_preview(
         raise HTTPException(status_code=401, detail="Missing session")
     session_data = session.data
 
-    # Resolve path safely under FILES_DIRECTORY. Keep the logical path check so
-    # deliberate symlinks inside files/ can point to mounted data directories.
+    # Resolve path safely under FILES_DIRECTORY. In Colab, files/content is a
+    # deliberate symlink to /content, so allow /content/drive paths as a special
+    # notebook runtime case.
     base_dir = Path(FILES_DIRECTORY).resolve()
     raw_filepath = str(filepath or "").replace("\\", "/")
     if "\x00" in raw_filepath or any(part == ".." for part in raw_filepath.split("/")):
         raise HTTPException(status_code=400, detail="Invalid filepath")
-
-    # filepath coming from file browser is expected to be relative (e.g. "uploads/foo.fits")
-    logical_candidate = base_dir / raw_filepath
-    candidate = logical_candidate.resolve()
+    if raw_filepath.startswith("/content/drive/"):
+        logical_candidate = Path(raw_filepath)
+        candidate = logical_candidate.resolve()
+    elif raw_filepath.startswith("content/drive/"):
+        logical_candidate = Path("/" + raw_filepath)
+        candidate = logical_candidate.resolve()
+    else:
+        # filepath coming from file browser is expected to be relative (e.g. "uploads/foo.fits")
+        logical_candidate = base_dir / raw_filepath
+        candidate = logical_candidate.resolve()
     try:
         logical_is_under_files = logical_candidate.is_relative_to(base_dir)
     except Exception:
         logical_is_under_files = False
-    if not (logical_is_under_files or str(candidate).startswith(str(base_dir))):
+    if not (logical_is_under_files or str(candidate).startswith(str(base_dir)) or str(candidate).startswith("/content/drive/")):
         raise HTTPException(status_code=400, detail="Invalid filepath")
     if not candidate.exists():
         raise HTTPException(status_code=404, detail=f"FITS file not found: {filepath}")
+
+    is_colab_drive_preview = _is_colab_drive_path(candidate)
 
     # Load a 2D view for preview (and its header). IMPORTANT: do_not_scale_image_data=True
     # avoids Astropy auto-scaling that can materialize huge arrays into RAM.
@@ -8948,10 +9850,16 @@ async def fits_preview(
         else:
             hdu_obj = None
             for i, it in enumerate(hdul):
-                data = getattr(it, "data", None)
-                if data is None:
-                    continue
-                ndim = getattr(data, "ndim", 0)
+                if is_colab_drive_preview:
+                    try:
+                        ndim = int(it.header.get("NAXIS", 0) or 0)
+                    except Exception:
+                        ndim = 0
+                else:
+                    data = getattr(it, "data", None)
+                    if data is None:
+                        continue
+                    ndim = getattr(data, "ndim", 0)
                 if ndim >= 2:
                     hdu_obj = it
                     hdu_index = i
@@ -9087,10 +9995,23 @@ async def fits_preview(
         if h <= 0 or w <= 0:
             raise HTTPException(status_code=400, detail="Invalid image dimensions")
 
-        # Use a UNIFORM stride in both axes. Using different strides (x != y) can make
-        # structures look "stretched" / anisotropically aliased in the preview.
-        stride = max(1, int(math.ceil(max(h, w) / float(max_dim))))
-        small = np.asarray(arr2d_view[0:h:stride, 0:w:stride])
+        # Use a UNIFORM stride in both axes. For Colab Drive, avoid striding across
+        # the full file because that becomes slow random I/O through Drive FUSE.
+        # A contiguous central window is much faster and good enough for hover preview.
+        if is_colab_drive_preview:
+            win_size = int(os.getenv("COLAB_DRIVE_PREVIEW_WINDOW", "1024"))
+            win_h = max(1, min(h, win_size))
+            win_w = max(1, min(w, win_size))
+            y0 = max(0, h // 2 - win_h // 2)
+            x0 = max(0, w // 2 - win_w // 2)
+            window = arr2d_view[y0:y0 + win_h, x0:x0 + win_w]
+            stride = max(1, int(math.ceil(max(win_h, win_w) / float(max_dim))))
+            small = np.asarray(window[0:win_h:stride, 0:win_w:stride])
+        else:
+            # Using different strides (x != y) can make structures look "stretched" /
+            # anisotropically aliased in the preview.
+            stride = max(1, int(math.ceil(max(h, w) / float(max_dim))))
+            small = np.asarray(arr2d_view[0:h:stride, 0:w:stride])
 
         # Apply FITS scaling to the small array only
         try:
@@ -9215,6 +10136,7 @@ async def fits_preview(
         "X-FITS-BPA-DEG": bpa_deg,
         "X-FITS-PIXSCALE-X-ARCSEC": pix_x_arcsec,
         "X-FITS-PIXSCALE-Y-ARCSEC": pix_y_arcsec,
+        "X-FITS-PREVIEW-MODE": "central" if is_colab_drive_preview else "full",
     }
     return Response(content=png, media_type="image/png", headers=headers)
 
@@ -13130,6 +14052,199 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": f"Failed to save RGB cutouts plot: {str(e)}"})
 
+@app.get("/generate-all-rgb-cutouts/")
+async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: int = Query(10), rows_per_page: int = Query(5)):
+    """
+    Generates RGB cutout panels for the first N sources in a catalog and stacks them vertically.
+    Use count=-1 to include every source in the catalog.
+    """
+    if count == 0 or count < -1:
+        return JSONResponse(status_code=400, content={"error": "count must be a positive integer, or -1 for all sources"})
+    if rows_per_page < 1:
+        return JSONResponse(status_code=400, content={"error": "rows_per_page must be at least 1"})
+
+    base_dir = Path(".").resolve()
+    catalog_table = loaded_catalogs.get(catalog_name)
+    if catalog_table is None:
+        catalog_dirs_to_try = []
+        try:
+            name = str(catalog_name).strip()
+            candidates = [
+                (base_dir, base_dir / name),
+                (base_dir / CATALOGS_DIRECTORY, base_dir / CATALOGS_DIRECTORY / name),
+                (base_dir / UPLOADS_DIRECTORY, base_dir / UPLOADS_DIRECTORY / name),
+                (base_dir / FILES_DIRECTORY, base_dir / FILES_DIRECTORY / name),
+            ]
+            for candidate_dir, candidate_path in candidates:
+                try:
+                    if candidate_path.is_file():
+                        catalog_dirs_to_try.append(candidate_dir)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        catalog_dirs_to_try.append(Path(CATALOGS_DIRECTORY))
+
+        for catalog_dir in catalog_dirs_to_try:
+            try:
+                catalog_table = get_astropy_table_from_catalog(catalog_name, catalog_dir)
+                if catalog_table is not None:
+                    loaded_catalogs[catalog_name] = catalog_table
+                    break
+            except Exception:
+                continue
+
+    if catalog_table is None:
+        return JSONResponse(status_code=404, content={"error": f"Could not load catalog '{catalog_name}'."})
+
+    available_cols_lower = {str(col).lower(): col for col in catalog_table.colnames}
+    ra_col = None
+    dec_col = None
+    for potential_ra_name in RGB_RA_COLUMN_NAMES:
+        if str(potential_ra_name).lower() in available_cols_lower:
+            ra_col = available_cols_lower[str(potential_ra_name).lower()]
+            break
+    for potential_dec_name in RGB_DEC_COLUMN_NAMES:
+        if str(potential_dec_name).lower() in available_cols_lower:
+            dec_col = available_cols_lower[str(potential_dec_name).lower()]
+            break
+    if not ra_col or not dec_col:
+        try:
+            ra_col, dec_col = detect_coordinate_columns(catalog_table.colnames)
+        except Exception:
+            ra_col, dec_col = None, None
+
+    if not ra_col or not dec_col:
+        return JSONResponse(status_code=400, content={"error": f"Could not find RA/Dec columns in catalog '{catalog_name}'."})
+
+    total_rows = len(catalog_table)
+    requested_count = total_rows if count == -1 else min(count, total_rows)
+    if requested_count <= 0:
+        return JSONResponse(status_code=400, content={"error": "Catalog has no sources to process."})
+
+    def _row_galaxy_name(row):
+        for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
+            resolved_col = available_cols_lower.get(str(gal_col_name).lower())
+            if not resolved_col:
+                continue
+            try:
+                val = row[resolved_col]
+                if isinstance(val, bytes):
+                    val = val.decode("utf-8", errors="ignore")
+                galaxy = str(val).strip()
+                if galaxy and galaxy.lower() not in RGB_INVALID_GALAXY_NAMES:
+                    return galaxy
+            except Exception:
+                continue
+        return "UnknownGalaxy"
+
+    generated_image_paths = []
+    generated_image_sizes = []
+    failures = []
+    data_found_summary = {}
+
+    for idx in range(requested_count):
+        row = catalog_table[idx]
+        try:
+            ra_val = float(row[ra_col])
+            dec_val = float(row[dec_col])
+            if not (np.isfinite(ra_val) and np.isfinite(dec_val)):
+                failures.append({"index": idx, "error": "Non-finite RA/Dec"})
+                continue
+        except Exception as coord_error:
+            failures.append({"index": idx, "error": f"Invalid RA/Dec: {coord_error}"})
+            continue
+
+        try:
+            def _generate_single_rgb():
+                return asyncio.run(generate_rgb_cutouts(
+                    request,
+                    ra=ra_val,
+                    dec=dec_val,
+                    catalog_name=catalog_name,
+                    galaxy_name=_row_galaxy_name(row)
+                ))
+
+            single_response = await asyncio.to_thread(_generate_single_rgb)
+            if getattr(single_response, "status_code", 500) != 200:
+                failures.append({"index": idx, "error": f"RGB generation failed with HTTP {single_response.status_code}"})
+                continue
+
+            payload = json.loads(single_response.body.decode("utf-8"))
+            filename = payload.get("filename")
+            if not filename:
+                failures.append({"index": idx, "error": "RGB generation returned no filename"})
+                continue
+
+            image_path = Path(IMAGE_DIR) / filename
+            if not image_path.is_file():
+                failures.append({"index": idx, "error": f"Generated image not found: {filename}"})
+                continue
+
+            with Image.open(image_path) as img:
+                generated_image_paths.append(image_path)
+                generated_image_sizes.append(img.size)
+            data_found_summary[f"Source {idx + 1}"] = payload.get("data_found_summary", {})
+        except Exception as rgb_error:
+            print(f"All RGB Cutouts: failed source {idx}: {rgb_error}")
+            traceback.print_exc()
+            failures.append({"index": idx, "error": str(rgb_error)})
+
+    if not generated_image_paths:
+        return JSONResponse(status_code=500, content={"error": "No RGB panels could be generated.", "failures": failures})
+
+    image_dir = Path(IMAGE_DIR)
+    image_dir.mkdir(exist_ok=True)
+    safe_catalog_name = Path(str(catalog_name)).stem
+    safe_catalog_name = "".join(c if c in RGB_ALLOWED_FILENAME_CHARS else RGB_FILENAME_REPLACEMENT_CHAR for c in safe_catalog_name).strip(RGB_FILENAME_REPLACEMENT_CHAR)
+    if not safe_catalog_name:
+        safe_catalog_name = "catalog"
+    timestamp = int(time.time())
+    filename = f"all_rgb_{safe_catalog_name}_{len(generated_image_paths)}sources_{timestamp}.pdf"
+    filepath = image_dir / filename
+
+    try:
+        pdf_pages = []
+        for page_start in range(0, len(generated_image_paths), rows_per_page):
+            page_paths = generated_image_paths[page_start:page_start + rows_per_page]
+            page_sizes = generated_image_sizes[page_start:page_start + rows_per_page]
+            page_width = max(size[0] for size in page_sizes)
+            page_height = sum(size[1] for size in page_sizes)
+            page = Image.new("RGB", (page_width, page_height), color=(255, 255, 255))
+            y_offset = 0
+            for image_path, (img_width, img_height) in zip(page_paths, page_sizes):
+                with Image.open(image_path) as img:
+                    rgb_img = img.convert("RGB")
+                    x_offset = (page_width - img_width) // 2
+                    page.paste(rgb_img, (x_offset, y_offset))
+                y_offset += img_height
+            pdf_pages.append(page)
+
+        first_page, rest_pages = pdf_pages[0], pdf_pages[1:]
+        first_page.save(
+            str(filepath),
+            format="PDF",
+            resolution=RGB_OUTPUT_DPI,
+            save_all=True,
+            append_images=rest_pages
+        )
+    except Exception as save_error:
+        print(f"Error saving stacked RGB cutouts PDF: {save_error}")
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": f"Failed to save stacked RGB cutouts PDF: {str(save_error)}"})
+
+    return JSONResponse(content={
+        "message": "Stacked RGB cutouts generated successfully",
+        "url": f"/{IMAGE_DIR}/{filename}",
+        "filename": filename,
+        "requested_count": requested_count,
+        "generated_count": len(generated_image_paths),
+        "rows_per_page": rows_per_page,
+        "pdf_pages": math.ceil(len(generated_image_paths) / rows_per_page),
+        "failures": failures,
+        "data_found_summary": data_found_summary,
+    })
+
 # Add this to your main.py file
 import subprocess
 import sys
@@ -13331,19 +14446,19 @@ async def startup_event():
             app.state.tile_render_semaphore = asyncio.Semaphore(render_limit)
         if not hasattr(app.state, "fits_init_semaphore") or app.state.fits_init_semaphore is None:
             app.state.fits_init_semaphore = asyncio.Semaphore(fits_limit)
-        print(f"[startup] CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
-        print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
+        _neloura_print(f"[startup] CPU={cpu_count}, executor(max_workers={max_workers}), tile(limit={render_limit}), fits(limit={fits_limit})")
+        _neloura_print(f"[startup] Math threads: OMP={os.getenv('OMP_NUM_THREADS')}, OPENBLAS={os.getenv('OPENBLAS_NUM_THREADS')}, MKL={os.getenv('MKL_NUM_THREADS')}, NUMEXPR={os.getenv('NUMEXPR_NUM_THREADS')}")
     except Exception as _e:
-        print(f"[startup] Failed to initialize executor/semaphore: {_e}")
+        _neloura_print(f"[startup] Failed to initialize executor/semaphore: {_e}")
 
     # Start the background task
     asyncio.create_task(system_stats_sender(manager))
     # Start uploads auto-clean worker
     try:
         asyncio.create_task(uploads_auto_clean_worker())
-        print("[startup] uploads_auto_clean_worker scheduled")
+        _neloura_print("[startup] uploads_auto_clean_worker scheduled")
     except Exception as _e:
-        print(f"[startup] Failed to schedule uploads_auto_clean_worker: {_e}")
+        _neloura_print(f"[startup] Failed to schedule uploads_auto_clean_worker: {_e}")
     # Seed settings_profiles.json at startup so UI click isn't required
     try:
         from settings_api import _load_store as _sp_load, _save_store as _sp_save, _get_original_defaults as _sp_defaults
@@ -13356,9 +14471,9 @@ async def startup_event():
         # Ensure mapping structure exists
         store.setdefault("active_by_session", {})
         _sp_save(store)
-        print("[startup] Ensured settings_profiles.json exists with default profile")
+        _neloura_print("[startup] Ensured settings_profiles.json exists with default profile")
     except Exception as _e:
-        print(f"[startup] Failed to seed settings profiles: {_e}")
+        _neloura_print(f"[startup] Failed to seed settings profiles: {_e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

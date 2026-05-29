@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neloura"
+version = "0.1.44"
+description = "A local web viewer and analysis app for astronomical FITS images."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Neloura Developers" }
+]
+keywords = ["astronomy", "fits", "astropy", "visualization", "jupyter"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+  "fastapi",
+  "python-multipart",
+  "astropy",
+  "regions",
+  "reproject",
+  "spectral-cube",
+  "matplotlib",
+  "Pillow",
+  "scikit-image",
+  "numpy",
+  "aiohttp",
+  "photutils",
+  "psutil",
+  "httpx",
+  "requests",
+  "certifi",
+  "websockets",
+  "wsproto",
+  "uvicorn[standard]",
+  "astrodendro",
+  "astroquery",
+  "scipy",
+]
+
+[project.optional-dependencies]
+notebook = ["ipython"]
+dev = ["build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/hamidnpc/Neloura"
+Source = "https://github.com/hamidnpc/Neloura"
+Issues = "https://github.com/hamidnpc/Neloura/issues"
+
+[project.scripts]
+neloura = "neloura:main"
+
+[tool.setuptools]
+py-modules = [
+  "neloura",
+  "main",
+  "peak_finder",
+  "ast_test",
+  "coding",
+  "local_coding",
+  "settings_api",
+]
+include-package-data = true
+
+[tool.setuptools.data-files]
+"share/neloura/static" = ["static/*.*"]
+"share/neloura/static/workers" = ["static/workers/*.*"]
+"share/neloura/static/vendor/codemirror" = ["static/vendor/codemirror/*.*"]
+"share/neloura/static/vendor/codemirror/addon/comment" = ["static/vendor/codemirror/addon/comment/*.*"]
+"share/neloura/static/vendor/codemirror/addon/hint" = ["static/vendor/codemirror/addon/hint/*.*"]
+"share/neloura/static/vendor/codemirror/mode/python" = ["static/vendor/codemirror/mode/python/*.*"]
+"share/neloura/static/vendor/codemirror/theme" = ["static/vendor/codemirror/theme/*.*"]
+"share/neloura/static/vendor/fabric" = ["static/vendor/fabric/*.*"]
+"share/neloura/static/vendor/lodash" = ["static/vendor/lodash/*.*"]
+"share/neloura/static/vendor/openseadragon" = ["static/vendor/openseadragon/*.*"]
+"share/neloura/static/vendor/regions-select" = ["static/vendor/regions-select/*.*"]
+"share/neloura/static/vendor/sweetalert2" = ["static/vendor/sweetalert2/*.*"]
+"share/neloura/vendor/colorcet" = ["vendor/colorcet/*.*"]
+"share/neloura/vendor/colorcet-3.1.0.dist-info" = ["vendor/colorcet-3.1.0.dist-info/*.*"]
+"share/neloura/catalogs" = ["catalogs/*.py"]
+"share/neloura/psf" = ["psf/*.*"]
+"share/neloura" = ["features.html"]
