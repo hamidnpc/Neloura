@@ -5894,6 +5894,10 @@ function createSedTab(container) {
             animation: fadeIn 0.4s ease-out forwards;
             opacity: 0;
         }
+        @keyframes sedAllRgbSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
     `;
     document.head.appendChild(style);
 
@@ -5934,6 +5938,8 @@ function createSedTab(container) {
         <label for="search-type-flag">By Flag</label>
         <input type="radio" id="search-type-range" name="search-type" value="range" style="margin-left: 15px;">
         <label for="search-type-range">By Range</label>
+        <input type="radio" id="search-type-all" name="search-type" value="all" style="margin-left: 15px;">
+        <label for="search-type-all">All</label>
     `;
     wrapper.appendChild(searchTypeDiv);
 
@@ -6075,6 +6081,72 @@ function createSedTab(container) {
 
     wrapper.appendChild(rangeSearchContainer);
 
+    // All Sources RGB Container
+    const allSearchContainer = document.createElement('div');
+    allSearchContainer.id = 'all-search-container';
+    allSearchContainer.style.display = 'none';
+
+    const allCountDiv = document.createElement('div');
+    allCountDiv.style.marginBottom = '15px';
+    allCountDiv.style.marginRight = '15px';
+
+    const allCountLabel = document.createElement('label');
+    allCountLabel.htmlFor = 'sed-all-count-input';
+    allCountLabel.textContent = 'Number of Sources';
+    allCountLabel.style.display = 'block';
+    allCountLabel.style.marginBottom = '5px';
+
+    const allCountInput = document.createElement('input');
+    allCountInput.type = 'number';
+    allCountInput.id = 'sed-all-count-input';
+    allCountInput.value = '10';
+    allCountInput.placeholder = '-1 means all sources';
+    Object.assign(allCountInput.style, {
+        width: '100%', padding: '8px', backgroundColor: '#333', color: 'white', border: '1px solid #555', borderRadius: '4px'
+    });
+
+    const allCountHelp = document.createElement('div');
+    allCountHelp.style.fontSize = '11px';
+    allCountHelp.style.color = '#aaa';
+    allCountHelp.style.marginTop = '4px';
+    allCountHelp.textContent = 'Creates one stacked RGB image for the selected catalog. Use -1 for all sources.';
+
+    allCountDiv.appendChild(allCountLabel);
+    allCountDiv.appendChild(allCountInput);
+    allCountDiv.appendChild(allCountHelp);
+    allSearchContainer.appendChild(allCountDiv);
+
+    const allRowsPerPageDiv = document.createElement('div');
+    allRowsPerPageDiv.style.marginBottom = '15px';
+    allRowsPerPageDiv.style.marginRight = '15px';
+
+    const allRowsPerPageLabel = document.createElement('label');
+    allRowsPerPageLabel.htmlFor = 'sed-all-rows-per-page-input';
+    allRowsPerPageLabel.textContent = 'Rows per PDF page';
+    allRowsPerPageLabel.style.display = 'block';
+    allRowsPerPageLabel.style.marginBottom = '5px';
+
+    const allRowsPerPageInput = document.createElement('input');
+    allRowsPerPageInput.type = 'number';
+    allRowsPerPageInput.id = 'sed-all-rows-per-page-input';
+    allRowsPerPageInput.value = '5';
+    allRowsPerPageInput.min = '1';
+    Object.assign(allRowsPerPageInput.style, {
+        width: '100%', padding: '8px', backgroundColor: '#333', color: 'white', border: '1px solid #555', borderRadius: '4px'
+    });
+
+    const allRowsPerPageHelp = document.createElement('div');
+    allRowsPerPageHelp.style.fontSize = '11px';
+    allRowsPerPageHelp.style.color = '#aaa';
+    allRowsPerPageHelp.style.marginTop = '4px';
+    allRowsPerPageHelp.textContent = 'Default is 5 rows per page.';
+
+    allRowsPerPageDiv.appendChild(allRowsPerPageLabel);
+    allRowsPerPageDiv.appendChild(allRowsPerPageInput);
+    allRowsPerPageDiv.appendChild(allRowsPerPageHelp);
+    allSearchContainer.appendChild(allRowsPerPageDiv);
+    wrapper.appendChild(allSearchContainer);
+
     // Search Button
     const searchButton = document.createElement('button');
     searchButton.id = 'sed-search-button';
@@ -6084,6 +6156,37 @@ function createSedTab(container) {
     });
     searchButton.addEventListener('click', dispatchSedSearch);
     wrapper.appendChild(searchButton);
+
+    const allRgbLoading = document.createElement('div');
+    allRgbLoading.id = 'sed-all-rgb-loading';
+    Object.assign(allRgbLoading.style, {
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '10px',
+        color: '#ccc',
+        marginTop: '10px',
+        fontSize: '12px'
+    });
+
+    const allRgbSpinner = document.createElement('div');
+    Object.assign(allRgbSpinner.style, {
+        width: '22px',
+        height: '22px',
+        border: '3px solid rgba(76, 175, 80, 0.25)',
+        borderTopColor: '#4CAF50',
+        borderRadius: '50%',
+        animation: 'sedAllRgbSpin 0.9s linear infinite',
+        flex: '0 0 auto'
+    });
+
+    const allRgbLoadingText = document.createElement('div');
+    allRgbLoadingText.id = 'sed-all-rgb-loading-text';
+    allRgbLoadingText.textContent = 'Creating RGBs...';
+
+    allRgbLoading.appendChild(allRgbSpinner);
+    allRgbLoading.appendChild(allRgbLoadingText);
+    wrapper.appendChild(allRgbLoading);
 
     // Results Container
     const resultsContainer = document.createElement('div');
@@ -6097,12 +6200,14 @@ function createSedTab(container) {
     const nearbyRadio = wrapper.querySelector('#search-type-nearby');
     const flagRadio = wrapper.querySelector('#search-type-flag');
     const rangeRadio = wrapper.querySelector('#search-type-range');
+    const allRadio = wrapper.querySelector('#search-type-all');
     const resultsContainerRef = container.querySelector('#sed-results-container');
 
     nearbyRadio.addEventListener('change', () => {
         nearbySearchContainer.style.display = 'block';
         flagSearchContainer.style.display = 'none';
         rangeSearchContainer.style.display = 'none';
+        allSearchContainer.style.display = 'none';
         searchButton.textContent = 'Search Nearby';
         if (resultsContainerRef) resultsContainerRef.innerHTML = '';
     });
@@ -6111,6 +6216,7 @@ function createSedTab(container) {
         nearbySearchContainer.style.display = 'none';
         flagSearchContainer.style.display = 'block';
         rangeSearchContainer.style.display = 'none';
+        allSearchContainer.style.display = 'none';
         searchButton.textContent = 'Search by Flag';
         if (resultsContainerRef) resultsContainerRef.innerHTML = '';
         populateSedFlagDropdown();
@@ -6120,6 +6226,7 @@ function createSedTab(container) {
         nearbySearchContainer.style.display = 'none';
         flagSearchContainer.style.display = 'none';
         rangeSearchContainer.style.display = 'block';
+        allSearchContainer.style.display = 'none';
         searchButton.textContent = 'Search by Range';
         if (resultsContainerRef) resultsContainerRef.innerHTML = '';
         // Populate the dropdown in the first condition row, if it exists
@@ -6127,6 +6234,15 @@ function createSedTab(container) {
         if (firstRow) {
             populateSedColumnDropdown(firstRow.querySelector('.sed-range-column-select'), catalogSelect.value);
         }
+    });
+
+    allRadio.addEventListener('change', () => {
+        nearbySearchContainer.style.display = 'none';
+        flagSearchContainer.style.display = 'none';
+        rangeSearchContainer.style.display = 'none';
+        allSearchContainer.style.display = 'block';
+        searchButton.textContent = 'Create';
+        if (resultsContainerRef) resultsContainerRef.innerHTML = '';
     });
 
     catalogSelect.addEventListener('change', () => {
@@ -6453,6 +6569,8 @@ function dispatchSedSearch() {
         performFlagSearch();
     } else if (searchType === 'range') {
         performRangeSearch();
+    } else if (searchType === 'all') {
+        performAllRgbSearch();
     }
 }
 
@@ -7113,6 +7231,137 @@ function performSedSearch() {
             resultsContainer.innerHTML = `<div style="color: #ff6b6b; text-align: center;">Error: ${error.message}</div>`;
             showNotification(`Search Error: ${error.message}`, 4000, 'error');
         });
+}
+
+async function performAllRgbSearch() {
+    console.log("performAllRgbSearch triggered.");
+    const catalog = document.getElementById('sed-catalog-select').value;
+    const countInput = document.getElementById('sed-all-count-input');
+    const rowsPerPageInput = document.getElementById('sed-all-rows-per-page-input');
+    const resultsContainer = document.getElementById('sed-results-container');
+    const rawCount = countInput ? countInput.value : '';
+    const count = parseInt(rawCount, 10);
+    const rawRowsPerPage = rowsPerPageInput ? rowsPerPageInput.value : '';
+    const rowsPerPage = parseInt(rawRowsPerPage, 10);
+
+    if (!catalog) {
+        showNotification('Please select a catalog.', 3000, 'warning');
+        return;
+    }
+
+    if (!Number.isFinite(count) || count === 0 || count < -1) {
+        showNotification('Enter a positive source count, or -1 for all sources.', 3000, 'warning');
+        return;
+    }
+
+    if (!Number.isFinite(rowsPerPage) || rowsPerPage < 1) {
+        showNotification('Enter at least 1 row per PDF page.', 3000, 'warning');
+        return;
+    }
+
+    if (resultsContainer) {
+        resultsContainer.innerHTML = '<div style="text-align: center; color: #aaa;">Creating stacked RGB panels...</div>';
+    }
+
+    try {
+        startAllRgbLoadingEstimate(count);
+        const data = await window.fetchAllRgbCutouts?.(catalog, count, rowsPerPage);
+        stopAllRgbLoadingEstimate();
+        if (resultsContainer && data) {
+            resultsContainer.innerHTML = '';
+
+            const doneMessage = document.createElement('div');
+            doneMessage.textContent = `Created RGB panels for ${data.generated_count || 0} of ${data.requested_count || 0} source(s).`;
+            Object.assign(doneMessage.style, {
+                color: '#ccc',
+                padding: '12px',
+                textAlign: 'center'
+            });
+
+            const downloadButton = document.createElement('button');
+            downloadButton.textContent = 'Download';
+            Object.assign(downloadButton.style, {
+                display: 'block',
+                width: 'calc(100% - 24px)',
+                margin: '0 12px 12px 12px',
+                padding: '10px',
+                backgroundColor: '#4CAF50',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: '600'
+            });
+            downloadButton.onmouseover = () => downloadButton.style.backgroundColor = '#45a049';
+            downloadButton.onmouseout = () => downloadButton.style.backgroundColor = '#4CAF50';
+            downloadButton.onclick = () => {
+                const link = document.createElement('a');
+                link.href = data.url;
+                link.download = data.filename || 'all_rgb_cutout_panels.pdf';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            resultsContainer.appendChild(doneMessage);
+            resultsContainer.appendChild(downloadButton);
+        } else if (resultsContainer) {
+            resultsContainer.innerHTML = '<div style="color: #ff6b6b; padding: 12px; text-align: center;">Could not create stacked RGB panels.</div>';
+        }
+    } catch (error) {
+        stopAllRgbLoadingEstimate();
+        console.error('Error creating all RGB panels:', error);
+        if (resultsContainer) {
+            resultsContainer.innerHTML = `<div style="color: #ff6b6b; padding: 12px; text-align: center;">Error: ${error.message}</div>`;
+        }
+        showNotification(`Error: ${error.message}`, 4000, 'error');
+    }
+}
+
+let sedAllRgbLoadingTimer = null;
+
+function formatAllRgbEta(seconds) {
+    const safeSeconds = Math.max(0, Math.ceil(Number(seconds) || 0));
+    if (safeSeconds < 60) return `${safeSeconds}s`;
+    const minutes = Math.floor(safeSeconds / 60);
+    const remainder = safeSeconds % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function startAllRgbLoadingEstimate(count) {
+    stopAllRgbLoadingEstimate();
+    const loading = document.getElementById('sed-all-rgb-loading');
+    const text = document.getElementById('sed-all-rgb-loading-text');
+    if (!loading || !text) return;
+
+    loading.style.display = 'flex';
+    const hasKnownCount = Number.isFinite(count) && count > 0;
+    let remainingSeconds = hasKnownCount ? Math.max(3, Math.ceil(count * 1.5)) : null;
+
+    const update = () => {
+        if (remainingSeconds === null) {
+            text.textContent = 'Creating RGBs... estimated time depends on catalog size';
+            return;
+        }
+        text.textContent = remainingSeconds > 0
+            ? `Creating RGBs... estimated ${formatAllRgbEta(remainingSeconds)} remaining`
+            : 'Creating RGBs... almost done';
+        remainingSeconds -= 1;
+    };
+
+    update();
+    sedAllRgbLoadingTimer = setInterval(update, 1000);
+}
+
+function stopAllRgbLoadingEstimate() {
+    if (sedAllRgbLoadingTimer) {
+        clearInterval(sedAllRgbLoadingTimer);
+        sedAllRgbLoadingTimer = null;
+    }
+    const loading = document.getElementById('sed-all-rgb-loading');
+    if (loading) {
+        loading.style.display = 'none';
+    }
 }
 
 let fullSedSources = [];

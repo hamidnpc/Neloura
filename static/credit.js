@@ -1,8 +1,11 @@
 // static/credit.js
 
 function initializeCreditButton() {
-    // Only initialize in top-level window; never inside iframes (multi-panel panes)
-    try { if (window.self !== window.top) return; } catch(_) {}
+    // Notebook/Colab embeds are iframes; only skip Neloura's internal
+    // multi-panel pane frames.
+    try {
+        if (new URLSearchParams(window.location.search || '').get('mp') === '1') return;
+    } catch(_) {}
     // Ensure single instance
     if (document.getElementById('credit-icon-container')) return;
     createCreditIcon();

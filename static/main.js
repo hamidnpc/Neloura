@@ -501,7 +501,7 @@ let histogramOverviewPixelData = null; // <-- ADD THIS LINE: For caching overvie
 
 function getHistogramDocument() {
     try {
-        const root = window.top || window;
+        const root = getNelouraSameOriginRootWindow();
         if (root.__histogramHostDoc && root.__histogramHostDoc.body) {
             return root.__histogramHostDoc;
         }
@@ -513,11 +513,27 @@ function getHistogramDocument() {
 
 function getHistogramWindow() {
     try {
-        const root = window.top || window;
+        const root = getNelouraSameOriginRootWindow();
         if (root.__histogramHostWin) return root.__histogramHostWin;
         return root;
     } catch (_) {
         return window;
+    }
+}
+
+function getNelouraSameOriginRootWindow(startWin) {
+    let current = startWin || window;
+    while (true) {
+        try {
+            const parent = current.parent;
+            if (!parent || parent === current) return current;
+            // Touching document verifies same-origin access. In Colab, the next
+            // parent above Neloura is cross-origin, so we stop at the app frame.
+            if (!parent.document || !parent.document.body) return current;
+            current = parent;
+        } catch (_) {
+            return current;
+        }
     }
 }
 
@@ -7524,13 +7540,15 @@ function showDynamicRangePopup(options = {}) {
     // If we're the top window and multi-panel is visible, delegate to the active pane
     // (or a best-effort pane that has metadata) so histogram works in 2x2/diagonal/etc.
     try {
-        const isTop = (window.top === window);
-        if (isTop) {
-            const wrap = document.getElementById('multi-panel-container');
-            const grid = document.getElementById('multi-panel-grid');
+        const appRoot = getNelouraSameOriginRootWindow();
+        const isAppRoot = (appRoot === window);
+        if (isAppRoot) {
+            const rootDoc = appRoot.document || document;
+            const wrap = rootDoc.getElementById('multi-panel-container');
+            const grid = rootDoc.getElementById('multi-panel-grid');
             const multiActive = !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelectorAll('iframe').length >= 1);
             if (multiActive) {
-                const activePaneWin = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                const activePaneWin = (typeof appRoot.getActivePaneWindow === 'function') ? appRoot.getActivePaneWindow() : null;
                 const hasMeta = (w) => !!(w && w.fitsData && typeof w.fitsData.min_value !== 'undefined' && typeof w.fitsData.max_value !== 'undefined');
                 let target = (activePaneWin && activePaneWin !== window && typeof activePaneWin.showDynamicRangePopup === 'function') ? activePaneWin : null;
                 if (!hasMeta(target)) {
@@ -7554,7 +7572,8 @@ function showDynamicRangePopup(options = {}) {
     // In tiled mode, the image can be open while fitsData min/max hasn't been seeded yet
     // (especially for pane #1 during base→multi transitions). Try to recover from currentTileInfo
     // or fetch tile-info once before warning.
-    const hasMinMax = (fd) => !!(fd && typeof fd.min_value !== 'undefined' && typeof fd.max_value !== 'undefined' &&
+    const hasMinMax = (fd) => !!(fd && fd.dynamic_range_pending !== true &&
+                                typeof fd.min_value !== 'undefined' && typeof fd.max_value !== 'undefined' &&
                                 isFinite(fd.min_value) && isFinite(fd.max_value) && fd.max_value > fd.min_value);
     if (!window.fitsData) window.fitsData = {};
     if (!hasMinMax(window.fitsData)) {
@@ -7574,6 +7593,7 @@ function showDynamicRangePopup(options = {}) {
                 window.fitsData.max_value = mm.max;
                 window.fitsData.initial_min_value = window.fitsData.initial_min_value ?? mm.min;
                 window.fitsData.initial_max_value = window.fitsData.initial_max_value ?? mm.max;
+                window.fitsData.dynamic_range_pending = false;
             }
         } catch (_) { }
     }
@@ -7598,8 +7618,22 @@ function showDynamicRangePopup(options = {}) {
                                 window.fitsData.max_value = mm.max;
                                 window.fitsData.initial_min_value = window.fitsData.initial_min_value ?? mm.min;
                                 window.fitsData.initial_max_value = window.fitsData.initial_max_value ?? mm.max;
+                                window.fitsData.dynamic_range_pending = false;
                             }
                         } catch (_) { }
+                        if (!hasMinMax(window.fitsData) && typeof fetchServerHistogram === 'function') {
+                            return fetchServerHistogram(null, null, 4096).then(histData => {
+                                const minValue = histData && histData.min_value;
+                                const maxValue = histData && histData.max_value;
+                                if (isFinite(minValue) && isFinite(maxValue) && maxValue > minValue) {
+                                    window.fitsData.min_value = minValue;
+                                    window.fitsData.max_value = maxValue;
+                                    window.fitsData.initial_min_value = window.fitsData.initial_min_value ?? minValue;
+                                    window.fitsData.initial_max_value = window.fitsData.initial_max_value ?? maxValue;
+                                    window.fitsData.dynamic_range_pending = false;
+                                }
+                            });
+                        }
                     })
                     .catch(() => { /* fall through */ })
                     .finally(() => {
@@ -7622,7 +7656,7 @@ function showDynamicRangePopup(options = {}) {
     let hostDocument = null;
     let hostWindow = null;
     try {
-        const root = window.top || window;
+        const root = getNelouraSameOriginRootWindow();
         if (root.document && root.document.body) {
             hostDocument = root.document;
             hostWindow = root;
@@ -7633,7 +7667,7 @@ function showDynamicRangePopup(options = {}) {
         hostWindow = window;
     }
     try {
-        const root = window.top || window;
+        const root = getNelouraSameOriginRootWindow();
         root.__histogramHostDoc = hostDocument;
         root.__histogramHostWin = hostWindow;
     } catch(_) {
@@ -11499,11 +11533,12 @@ async function initializeTiledViewer() {
                 window.fitsData.initial_min_value = window.fitsData.data_min; 
                 window.fitsData.initial_max_value = window.fitsData.data_max;
             } else {
-                console.error("Critical: Cannot determine initial dynamic range. Neither initial_display_min/max nor data_min/max were provided in tileInfo.");
-                window.fitsData.min_value = 0;
-                window.fitsData.max_value = 1;
-                window.fitsData.initial_min_value = 0;
-                window.fitsData.initial_max_value = 1;
+                console.warn("Initial dynamic range not provided by tileInfo. Deferring range selection until histogram data is available.");
+                delete window.fitsData.min_value;
+                delete window.fitsData.max_value;
+                delete window.fitsData.initial_min_value;
+                delete window.fitsData.initial_max_value;
+                window.fitsData.dynamic_range_pending = true;
             }
         } else {
             // We have pending settings, but still store initial values for reference
@@ -11521,8 +11556,15 @@ async function initializeTiledViewer() {
         const minInputEl = doc.getElementById('min-range-input');
         const maxInputEl = doc.getElementById('max-range-input');
         if (minInputEl && maxInputEl) {
-            minInputEl.value = window.fitsData.min_value.toFixed(GLOBAL_DATA_PRECISION || 2);
-            maxInputEl.value = window.fitsData.max_value.toFixed(GLOBAL_DATA_PRECISION || 2);
+            const minForInput = Number(window.fitsData.min_value);
+            const maxForInput = Number(window.fitsData.max_value);
+            if (Number.isFinite(minForInput) && Number.isFinite(maxForInput) && maxForInput > minForInput) {
+                minInputEl.value = minForInput.toFixed(GLOBAL_DATA_PRECISION || 2);
+                maxInputEl.value = maxForInput.toFixed(GLOBAL_DATA_PRECISION || 2);
+            } else {
+                minInputEl.value = '';
+                maxInputEl.value = '';
+            }
         }
 
         // Set global current colormap and scaling from server or defaults, and update UI
@@ -15791,18 +15833,47 @@ async function fetchRgbCutouts(ra, dec, catalogName, galaxyName = "UnknownGalaxy
         showNotification(false);
     }
 }
+async function fetchAllRgbCutouts(catalogName, count = 10, rowsPerPage = 5) {
+    if (!catalogName) {
+        showNotification("Catalog Name is missing. Cannot generate stacked RGB cutouts.", 3000, "error");
+        console.error("All RGB Cutouts: Missing catalogName", { catalogName, count });
+        return null;
+    }
+
+    showNotification(true, "Generating stacked RGB panels...");
+    console.log(`Fetching stacked RGB cutouts for Catalog: ${catalogName}, Count: ${count}, Rows/Page: ${rowsPerPage}`);
+
+    const endpointUrl = `/generate-all-rgb-cutouts/?catalog_name=${encodeURIComponent(catalogName)}&count=${encodeURIComponent(count)}&rows_per_page=${encodeURIComponent(rowsPerPage)}`;
+
+    try {
+        const response = await apiFetch(endpointUrl);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || `Failed to generate stacked RGB cutouts (HTTP ${response.status})`);
+        }
+
+        if (data.url) {
+            console.log("Stacked RGB cutouts generated:", data);
+            return data;
+        }
+
+        throw new Error("Received success, but no image URL in response for stacked RGB cutouts.");
+    } catch (error) {
+        console.error("Error fetching stacked RGB cutouts:", error);
+        showNotification(`Error: ${error.message}`, 4000, "error");
+        throw error;
+    } finally {
+        showNotification(false);
+    }
+}
 function displayRgbCutoutImage(imageUrl, filename, dataFoundSummary, titleText = "RGB Cutout Panels") {
     closeSedContainer();
     let popup = document.getElementById('rgb-cutout-popup');
 
     if (popup) { // If popup exists, update its image and make sure it's visible
-        const imgElement = popup.querySelector('img');
-        if (imgElement) {
-            imgElement.src = imageUrl + '?' + new Date().getTime(); // Add cache buster
-        }
-        popup.style.display = 'flex'; // Make sure it's visible
-        popup.style.bottom = '0px'; // Slide in if it was somehow hidden
-        return;
+        popup.remove();
+        popup = null;
     }
 
     // Create new popup - using original CSS styles

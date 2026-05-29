@@ -96,6 +96,13 @@
 
     // ---------- Helpers ----------
     function toolbar() { return document.querySelector('.toolbar'); }
+    function isMultiPanelPaneFrame() {
+        try {
+            return new URLSearchParams(window.location.search || '').get('mp') === '1';
+        } catch (_) {
+            return false;
+        }
+    }
     function anchorBtn() {
         const tb = toolbar(); if (!tb) return null;
         return tb.querySelector('.file-browser-button')            // current Files button from files.js
@@ -730,7 +737,7 @@
     // Some scripts historically hide toolbar buttons until an image is loaded.
     // User preference: keep all toolbar buttons visible at all times.
     function startAlwaysVisibleEnforcer() {
-        try { if (window.self !== window.top) return; } catch (_) { }
+        if (isMultiPanelPaneFrame()) return;
         if (window.__nelouraToolbarEnforcer) return;
         window.__nelouraToolbarEnforcer = true;
         const ids = [
@@ -785,8 +792,9 @@
 
     // ---------- Init ----------
     async function init() {
-        // Do not initialize the toolbar inside pane iframes
-        try { if (window.self !== window.top) return; } catch (_) { }
+        // Do not initialize duplicated toolbar UI inside Neloura multi-panel panes.
+        // Notebook/Colab embeds also run in iframes, so do not use window.self !== window.top here.
+        if (isMultiPanelPaneFrame()) return;
         await detectAdmin();
         ensureAllButtons();
         bindToolbarActions();
@@ -813,8 +821,16 @@
     const FADE_INACTIVE_OPACITY_DEFAULT = 0.7;
     const FADE_TIME_DEFAULT_MS = 650;
 
+    function isMultiPanelPaneFrame() {
+        try {
+            return new URLSearchParams(window.location.search || '').get('mp') === '1';
+        } catch (_) {
+            return false;
+        }
+    }
+
     function createWcsLockFab() {
-        try { if (window.self !== window.top) return; } catch (_) { }
+        if (isMultiPanelPaneFrame()) return;
         if (document.getElementById('multi-panel-wcs-lock')) return;
         const btn = document.createElement('button');
         btn.id = 'multi-panel-wcs-lock';
@@ -866,7 +882,7 @@
     }
 
     function createBlinkFab() {
-        try { if (window.self !== window.top) return; } catch (_) { }
+        if (isMultiPanelPaneFrame()) return;
         if (document.getElementById('multi-panel-blink')) return;
         // Default to blink mode; no mode picker UI.
         try { window.__multiPanelEyeMode = 'blink'; } catch (_) { }
@@ -1766,8 +1782,9 @@
     }
     // Floating + button bottom-right
     function createPanelFab() {
-        // Only in top-level window, never inside iframes
-        try { if (window.self !== window.top) return; } catch (_) { }
+        // Notebook/Colab embeds are iframes; only suppress duplicated controls in
+        // Neloura's own internal multi-panel pane frames.
+        if (isMultiPanelPaneFrame()) return;
         if (document.getElementById('multi-panel-fab')) return;
         const fab = document.createElement('button');
         fab.id = 'multi-panel-fab';
@@ -1804,7 +1821,7 @@
         updateWcsLockVisibility();
     }
     function createClosePanelsFab() {
-        try { if (window.self !== window.top) return; } catch (_) { }
+        if (isMultiPanelPaneFrame()) return;
         if (document.getElementById('multi-panel-close-fab')) return;
         const btn = document.createElement('button');
         btn.id = 'multi-panel-close-fab';

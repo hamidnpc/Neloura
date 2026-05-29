@@ -18,7 +18,11 @@
     function init() {
         // In pane iframes we don't build toolbar UI (it lives in top window),
         // but we still expose __nelouraSavePng so the top window can trigger saving.
-        try { if (window.self !== window.top) return; } catch (_) {}
+        // Colab/Jupyter notebook embeds are also iframes, so only skip Neloura's
+        // own multi-panel pane frames.
+        try {
+            if (new URLSearchParams(window.location.search || '').get('mp') === '1') return;
+        } catch (_) {}
 
         // Remove any floating button from older versions
         const old = document.getElementById('save-png-button');

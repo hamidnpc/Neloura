@@ -536,6 +536,9 @@ function pixelsToWorldFromHeader(header, x, y) {
   }
 
   let requestedWcs = false;
+  let wcsRequestKey = null;
+  let wcsReadyKey = null;
+  let wcsRequestPromise = null;
   function parseHeaderValue(v) {
     if (v == null) return undefined;
     let s = String(v).trim();
@@ -566,16 +569,20 @@ function pixelsToWorldFromHeader(header, x, y) {
     try {
       // Ensure container exists
       if (!window.fitsData) window.fitsData = {};
-      if (window?.fitsData?.wcs) return;
-      if (requestedWcs) return;
-      requestedWcs = true;
       // Use the most reliable path/HDU we have
       const rawPath = window.currentFitsFile || window.fitsData.filename;
       const filepath = (typeof rawPath === 'string') ? rawPath : (typeof window.fitsData?.filename === 'string' ? window.fitsData.filename : null);
       const path = filepath;
       if (!path) { requestedWcs = false; return; }
       const hduIndex = typeof window.currentHduIndex === 'number' ? window.currentHduIndex : 0;
-      console.log('[coords_overlay] Fetching header for', { filepath, hduIndex });
+      const key = `${path}|${hduIndex}`;
+      if (window?.fitsData?.wcs && wcsReadyKey === key && window.parsedWCS) return;
+      if (wcsRequestPromise && wcsRequestKey === key) return wcsRequestPromise;
+
+      requestedWcs = true;
+      wcsRequestKey = key;
+      console.debug('[coords_overlay] Fetching header for', { filepath, hduIndex });
+      wcsRequestPromise = (async () => {
       // Do NOT encode here; the backend route uses a {filepath:path} param and expects raw path
       const res = await apiFetch(`/fits-header/${path}?hdu_index=${hduIndex}`);
       if (!res.ok) return;
@@ -585,10 +592,11 @@ function pixelsToWorldFromHeader(header, x, y) {
       const headerDict = Array.isArray(rawHeader) ? headerListToDict(rawHeader) : rawHeader;
       const normalized = normalizeHeaderForParse(headerDict);
       window.fitsData.wcs = normalized;
-      console.log('[coords_overlay] Normalized WCS ready');
+      wcsReadyKey = key;
+      console.debug('[coords_overlay] Normalized WCS ready');
       try {
         const dbg = collectWcsDebug();
-        console.log('[coords_overlay] WCS essentials:', { file: dbg.file, hdu: dbg.hdu, ctype: dbg.ctype, matrix: dbg.matrix, ref: dbg.ref, axes: dbg.axes, hasSIP: dbg.hasSIP, hasPV: dbg.hasPV });
+        console.debug('[coords_overlay] WCS essentials:', { file: dbg.file, hdu: dbg.hdu, ctype: dbg.ctype, matrix: dbg.matrix, ref: dbg.ref, axes: dbg.axes, hasSIP: dbg.hasSIP, hasPV: dbg.hasPV });
       } catch (_) {}
       // Derive flip_y using the backend's analyze_wcs_orientation() (main.py),
       // so overlay coordinate orientation matches the displayed map.
@@ -611,14 +619,19 @@ function pixelsToWorldFromHeader(header, x, y) {
         const parsed = window.parseWCS(normalized);
         parsed.__source = normalized;
         window.parsedWCS = parsed;
-        console.log('[coords_overlay] parsedWCS.hasWCS =', !!parsed?.hasWCS);
+        console.debug('[coords_overlay] parsedWCS.hasWCS =', !!parsed?.hasWCS);
       }
       // Notify listeners that WCS is ready (normalize event name/target)
       try { document.dispatchEvent(new CustomEvent('wcs:ready', { detail: { filepath, hduIndex } })); } catch (_) {}
       // Back-compat: also emit the hyphen variant
       try { document.dispatchEvent(new CustomEvent('wcs-ready', { detail: { filepath, hduIndex } })); } catch (_) {}
+      })();
+      return await wcsRequestPromise;
     } catch (_) {
       // ignore
+    } finally {
+      wcsRequestPromise = null;
+      requestedWcs = false;
     }
   }
 
@@ -889,14 +902,20 @@ function pixelsToWorldFromHeader(header, x, y) {
     if (typeof hduIndex === 'number') {
       window.currentHduIndex = hduIndex;
     }
-    // Clear cached WCS and re-fetch for the selected HDU
-    if (window.fitsData) {
+    const path = window.currentFitsFile || window?.fitsData?.filename || '';
+    const hdu = typeof window.currentHduIndex === 'number' ? window.currentHduIndex : 0;
+    const key = `${path}|${hdu}`;
+    if (window?.fitsData?.wcs && wcsReadyKey === key && window.parsedWCS) return;
+    if (wcsRequestPromise && wcsRequestKey === key) return wcsRequestPromise;
+
+    // Clear cached WCS and re-fetch for the selected HDU only when the file/HDU changed.
+    if (window.fitsData && wcsReadyKey !== key) {
       delete window.fitsData.wcs;
     }
     // Reset parsedWCS so RA/Dec recompute for the new file/HDU
-    if (window.parsedWCS) delete window.parsedWCS;
+    if (window.parsedWCS && wcsReadyKey !== key) delete window.parsedWCS;
     requestedWcs = false;
-    console.log('[coords_overlay] Forcing WCS refresh for', { filepath: window.currentFitsFile || window?.fitsData?.filename, hduIndex: window.currentHduIndex });
+    console.debug('[coords_overlay] Forcing WCS refresh for', { filepath: path, hduIndex: hdu });
     requestWcsIfMissing();
   };
 

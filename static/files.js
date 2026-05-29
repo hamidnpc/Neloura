@@ -558,7 +558,9 @@ function createHduSelectorPopup(hduList, filepath) {
     
     // Add description
     const description = createEl('p');
-    description.textContent = 'This FITS file contains multiple data units (HDUs). Please select which one to open:';
+    description.textContent = hduList.partial
+        ? 'This is a large remote FITS file, so Neloura loaded a fast partial HDU list. Please select from the discovered HDUs:'
+        : 'This FITS file contains multiple data units (HDUs). Please select which one to open:';
     description.style.color = '#ddd';
     description.style.marginBottom = '15px';
     description.style.fontFamily = 'Arial, sans-serif';
@@ -605,6 +607,7 @@ function createHduSelectorPopup(hduList, filepath) {
     
     // Add each HDU as an option
     hduList.forEach((hdu, index) => {
+        const hduIndex = Number.isFinite(Number(hdu.index)) ? Number(hdu.index) : index;
         const option = createEl('div');
         option.className = 'hdu-option';
         option.style.padding = '10px';
@@ -614,7 +617,7 @@ function createHduSelectorPopup(hduList, filepath) {
         option.style.transition = 'background-color 0.2s, transform 0.1s';
         
         // Store searchable text for this option
-        let searchText = `HDU ${index} ${hdu.type} `;
+        let searchText = `HDU ${hduIndex} ${hdu.type} `;
         if (hdu.name) searchText += hdu.name + ' ';
         if (hdu.dimensions) searchText += hdu.dimensions.join('x') + ' ';
         if (hdu.bunit) searchText += hdu.bunit + ' ';
@@ -642,7 +645,7 @@ function createHduSelectorPopup(hduList, filepath) {
         const optionTitle = createEl('div');
         optionTitle.style.fontWeight = 'bold';
         optionTitle.style.color = '#fff';
-        optionTitle.textContent = `HDU ${index}: ${hdu.type}`;
+        optionTitle.textContent = `HDU ${hduIndex}: ${hdu.type}`;
         if (hdu.name && hdu.name !== '') {
             optionTitle.textContent += ` (${hdu.name})`;
         }
@@ -703,7 +706,7 @@ function createHduSelectorPopup(hduList, filepath) {
         
         // Add click handler to select this HDU
         option.addEventListener('click', function() {
-            selectHdu(index, filepath);
+            selectHdu(hduIndex, filepath);
             removePopup();
         });
         
@@ -788,12 +791,15 @@ function createHduSelectorPopup(hduList, filepath) {
     
     autoSelectButton.addEventListener('click', () => {
         // Find the recommended HDU index
-        const recommendedIndex = hduList.findIndex(hdu => hdu.isRecommended);
-        if (recommendedIndex >= 0) {
-            selectHdu(recommendedIndex, filepath);
+        const recommended = hduList.find(hdu => hdu.isRecommended);
+        if (recommended) {
+            const hduIndex = Number.isFinite(Number(recommended.index)) ? Number(recommended.index) : hduList.indexOf(recommended);
+            selectHdu(hduIndex, filepath);
         } else {
             // If no recommended HDU, use the first one
-            selectHdu(0, filepath);
+            const first = hduList[0] || {};
+            const hduIndex = Number.isFinite(Number(first.index)) ? Number(first.index) : 0;
+            selectHdu(hduIndex, filepath);
         }
         removePopup();
     });
@@ -947,7 +953,10 @@ function getFitsHduInfo(filepath) {
             if (data.error) {
                 throw new Error(data.error);
             }
-            return data.hduList;
+            const hduList = Array.isArray(data.hduList) ? data.hduList : [];
+            hduList.partial = !!data.partial;
+            hduList.fileSize = data.file_size;
+            return hduList;
         });
 }
 
@@ -981,7 +990,10 @@ function loadFitsFileWithHduSelection(filepath) {
                 (hdu.type === 'Image' || hdu.type === 'Primary') && hdu.dimensions && hdu.dimensions.length >= 2
             );
 
-            if (imageHdus.length > 1) {
+            if (hduList.partial && imageHdus.length >= 1) {
+                console.log(`FITS HDU scan returned a partial list for a large/remote file. Showing selector with ${imageHdus.length} discovered image HDU(s).`);
+                createHduSelectorPopup(hduList, filepath);
+            } else if (imageHdus.length > 1) {
                 // If there are multiple image HDUs, show the selection popup
                 console.log(`FITS file has ${imageHdus.length} image HDUs. Showing selection popup.`);
                 createHduSelectorPopup(hduList, filepath); // Show popup with all HDUs
@@ -1516,7 +1528,9 @@ function loadFilesList(path = '', search = null) {
         fileBrowserContainer.dataset.currentPath = path;
         const title = fileBrowserContainer.querySelector('h2');
         if (title) {
-            title.textContent = search ? `Search results for "${search}"` : (path ? `Files: /${path}` : 'Browser');
+            const titleText = search ? `Search results for "${search}"` : (path ? `Files: /${path}` : 'Browser');
+            title.textContent = titleText;
+            title.title = titleText;
         }
     }
 
@@ -1636,6 +1650,40 @@ function displayFilesList(items, currentPath = '', search = null) {
         });
     }
     directoryContent.appendChild(breadcrumbContainer);
+
+    {
+        const contentShortcut = Array.isArray(items)
+            ? items.find(item => item && item.type === 'directory' && item.path === 'content')
+            : null;
+        if (contentShortcut) {
+            window.__nelouraHasColabContentShortcut = true;
+        }
+        const shouldShowContentShortcut = !!contentShortcut
+            || window.__nelouraHasColabContentShortcut === true
+            || currentPath === 'content'
+            || String(currentPath || '').startsWith('content/');
+        if (shouldShowContentShortcut) {
+            const shortcutButton = document.createElement('button');
+            shortcutButton.type = 'button';
+            shortcutButton.textContent = 'Open Colab /content';
+            shortcutButton.title = 'Browse files in the Colab /content folder';
+            Object.assign(shortcutButton.style, {
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '5px 9px',
+                margin: '-6px 0 10px 0',
+                backgroundColor: '#263238',
+                color: '#fff',
+                border: '1px solid #4fc3f7',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: '600'
+            });
+            shortcutButton.addEventListener('click', () => loadFilesList('content'));
+            directoryContent.appendChild(shortcutButton);
+        }
+    }
     
     const searchContainer = document.createElement('div');
     searchContainer.style.marginBottom = '15px';
@@ -2368,7 +2416,17 @@ function createFileBrowserContainer() {
     
     const title = document.createElement('h2');
     title.textContent = 'Images';
-    Object.assign(title.style, { margin: '0', fontSize: '18px', fontWeight: '500' });
+    Object.assign(title.style, {
+        margin: '0',
+        fontSize: '18px',
+        fontWeight: '500',
+        minWidth: '0',
+        flex: '1 1 auto',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        paddingRight: '12px'
+    });
     
     const closeButton = document.createElement('button');
     closeButton.innerHTML = '&times;';
@@ -2376,7 +2434,8 @@ function createFileBrowserContainer() {
         background: 'transparent', border: 'none', color: 'white', fontSize: '24px',
         cursor: 'pointer', width: '30px', height: '30px', display: 'flex',
         alignItems: 'center', justifyContent: 'center', borderRadius: '50%',
-        transition: 'background-color 0.2s'
+        transition: 'background-color 0.2s',
+        flex: '0 0 30px'
     });
     closeButton.onclick = hideFileBrowser;
     closeButton.addEventListener('mouseover', () => closeButton.style.backgroundColor = 'rgba(255, 255, 255, 0.1)');

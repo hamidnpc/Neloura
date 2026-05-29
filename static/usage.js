@@ -48,9 +48,10 @@ function animateValue(element, start, end, duration, decimals = 0, prefix = '', 
 }
 
 function initializeUsageMonitor() {
-    // Only create once in the top-level window, never inside iframes
+    // Notebook/Colab embeds are iframes; only skip Neloura's internal
+    // multi-panel pane frames.
     try {
-        if (window.self !== window.top) return;
+        if (new URLSearchParams(window.location.search || '').get('mp') === '1') return;
         if (document.getElementById('usage-icon-container')) return;
     } catch(_) {}
     createUsageIcon();

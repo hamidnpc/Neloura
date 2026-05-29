@@ -771,7 +771,7 @@
                 border: 'none',
                 boxShadow: 'none',
                 cursor: 'default',
-                zIndex: '50000',
+                zIndex: '3500',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1755,6 +1755,64 @@
         } catch (_) { /* noop */ }
     }
 
+    function parseRgbDeepLinkFiles() {
+        let sp = null;
+        try {
+            sp = new URLSearchParams(window.location.search || '');
+        } catch (_) {
+            return [];
+        }
+        const raw = sp.get('rgb_files');
+        if (!raw) return [];
+        try {
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+                .map((entry) => ({
+                    channel: String(entry && entry.channel || '').toLowerCase(),
+                    filepath: String(entry && entry.filepath || '').trim(),
+                    filter: String(entry && entry.filter || '').trim().toUpperCase()
+                }))
+                .filter((entry) => entry.filepath && CHANNELS.some((ch) => ch.id === entry.channel));
+        } catch (err) {
+            console.error('[rgb] invalid rgb_files deep link payload', err);
+            return [];
+        }
+    }
+
+    async function openRgbFromDeepLinkIfPresent() {
+        if (window.__rgbDeepLinkHandled) return;
+        const files = parseRgbDeepLinkFiles();
+        if (!files.length) return;
+        window.__rgbDeepLinkHandled = true;
+
+        let title = 'RGB image';
+        try {
+            const sp = new URLSearchParams(window.location.search || '');
+            title = sp.get('rgb_title') || title;
+        } catch (_) { /* noop */ }
+
+        try {
+            window.__DISABLE_AUTO_FILE_BROWSER = true;
+            hideWelcomeOverlays();
+            await ensureRgbSessionClearedForPage();
+            notify(true, `Opening ${title}...`);
+            for (const entry of files) {
+                const channelInfo = CHANNELS.find((ch) => ch.id === entry.channel);
+                if (channelInfo && state.channels[entry.channel]) {
+                    state.channels[entry.channel].color_map = channelInfo.defaultMap;
+                }
+                await setChannelFile(entry.channel, entry.filepath, { preferAutoHdu: true });
+            }
+            if (window.fitsData) window.fitsData.rgb_label = title;
+            try { document.title = title; } catch (_) { /* noop */ }
+            notify(`${title} opened.`, 2200, 'success');
+        } catch (err) {
+            console.error('[rgb] RGB deep link failed', err);
+            notify((err && err.message) || 'Failed to open RGB image from link.', 5000, 'error');
+        }
+    }
+
     function init() {
         installRgbModeGuards();
         let isMultiPanelPane = false;
@@ -1763,6 +1821,7 @@
         addToolbarButton();
         setTimeout(addToolbarButton, 500);
         setTimeout(addToolbarButton, 1500);
+        openRgbFromDeepLinkIfPresent();
     }
 
     window.showRgbComposer = showRgbComposer;
