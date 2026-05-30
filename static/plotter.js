@@ -6579,7 +6579,6 @@ function getSedCatalogApiName() {
     const el = document.getElementById('sed-catalog-select');
     return resolveSedCatalogApiName(el ? el.value : '');
 }
-try { window.resolveSedCatalogApiName = resolveSedCatalogApiName; } catch (_) {}
 
 function populateSedFlagDropdown() {
     const catalogName = getSedCatalogApiName();
