@@ -590,6 +590,25 @@ def _select_rgb_cutout_ra_dec_columns(colnames) -> tuple[Optional[str], Optional
     return ra_col, dec_col
 
 
+def _galaxy_name_from_catalog_row(row, catalog_table) -> str:
+    """Read galaxy name from a catalog row using known galaxy column names."""
+    cols_lower = {str(c).lower(): str(c) for c in catalog_table.colnames}
+    for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
+        resolved_col = cols_lower.get(str(gal_col_name).lower())
+        if not resolved_col:
+            continue
+        try:
+            val = row[resolved_col]
+            if isinstance(val, bytes):
+                val = val.decode("utf-8", errors="ignore")
+            galaxy = str(val).strip()
+            if galaxy and galaxy.lower() not in RGB_INVALID_GALAXY_NAMES:
+                return galaxy
+        except Exception:
+            continue
+    return RGB_DEFAULT_GALAXY_NAME
+
+
 SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE = 99.3            # Max value for MIRI RGB composite creation
 SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE= 5
 
@@ -13767,14 +13786,8 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
             else:
                 print(f"RGB Cutouts: Failed to load catalog '{catalog_name}'.")
         if catalog_table is not None:
-            ra_col, dec_col = None, None
+            ra_col, dec_col = _select_rgb_cutout_ra_dec_columns(catalog_table.colnames)
             available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
-            for potential_ra_name in RGB_RA_COLUMN_NAMES:
-                if potential_ra_name in available_cols_lower:
-                    ra_col = available_cols_lower[potential_ra_name]; break
-            for potential_dec_name in RGB_DEC_COLUMN_NAMES:
-                if potential_dec_name in available_cols_lower:
-                    dec_col = available_cols_lower[potential_dec_name]; break
             if ra_col and dec_col:
                 try:
                     table_ra = np.asarray(catalog_table[ra_col].astype(float), dtype=float)
@@ -14202,22 +14215,6 @@ async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: i
     if requested_count <= 0:
         return JSONResponse(status_code=400, content={"error": "Catalog has no sources to process."})
 
-    def _row_galaxy_name(row):
-        for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
-            resolved_col = available_cols_lower.get(str(gal_col_name).lower())
-            if not resolved_col:
-                continue
-            try:
-                val = row[resolved_col]
-                if isinstance(val, bytes):
-                    val = val.decode("utf-8", errors="ignore")
-                galaxy = str(val).strip()
-                if galaxy and galaxy.lower() not in RGB_INVALID_GALAXY_NAMES:
-                    return galaxy
-            except Exception:
-                continue
-        return "UnknownGalaxy"
-
     generated_image_paths = []
     generated_image_sizes = []
     failures = []
@@ -14236,13 +14233,20 @@ async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: i
             continue
 
         try:
-            def _generate_single_rgb():
+            row_galaxy_name = _galaxy_name_from_catalog_row(row, catalog_table)
+
+            def _generate_single_rgb(
+                _ra=ra_val,
+                _dec=dec_val,
+                _galaxy=row_galaxy_name,
+                _catalog_key=catalog_key,
+            ):
                 return asyncio.run(generate_rgb_cutouts(
                     request,
-                    ra=ra_val,
-                    dec=dec_val,
-                    catalog_name=catalog_key,
-                    galaxy_name=_row_galaxy_name(row)
+                    ra=_ra,
+                    dec=_dec,
+                    catalog_name=_catalog_key,
+                    galaxy_name=_galaxy,
                 ))
 
             single_response = await asyncio.to_thread(_generate_single_rgb)
