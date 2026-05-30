@@ -512,101 +512,6 @@ RGB_DISPLAY_NIRCAM_MAX_PERCENTILE = 99.7
 RGB_DISPLAY_MIRI_MIN_PERCENTILE = 5
 RGB_DISPLAY_MIRI_MAX_PERCENTILE = 99.3
 
-# Prefer imaging-ready degree columns for RGB cutouts (uploaded master catalogs often have PHANGS_RA too).
-RGB_CUTOUT_RA_COLUMN_NAMES = [
-    'ra', 'RA', 'Ra', 'cen_ra', 'CEN_RA', 'XCTR_DEG', 'right_ascension', 'RIGHT_ASCENSION',
-    'raj2000', 'RAJ2000', 'PHANGS_RA',
-]
-RGB_CUTOUT_DEC_COLUMN_NAMES = [
-    'dec', 'DEC', 'Dec', 'cen_dec', 'CEN_DEC', 'YCTR_DEG', 'declination', 'DECLINATION',
-    'decj2000', 'dej2000', 'DECJ2000', 'DEJ2000', 'PHANGS_DEC',
-]
-
-
-def build_galaxy_tokens(name: str) -> list[str]:
-    """Build filename tokens for a galaxy (ngc628, ngc0628, ngc628mosaic, etc.)."""
-    if not name:
-        return []
-    g = str(name).strip().lower()
-    if not g or g in ("unknown", "unknowngalaxy"):
-        return []
-    base = re.sub(r'[\s_\-]+', '', g)
-    tokens = {g, base}
-    m = re.match(r'([a-z]+)\s*0*(\d+)', base, re.IGNORECASE)
-    if m:
-        prefix = m.group(1).lower()
-        digits = m.group(2)
-        num = digits.lstrip('0') or '0'
-        tokens.add(f"{prefix}{num}")                  # ngc628
-        tokens.add(f"{prefix}{digits}")               # as written after prefix
-        tokens.add(f"{prefix}{num.zfill(3)}")         # ngc628 (3-digit)
-        tokens.add(f"{prefix}{num.zfill(4)}")         # ngc0628 (4-digit)
-        tokens.add(f"{prefix}0{num}")                 # ngc0628 (single leading zero)
-    return list(tokens)
-
-
-def galaxy_path_matches_tokens(path: str, tokens: list[str]) -> bool:
-    """
-    True when a FITS path belongs to the galaxy.
-    Uses regex so ngc628 matches ngc0628 filenames and vice versa.
-    """
-    if not tokens:
-        return True
-    pl = str(path).lower().replace('\\', '/')
-    for tok in tokens:
-        if not tok:
-            continue
-        if tok in pl:
-            return True
-        m = re.match(r'^([a-z]+)(\d+)$', tok, re.IGNORECASE)
-        if not m:
-            continue
-        prefix, digits = m.group(1).lower(), m.group(2)
-        num = digits.lstrip('0') or '0'
-        pat = rf'(?<![a-z0-9]){re.escape(prefix)}0*{re.escape(num)}(?![0-9a-z])'
-        if re.search(pat, pl):
-            return True
-    return False
-
-
-def _select_rgb_cutout_ra_dec_columns(colnames) -> tuple[Optional[str], Optional[str]]:
-    """Pick RA/Dec columns for RGB cutouts (prefer plain ra/dec over catalog-specific variants)."""
-    available = {str(c).lower(): str(c) for c in colnames}
-    ra_col = None
-    dec_col = None
-    for name in RGB_CUTOUT_RA_COLUMN_NAMES:
-        if str(name).lower() in available:
-            ra_col = available[str(name).lower()]
-            break
-    for name in RGB_CUTOUT_DEC_COLUMN_NAMES:
-        if str(name).lower() in available:
-            dec_col = available[str(name).lower()]
-            break
-    if not ra_col or not dec_col:
-        try:
-            ra_col, dec_col = detect_coordinate_columns(colnames)
-        except Exception:
-            ra_col, dec_col = None, None
-    return ra_col, dec_col
-
-
-def _galaxy_name_from_catalog_row(row, catalog_table) -> str:
-    """Read galaxy name from a catalog row using known galaxy column names."""
-    cols_lower = {str(c).lower(): str(c) for c in catalog_table.colnames}
-    for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
-        resolved_col = cols_lower.get(str(gal_col_name).lower())
-        if not resolved_col:
-            continue
-        try:
-            val = row[resolved_col]
-            if isinstance(val, bytes):
-                val = val.decode("utf-8", errors="ignore")
-            galaxy = str(val).strip()
-            if galaxy and galaxy.lower() not in RGB_INVALID_GALAXY_NAMES:
-                return galaxy
-        except Exception:
-            continue
-    return RGB_DEFAULT_GALAXY_NAME
 
 
 SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE = 99.3            # Max value for MIRI RGB composite creation
@@ -5548,6 +5453,24 @@ async def generate_sed_optimized(
             print('Exception in filename parsing:', e)
             pass
 
+        # Tokens (ngc628/ngc0628/ngc628mosaic)
+        import re
+        def build_galaxy_tokens(name: str) -> list[str]:
+            if not name:
+                return []
+            g = name.strip().lower()
+            if not g or g in ("unknown", "unknowngalaxy"):
+                return []
+            base = re.sub(r'[\s_\-]+', '', g)
+            tokens = {g, base}
+            m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+            if m:
+                prefix, digits = m.group(1), m.group(2)
+                tokens.add(f"{prefix}{digits}")             # ngc628
+                tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+                tokens.add(f"{prefix}0{digits}")            # ngc0628 variant
+            return list(tokens)
+
         galaxy_tokens = build_galaxy_tokens(target_galaxy_name)
 
         def _unique_preserve_order(values):
@@ -5894,7 +5817,7 @@ async def generate_sed_optimized(
                     if not matches:
                         continue
                 if galaxy_tokens:
-                    prioritized = [f for f in matches if galaxy_path_matches_tokens(f, galaxy_tokens)]
+                    prioritized = [f for f in matches if any(tok in f.lower() for tok in galaxy_tokens)]
                     if not prioritized:
                         continue
                     chosen = prioritized
@@ -5952,7 +5875,7 @@ async def generate_sed_optimized(
         if target_galaxy_name and target_galaxy_name != SED_DEFAULT_GALAXY_NAME:
             print(f"Files found for galaxy '{target_galaxy_name}': {len(file_matches)} filters")
             for fn, fp in file_matches.items():
-                mark = "galaxy-specific" if galaxy_path_matches_tokens(fp, galaxy_tokens) else "generic"
+                mark = "galaxy-specific" if any(tok in fp.lower() for tok in galaxy_tokens) else "generic"
                 print(f"  {fn}: {fp} ({mark})")
 
         # 7) Cutouts
@@ -6114,7 +6037,7 @@ async def generate_sed_optimized(
             if not matches:
                 continue
             if galaxy_tokens:
-                galaxy_matches = [f for f in matches if galaxy_path_matches_tokens(f, galaxy_tokens)]
+                galaxy_matches = [f for f in matches if any(tok in f.lower() for tok in galaxy_tokens)]
                 if galaxy_matches:
                     ha_files = galaxy_matches; break
             ha_files = matches; break
@@ -13594,8 +13517,26 @@ def _find_and_extract_cutout_via_glob(
     - If galaxy_name is provided, only considers files whose path includes a matching galaxy token
       (handles variants like 'ngc628', 'ngc0628', 'ngc628mosaic', etc.)
     """
+    import re
+
     if exclude_patterns is None:
         exclude_patterns = []
+
+    def build_galaxy_tokens(name: str) -> list[str]:
+        if not name:
+            return []
+        g = name.strip().lower()
+        if not g or g in ("unknown", "unknowngalaxy"):
+            return []
+        base = re.sub(r'[\s_\-]+', '', g)
+        tokens = {g, base}
+        m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+        if m:
+            prefix, digits = m.group(1), m.group(2)
+            tokens.add(f"{prefix}{digits}")             # ngc628
+            tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+            tokens.add(f"{prefix}0{digits}")            # ngc0628 (single zero variant)
+        return list(tokens)
 
     galaxy_tokens = build_galaxy_tokens(galaxy_name) if galaxy_name else []
 
@@ -13630,19 +13571,13 @@ def _find_and_extract_cutout_via_glob(
     # Deduplicate while preserving order
     matching_files = list(dict.fromkeys(matching_files))
 
-    all_matching_files = list(matching_files)
-
-    # If galaxy_name provided, restrict to that galaxy (ngc628 == ngc0628 in filenames)
+    # If galaxy_name provided, strictly restrict to that galaxy using any token
     if galaxy_tokens:
-        galaxy_only = [f for f in all_matching_files if galaxy_path_matches_tokens(f, galaxy_tokens)]
-        if galaxy_only:
-            matching_files = galaxy_only
-        else:
-            print(
-                f"Cutout [{display_filter_name}]: No galaxy-specific file for '{galaxy_name}' "
-                f"(tokens={galaxy_tokens}); trying all filter matches"
-            )
-            matching_files = all_matching_files
+        galaxy_only = [f for f in matching_files if any(tok in f.lower() for tok in galaxy_tokens)]
+        if not galaxy_only:
+            print(f"Cutout [{display_filter_name}]: No FITS file found for galaxy='{galaxy_name}' using identifiers {filter_identifiers}")
+            return None, None
+        matching_files = galaxy_only
 
     if not matching_files:
         excluded_info = f" (after excluding patterns: {exclude_patterns})" if exclude_patterns else ""
@@ -13652,96 +13587,79 @@ def _find_and_extract_cutout_via_glob(
     # When galaxy_name is unknown, many FITS files across different galaxies can match a filter identifier.
     # Previously we picked the "first match" and returned immediately on NoOverlap, which causes all channels
     # to fail if that first file belongs to a different galaxy. Instead, try multiple candidates until one overlaps.
-    candidate_lists = []
-    primary = matching_files if RGB_USE_FIRST_MATCH else list(reversed(matching_files))
-    if primary:
-        candidate_lists.append(primary)
-    # If galaxy-restricted files fail overlap, retry other filter matches (other zero-padding, mosaic tiles, etc.)
-    if galaxy_tokens and all_matching_files and all_matching_files != matching_files:
-        fallback = all_matching_files if RGB_USE_FIRST_MATCH else list(reversed(all_matching_files))
-        if fallback and fallback != primary:
-            candidate_lists.append(fallback)
+    candidates = matching_files if RGB_USE_FIRST_MATCH else list(reversed(matching_files))
+    max_try = min(len(candidates), int(os.getenv("RGB_CUTOUT_MAX_CANDIDATES", "40")))
 
-    max_try = int(os.getenv("RGB_CUTOUT_MAX_CANDIDATES", "40"))
-    tried_paths: set[str] = set()
+    for idx_file, fits_file_path in enumerate(candidates[:max_try]):
+        print(f"Cutout [{display_filter_name}]: Trying FITS file {fits_file_path} ({idx_file+1}/{max_try})")
+        try:
+            with fits.open(fits_file_path) as hdul:
+                any_image_hdu = False
+                for hdu_idx, hdu in enumerate(hdul):
+                    if hdu.data is None or not hasattr(hdu.data, 'shape') or len(hdu.data.shape) < 2:
+                        continue
+                    any_image_hdu = True
+                    try:
+                        header = hdu.header.copy()
+                        if any(tag.upper() in display_filter_name.upper() for tag in RGB_WCS_PREP_FILTERS):
+                            header = _prepare_jwst_header_for_wcs(header)
 
-    for candidates in candidate_lists:
-        for fits_file_path in candidates:
-            if len(tried_paths) >= max_try:
-                break
-            norm_path = str(fits_file_path)
-            if norm_path in tried_paths:
-                continue
-            tried_paths.add(norm_path)
-            print(f"Cutout [{display_filter_name}]: Trying FITS file {fits_file_path} ({len(tried_paths)}/{max_try})")
-            try:
-                with fits.open(fits_file_path) as hdul:
-                    any_image_hdu = False
-                    for hdu_idx, hdu in enumerate(hdul):
-                        if hdu.data is None or not hasattr(hdu.data, 'shape') or len(hdu.data.shape) < 2:
+                        wcs = WCS(header)
+                        if RGB_SKIP_NON_CELESTIAL_WCS and not wcs.has_celestial:
                             continue
-                        any_image_hdu = True
+
+                        image_data_full = hdu.data
+                        if image_data_full.ndim == 3:
+                            image_data_full = image_data_full[0, :, :]
+                        elif image_data_full.ndim == 4:
+                            image_data_full = image_data_full[0, 0, :, :]
+                        elif image_data_full.ndim != 2:
+                            continue
+
+                        if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
+                            print(f"Cutout [{display_filter_name}]: Invalid RA/Dec ({ra}, {dec}). Cannot create cutout.")
+                            return None, None
+
+                        target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
                         try:
-                            header = hdu.header.copy()
-                            if any(tag.upper() in display_filter_name.upper() for tag in RGB_WCS_PREP_FILTERS):
-                                header = _prepare_jwst_header_for_wcs(header)
-
-                            wcs = WCS(header)
-                            if RGB_SKIP_NON_CELESTIAL_WCS and not wcs.has_celestial:
+                            px, py = wcs.world_to_pixel(target_coord)
+                            if not (np.isfinite(px) and np.isfinite(py)):
                                 continue
-
-                            image_data_full = hdu.data
-                            if image_data_full.ndim == 3:
-                                image_data_full = image_data_full[0, :, :]
-                            elif image_data_full.ndim == 4:
-                                image_data_full = image_data_full[0, 0, :, :]
-                            elif image_data_full.ndim != 2:
-                                continue
-
-                            if np.isnan(ra) or np.isinf(ra) or np.isnan(dec) or np.isinf(dec):
-                                print(f"Cutout [{display_filter_name}]: Invalid RA/Dec ({ra}, {dec}). Cannot create cutout.")
-                                return None, None
-
-                            target_coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
-                            try:
-                                px, py = wcs.world_to_pixel(target_coord)
-                                if not (np.isfinite(px) and np.isfinite(py)):
-                                    continue
-                            except Exception:
-                                continue
-
-                            try:
-                                cutout_obj = Cutout2D(
-                                    image_data_full,
-                                    target_coord,
-                                    cutout_size_arcsec * u.arcsec,
-                                    wcs=wcs,
-                                    mode=RGB_CUTOUT_MODE,
-                                    fill_value=RGB_CUTOUT_FILL_VALUE
-                                )
-                            except NoOverlapError:
-                                continue
-
-                            cutout_data = cutout_obj.data.copy()
-                            cutout_wcs_header = cutout_obj.wcs.to_header()
-                            cutout_wcs_header['NAXIS1'] = cutout_data.shape[1]
-                            cutout_wcs_header['NAXIS2'] = cutout_data.shape[0]
-                            cutout_wcs_header['NAXIS'] = 2
-                            print(f"Cutout [{display_filter_name}]: Success using {fits_file_path} (HDU {hdu_idx}), shape {cutout_data.shape}")
-                            return cutout_data, cutout_wcs_header
                         except Exception:
                             continue
 
-                    if not any_image_hdu:
-                        continue
-            except FileNotFoundError:
-                continue
-            except Exception:
-                continue
-        if len(tried_paths) >= max_try:
-            break
+                        try:
+                            cutout_obj = Cutout2D(
+                                image_data_full,
+                                target_coord,
+                                cutout_size_arcsec * u.arcsec,
+                                wcs=wcs,
+                                mode=RGB_CUTOUT_MODE,
+                                fill_value=RGB_CUTOUT_FILL_VALUE
+                            )
+                        except NoOverlapError:
+                            # Try next HDU or next file candidate.
+                            continue
 
-    print(f"Cutout [{display_filter_name}]: No overlapping FITS found after trying {len(tried_paths)} candidate files")
+                        cutout_data = cutout_obj.data.copy()
+                        cutout_wcs_header = cutout_obj.wcs.to_header()
+                        cutout_wcs_header['NAXIS1'] = cutout_data.shape[1]
+                        cutout_wcs_header['NAXIS2'] = cutout_data.shape[0]
+                        cutout_wcs_header['NAXIS'] = 2
+                        print(f"Cutout [{display_filter_name}]: Success using {fits_file_path} (HDU {hdu_idx}), shape {cutout_data.shape}")
+                        return cutout_data, cutout_wcs_header
+                    except Exception:
+                        # Keep trying other HDUs and files
+                        continue
+
+                if not any_image_hdu:
+                    continue
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+
+    print(f"Cutout [{display_filter_name}]: No overlapping FITS found after trying {max_try} candidate files")
     return None, None
 @app.get("/generate-rgb-cutouts/")
 async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_name: str, galaxy_name: str = Query("UnknownGalaxy")):
@@ -13771,23 +13689,40 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
         catalog_table = loaded_catalogs.get(catalog_name)
         if catalog_table is None:
             print(f"RGB Cutouts: Catalog '{catalog_name}' not in cache. Loading.")
-            resolved = resolve_catalog_file_path(catalog_name)
+            # Resolve uploaded catalogs too (frontend typically passes basename like "upload_foo.fits")
+            base_dir = Path(".").resolve()
             catalogs_dir = Path(CATALOGS_DIRECTORY)
-            catalog_key = catalog_name
-            if resolved is not None:
-                catalogs_dir = resolved.parent
-                try:
-                    catalog_key = resolved.relative_to(Path(".").resolve()).as_posix()
-                except Exception:
-                    catalog_key = str(resolved)
-            catalog_table = get_astropy_table_from_catalog(catalog_key, catalogs_dir)
+            try:
+                name = str(catalog_name).strip()
+                direct = base_dir / name
+                in_catalogs = base_dir / CATALOGS_DIRECTORY / name
+                in_files = base_dir / FILES_DIRECTORY / name
+                in_uploads = base_dir / UPLOADS_DIRECTORY / name
+                if direct.is_file():
+                    catalogs_dir = base_dir
+                elif in_catalogs.is_file():
+                    catalogs_dir = base_dir / CATALOGS_DIRECTORY
+                elif in_uploads.is_file():
+                    catalogs_dir = base_dir / UPLOADS_DIRECTORY
+                elif in_files.is_file():
+                    catalogs_dir = base_dir / FILES_DIRECTORY
+            except Exception:
+                catalogs_dir = Path(CATALOGS_DIRECTORY)
+
+            catalog_table = get_astropy_table_from_catalog(catalog_name, catalogs_dir)
             if catalog_table is not None:
                 loaded_catalogs[catalog_name] = catalog_table
             else:
                 print(f"RGB Cutouts: Failed to load catalog '{catalog_name}'.")
         if catalog_table is not None:
-            ra_col, dec_col = _select_rgb_cutout_ra_dec_columns(catalog_table.colnames)
+            ra_col, dec_col = None, None
             available_cols_lower = {col.lower(): col for col in catalog_table.colnames}
+            for potential_ra_name in RGB_RA_COLUMN_NAMES:
+                if potential_ra_name in available_cols_lower:
+                    ra_col = available_cols_lower[potential_ra_name]; break
+            for potential_dec_name in RGB_DEC_COLUMN_NAMES:
+                if potential_dec_name in available_cols_lower:
+                    dec_col = available_cols_lower[potential_dec_name]; break
             if ra_col and dec_col:
                 try:
                     table_ra = np.asarray(catalog_table[ra_col].astype(float), dtype=float)
@@ -13911,7 +13846,23 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
         print('Exception in filename parsing:', e)
         pass
 
-    print('building galaxy tokens', target_galaxy_name, '->', build_galaxy_tokens(target_galaxy_name))
+    def build_galaxy_tokens(name: str) -> list[str]:
+        if not name:
+            return []
+        g = name.strip().lower()
+        if not g or g in ("unknown", "unknowngalaxy"):
+            return []
+        base = re.sub(r'[\s_\-]+', '', g)
+        tokens = {g, base}
+        m = re.match(r'([a-z]+)\s*0*(\d+)', base)
+        if m:
+            prefix, digits = m.group(1), m.group(2)
+            tokens.add(f"{prefix}{digits}")             # ngc628
+            tokens.add(f"{prefix}{digits.zfill(4)}")    # ngc0628
+            tokens.add(f"{prefix}0{digits}")            # ngc0628 variant
+        return list(tokens)
+
+    print('building galaxy tokens',target_galaxy_name)
     galaxy_tokens = build_galaxy_tokens(target_galaxy_name)
 
     print(f"RGB Cutouts: Generating for RA={ra}, Dec={dec}. Target Galaxy: {target_galaxy_name}")
@@ -14184,28 +14135,56 @@ async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: i
     if rows_per_page < 1:
         return JSONResponse(status_code=400, content={"error": "rows_per_page must be at least 1"})
 
-    resolved_catalog_path = resolve_catalog_file_path(catalog_name)
-    catalog_key = str(resolved_catalog_path.relative_to(Path(".").resolve()).as_posix()) if resolved_catalog_path else str(catalog_name).strip()
-
-    catalog_table = loaded_catalogs.get(catalog_key) or loaded_catalogs.get(catalog_name)
+    base_dir = Path(".").resolve()
+    catalog_table = loaded_catalogs.get(catalog_name)
     if catalog_table is None:
-        catalog_dir = Path(CATALOGS_DIRECTORY)
-        if resolved_catalog_path is not None:
-            try:
-                catalog_dir = resolved_catalog_path.parent
-            except Exception:
-                pass
+        catalog_dirs_to_try = []
         try:
-            catalog_table = get_astropy_table_from_catalog(catalog_key, catalog_dir)
-            if catalog_table is not None:
-                loaded_catalogs[catalog_key] = catalog_table
+            name = str(catalog_name).strip()
+            candidates = [
+                (base_dir, base_dir / name),
+                (base_dir / CATALOGS_DIRECTORY, base_dir / CATALOGS_DIRECTORY / name),
+                (base_dir / UPLOADS_DIRECTORY, base_dir / UPLOADS_DIRECTORY / name),
+                (base_dir / FILES_DIRECTORY, base_dir / FILES_DIRECTORY / name),
+            ]
+            for candidate_dir, candidate_path in candidates:
+                try:
+                    if candidate_path.is_file():
+                        catalog_dirs_to_try.append(candidate_dir)
+                except Exception:
+                    continue
         except Exception:
-            catalog_table = None
+            pass
+        catalog_dirs_to_try.append(Path(CATALOGS_DIRECTORY))
+
+        for catalog_dir in catalog_dirs_to_try:
+            try:
+                catalog_table = get_astropy_table_from_catalog(catalog_name, catalog_dir)
+                if catalog_table is not None:
+                    loaded_catalogs[catalog_name] = catalog_table
+                    break
+            except Exception:
+                continue
 
     if catalog_table is None:
         return JSONResponse(status_code=404, content={"error": f"Could not load catalog '{catalog_name}'."})
 
-    ra_col, dec_col = _select_rgb_cutout_ra_dec_columns(catalog_table.colnames)
+    available_cols_lower = {str(col).lower(): col for col in catalog_table.colnames}
+    ra_col = None
+    dec_col = None
+    for potential_ra_name in RGB_RA_COLUMN_NAMES:
+        if str(potential_ra_name).lower() in available_cols_lower:
+            ra_col = available_cols_lower[str(potential_ra_name).lower()]
+            break
+    for potential_dec_name in RGB_DEC_COLUMN_NAMES:
+        if str(potential_dec_name).lower() in available_cols_lower:
+            dec_col = available_cols_lower[str(potential_dec_name).lower()]
+            break
+    if not ra_col or not dec_col:
+        try:
+            ra_col, dec_col = detect_coordinate_columns(catalog_table.colnames)
+        except Exception:
+            ra_col, dec_col = None, None
 
     if not ra_col or not dec_col:
         return JSONResponse(status_code=400, content={"error": f"Could not find RA/Dec columns in catalog '{catalog_name}'."})
@@ -14214,6 +14193,22 @@ async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: i
     requested_count = total_rows if count == -1 else min(count, total_rows)
     if requested_count <= 0:
         return JSONResponse(status_code=400, content={"error": "Catalog has no sources to process."})
+
+    def _row_galaxy_name(row):
+        for gal_col_name in RGB_GALAXY_COLUMN_NAMES:
+            resolved_col = available_cols_lower.get(str(gal_col_name).lower())
+            if not resolved_col:
+                continue
+            try:
+                val = row[resolved_col]
+                if isinstance(val, bytes):
+                    val = val.decode("utf-8", errors="ignore")
+                galaxy = str(val).strip()
+                if galaxy and galaxy.lower() not in RGB_INVALID_GALAXY_NAMES:
+                    return galaxy
+            except Exception:
+                continue
+        return "UnknownGalaxy"
 
     generated_image_paths = []
     generated_image_sizes = []
@@ -14233,20 +14228,13 @@ async def generate_all_rgb_cutouts(request: Request, catalog_name: str, count: i
             continue
 
         try:
-            row_galaxy_name = _galaxy_name_from_catalog_row(row, catalog_table)
-
-            def _generate_single_rgb(
-                _ra=ra_val,
-                _dec=dec_val,
-                _galaxy=row_galaxy_name,
-                _catalog_key=catalog_key,
-            ):
+            def _generate_single_rgb():
                 return asyncio.run(generate_rgb_cutouts(
                     request,
-                    ra=_ra,
-                    dec=_dec,
-                    catalog_name=_catalog_key,
-                    galaxy_name=_galaxy,
+                    ra=ra_val,
+                    dec=dec_val,
+                    catalog_name=catalog_name,
+                    galaxy_name=_row_galaxy_name(row)
                 ))
 
             single_response = await asyncio.to_thread(_generate_single_rgb)
