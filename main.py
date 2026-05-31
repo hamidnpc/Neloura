@@ -5214,6 +5214,46 @@ def resolve_sed_norm_mode_for_filter(filter_name: str, default_group: str | None
         return SED_NORM_MODE
     except Exception:
         return SED_NORM_MODE
+
+
+def freeze_sed_inset_axes_for_save(fig, main_ax):
+    """Resolve axes_grid1 inset locators before savefig so bad inset geometry cannot crash SED output."""
+    try:
+        renderer = fig.canvas.get_renderer()
+    except Exception:
+        try:
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+        except Exception as e:
+            print(f"[SED] Could not prepare renderer for inset validation: {e}")
+            return
+
+    for child_ax in list(fig.axes):
+        if child_ax is main_ax:
+            continue
+        try:
+            locator = child_ax.get_axes_locator()
+            bbox = locator(child_ax, renderer) if locator is not None else child_ax.get_position()
+            bounds = tuple(float(v) for v in bbox.bounds)
+            if (
+                len(bounds) == 4
+                and all(np.isfinite(bounds))
+                and bounds[2] > 0
+                and bounds[3] > 0
+            ):
+                child_ax.set_axes_locator(None)
+                child_ax.set_position(bbox)
+            else:
+                print(f"[SED] Removing inset with invalid bbox before save: {bounds}")
+                child_ax.remove()
+        except Exception as e:
+            print(f"[SED] Removing inset that failed bbox validation before save: {e}")
+            try:
+                child_ax.remove()
+            except Exception:
+                pass
+
+
 @app.get("/generate-sed/")
 async def generate_sed_optimized(
     request: Request,
@@ -6196,6 +6236,7 @@ async def generate_sed_optimized(
             except Exception as e:
                 print(f"Error creating HST RGB: {e}")
         # 9) Save
+        freeze_sed_inset_axes_for_save(fig, ax)
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning,
@@ -6209,7 +6250,14 @@ async def generate_sed_optimized(
         image_dir = os.path.join(os.getcwd(), IMAGE_DIR)
         os.makedirs(image_dir, exist_ok=True)
         filepath = os.path.join(image_dir, filename)
-        fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches=SED_SAVEFIG_BBOX_INCHES)
+        try:
+            fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches=SED_SAVEFIG_BBOX_INCHES)
+        except ValueError as e_save:
+            if "cannot convert float NaN to integer" not in str(e_save):
+                raise
+            print("[SED] Retrying save without tight bbox after Matplotlib NaN layout error.")
+            freeze_sed_inset_axes_for_save(fig, ax)
+            fig.savefig(filepath, format='png', dpi=SED_DPI, bbox_inches=None)
         plt.close(fig)
 
         if os.path.exists(filepath):
