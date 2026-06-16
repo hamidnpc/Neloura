@@ -525,12 +525,9 @@ RGB_OPEN_EXAMPLE_SETS = {
         "filters": ["F336W", "F555W", "F814W", "HA"],
         "description": "PHANGS-HST optical plus Hα composite",
         "candidates": [
-            "ic1954", "ic5332", "ngc0628", "ngc1087", "ngc1097", "ngc1300",
-            "ngc1317", "ngc1365", "ngc1385", "ngc1433", "ngc1512", "ngc1559",
-            "ngc1566", "ngc1672", "ngc1792", "ngc2775", "ngc2835", "ngc2903",
-            "ngc3351", "ngc3627", "ngc4254", "ngc4298", "ngc4303", "ngc4321",
-            "ngc4535", "ngc4536", "ngc4548", "ngc4569", "ngc4571", "ngc4654",
-            "ngc4689", "ngc4826", "ngc5068", "ngc5248", "ngc6744", "ngc0685",
+            "ic5332", "ngc0628", "ngc1087", "ngc1300", "ngc1365", "ngc1385",
+            "ngc1433", "ngc1512", "ngc1566", "ngc1672", "ngc2835", "ngc3351",
+            "ngc3627", "ngc4254", "ngc4303", "ngc4321", "ngc4535", "ngc5068",
             "ngc7496",
         ],
     },
@@ -1417,10 +1414,17 @@ def _open_rgb_galaxy_variants(galaxy: str) -> list[str]:
     variants = [base] if base else []
     match = re.fullmatch(r"ngc0+(\d+)", base)
     if match:
-        variants.append(f"ngc{match.group(1)}")
+        short = f"ngc{match.group(1)}"
+        variants.append(short)
+        variants.extend([f"{short}c", f"{short}e", f"{short}mosaic"])
     match = re.fullmatch(r"ngc(\d{1,3})", base)
     if match:
-        variants.append(f"ngc{int(match.group(1)):04d}")
+        short = f"ngc{int(match.group(1))}"
+        padded = f"ngc{int(match.group(1)):04d}"
+        variants.extend([padded, f"{short}c", f"{short}e", f"{short}mosaic"])
+    match = re.fullmatch(r"ngc(\d+)", base)
+    if match:
+        variants.extend([f"{base}n", f"{base}s", f"{base}mosaic"])
     return list(dict.fromkeys(v for v in variants if v))
 
 
