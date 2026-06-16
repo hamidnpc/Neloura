@@ -11498,7 +11498,6 @@ function setupWelcomeGalaxyRgbModal() {
     let activeTab = 'hst';
     const phangsFirst19Galaxies = new Set(rgbSets.nircam.galaxies);
     let rgbSetsAvailabilityPromise = null;
-    let rgbSetsAvailabilityLoaded = false;
 
     const labelForGalaxy = (name) => {
         const m = String(name || '').match(/^([a-z]+)0*(\d+)$/i);
@@ -11554,12 +11553,8 @@ function setupWelcomeGalaxyRgbModal() {
                         missing: config.missing || {}
                     };
                 });
-                rgbSetsAvailabilityLoaded = true;
             })
-            .catch(() => {
-                rgbSetsAvailabilityLoaded = true;
-                return null;
-            });
+            .catch(() => null);
         return rgbSetsAvailabilityPromise;
     };
 
@@ -11611,10 +11606,6 @@ function setupWelcomeGalaxyRgbModal() {
             const active = rgbSets[activeTab] || rgbSets.hst;
             if (filterSet) {
                 filterSet.innerHTML = `<strong>${active.label} filter set:</strong> ${active.filters.toUpperCase()}`;
-            }
-            if (!rgbSetsAvailabilityLoaded) {
-                if (list) list.innerHTML = `<div class="galaxy-rgb-empty">Checking available files...</div>`;
-                return;
             }
             const matches = active.galaxies.filter((galaxy) => {
                 const label = labelForGalaxy(galaxy).toLowerCase();
@@ -11690,7 +11681,6 @@ function setupWelcomeGalaxyRgbModal() {
 
     button.addEventListener('click', () => {
         const modal = ensureModal();
-        if (!rgbSetsAvailabilityPromise) rgbSetsAvailabilityLoaded = false;
         if (typeof modal.__renderGalaxyRgbList === 'function') modal.__renderGalaxyRgbList();
         loadAvailableRgbSets().then(() => {
             if (typeof modal.__renderGalaxyRgbList === 'function') modal.__renderGalaxyRgbList();
