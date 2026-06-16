@@ -437,14 +437,14 @@ RGB_OPEN_FILTER_ALIASES = {
     'F555W': ['F555W'],
     'HA': ['HA', 'H-alpha', 'Halpha', 'halpha', 'ha-img', 'ha_img', '_ha-img', '_ha_img'],
     'F814W': ['F814W'],
-    'F200W': ['F200W'],
-    'F300M': ['F300M'],
-    'F335M': ['F335M'],
-    'F360M': ['F360M'],
-    'F770W': ['F770W'],
-    'F1000W': ['F1000W'],
-    'F1130W': ['F1130W'],
-    'F2100W': ['F2100W'],
+    'F200W': ['F200W', '200', 'jwst_f200w', 'nircam_f200w'],
+    'F300M': ['F300M', '300', 'jwst_f300m', 'nircam_f300m'],
+    'F335M': ['F335M', '335', 'jwst_f335m', 'nircam_f335m'],
+    'F360M': ['F360M', '360', 'jwst_f360m', 'nircam_f360m'],
+    'F770W': ['F770W', '770', '770w', 'jwst_f770w', 'miri_f770w'],
+    'F1000W': ['F1000W', '1000', '1000w', 'jwst_f1000w', 'miri_f1000w'],
+    'F1130W': ['F1130W', '1130', '1130w', 'jwst_f1130w', 'miri_f1130w'],
+    'F2100W': ['F2100W', '2100', '2100w', 'jwst_f2100w', 'miri_f2100w'],
     'CO21': ['CO21', 'co21', '12m+7m+tp_co21_broad_mom0', '_12m+7m+tp_co21_broad_mom0.fits'],
 }
 RGB_OPEN_EXAMPLE_SETS = {
@@ -1510,11 +1510,15 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
             rel_haystack = _open_rgb_normalize_token(rel)
             if not any(g in rel_haystack for g in galaxy_keys):
                 continue
-            if not any(f in haystack for f in filter_keys):
+            filter_in_filename = any(f in haystack for f in filter_keys)
+            filter_in_path = any(f in rel_haystack for f in filter_keys)
+            if not filter_in_filename and not filter_in_path:
                 continue
             score = 0
             if any(g in haystack for g in galaxy_keys):
                 score -= 20
+            if filter_in_filename:
+                score -= 10
             if "/uploads/" in f"/{rel.lower()}":
                 score += 30
             score += len(rel)
