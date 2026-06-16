@@ -11497,6 +11497,7 @@ function setupWelcomeGalaxyRgbModal() {
     };
     let activeTab = 'hst';
     const phangsFirst19Galaxies = new Set(rgbSets.nircam.galaxies);
+    let rgbSetsAvailabilityPromise = null;
 
     const labelForGalaxy = (name) => {
         const m = String(name || '').match(/^([a-z]+)0*(\d+)$/i);
@@ -11532,6 +11533,31 @@ function setupWelcomeGalaxyRgbModal() {
         return url.toString();
     };
 
+    const loadAvailableRgbSets = () => {
+        if (rgbSetsAvailabilityPromise) return rgbSetsAvailabilityPromise;
+        rgbSetsAvailabilityPromise = fetch('/api/open-rgb-options?include_availability=true', { cache: 'no-store' })
+            .then((response) => response.ok ? response.json() : null)
+            .then((data) => {
+                const sets = data && data.sets && typeof data.sets === 'object' ? data.sets : null;
+                if (!sets) return;
+                Object.entries(sets).forEach(([key, config]) => {
+                    if (!rgbSets[key] || !config || typeof config !== 'object') return;
+                    const fallbackGalaxies = Array.isArray(config.galaxies) ? config.galaxies : rgbSets[key].galaxies;
+                    const galaxies = Array.isArray(config.available_galaxies) ? config.available_galaxies : fallbackGalaxies;
+                    rgbSets[key] = {
+                        ...rgbSets[key],
+                        label: config.label || rgbSets[key].label,
+                        filters: config.filters || rgbSets[key].filters,
+                        description: config.description || rgbSets[key].description,
+                        galaxies,
+                        missing: config.missing || {}
+                    };
+                });
+            })
+            .catch(() => null);
+        return rgbSetsAvailabilityPromise;
+    };
+
     const ensureModal = () => {
         let modal = document.getElementById('galaxy-rgb-modal');
         if (modal) return modal;
@@ -11545,6 +11571,7 @@ function setupWelcomeGalaxyRgbModal() {
                 <h2 class="galaxy-rgb-title">Multi-Color Galaxy Images</h2>
                 <p class="galaxy-rgb-subtitle">
                     Open RGB galaxy images from neloura.com.
+                    You can open the image only or with catalogs as you select from the list.
                 </p>
                 <div class="galaxy-rgb-controls">
                     <input id="galaxy-rgb-search" class="galaxy-rgb-search" type="search" placeholder="Search galaxies..." autocomplete="off">
@@ -11648,6 +11675,9 @@ function setupWelcomeGalaxyRgbModal() {
     button.addEventListener('click', () => {
         const modal = ensureModal();
         if (typeof modal.__renderGalaxyRgbList === 'function') modal.__renderGalaxyRgbList();
+        loadAvailableRgbSets().then(() => {
+            if (typeof modal.__renderGalaxyRgbList === 'function') modal.__renderGalaxyRgbList();
+        });
         modal.style.display = 'block';
         const search = modal.querySelector('#galaxy-rgb-search');
         if (search) setTimeout(() => search.focus(), 0);
