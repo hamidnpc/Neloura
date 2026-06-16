@@ -484,6 +484,31 @@ RGB_OPEN_EXAMPLE_SETS = {
             "ngc7496",
         ],
     },
+    "hstJwst": {
+        "label": "HST/JWST",
+        "filters": ["F336W", "F555W", "F814W", "F770W"],
+        "description": "PHANGS-HST optical plus JWST F770W composite",
+        "candidates": [
+            "ic5332", "ngc0628", "ngc1087", "ngc1300", "ngc1365", "ngc1385",
+            "ngc1433", "ngc1512", "ngc1566", "ngc1672", "ngc2835", "ngc3351",
+            "ngc3627", "ngc4254", "ngc4303", "ngc4321", "ngc4535", "ngc5068",
+            "ngc7496",
+        ],
+    },
+    "hstAlma": {
+        "label": "HST/ALMA",
+        "filters": ["F336W", "F555W", "F814W", "CO21"],
+        "description": "PHANGS-HST optical plus ALMA CO(2-1) composite",
+        "candidates": [
+            "ic1954", "ic5332", "ngc0628", "ngc1087", "ngc1097", "ngc1300",
+            "ngc1317", "ngc1365", "ngc1385", "ngc1433", "ngc1512", "ngc1559",
+            "ngc1566", "ngc1672", "ngc1792", "ngc2775", "ngc2835", "ngc2903",
+            "ngc3351", "ngc3627", "ngc4254", "ngc4298", "ngc4303", "ngc4321",
+            "ngc4535", "ngc4536", "ngc4548", "ngc4569", "ngc4571", "ngc4654",
+            "ngc4689", "ngc4826", "ngc5068", "ngc5248", "ngc6744", "ngc0685",
+            "ngc7496",
+        ],
+    },
 }
 RGB_OPEN_CHANNELS_BY_COUNT = {
     1: ['r'],
