@@ -11470,7 +11470,7 @@ function setupWelcomeGalaxyRgbModal() {
             ]
         },
         hstJwst: {
-            label: 'HST/JWST',
+            label: 'HST + JWST',
             filters: 'f336w-f555w-f814w-f770w',
             description: 'PHANGS-HST optical plus JWST F770W composite',
             galaxies: [
@@ -11481,9 +11481,34 @@ function setupWelcomeGalaxyRgbModal() {
             ]
         },
         hstAlma: {
-            label: 'HST/ALMA',
+            label: 'HST + ALMA',
             filters: 'f336w-f555w-f814w-co21',
             description: 'PHANGS-HST optical plus ALMA CO(2-1) composite',
+            galaxies: [
+                'ic1954', 'ic5332', 'ngc0628', 'ngc1087', 'ngc1097', 'ngc1300',
+                'ngc1317', 'ngc1365', 'ngc1385', 'ngc1433', 'ngc1512', 'ngc1559',
+                'ngc1566', 'ngc1672', 'ngc1792', 'ngc2775', 'ngc2835', 'ngc2903',
+                'ngc3351', 'ngc3627', 'ngc4254', 'ngc4298', 'ngc4303', 'ngc4321',
+                'ngc4535', 'ngc4536', 'ngc4548', 'ngc4569', 'ngc4571', 'ngc4654',
+                'ngc4689', 'ngc4826', 'ngc5068', 'ngc5248', 'ngc6744', 'ngc0685',
+                'ngc7496'
+            ]
+        },
+        jwstAlma: {
+            label: 'JWST + ALMA',
+            filters: 'f2100w-f1000w-f770w-co21',
+            description: 'PHANGS-JWST MIRI plus ALMA CO(2-1) composite',
+            galaxies: [
+                'ic5332', 'ngc0628', 'ngc1087', 'ngc1300', 'ngc1365', 'ngc1385',
+                'ngc1433', 'ngc1512', 'ngc1566', 'ngc1672', 'ngc2835', 'ngc3351',
+                'ngc3627', 'ngc4254', 'ngc4303', 'ngc4321', 'ngc4535', 'ngc5068',
+                'ngc7496'
+            ]
+        },
+        hstHa: {
+            label: 'HST + Hα',
+            filters: 'f336w-f555w-f814w-ha',
+            description: 'PHANGS-HST optical plus Hα composite',
             galaxies: [
                 'ic1954', 'ic5332', 'ngc0628', 'ngc1087', 'ngc1097', 'ngc1300',
                 'ngc1317', 'ngc1365', 'ngc1385', 'ngc1433', 'ngc1512', 'ngc1559',
