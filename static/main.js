@@ -11385,7 +11385,7 @@ function createWelcomeScreen() {
             </svg>
           </a>
         </div>
-        <div class="welcome-rgb-row" style='display:none;' >
+        <div class="welcome-rgb-row" >
           <button type="button"
                   id="welcome-galaxy-rgb-button"
                   class="welcome-btn welcome-btn--galaxy-rgb"
