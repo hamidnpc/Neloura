@@ -409,7 +409,8 @@ SED_JWST_NIRCAM_FILTERS = ['F200W', 'F300M', 'F335M', 'F360M']
 SED_JWST_MIRI_FILTERS = ['F770W', 'F1000W', 'F1130W', 'F2100W']
 RGB_OPEN_HST_FILTERS = SED_HST_FILTERS
 RGB_OPEN_JWST_FILTERS = SED_JWST_NIRCAM_FILTERS + SED_JWST_MIRI_FILTERS
-RGB_OPEN_FILTERS = RGB_OPEN_HST_FILTERS + ['HA'] + RGB_OPEN_JWST_FILTERS
+RGB_OPEN_ALMA_FILTERS = ['CO21']
+RGB_OPEN_FILTERS = RGB_OPEN_HST_FILTERS + ['HA'] + RGB_OPEN_JWST_FILTERS + RGB_OPEN_ALMA_FILTERS
 RGB_OPEN_FILTER_WAVELENGTHS = {
     'F275W': 0.275,
     'F336W': 0.336,
@@ -426,6 +427,7 @@ RGB_OPEN_FILTER_WAVELENGTHS = {
     'F1000W': 10.0,
     'F1130W': 11.3,
     'F2100W': 21.0,
+    'CO21': 1300.0,
 }
 RGB_OPEN_FILTER_ALIASES = {
     'F275W': ['F275W'],
@@ -443,6 +445,45 @@ RGB_OPEN_FILTER_ALIASES = {
     'F1000W': ['F1000W'],
     'F1130W': ['F1130W'],
     'F2100W': ['F2100W'],
+    'CO21': ['CO21', 'co21', '12m+7m+tp_co21_broad_mom0', '_12m+7m+tp_co21_broad_mom0.fits'],
+}
+RGB_OPEN_EXAMPLE_SETS = {
+    "hst": {
+        "label": "HST",
+        "filters": ["F336W", "F555W", "F814W"],
+        "description": "PHANGS-HST optical RGB",
+        "candidates": [
+            "ic1954", "ic5332", "ngc0628", "ngc1087", "ngc1097", "ngc1300",
+            "ngc1317", "ngc1365", "ngc1385", "ngc1433", "ngc1512", "ngc1559",
+            "ngc1566", "ngc1672", "ngc1792", "ngc2775", "ngc2835", "ngc2903",
+            "ngc3351", "ngc3627", "ngc4254", "ngc4298", "ngc4303", "ngc4321",
+            "ngc4535", "ngc4536", "ngc4548", "ngc4569", "ngc4571", "ngc4654",
+            "ngc4689", "ngc4826", "ngc5068", "ngc5248", "ngc6744", "ngc0685",
+            "ngc7496",
+        ],
+    },
+    "nircam": {
+        "label": "NIRCam",
+        "filters": ["F360M", "F335M", "F300M"],
+        "description": "PHANGS-JWST NIRCam RGB",
+        "candidates": [
+            "ic5332", "ngc0628", "ngc1087", "ngc1300", "ngc1365", "ngc1385",
+            "ngc1433", "ngc1512", "ngc1566", "ngc1672", "ngc2835", "ngc3351",
+            "ngc3627", "ngc4254", "ngc4303", "ngc4321", "ngc4535", "ngc5068",
+            "ngc7496",
+        ],
+    },
+    "miri": {
+        "label": "MIRI",
+        "filters": ["F2100W", "F1000W", "F770W"],
+        "description": "PHANGS-JWST MIRI RGB",
+        "candidates": [
+            "ic5332", "ngc0628", "ngc1087", "ngc1300", "ngc1365", "ngc1385",
+            "ngc1433", "ngc1512", "ngc1566", "ngc1672", "ngc2835", "ngc3351",
+            "ngc3627", "ngc4254", "ngc4303", "ngc4321", "ngc4535", "ngc5068",
+            "ngc7496",
+        ],
+    },
 }
 RGB_OPEN_CHANNELS_BY_COUNT = {
     1: ['r'],
@@ -1389,6 +1430,8 @@ def _open_rgb_filter_group(filter_name: str) -> str:
         return "HST"
     if filter_name in RGB_OPEN_JWST_FILTERS:
         return "JWST"
+    if filter_name in RGB_OPEN_ALMA_FILTERS:
+        return "ALMA"
     return "RGB"
 
 
@@ -1411,6 +1454,8 @@ def _open_rgb_title(galaxy: str, filters: list[str]) -> str:
         prefix = "JWST-RGB"
     elif "HST" in groups and "JWST" in groups:
         prefix = "HST-JWST-RGB"
+    elif "HST" in groups and "ALMA" in groups:
+        prefix = "HST-ALMA-RGB"
     else:
         prefix = "RGB"
     clean_galaxy = re.sub(r"\s+", "-", str(galaxy or "").strip()) or RGB_DEFAULT_GALAXY_NAME
@@ -1473,6 +1518,35 @@ def _open_rgb_channel_plan(filters: list[str]) -> list[tuple[str, str]]:
     if not channels:
         raise HTTPException(status_code=400, detail="open-rgb supports 1 to 5 filters")
     return list(zip(channels, ordered))
+
+
+def _open_rgb_available_examples(include_availability: bool = False) -> dict[str, dict]:
+    available: dict[str, dict] = {}
+    for key, config in RGB_OPEN_EXAMPLE_SETS.items():
+        filters = list(config.get("filters") or [])
+        galaxies = [str(galaxy) for galaxy in config.get("candidates") or []]
+        available_galaxies = []
+        missing: dict[str, list[str]] = {}
+        if include_availability:
+            for galaxy in galaxies:
+                missing_filters = [
+                    filter_name
+                    for filter_name in filters
+                    if not _open_rgb_find_file(galaxy, str(filter_name))
+                ]
+                if missing_filters:
+                    missing[galaxy] = missing_filters
+                    continue
+                available_galaxies.append(galaxy)
+        available[key] = {
+            "label": config.get("label", key.upper()),
+            "filters": "-".join(str(f).lower() for f in filters),
+            "description": config.get("description", ""),
+            "galaxies": galaxies,
+            "available_galaxies": available_galaxies,
+            "missing": missing,
+        }
+    return available
 
 
 # FastAPI app
@@ -1647,6 +1721,7 @@ app.add_middleware(PerSessionMiddleware, allow_paths={
     "/settings/defaults",
     "/settings/me",
     "/settings/profiles",
+    "/api/open-rgb-options",
 })
 
 # Serve simple static HTML pages from repo root (no session required).
@@ -1826,6 +1901,15 @@ async def open_fits_viewer(filepath: str, request: Request, hdu: int | None = Qu
 
     qs = "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in params.items()])
     return RedirectResponse(url=f"/?{qs}", status_code=307)
+
+
+@app.get("/api/open-rgb-options")
+async def open_rgb_options(include_availability: bool = Query(False)):
+    return {
+        "sets": _open_rgb_available_examples(include_availability=include_availability),
+        "hst_filters": RGB_OPEN_HST_FILTERS,
+        "jwst_filters": RGB_OPEN_JWST_FILTERS,
+    }
 
 
 @app.get("/open-rgb")
@@ -11338,55 +11422,56 @@ async def catalog_binary(
                             hdu_index = int(base_meta.get("hdu", getattr(base, "hdu_index", 0)))
                     except Exception:
                         pass
-                elif not fits_file:
+                if not fits_file and not (rgb_frame is not None and rgb_frame.get("base") is not None):
                     fast_result = {"error": "No FITS file currently selected", "records": [], "total": 0, "pagination": (page, limit)}
                 else:
-                    # Build image WCS and dimensions without touching image data
-                    image_wcs = (session_data.get("current_wcs_object") if session_data else getattr(app.state, "current_wcs_object", None))
-                    image_height = None
-                    image_width = None
-                    flip_y = False
-                    with fits.open(fits_file) as hdul:
-                        if not (0 <= hdu_index < len(hdul)):
-                            hdu_index = 0
-                        image_hdu = hdul[hdu_index]
-                        # header-only image HDU test
-                        def _is_image_hdu(h) -> bool:
-                            try:
-                                hdr = getattr(h, 'header', None)
-                                if hdr is None:
-                                    return False
-                                naxis = int(hdr.get('NAXIS', 0) or 0)
-                                if naxis < 2:
-                                    return False
-                                n1 = hdr.get('NAXIS1', None)
-                                n2 = hdr.get('NAXIS2', None)
-                                return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
-                            except Exception:
-                                return False
-                        if not _is_image_hdu(image_hdu):
-                            image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
-                        if image_hdu is None:
-                            fast_result = {"error": "No image HDU found in current FITS file", "records": [], "total": 0, "pagination": (page, limit)}
-                        else:
-                            fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
-                            flip_y = bool(fy)
-                            image_height = int(image_hdu.header.get('NAXIS2', 0))
-                            image_width = int(image_hdu.header.get('NAXIS1', 0))
-                            if image_wcs is None:
+                    if not (rgb_frame is not None and rgb_frame.get("base") is not None):
+                        # Build image WCS and dimensions without touching image data
+                        image_wcs = (session_data.get("current_wcs_object") if session_data else getattr(app.state, "current_wcs_object", None))
+                        image_height = None
+                        image_width = None
+                        flip_y = False
+                        with fits.open(fits_file) as hdul:
+                            if not (0 <= hdu_index < len(hdul)):
+                                hdu_index = 0
+                            image_hdu = hdul[hdu_index]
+                            # header-only image HDU test
+                            def _is_image_hdu(h) -> bool:
                                 try:
-                                    wcs_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                                    hdr = getattr(h, 'header', None)
+                                    if hdr is None:
+                                        return False
+                                    naxis = int(hdr.get('NAXIS', 0) or 0)
+                                    if naxis < 2:
+                                        return False
+                                    n1 = hdr.get('NAXIS1', None)
+                                    n2 = hdr.get('NAXIS2', None)
+                                    return (n1 is not None and n2 is not None and int(n1) > 0 and int(n2) > 0)
                                 except Exception:
-                                    wcs_header = image_hdu.header
-                                image_wcs = WCS(wcs_header)
-                    try:
-                        if image_wcs is not None:
-                            if hasattr(image_wcs, 'celestial'):
-                                image_wcs = image_wcs.celestial
+                                    return False
+                            if not _is_image_hdu(image_hdu):
+                                image_hdu = next((h for h in hdul if _is_image_hdu(h)), None)
+                            if image_hdu is None:
+                                fast_result = {"error": "No image HDU found in current FITS file", "records": [], "total": 0, "pagination": (page, limit)}
                             else:
-                                image_wcs = image_wcs.sub(['celestial'])
-                    except Exception:
-                        pass
+                                fy, _, _ = analyze_wcs_orientation(image_hdu.header, None)
+                                flip_y = bool(fy)
+                                image_height = int(image_hdu.header.get('NAXIS2', 0))
+                                image_width = int(image_hdu.header.get('NAXIS1', 0))
+                                if image_wcs is None:
+                                    try:
+                                        wcs_header = _prepare_jwst_header_for_wcs(image_hdu.header)
+                                    except Exception:
+                                        wcs_header = image_hdu.header
+                                    image_wcs = WCS(wcs_header)
+                        try:
+                            if image_wcs is not None:
+                                if hasattr(image_wcs, 'celestial'):
+                                    image_wcs = image_wcs.celestial
+                                else:
+                                    image_wcs = image_wcs.sub(['celestial'])
+                        except Exception:
+                            pass
 
                     # Require numeric RA/Dec columns for fast path (otherwise fall back to slow path)
                     if ra_col is None or dec_col is None:
@@ -11810,6 +11895,17 @@ async def catalog_binary(
         
         # Get binary data
         binary_data = binary_buffer.getvalue()
+        catalog_path_header = "fast" if (use_fast_path and fast_result and 'ra_page' in fast_result) else "slow"
+        try:
+            logger.info(
+                "[catalog-binary] response path=%s records=%s bytes=%s catalog=%s",
+                catalog_path_header,
+                (len(fast_result["ra_page"]) if catalog_path_header == "fast" else len(catalog_data or [])),
+                len(binary_data),
+                catalog_name,
+            )
+        except Exception:
+            pass
         
         # Compress if client accepts gzip and data is large
         accept_encoding = request.headers.get('accept-encoding', '')
@@ -11824,7 +11920,8 @@ async def catalog_binary(
                 media_type="application/octet-stream",
                 headers={
                     "Content-Encoding": "gzip",
-                    "X-Catalog-Format": "binary-v1"
+                    "X-Catalog-Format": "binary-v1",
+                    "X-Catalog-Path": catalog_path_header,
                 }
             )
         
@@ -11832,7 +11929,8 @@ async def catalog_binary(
             content=binary_data,
             media_type="application/octet-stream",
             headers={
-                "X-Catalog-Format": "binary-v1"
+                "X-Catalog-Format": "binary-v1",
+                "X-Catalog-Path": catalog_path_header,
             }
         )
         
