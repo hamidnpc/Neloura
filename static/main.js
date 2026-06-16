@@ -11613,7 +11613,10 @@ function setupWelcomeGalaxyRgbModal() {
             });
             if (!list) return;
             if (!matches.length) {
-                list.innerHTML = `<div class="galaxy-rgb-empty">No ${active.label} galaxies match your search.</div>`;
+                const emptyText = query
+                    ? `No ${active.label} galaxies match your search.`
+                    : `No available ${active.label} galaxies were found for this filter set.`;
+                list.innerHTML = `<div class="galaxy-rgb-empty">${emptyText}</div>`;
                 return;
             }
             list.innerHTML = matches.map((galaxy) => {
@@ -11666,7 +11669,11 @@ function setupWelcomeGalaxyRgbModal() {
                 }
             });
         });
-        if (search) search.addEventListener('input', renderList);
+        if (search) {
+            search.addEventListener('input', renderList);
+            search.addEventListener('search', renderList);
+            search.addEventListener('keyup', renderList);
+        }
         modal.__renderGalaxyRgbList = renderList;
         renderList();
         return modal;
