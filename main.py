@@ -1471,6 +1471,47 @@ def _open_rgb_filter_file_keys(filter_name: str) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+def _open_rgb_iter_fits_files():
+    base_dir = Path(FILES_DIRECTORY)
+    stack = [base_dir]
+    seen_dirs = set()
+    while stack:
+        scan_dir = stack.pop()
+        try:
+            stat = scan_dir.stat()
+            dir_key = (getattr(stat, "st_dev", None), getattr(stat, "st_ino", None), str(scan_dir))
+            if dir_key in seen_dirs:
+                continue
+            seen_dirs.add(dir_key)
+        except Exception:
+            pass
+
+        try:
+            children = list(scan_dir.iterdir())
+        except Exception:
+            continue
+
+        for entry in children:
+            try:
+                if any(part.startswith(".") for part in entry.relative_to(base_dir).parts):
+                    continue
+            except Exception:
+                continue
+
+            try:
+                if entry.is_dir():
+                    stack.append(entry)
+                    continue
+            except Exception:
+                pass
+
+            try:
+                if entry.is_file() and entry.name.lower().endswith((".fits", ".fit", ".fits.gz")):
+                    yield entry
+            except Exception:
+                continue
+
+
 def _open_rgb_title(galaxy: str, filters: list[str]) -> str:
     groups = {_open_rgb_filter_group(f) for f in filters}
     if groups == {"HST"}:
@@ -1494,35 +1535,32 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
         return None
 
     candidates: list[tuple[int, str, Path]] = []
-    for pattern in ("*.fits", "*.fit", "*.fits.gz"):
+    base_dir = Path(FILES_DIRECTORY)
+    for path in _open_rgb_iter_fits_files():
         try:
-            iterator = FILES_ROOT.rglob(pattern)
+            rel = path.relative_to(base_dir).as_posix()
         except Exception:
             continue
-        for path in iterator:
-            if not path.is_file():
-                continue
-            rel = path.relative_to(FILES_ROOT).as_posix()
-            rel_lower = rel.lower()
-            if any(token in rel_lower for token in ("mask", "segmentation", "segments", "nebulae")):
-                continue
-            haystack = _open_rgb_normalize_token(path.name)
-            rel_haystack = _open_rgb_normalize_token(rel)
-            if not any(g in rel_haystack for g in galaxy_keys):
-                continue
-            filter_in_filename = any(f in haystack for f in filter_keys)
-            filter_in_path = any(f in rel_haystack for f in filter_keys)
-            if not filter_in_filename and not filter_in_path:
-                continue
-            score = 0
-            if any(g in haystack for g in galaxy_keys):
-                score -= 20
-            if filter_in_filename:
-                score -= 10
-            if "/uploads/" in f"/{rel.lower()}":
-                score += 30
-            score += len(rel)
-            candidates.append((score, rel, path))
+        rel_lower = rel.lower()
+        if any(token in rel_lower for token in ("mask", "segmentation", "segments", "nebulae")):
+            continue
+        haystack = _open_rgb_normalize_token(path.name)
+        rel_haystack = _open_rgb_normalize_token(rel)
+        if not any(g in rel_haystack for g in galaxy_keys):
+            continue
+        filter_in_filename = any(f in haystack for f in filter_keys)
+        filter_in_path = any(f in rel_haystack for f in filter_keys)
+        if not filter_in_filename and not filter_in_path:
+            continue
+        score = 0
+        if any(g in haystack for g in galaxy_keys):
+            score -= 20
+        if filter_in_filename:
+            score -= 10
+        if "/uploads/" in f"/{rel.lower()}":
+            score += 30
+        score += len(rel)
+        candidates.append((score, rel, path))
 
     if not candidates:
         return None
