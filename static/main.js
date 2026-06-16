@@ -11126,24 +11126,23 @@ function createWelcomeScreen() {
 
         .galaxy-rgb-controls {
             display: flex;
+            flex-direction: column;
             gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
+            align-items: stretch;
             margin-bottom: 14px;
         }
 
         .galaxy-rgb-search {
-               outline: none !important;
-    border: 0px !important;
-    flex: 1 1 220px;
-    min-width: 180px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.28);
-    background: rgb(17 17 17);
-    color: #f8fafc;
-    font-size: 14px;
-    outline: none;
+            outline: none !important;
+            border: 0px !important;
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            background: rgb(17 17 17);
+            color: #f8fafc;
+            font-size: 14px;
+            outline: none;
         }
 
         .galaxy-rgb-search:focus {
@@ -11153,6 +11152,7 @@ function createWelcomeScreen() {
 
         .galaxy-rgb-tabs {
             display: inline-flex;
+            align-self: center;
             gap: 6px;
             padding: 4px;
             border-radius: 12px;
