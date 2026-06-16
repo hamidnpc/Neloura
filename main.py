@@ -1479,7 +1479,7 @@ def _open_rgb_iter_fits_files():
         scan_dir = stack.pop()
         try:
             stat = scan_dir.stat()
-            dir_key = (getattr(stat, "st_dev", None), getattr(stat, "st_ino", None), str(scan_dir))
+            dir_key = (getattr(stat, "st_dev", None), getattr(stat, "st_ino", None))
             if dir_key in seen_dirs:
                 continue
             seen_dirs.add(dir_key)
