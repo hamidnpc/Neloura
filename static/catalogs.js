@@ -2401,7 +2401,9 @@ function refreshCatalogOverlayColorCoding() {
             const valueForColor = coerceScalarValue(getRecordValue(obj, col));
             const colorHex = coder(valueForColor);
             if (colorHex) {
-                const opacityVal = styles.opacity || obj.opacity || 0.8;
+                const opacityVal = Number.isFinite(Number(styles.opacity))
+                    ? Number(styles.opacity)
+                    : (Number.isFinite(Number(obj.opacity)) ? Number(obj.opacity) : 0.8);
                 obj.color = colorHex;
                 obj.fillColor = hexToRgba(colorHex, 0.3);
                 obj.opacity = opacityVal;
@@ -2687,8 +2689,12 @@ function applyStylesToRegions(catalogName, styles) {
     window.regionStyles = {
         borderColor: styles.borderColor || window.regionStyles?.borderColor || '#FF0000',
         backgroundColor: styles.backgroundColor || window.regionStyles?.backgroundColor || 'transparent',
-        borderWidth: styles.borderWidth || window.regionStyles?.borderWidth || 2,
-        opacity: styles.opacity || window.regionStyles?.opacity || 0.8,
+        borderWidth: Number.isFinite(Number(styles.borderWidth))
+            ? Number(styles.borderWidth)
+            : (Number.isFinite(Number(window.regionStyles?.borderWidth)) ? Number(window.regionStyles.borderWidth) : 2),
+        opacity: Number.isFinite(Number(styles.opacity))
+            ? Number(styles.opacity)
+            : (Number.isFinite(Number(window.regionStyles?.opacity)) ? Number(window.regionStyles.opacity) : 0.8),
         shape: resolvedShape,
         // Preserve color-coding config unless explicitly changed.
         colorCodeColumn: (Object.prototype.hasOwnProperty.call(styles || {}, 'colorCodeColumn'))
@@ -2804,7 +2810,9 @@ function applyStylesToRegions(catalogName, styles) {
             if (overlayColorCoder) {
                 const colorHex = overlayColorCoder(coerceScalarValue(getRecordValue(obj, nextStyle.colorCodeColumn)));
                 if (colorHex) {
-                    const opacityVal = styles.opacity || obj.opacity || 0.8;
+                    const opacityVal = Number.isFinite(Number(styles.opacity))
+                        ? Number(styles.opacity)
+                        : (Number.isFinite(Number(obj.opacity)) ? Number(obj.opacity) : 0.8);
                     obj.color = colorHex;
                     // Keep fill alpha independent of opacity so the opacity slider behaves linearly.
                     // Renderer will apply `obj.opacity` as the overall alpha multiplier.
@@ -2817,10 +2825,10 @@ function applyStylesToRegions(catalogName, styles) {
             if (!colorApplied) {
                 obj.color = styles.borderColor || '#FF0000';
                 obj.fillColor = styles.backgroundColor === 'transparent' ? 'rgba(255, 0, 0, 0.3)' : styles.backgroundColor;
-                obj.opacity = styles.opacity || 0.8;
+                obj.opacity = Number.isFinite(Number(styles.opacity)) ? Number(styles.opacity) : 0.8;
                 obj.useTransparentFill = styles.backgroundColor === 'transparent';
             }
-            obj.border_width = styles.borderWidth || 2;
+            obj.border_width = Number.isFinite(Number(styles.borderWidth)) ? Number(styles.borderWidth) : 2;
             // Persist shape per-source so canvas overlay can render hexagon/circle.
             // If caller didn't send a shape, keep existing per-object shape; otherwise apply resolved.
             obj.shape = (styles && styles.shape) ? resolvedShape : (obj.shape || resolvedShape);
@@ -3668,6 +3676,13 @@ async function loadCatalogBinaryAsync(catalogName, styles = null, options = null
     if (sizeColBin) urlParams.set('size_col', sizeColBin);
     if (sizeUnitBin) urlParams.set('size_unit', sizeUnitBin);
     if (colorColBin) urlParams.set('color_col', colorColBin);
+    try {
+        const sid = window.__forcedSid || window.__nelouraSid || window.__sid ||
+            new URLSearchParams(window.location.search || '').get('sid') ||
+            new URLSearchParams(window.location.search || '').get('pane_sid') ||
+            (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('sid') : null);
+        if (sid && !urlParams.has('sid')) urlParams.set('sid', sid);
+    } catch (_) {}
 
     const finalQuery = urlParams.toString();
     const finalUrl = `/catalog-binary/${encodeURIComponent(catalogNameForApi)}${finalQuery ? `?${finalQuery}` : ''}`;
@@ -3683,10 +3698,12 @@ async function loadCatalogBinaryAsync(catalogName, styles = null, options = null
     if (colorColBin) extraHeadersBin['X-Color-Col'] = colorColBin;
     console.log('[loadCatalogBinary] Headers to send:', extraHeadersBin);
 
+    const requestStartedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     let response = await apiFetch(finalUrl, {
         method: 'GET',
         headers: { ...extraHeadersBin }
     });
+    const catalogPathHeader = response.headers ? response.headers.get('X-Catalog-Path') : null;
     let arrayBuffer;
     if (!response.ok) {
         if (response.status === 500) {
@@ -3706,7 +3723,8 @@ async function loadCatalogBinaryAsync(catalogName, styles = null, options = null
         arrayBuffer = await response.arrayBuffer();
     }
 
-    console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength);
+    const requestElapsedMs = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - requestStartedAt;
+    console.log('[loadCatalogBinary] Received binary response, size:', arrayBuffer.byteLength, 'path:', catalogPathHeader || 'unknown', 'elapsedMs:', Math.round(requestElapsedMs));
 
     let catalogData = parseBinaryCatalog(arrayBuffer);
     console.log('[loadCatalogBinary] Header from primary endpoint:', catalogData && catalogData.header);
@@ -4050,7 +4068,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
         const fill = (styles && styles.backgroundColor && styles.backgroundColor !== 'transparent')
             ? styles.backgroundColor
             : 'rgba(255, 0, 0, 0.3)';
-        const borderW = (styles && styles.borderWidth) ? styles.borderWidth : 2;
+        const borderW = (styles && Number.isFinite(Number(styles.borderWidth))) ? Number(styles.borderWidth) : 2;
         const radiusPx = (styles && typeof styles.radius === 'number' && isFinite(styles.radius) && styles.radius > 0)
             ? styles.radius
             : 5;
@@ -4161,7 +4179,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                     // Keep fill alpha independent of opacity so the opacity slider behaves linearly.
                     // Renderer will apply `styledObj.opacity` as the overall alpha multiplier.
                     styledObj.fillColor = hexToRgba(colorHex, 0.3);
-                    styledObj.border_width = styles.borderWidth || 2;
+                    styledObj.border_width = Number.isFinite(Number(styles.borderWidth)) ? Number(styles.borderWidth) : 2;
                     styledObj.opacity = styleOpacity;
                     styledObj.useTransparentFill = false;
                     styledObj.colorCodeColumn = styles.colorCodeColumn;
@@ -4184,7 +4202,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                 styledObj.color = styles.borderColor || '#FF0000';
                 styledObj.fillColor = (styles.backgroundColor !== 'transparent') ? 
                     styles.backgroundColor : 'rgba(255, 0, 0, 0.3)';
-                styledObj.border_width = styles.borderWidth || 2;
+                styledObj.border_width = Number.isFinite(Number(styles.borderWidth)) ? Number(styles.borderWidth) : 2;
                 styledObj.opacity = styleOpacity;
                 styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
             }

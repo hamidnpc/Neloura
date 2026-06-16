@@ -11006,6 +11006,7 @@ function createWelcomeScreen() {
     } catch(_) {
         inPane = true;
     }
+    const showGalaxyRgbButton = window.location.hostname === 'neloura.com';
     
     // Add styles for the animation
     const style = document.createElement('style');
@@ -11073,6 +11074,260 @@ function createWelcomeScreen() {
             padding: 0;
             border: none;
         }
+
+        .welcome-rgb-row {
+            display: flex;
+            justify-content: center;
+            margin-top: 18px;
+        }
+
+        .welcome-btn--galaxy-rgb {
+            border: 1px solid rgba(255,255,255,0.12);
+            background: linear-gradient(135deg, #4b5563 0%, #374151 55%, #1f2937 100%);
+            padding: 13px 22px;
+            min-width: 260px;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .welcome-btn--galaxy-rgb .galaxy-btn-icon {
+            width: 24px;
+            height: 24px;
+            flex: 0 0 auto;
+        }
+
+        #galaxy-rgb-modal.modal {
+            z-index: 65120 !important;
+        }
+
+        .galaxy-rgb-modal-content {
+            font-family: 'Raleway', Arial, sans-serif;
+            width: min(860px, 86vw);
+        }
+
+        .galaxy-rgb-title {
+            margin: 0 0 10px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #444;
+            font-family: 'Raleway', sans-serif;
+            font-size: 1.45em;
+            font-weight: 700;
+            line-height: 1.25;
+            letter-spacing: 0.01em;
+            color: #ffffff;
+        }
+
+        .galaxy-rgb-subtitle {
+            color: #cbd5e1;
+            font-size: 14px;
+            line-height: 1.5;
+            margin: 0 0 16px;
+        }
+
+        .galaxy-rgb-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+
+        .galaxy-rgb-search {
+               outline: none !important;
+    border: 0px !important;
+    flex: 1 1 220px;
+    min-width: 180px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgb(17 17 17);
+    color: #f8fafc;
+    font-size: 14px;
+    outline: none;
+        }
+
+        .galaxy-rgb-search:focus {
+            border-color: rgba(168,117,184,0.78);
+            box-shadow: 0 0 0 3px rgba(139,92,155,0.18);
+        }
+
+        .galaxy-rgb-tabs {
+            display: inline-flex;
+            gap: 6px;
+            padding: 4px;
+            border-radius: 12px;
+            background: rgba(30,24,38,0.88);
+            border: 1px solid rgba(139,92,155,0.28);
+        }
+
+        .galaxy-rgb-tab {
+            padding: 8px 11px;
+            border-radius: 9px;
+            border: none;
+            background: transparent;
+            color: #cbd5e1;
+            font-weight: 700;
+            cursor: pointer;
+            transition: color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+        }
+
+        .galaxy-rgb-tab.active {
+            color: #fff;
+            background: #8B5C9B;
+            box-shadow: 0 6px 16px rgba(74,59,92,0.45);
+            transform: translateY(-1px);
+        }
+
+        .galaxy-rgb-filter-set {
+            margin: -5px 0 12px;
+            color: #9ca3af;
+            font-size: 12px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        .galaxy-rgb-filter-set strong {
+            color: #e5e7eb;
+            font-family: 'Raleway', Arial, sans-serif;
+            font-weight: 700;
+        }
+
+        @keyframes galaxyRgbListIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .galaxy-rgb-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            overflow-y: auto;
+            max-height: 48vh;
+            padding: 4px 2px 2px;
+        }
+
+        .galaxy-rgb-list.is-switching {
+            animation: galaxyRgbListIn 260ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .galaxy-rgb-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 0px solid rgba(148,163,184,0.22);
+            background: #111111;
+            color: #f3f4f6;
+            text-decoration: none;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+            transition: transform 130ms ease, border-color 130ms ease, background 130ms ease, box-shadow 130ms ease, color 130ms ease;
+        }
+
+        .galaxy-rgb-row:hover {
+            transform: translateY(-1px);
+            border-color: rgba(168,117,184,0.72);
+            background: rgba(74,59,92,0.92);
+            box-shadow: 0 8px 20px rgba(74,59,92,0.35);
+            color: #ffffff;
+        }
+
+        .galaxy-rgb-meta {
+            min-width: 160px;
+            flex: 1 1 auto;
+        }
+
+        .galaxy-rgb-action-panel {
+            display: flex;
+            gap: 12px;
+            align-items: stretch;
+            justify-content: flex-end;
+            flex: 0 0 auto;
+            flex-wrap: wrap;
+            padding: 6px;
+            border: 1px solid rgba(85,85,85,0.72);
+            border-radius: 9px;
+            background: rgba(40,40,40,0.82);
+        }
+
+        .galaxy-rgb-action-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            align-items: flex-start;
+        }
+
+        .galaxy-rgb-action-buttons {
+            display: flex;
+            gap: 7px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .galaxy-rgb-action-label {
+            display: inline-flex;
+            align-items: center;
+            min-height: auto;
+            padding: 0;
+            color: #9ca3af;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .galaxy-rgb-action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 26px;
+            padding: 5px 8px;
+            border-radius: 6px;
+            border: 1px solid #555;
+            background: #333;
+            color: #f1f1f1;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1;
+            text-decoration: none;
+            white-space: nowrap;
+            transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+        }
+
+        .galaxy-rgb-action-btn:hover {
+            border-color: rgba(168,117,184,0.72);
+            background: #4A3B5C;
+            color: #fff;
+        }
+
+        .galaxy-rgb-name {
+            display: block;
+            font-weight: 700;
+            font-size: 14px;
+            letter-spacing: 0.02em;
+        }
+
+        .galaxy-rgb-filters {
+            display: block;
+            color: #9ca3af;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            white-space: nowrap;
+            transition: color 130ms ease;
+        }
+
+        .galaxy-rgb-row:hover .galaxy-rgb-filters {
+            color: #C4A8D4;
+        }
+
+        .galaxy-rgb-empty {
+            padding: 18px;
+            text-align: center;
+            color: #94a3b8;
+            border: 1px dashed rgba(148,163,184,0.26);
+            border-radius: 12px;
+            background: rgba(15,23,42,0.42);
+        }
     `;
     document.head.appendChild(style);
 
@@ -11130,6 +11385,32 @@ function createWelcomeScreen() {
             </svg>
           </a>
         </div>
+        <div class="welcome-rgb-row" style='display:none;' >
+          <button type="button"
+                  id="welcome-galaxy-rgb-button"
+                  class="welcome-btn welcome-btn--galaxy-rgb"
+                  aria-label="Open Galaxy RGB examples">
+            <svg class="welcome-btn__icon galaxy-btn-icon" viewBox="0 0 32 32" aria-hidden="true">
+              <defs>
+                <radialGradient id="galaxyButtonCore" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#ffffff"/>
+                  <stop offset="58%" stop-color="#f8fafc"/>
+                  <stop offset="100%" stop-color="#cbd5e1"/>
+                </radialGradient>
+              </defs>
+              <g transform="rotate(-18 16 16)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 16 C18.7 11.7 24.4 8.8 28.1 10.8 C31.1 12.5 30 17.1 25.5 19.4" stroke="#ffffff" stroke-width="2.1"/>
+                <path d="M16 16 C13.3 20.3 7.6 23.2 3.9 21.2 C0.9 19.5 2 14.9 6.5 12.6" stroke="#ffffff" stroke-width="2.1"/>
+                <path d="M16 16 C20.8 17.6 24.5 22.2 23.3 26.2 C22.3 29.3 17.6 29.4 14.4 25.7" stroke="rgba(255,255,255,0.88)" stroke-width="1.85"/>
+                <path d="M16 16 C11.2 14.4 7.5 9.8 8.7 5.8 C9.7 2.7 14.4 2.6 17.6 6.3" stroke="rgba(255,255,255,0.88)" stroke-width="1.85"/>
+                <path d="M16 16 C18.1 18.2 18.6 21.4 16.8 23.3" stroke="rgba(255,255,255,0.7)" stroke-width="1.35"/>
+                <path d="M16 16 C13.9 13.8 13.4 10.6 15.2 8.7" stroke="rgba(255,255,255,0.7)" stroke-width="1.35"/>
+              </g>
+              <circle cx="16" cy="16" r="4.3" fill="url(#galaxyButtonCore)"/>
+            </svg>
+            <span>Galaxy RGB</span>
+          </button>
+        </div>
         `;
     }
     
@@ -11143,6 +11424,234 @@ function createWelcomeScreen() {
     
     container.appendChild(welcomeDiv);
     if (pointerDiv) container.appendChild(pointerDiv);
+    if (!inPane) setupWelcomeGalaxyRgbModal();
+}
+
+function setupWelcomeGalaxyRgbModal() {
+    const button = document.getElementById('welcome-galaxy-rgb-button');
+    if (!button || button.__nelouraGalaxyRgbBound) return;
+    button.__nelouraGalaxyRgbBound = true;
+
+    let rgbSets = {
+        hst: {
+            label: 'HST',
+            filters: 'f336w-f555w-f814w',
+            description: 'PHANGS-HST optical RGB',
+            galaxies: [
+                'ic1954', 'ic5332', 'ngc0628', 'ngc1087', 'ngc1097', 'ngc1300',
+                'ngc1317', 'ngc1365', 'ngc1385', 'ngc1433', 'ngc1512', 'ngc1559',
+                'ngc1566', 'ngc1672', 'ngc1792', 'ngc2775', 'ngc2835', 'ngc2903',
+                'ngc3351', 'ngc3627', 'ngc4254', 'ngc4298', 'ngc4303', 'ngc4321',
+                'ngc4535', 'ngc4536', 'ngc4548', 'ngc4569', 'ngc4571', 'ngc4654',
+                'ngc4689', 'ngc4826', 'ngc5068', 'ngc5248', 'ngc6744', 'ngc0685',
+                'ngc7496'
+            ]
+        },
+        nircam: {
+            label: 'NIRCam',
+            filters: 'f360m-f335m-f300m',
+            description: 'PHANGS-JWST NIRCam RGB',
+            galaxies: [
+                'ic5332', 'ngc0628', 'ngc1087', 'ngc1300', 'ngc1365', 'ngc1385',
+                'ngc1433', 'ngc1512', 'ngc1566', 'ngc1672', 'ngc2835', 'ngc3351',
+                'ngc3627', 'ngc4254', 'ngc4303', 'ngc4321', 'ngc4535', 'ngc5068',
+                'ngc7496'
+            ]
+        },
+        miri: {
+            label: 'MIRI',
+            filters: 'f2100w-f1000w-f770w',
+            description: 'PHANGS-JWST MIRI RGB',
+            galaxies: [
+                'ic5332', 'ngc0628', 'ngc1087', 'ngc1300', 'ngc1365', 'ngc1385',
+                'ngc1433', 'ngc1512', 'ngc1566', 'ngc1672', 'ngc2835', 'ngc3351',
+                'ngc3627', 'ngc4254', 'ngc4303', 'ngc4321', 'ngc4535', 'ngc5068',
+                'ngc7496'
+            ]
+        },
+        hstJwst: {
+            label: 'HST/JWST',
+            filters: 'f336w-f555w-f814w-f770w',
+            description: 'PHANGS-HST optical plus JWST F770W composite',
+            galaxies: [
+                'ic5332', 'ngc0628', 'ngc1087', 'ngc1300', 'ngc1365', 'ngc1385',
+                'ngc1433', 'ngc1512', 'ngc1566', 'ngc1672', 'ngc2835', 'ngc3351',
+                'ngc3627', 'ngc4254', 'ngc4303', 'ngc4321', 'ngc4535', 'ngc5068',
+                'ngc7496'
+            ]
+        },
+        hstAlma: {
+            label: 'HST/ALMA',
+            filters: 'f336w-f555w-f814w-co21',
+            description: 'PHANGS-HST optical plus ALMA CO(2-1) composite',
+            galaxies: [
+                'ic1954', 'ic5332', 'ngc0628', 'ngc1087', 'ngc1097', 'ngc1300',
+                'ngc1317', 'ngc1365', 'ngc1385', 'ngc1433', 'ngc1512', 'ngc1559',
+                'ngc1566', 'ngc1672', 'ngc1792', 'ngc2775', 'ngc2835', 'ngc2903',
+                'ngc3351', 'ngc3627', 'ngc4254', 'ngc4298', 'ngc4303', 'ngc4321',
+                'ngc4535', 'ngc4536', 'ngc4548', 'ngc4569', 'ngc4571', 'ngc4654',
+                'ngc4689', 'ngc4826', 'ngc5068', 'ngc5248', 'ngc6744', 'ngc0685',
+                'ngc7496'
+            ]
+        }
+    };
+    let activeTab = 'hst';
+    const phangsFirst19Galaxies = new Set(rgbSets.nircam.galaxies);
+
+    const labelForGalaxy = (name) => {
+        const m = String(name || '').match(/^([a-z]+)0*(\d+)$/i);
+        if (m) return `${m[1].toUpperCase()} ${m[2]}`;
+        return String(name || '').toUpperCase();
+    };
+
+    const rgbCatalogPresets = {
+        imageOnly: {},
+        miri21um: {
+            catalog: '21um_catalog_hassani_et_al_jan_2026.fits',
+            ra_col: 'ra',
+            dec_col: 'dec',
+            size_col: 'bmaj',
+            size_unit: 'arcsec'
+        },
+        hstClusters: {
+            hdu: '0',
+            catalog: 'hlsp_phangs-cat_hst_multi_dr5-supplemental.fits',
+            ra_col: 'PHANGS_RA',
+            dec_col: 'PHANGS_DEC',
+            size_col: '0.06',
+            size_unit: 'arcsec'
+        }
+    };
+
+    const buildRgbHref = (galaxy, filters, params = {}) => {
+        const path = `${galaxy}-${filters}`;
+        const url = new URL(`https://neloura.com/open-rgb/${encodeURIComponent(path)}`);
+        Object.entries(params).forEach(([key, value]) => {
+            url.searchParams.set(key, value);
+        });
+        return url.toString();
+    };
+
+    const ensureModal = () => {
+        let modal = document.getElementById('galaxy-rgb-modal');
+        if (modal) return modal;
+        modal = document.createElement('div');
+        modal.id = 'galaxy-rgb-modal';
+        modal.className = 'modal';
+        modal.style.display = 'none';
+        modal.innerHTML = `
+            <div class="modal-content galaxy-rgb-modal-content">
+                <span class="close-button" id="galaxy-rgb-modal-close" aria-label="Close">&times;</span>
+                <h2 class="galaxy-rgb-title">Multi-Color Galaxy Images</h2>
+                <p class="galaxy-rgb-subtitle">
+                    Open RGB galaxy images from neloura.com.
+                </p>
+                <div class="galaxy-rgb-controls">
+                    <input id="galaxy-rgb-search" class="galaxy-rgb-search" type="search" placeholder="Search galaxies..." autocomplete="off">
+                    <div class="galaxy-rgb-tabs" role="tablist" aria-label="RGB source">
+                        ${Object.keys(rgbSets).map((key) => `
+                            <button type="button" class="galaxy-rgb-tab${key === activeTab ? ' active' : ''}" data-rgb-tab="${key}" role="tab">
+                                ${rgbSets[key].label}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+                <div id="galaxy-rgb-filter-set" class="galaxy-rgb-filter-set"></div>
+                <div id="galaxy-rgb-list" class="galaxy-rgb-list"></div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        const close = modal.querySelector('#galaxy-rgb-modal-close');
+        if (close) close.addEventListener('click', () => { modal.style.display = 'none'; });
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) modal.style.display = 'none';
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && modal.style.display !== 'none') {
+                modal.style.display = 'none';
+            }
+        });
+        const search = modal.querySelector('#galaxy-rgb-search');
+        const renderList = () => {
+            const list = modal.querySelector('#galaxy-rgb-list');
+            const filterSet = modal.querySelector('#galaxy-rgb-filter-set');
+            const query = String(search && search.value || '').trim().toLowerCase();
+            const active = rgbSets[activeTab] || rgbSets.hst;
+            if (filterSet) {
+                filterSet.innerHTML = `<strong>${active.label} filter set:</strong> ${active.filters.toUpperCase()}`;
+            }
+            const matches = active.galaxies.filter((galaxy) => {
+                const label = labelForGalaxy(galaxy).toLowerCase();
+                return !query || galaxy.toLowerCase().includes(query) || label.includes(query);
+            });
+            if (!list) return;
+            if (!matches.length) {
+                list.innerHTML = `<div class="galaxy-rgb-empty">No ${active.label} galaxies match your search.</div>`;
+                return;
+            }
+            list.innerHTML = matches.map((galaxy) => {
+                const imageOnlyHref = buildRgbHref(galaxy, active.filters, rgbCatalogPresets.imageOnly);
+                const hstHref = buildRgbHref(galaxy, active.filters, rgbCatalogPresets.hstClusters);
+                const miriButton = phangsFirst19Galaxies.has(galaxy)
+                    ? `<a class="galaxy-rgb-action-btn" href="${buildRgbHref(galaxy, active.filters, rgbCatalogPresets.miri21um)}" target="_blank" rel="noopener noreferrer">21um sources</a>`
+                    : '';
+                const catalogButtons = `${miriButton}<a class="galaxy-rgb-action-btn" href="${hstHref}" target="_blank" rel="noopener noreferrer">HST IR5 clusters</a>`;
+                return `
+                    <div class="galaxy-rgb-row" title="${active.description}: ${labelForGalaxy(galaxy)}">
+                        <span class="galaxy-rgb-meta">
+                            <span class="galaxy-rgb-name">${labelForGalaxy(galaxy)}</span>
+                            <span style="display:block;color:#94a3b8;font-size:11px;margin-top:3px;">${active.description}</span>
+                        </span>
+                        <span class="galaxy-rgb-action-panel" aria-label="Open ${labelForGalaxy(galaxy)} RGB options">
+                            <span class="galaxy-rgb-action-group">
+                                <span class="galaxy-rgb-action-label">Images</span>
+                                <span class="galaxy-rgb-action-buttons">
+                                    <a class="galaxy-rgb-action-btn" href="${imageOnlyHref}" target="_blank" rel="noopener noreferrer">Open image</a>
+                                </span>
+                            </span>
+                            <span class="galaxy-rgb-action-group">
+                                <span class="galaxy-rgb-action-label">Catalogs</span>
+                                <span class="galaxy-rgb-action-buttons">
+                                    ${catalogButtons}
+                                </span>
+                            </span>
+                        </span>
+                    </div>
+                `;
+            }).join('');
+        };
+        modal.querySelectorAll('.galaxy-rgb-tab').forEach((tab) => {
+            tab.addEventListener('click', () => {
+                const nextTab = tab.getAttribute('data-rgb-tab') || 'hst';
+                if (nextTab === activeTab) return;
+                activeTab = nextTab;
+                modal.querySelectorAll('.galaxy-rgb-tab').forEach((t) => {
+                    t.classList.toggle('active', t === tab);
+                });
+                const list = modal.querySelector('#galaxy-rgb-list');
+                if (list) {
+                    list.classList.remove('is-switching');
+                    void list.offsetWidth;
+                    renderList();
+                    list.classList.add('is-switching');
+                } else {
+                    renderList();
+                }
+            });
+        });
+        if (search) search.addEventListener('input', renderList);
+        modal.__renderGalaxyRgbList = renderList;
+        renderList();
+        return modal;
+    };
+
+    button.addEventListener('click', () => {
+        const modal = ensureModal();
+        if (typeof modal.__renderGalaxyRgbList === 'function') modal.__renderGalaxyRgbList();
+        modal.style.display = 'block';
+        const search = modal.querySelector('#galaxy-rgb-search');
+        if (search) setTimeout(() => search.focus(), 0);
+    });
 }
 
 function loadFitsFromUrl() {

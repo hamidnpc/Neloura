@@ -4177,8 +4177,8 @@
             );
             // Right pane is a fresh session
             const rightHolder = addPaneWithSid(null);
-            // Keep the current view active (left), so "Add panel" doesn't feel like a reset
-            try { setActivePanel(leftHolder || rightHolder); } catch (_) { }
+            // Make the new empty pane active so the next file open targets it, not the mirrored/RGB pane.
+            try { setActivePanel(rightHolder || leftHolder); } catch (_) { }
             updateWcsLockVisibility();
             nelouraRefreshHostScreenColorBarForMultiPanel();
             return;
@@ -4513,6 +4513,8 @@
             } catch (_) { }
         } catch (_) { }
         updateWcsLockVisibility();
+        // Newly added panes should receive subsequent top-toolbar actions such as Files/Histogram.
+        try { setActivePanel(holder); } catch (_) { }
         nelouraRefreshHostScreenColorBarForMultiPanel();
     }
 
@@ -4948,6 +4950,18 @@
                             }
                             if (tries > 60) { clearInterval(window.__forwarderIv); window.__forwarderIv = null; }
                         }, 250);
+                    }
+                }
+                if (typeof window.loadFitsFileWithHduSelection === 'function') {
+                    if (!window.__origLoadFitsFileWithHduSelection) {
+                        window.__origLoadFitsFileWithHduSelection = window.loadFitsFileWithHduSelection;
+                        window.loadFitsFileWithHduSelection = function (filepath) {
+                            const w = window.getActivePaneWindow && window.getActivePaneWindow();
+                            if (w && w !== window && typeof w.loadFitsFileWithHduSelection === 'function') {
+                                return w.loadFitsFileWithHduSelection(filepath);
+                            }
+                            return window.__origLoadFitsFileWithHduSelection(filepath);
+                        };
                     }
                 }
                 // Also forward URL-based loader

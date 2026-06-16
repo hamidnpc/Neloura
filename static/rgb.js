@@ -5,7 +5,7 @@
         { id: 'r', label: 'Channel 1', defaultMap: 'red' },
         { id: 'g', label: 'Channel 2', defaultMap: 'green' },
         { id: 'b', label: 'Channel 3', defaultMap: 'blue' },
-        { id: 'c4', label: 'Channel 4', defaultMap: 'yellow' },
+        { id: 'c4', label: 'Channel 4', defaultMap: 'hot' },
         { id: 'c5', label: 'Channel 5', defaultMap: 'magenta' }
     ];
     const SCALING_OPTIONS = [
@@ -26,7 +26,7 @@
             r: { color_map: 'red', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
             g: { color_map: 'green', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
             b: { color_map: 'blue', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
-            c4: { color_map: 'yellow', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
+            c4: { color_map: 'hot', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false },
             c5: { color_map: 'magenta', scaling_function: 'linear', invert_colormap: false, visible: true, hdu: null, hdu_name: null, show_hdu_controls: false, hdu_user_set: false }
         }
     };
@@ -44,9 +44,121 @@
         }
     }
 
+    function isPaneIframe() {
+        try { return new URLSearchParams(window.location.search).get('mp') === '1'; } catch (_) { return false; }
+    }
+
+    /** Route RGB API calls through the pane that owns the compositor (not top / wrong pane). */
+    function getRgbApiWindow() {
+        try {
+            const owner = getRgbPopupOwnerWindow();
+            if (owner && typeof owner.apiFetch === 'function') return owner;
+
+            const target = findRgbComposerTargetWindow();
+            if (target && typeof target.apiFetch === 'function') return target;
+
+            if (typeof window.apiFetch === 'function') return window;
+        } catch (_) { /* noop */ }
+        return window;
+    }
+
     function request(url, options) {
-        if (typeof window.apiFetch === 'function') return window.apiFetch(url, options || {});
+        const w = getRgbApiWindow();
+        if (typeof w.apiFetch === 'function') return w.apiFetch(url, options || {});
         return fetch(url, options || {});
+    }
+
+    function rememberRgbSessionId(sessionId) {
+        if (!sessionId) return;
+        try { window.__nelouraSid = sessionId; } catch (_) { /* noop */ }
+        // sessionStorage is shared across pane iframes; never write from pane contexts.
+        if (isPaneIframe()) return;
+        try { window.__forcedSid = sessionId; } catch (_) { /* noop */ }
+        try { sessionStorage.setItem('sid', sessionId); } catch (_) { /* noop */ }
+    }
+
+    function isTopMultiPanelActive() {
+        try {
+            const root = rootWindow();
+            if (root !== window || !root.document) return false;
+            const wrap = root.document.getElementById('multi-panel-container');
+            const grid = root.document.getElementById('multi-panel-grid');
+            return !!(wrap && wrap.style.display !== 'none' && grid && grid.querySelector('iframe'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function activePaneIsRgbMode() {
+        try {
+            const root = rootWindow();
+            const paneWin = (root && typeof root.getActivePaneWindow === 'function') ? root.getActivePaneWindow() : null;
+            if (!paneWin) return false;
+            return windowHasRgbMode(paneWin);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function windowHasRgbMode(win) {
+        try {
+            const w = win || window;
+            return !!(
+                w.__rgbModeActive ||
+                (w.fitsData && w.fitsData.rgb_mode) ||
+                (w.currentTileInfo && w.currentTileInfo.rgb_mode) ||
+                (typeof w.getRgbTileInfo === 'function' && w.getRgbTileInfo())
+            );
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getRgbPopupOwnerWindow() {
+        try {
+            const doc = hostDocument();
+            const popup = doc.getElementById('rgb-composer-popup');
+            const owner = popup && popup.__nelouraRgbOwnerWin;
+            return owner || null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function findRgbComposerTargetWindow() {
+        try {
+            const root = rootWindow();
+            const activePane = (root && typeof root.getActivePaneWindow === 'function') ? root.getActivePaneWindow() : null;
+            if (windowHasRgbMode(activePane)) return activePane;
+
+            const popupOwner = getRgbPopupOwnerWindow();
+            if (windowHasRgbMode(popupOwner)) return popupOwner;
+
+            if (windowHasRgbMode(window)) return window;
+
+            const doc = root && root.document;
+            const grid = doc && doc.getElementById('multi-panel-grid');
+            if (grid) {
+                const frames = Array.from(grid.querySelectorAll('iframe'));
+                for (const frame of frames) {
+                    const paneWin = frame && frame.contentWindow;
+                    if (windowHasRgbMode(paneWin)) return paneWin;
+                }
+                // Popup owner may still be the RGB pane even if mode flags are briefly stale.
+                if (popupOwner && popupOwner !== root) return popupOwner;
+            }
+
+            return activePane || window;
+        } catch (_) {
+            return window;
+        }
+    }
+
+    function shouldBlockImageHistogram(active) {
+        if (isTopMultiPanelActive()) {
+            return activePaneIsRgbMode();
+        }
+        return !!(active || (window.fitsData && window.fitsData.rgb_mode));
     }
 
     function notify(message, ms, type) {
@@ -144,8 +256,7 @@
     }
 
     function setRgbModeActive(active) {
-        const stillRgb = !!(window.fitsData && window.fitsData.rgb_mode);
-        const effectiveActive = !!active || stillRgb;
+        const effectiveActive = shouldBlockImageHistogram(active);
         window.__rgbModeActive = effectiveActive;
         const doc = document;
         const histogramButton = doc.getElementById('histogram-button');
@@ -163,16 +274,17 @@
         if (effectiveActive) {
             if (!window.__rgbUiEnforcer) {
                 window.__rgbUiEnforcer = setInterval(() => {
-                    if (!window.__rgbModeActive && !(window.fitsData && window.fitsData.rgb_mode)) return;
+                    const shouldBlock = shouldBlockImageHistogram(window.__rgbModeActive);
+                    window.__rgbModeActive = shouldBlock;
                     const d = document;
                     const btn = d.getElementById('histogram-button');
                     if (btn) {
-                        btn.disabled = true;
-                        btn.title = 'Use RGB controls while RGB mode is active';
-                        btn.style.opacity = '0.45';
-                        btn.style.cursor = 'not-allowed';
+                        btn.disabled = shouldBlock;
+                        btn.title = shouldBlock ? 'Use RGB controls while RGB mode is active' : 'Histogram';
+                        btn.style.opacity = shouldBlock ? '0.45' : '';
+                        btn.style.cursor = shouldBlock ? 'not-allowed' : '';
                     }
-                    renderRgbVisibilityControl(true);
+                    renderRgbVisibilityControl(shouldBlock);
                 }, 400);
             }
         } else if (window.__rgbUiEnforcer) {
@@ -212,6 +324,11 @@
             // Keep RGB UI active whenever current viewer content is RGB.
             setRgbModeActive(!!(window.fitsData && window.fitsData.rgb_mode));
         });
+        try {
+            window.addEventListener('pane:activated', () => {
+                setRgbModeActive(shouldBlockImageHistogram(window.__rgbModeActive));
+            });
+        } catch (_) { /* noop */ }
     }
 
     function getColorOptions() {
@@ -641,10 +758,7 @@
 
     function syncStateFromInfo(info) {
         if (!info || !info.channels) return;
-        if (info.session_id) {
-            try { sessionStorage.setItem('sid', info.session_id); } catch (_) { /* noop */ }
-            try { window.__nelouraSid = info.session_id; } catch (_) { /* noop */ }
-        }
+        rememberRgbSessionId(info.session_id);
         CHANNELS.forEach((ch) => {
             const meta = info.channels[ch.id] || {};
             state.channels[ch.id] = Object.assign({}, state.channels[ch.id], meta);
@@ -1460,10 +1574,7 @@
         }
         window.fitsData.rgb_mode = true;
         window.fitsData.rgb_label = 'RGB composite';
-        if (info.session_id) {
-            try { sessionStorage.setItem('sid', info.session_id); } catch (_) { /* noop */ }
-            try { window.__nelouraSid = info.session_id; } catch (_) { /* noop */ }
-        }
+        rememberRgbSessionId(info.session_id);
 
         const tileSize = Number(info.tileSize) || 256;
         const sourceWidth = Number(info.width);
@@ -1799,19 +1910,48 @@
         return panel;
     }
 
+    async function resyncRgbPopupFromServer() {
+        try {
+            const resp = await request('/rgb/tile-info/');
+            if (!resp.ok) return false;
+            syncStateFromInfo(await resp.json());
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function revealRgbComposerPopup(popup) {
+        popup.style.display = 'flex';
+        await resyncRgbPopupFromServer();
+        CHANNELS.forEach((ch) => refreshPanelValues(ch.id));
+        updateTabVisibility();
+    }
+
     function showRgbComposer() {
+        try {
+            const targetWin = findRgbComposerTargetWindow();
+            if (targetWin && targetWin !== window && typeof targetWin.showRgbComposer === 'function') {
+                return targetWin.showRgbComposer();
+            }
+        } catch (_) { /* noop */ }
+
         const doc = hostDocument();
         const rootWin = rootWindow();
+        if (window === rootWin && isTopMultiPanelActive()) {
+            notify('Activate the RGB panel, then open Multi-Color Image.', 2600, 'info');
+            return;
+        }
+
         let popup = doc.getElementById('rgb-composer-popup');
         // Popup lives on the top document but channel state + fetch live on each pane's window.
-        // Reusing another pane's DOM leaves Load buttons wired to the wrong closures — rebuild.
         if (popup) {
             const owner = popup.__nelouraRgbOwnerWin;
+            if (owner && owner !== window && typeof owner.showRgbComposer === 'function') {
+                return owner.showRgbComposer();
+            }
             const isTopPane = window === rootWin;
-            if (owner && owner !== window) {
-                try { popup.remove(); } catch (_) { /* noop */ }
-                popup = null;
-            } else if (!owner && !isTopPane) {
+            if (!owner && !isTopPane) {
                 try { popup.remove(); } catch (_) { /* noop */ }
                 popup = null;
             }
@@ -1820,9 +1960,7 @@
             try {
                 if (!popup.__nelouraRgbOwnerWin) popup.__nelouraRgbOwnerWin = window;
             } catch (_) { /* noop */ }
-            popup.style.display = 'flex';
-            CHANNELS.forEach((ch) => refreshPanelValues(ch.id));
-            updateTabVisibility();
+            revealRgbComposerPopup(popup).catch(() => {});
             return;
         }
 
@@ -1925,8 +2063,7 @@
         popup.appendChild(scroll);
         doc.body.appendChild(popup);
         try { popup.__nelouraRgbOwnerWin = window; } catch (_) { /* noop */ }
-        CHANNELS.forEach((ch) => refreshPanelValues(ch.id));
-        updateTabVisibility();
+        revealRgbComposerPopup(popup).catch(() => {});
     }
 
     function addToolbarButton() {
@@ -1942,7 +2079,7 @@
         if (anchor && anchor.className) button.className = anchor.className;
         button.addEventListener('click', (e) => {
             e.preventDefault();
-            const w = (window.getActivePaneWindow && window.getActivePaneWindow()) || window;
+            const w = findRgbComposerTargetWindow();
             if (w && w !== window && typeof w.showRgbComposer === 'function') {
                 w.showRgbComposer();
             } else {

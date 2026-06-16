@@ -2029,8 +2029,7 @@ function canvasUpdateOverlay(opts = null) {
     // -------------------------------------------------------------
     try {
         const r = window.__catalogWebgl;
-        const rgbModeActive = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
-        if (r && typeof r.draw === 'function' && !rgbModeActive) {
+        if (r && typeof r.draw === 'function') {
             // Viewer can be replaced (e.g. dynamic range); keep renderer synced.
             try { r.viewer = activeOsViewer; } catch (_) {}
 
@@ -3377,11 +3376,7 @@ function canvasAddCatalogOverlay(catalogData) {
     // Initialize WebGL renderer for ALL catalogs (fallback to 2D if WebGL unavailable).
     try {
         console.log('[WebGL] init attempt. CatalogWebGLRenderer=', typeof window.CatalogWebGLRenderer, 'dataLen=', (window.catalogDataForOverlay ? window.catalogDataForOverlay.length : 0));
-        const rgbModeActive = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
-        if (rgbModeActive) {
-            window.__catalogWebgl = null;
-            console.log('[WebGL] Skipping catalog WebGL renderer in RGB mode; using 2D overlay.');
-        } else if (!window.CatalogWebGLRenderer) {
+        if (!window.CatalogWebGLRenderer) {
             console.warn('[WebGL] catalog_webgl.js not loaded (CatalogWebGLRenderer missing) — using 2D');
         } else {
             const r = new window.CatalogWebGLRenderer(webglCanvas, activeOsViewer);

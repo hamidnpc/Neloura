@@ -637,8 +637,10 @@
         fillArr[id * 4 + 1] = st.fill[1];
         fillArr[id * 4 + 2] = st.fill[2];
         fillArr[id * 4 + 3] = st.fill[3];
-        const bw = clamp(Math.round(Number(st.border || 2) * 4), 0, 255); // borderPx*4 => 0..63.75px in shader
-        const op = clamp(Math.round(clamp(Number(st.opacity || 0.8), 0, 1) * 255), 0, 255);
+        const borderValue = Number.isFinite(Number(st.border)) ? Number(st.border) : 2;
+        const opacityValue = Number.isFinite(Number(st.opacity)) ? Number(st.opacity) : 0.8;
+        const bw = clamp(Math.round(borderValue * 4), 0, 255); // borderPx*4 => 0..63.75px in shader
+        const op = clamp(Math.round(clamp(opacityValue, 0, 1) * 255), 0, 255);
         paramsArr[id * 4] = bw;
         paramsArr[id * 4 + 1] = op;
         paramsArr[id * 4 + 2] = 0;
