@@ -485,7 +485,7 @@ RGB_OPEN_EXAMPLE_SETS = {
         ],
     },
     "hstJwst": {
-        "label": "HST/JWST",
+        "label": "HST + JWST",
         "filters": ["F336W", "F555W", "F814W", "F770W"],
         "description": "PHANGS-HST optical plus JWST F770W composite",
         "candidates": [
@@ -496,9 +496,34 @@ RGB_OPEN_EXAMPLE_SETS = {
         ],
     },
     "hstAlma": {
-        "label": "HST/ALMA",
+        "label": "HST + ALMA",
         "filters": ["F336W", "F555W", "F814W", "CO21"],
         "description": "PHANGS-HST optical plus ALMA CO(2-1) composite",
+        "candidates": [
+            "ic1954", "ic5332", "ngc0628", "ngc1087", "ngc1097", "ngc1300",
+            "ngc1317", "ngc1365", "ngc1385", "ngc1433", "ngc1512", "ngc1559",
+            "ngc1566", "ngc1672", "ngc1792", "ngc2775", "ngc2835", "ngc2903",
+            "ngc3351", "ngc3627", "ngc4254", "ngc4298", "ngc4303", "ngc4321",
+            "ngc4535", "ngc4536", "ngc4548", "ngc4569", "ngc4571", "ngc4654",
+            "ngc4689", "ngc4826", "ngc5068", "ngc5248", "ngc6744", "ngc0685",
+            "ngc7496",
+        ],
+    },
+    "jwstAlma": {
+        "label": "JWST + ALMA",
+        "filters": ["F2100W", "F1000W", "F770W", "CO21"],
+        "description": "PHANGS-JWST MIRI plus ALMA CO(2-1) composite",
+        "candidates": [
+            "ic5332", "ngc0628", "ngc1087", "ngc1300", "ngc1365", "ngc1385",
+            "ngc1433", "ngc1512", "ngc1566", "ngc1672", "ngc2835", "ngc3351",
+            "ngc3627", "ngc4254", "ngc4303", "ngc4321", "ngc4535", "ngc5068",
+            "ngc7496",
+        ],
+    },
+    "hstHa": {
+        "label": "HST + Hα",
+        "filters": ["F336W", "F555W", "F814W", "HA"],
+        "description": "PHANGS-HST optical plus Hα composite",
         "candidates": [
             "ic1954", "ic5332", "ngc0628", "ngc1087", "ngc1097", "ngc1300",
             "ngc1317", "ngc1365", "ngc1385", "ngc1433", "ngc1512", "ngc1559",
@@ -1514,12 +1539,16 @@ def _open_rgb_iter_fits_files():
 
 def _open_rgb_title(galaxy: str, filters: list[str]) -> str:
     groups = {_open_rgb_filter_group(f) for f in filters}
-    if groups == {"HST"}:
+    if "HA" in filters and groups == {"HST"}:
+        prefix = "HST-Halpha-RGB"
+    elif groups == {"HST"}:
         prefix = "HST-RGB"
     elif groups == {"JWST"}:
         prefix = "JWST-RGB"
     elif "HST" in groups and "JWST" in groups:
         prefix = "HST-JWST-RGB"
+    elif "JWST" in groups and "ALMA" in groups:
+        prefix = "JWST-ALMA-RGB"
     elif "HST" in groups and "ALMA" in groups:
         prefix = "HST-ALMA-RGB"
     else:
@@ -1573,6 +1602,8 @@ def _open_rgb_channel_plan(filters: list[str]) -> list[tuple[str, str]]:
         filters,
         key=lambda name: RGB_OPEN_FILTER_WAVELENGTHS.get(name, 999.0)
     )
+    if 'HA' in ordered and len(ordered) >= 4:
+        ordered = [name for name in ordered if name != 'HA'] + ['HA']
     count = len(ordered)
     channels_by_count = {
         1: ['r'],
