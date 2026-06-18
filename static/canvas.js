@@ -4083,6 +4083,103 @@ function _restoreRegionsFromSerialized(shapes) {
     }
 }
 
+function _getRgbZoomInsetChannels() {
+    let info = null;
+    try {
+        if (typeof window.getRgbTileInfo === 'function') info = window.getRgbTileInfo();
+    } catch (_) {}
+    if (!info) {
+        try { info = window.currentTileInfo || null; } catch (_) { info = null; }
+    }
+    const channels = info && info.channels && typeof info.channels === 'object' ? info.channels : null;
+    if (!channels) return [];
+    const labels = {
+        r: 'Channel 1',
+        g: 'Channel 2',
+        b: 'Channel 3',
+        c4: 'Channel 4',
+        c5: 'Channel 5'
+    };
+    return ['r', 'g', 'b', 'c4', 'c5']
+        .map((id) => {
+            const meta = channels[id] || {};
+            const filepath = String(meta.filepath || '').trim();
+            if (!meta.loaded || !filepath) return null;
+            return {
+                id,
+                label: labels[id] || id.toUpperCase(),
+                filepath,
+                hdu: Number.isFinite(Number(meta.hdu)) ? Number(meta.hdu) : null
+            };
+        })
+        .filter(Boolean);
+}
+
+function _syncZoomInsetChannelSelector(z) {
+    if (!z || !z.rgbChannelSelect) return;
+    const src = z.sourceRegionData || {};
+    const options = _getRgbZoomInsetChannels();
+    let selected = src.rgb_channel || null;
+    if (!selected && src.fits_path) {
+        const srcPath = String(src.fits_path);
+        const match = options.find((opt) => String(opt.filepath) === srcPath);
+        if (match) selected = match.id;
+    }
+    if (!selected && options.length) selected = options[0].id;
+    try {
+        if (selected) z.rgbChannelSelect.value = selected;
+    } catch (_) {}
+}
+
+async function _retargetZoomInsetToRgbChannel(z, channelId) {
+    const options = _getRgbZoomInsetChannels();
+    const chosen = options.find((opt) => opt.id === channelId);
+    if (!z || !chosen) return;
+    const src = z.sourceRegionData || {};
+    if (!Number.isFinite(src.ra) || !Number.isFinite(src.dec)) {
+        try { window.showNotification && window.showNotification('Zoom inset has no saved RA/Dec context.', 3500, 'error'); } catch (_) {}
+        return;
+    }
+
+    const regionData = Object.assign({}, src, {
+        fits_path: chosen.filepath,
+        hdu_index: chosen.hdu,
+        rgb_channel: chosen.id
+    });
+
+    try {
+        if (!window.__sid) {
+            try {
+                const sessionRes = await fetch('/session/start');
+                const sessionJson = await sessionRes.json();
+                if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
+            } catch (_) {}
+        }
+        const headers = { 'Content-Type': 'application/json' };
+        if (window.__sid) headers['X-Session-ID'] = window.__sid;
+        try { z.spinner.style.display = 'block'; } catch (_) {}
+        const resp = await fetch('/region-cutout/', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(regionData)
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}: ${resp.statusText}` }));
+            throw new Error(err.detail || 'Failed to create cutout');
+        }
+        const result = await resp.json();
+        z.filepathRel = `uploads/${result.filename}`;
+        z.sourceRegionData = regionData;
+        await z.reload();
+        _syncZoomInsetChannelSelector(z);
+        try { renderRegionOverlay(); } catch (_) {}
+    } catch (err) {
+        try { window.showNotification && window.showNotification(`Zoom inset: ${err.message}`, 4000, 'error'); } catch (_) {}
+    } finally {
+        try { z.spinner.style.display = 'none'; } catch (_) {}
+    }
+}
+
 function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
     const viewerElement = document.getElementById('openseadragon') || document.body;
     const insetId = __regionZoomInsetIdCounter++;
@@ -4389,6 +4486,44 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
         // Used for "open another image" -> re-cutout at same RA/Dec
         sourceRegionData: null
     };
+
+    const rgbInsetChannels = _getRgbZoomInsetChannels();
+    if (rgbInsetChannels.length > 1) {
+        const channelSelect = document.createElement('select');
+        channelSelect.dataset.zoomInsetControl = 'true';
+        channelSelect.dataset.excludeFromExport = 'true';
+        channelSelect.title = 'Zoom inset RGB channel';
+        channelSelect.innerHTML = rgbInsetChannels
+            .map((opt) => `<option value="${opt.id}">${opt.label}</option>`)
+            .join('');
+        Object.assign(channelSelect.style, {
+            position: 'absolute',
+            top: '44px',
+            left: '8px',
+            zIndex: '2',
+            color: '#fff',
+            background: glass.background,
+            backdropFilter: glass.backdropFilter,
+            WebkitBackdropFilter: glass.WebkitBackdropFilter,
+            border: '1px solid rgba(255,255,255,0.2)',
+            borderRadius: '999px',
+            padding: '5px 9px',
+            fontSize: '11px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            outline: 'none',
+            boxShadow: '0 6px 16px rgba(0,0,0,0.25)'
+        });
+        channelSelect.addEventListener('click', (e) => e.stopPropagation());
+        channelSelect.addEventListener('mousedown', (e) => e.stopPropagation());
+        channelSelect.addEventListener('change', async (e) => {
+            e.stopPropagation();
+            await _retargetZoomInsetToRgbChannel(z, channelSelect.value);
+        });
+        body.appendChild(channelSelect);
+        z.rgbChannelSelect = channelSelect;
+        _syncZoomInsetChannelSelector(z);
+    }
 
     // Settings panels (callout + display)
     const makePanel = () => {
@@ -4851,6 +4986,7 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
 async function showRegionZoomInsetFromCutout(filepathRel, label, regionId, sourceRegionData = null) {
     const z = createRegionZoomInsetOverlay({ filepathRel, titleText: label, regionId });
     try { z.sourceRegionData = sourceRegionData ? JSON.parse(JSON.stringify(sourceRegionData)) : null; } catch (_) { try { z.sourceRegionData = sourceRegionData || null; } catch (_) {} }
+    try { _syncZoomInsetChannelSelector(z); } catch (_) {}
     await z.reload();
     try { renderRegionOverlay(); } catch (_) {}
 }
@@ -7070,6 +7206,16 @@ function showSimpleRegionPopup(content, anchor) {
                             fits_path: window.currentFitsFile || null,
                             hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
                         };
+                        try {
+                            const rgbOptions = _getRgbZoomInsetChannels();
+                            const currentPath = String(regionData.fits_path || '');
+                            const currentRgb = rgbOptions.find((opt) => String(opt.filepath) === currentPath) || rgbOptions[0];
+                            if (currentRgb) {
+                                regionData.fits_path = currentRgb.filepath;
+                                regionData.hdu_index = currentRgb.hdu;
+                                regionData.rgb_channel = currentRgb.id;
+                            }
+                        } catch (_) {}
                         regionData.galaxy_name = galaxyName;
                         try {
                             cutoutRegionButton.disabled = true;
