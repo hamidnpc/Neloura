@@ -1500,6 +1500,11 @@ def _open_rgb_filter_file_keys(filter_name: str) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+_OPEN_RGB_FILE_INDEX_TTL_SECONDS = float(os.getenv("OPEN_RGB_FILE_INDEX_TTL_SECONDS", "60"))
+_open_rgb_file_index_lock = threading.RLock()
+_open_rgb_file_index_cache: dict[str, object] = {"built_at": 0.0, "files": []}
+
+
 def _open_rgb_iter_fits_files():
     base_dir = Path(FILES_DIRECTORY)
     stack = [base_dir]
@@ -1541,6 +1546,38 @@ def _open_rgb_iter_fits_files():
                 continue
 
 
+def _open_rgb_file_index(force_refresh: bool = False) -> list[dict[str, str]]:
+    now = time.time()
+    with _open_rgb_file_index_lock:
+        cached_files = _open_rgb_file_index_cache.get("files")
+        built_at = float(_open_rgb_file_index_cache.get("built_at") or 0.0)
+        if (
+            not force_refresh
+            and isinstance(cached_files, list)
+            and cached_files
+            and (now - built_at) < _OPEN_RGB_FILE_INDEX_TTL_SECONDS
+        ):
+            return cached_files
+
+        base_dir = Path(FILES_DIRECTORY)
+        indexed: list[dict[str, str]] = []
+        for path in _open_rgb_iter_fits_files():
+            try:
+                rel = path.relative_to(base_dir).as_posix()
+            except Exception:
+                continue
+            indexed.append({
+                "rel": rel,
+                "rel_lower": rel.lower(),
+                "name_norm": _open_rgb_normalize_token(path.name),
+                "rel_norm": _open_rgb_normalize_token(rel),
+            })
+
+        _open_rgb_file_index_cache["built_at"] = now
+        _open_rgb_file_index_cache["files"] = indexed
+        return indexed
+
+
 def _open_rgb_title(galaxy: str, filters: list[str]) -> str:
     groups = {_open_rgb_filter_group(f) for f in filters}
     if "HA" in filters and groups == {"HST"}:
@@ -1567,18 +1604,14 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
     if not galaxy_keys or not filter_keys:
         return None
 
-    candidates: list[tuple[int, str, Path]] = []
-    base_dir = Path(FILES_DIRECTORY)
-    for path in _open_rgb_iter_fits_files():
-        try:
-            rel = path.relative_to(base_dir).as_posix()
-        except Exception:
-            continue
-        rel_lower = rel.lower()
+    candidates: list[tuple[int, str]] = []
+    for rec in _open_rgb_file_index():
+        rel = str(rec.get("rel") or "")
+        rel_lower = str(rec.get("rel_lower") or "")
         if any(token in rel_lower for token in ("mask", "segmentation", "segments", "nebulae")):
             continue
-        haystack = _open_rgb_normalize_token(path.name)
-        rel_haystack = _open_rgb_normalize_token(rel)
+        haystack = str(rec.get("name_norm") or "")
+        rel_haystack = str(rec.get("rel_norm") or "")
         if not any(g in rel_haystack for g in galaxy_keys):
             continue
         filter_in_filename = any(f in haystack for f in filter_keys)
@@ -1593,12 +1626,28 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
         if "/uploads/" in f"/{rel.lower()}":
             score += 30
         score += len(rel)
-        candidates.append((score, rel, path))
+        candidates.append((score, rel))
 
     if not candidates:
         return None
     candidates.sort(key=lambda item: (item[0], item[1].lower()))
     return candidates[0][1]
+
+
+def _open_rgb_resolve_channel_files(parsed_galaxy: str, parsed_filters: list[str]) -> tuple[list[dict[str, str]], list[str]]:
+    channel_files: list[dict[str, str]] = []
+    missing: list[str] = []
+    for channel, filter_name in _open_rgb_channel_plan(parsed_filters):
+        filepath = _open_rgb_find_file(parsed_galaxy, filter_name)
+        if not filepath:
+            missing.append(filter_name)
+            continue
+        channel_files.append({
+            "channel": channel,
+            "filter": filter_name,
+            "filepath": filepath,
+        })
+    return channel_files, missing
 
 
 def _open_rgb_channel_plan(filters: list[str]) -> list[tuple[str, str]]:
@@ -2007,8 +2056,18 @@ async def open_fits_viewer(filepath: str, request: Request, hdu: int | None = Qu
 
 @app.get("/api/open-rgb-options")
 async def open_rgb_options(include_availability: bool = Query(False)):
+    if include_availability:
+        loop = asyncio.get_running_loop()
+        executor = getattr(app.state, "thread_executor", None)
+        sets = await loop.run_in_executor(
+            executor,
+            _open_rgb_available_examples,
+            True,
+        )
+    else:
+        sets = _open_rgb_available_examples(include_availability=False)
     return {
-        "sets": _open_rgb_available_examples(include_availability=include_availability),
+        "sets": sets,
         "hst_filters": RGB_OPEN_HST_FILTERS,
         "jwst_filters": RGB_OPEN_JWST_FILTERS,
     }
@@ -2053,18 +2112,14 @@ async def open_rgb_viewer(
             },
         )
 
-    channel_files = []
-    missing = []
-    for channel, filter_name in _open_rgb_channel_plan(parsed_filters):
-        filepath = _open_rgb_find_file(parsed_galaxy, filter_name)
-        if not filepath:
-            missing.append(filter_name)
-            continue
-        channel_files.append({
-            "channel": channel,
-            "filter": filter_name,
-            "filepath": filepath,
-        })
+    loop = asyncio.get_running_loop()
+    executor = getattr(app.state, "thread_executor", None)
+    channel_files, missing = await loop.run_in_executor(
+        executor,
+        _open_rgb_resolve_channel_files,
+        parsed_galaxy,
+        parsed_filters,
+    )
 
     if missing:
         raise HTTPException(
