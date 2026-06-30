@@ -10826,6 +10826,29 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             pixel_region = _build_pixel_region(payload, wcs, target_coord)
             arcsec_per_pixel = _compute_arcsec_per_pixel(wcs)
             arcsec_per_pixel_x, arcsec_per_pixel_y = _compute_arcsec_per_pixel_xy(wcs)
+            debug_wcs_info = {
+                "fits_path": str(fits_path),
+                "hdu_index": hdu_index,
+                "source_shape": [int(image_data.shape[-2]), int(image_data.shape[-1])],
+                "source_crval": [header.get("CRVAL1"), header.get("CRVAL2")],
+                "source_crpix": [header.get("CRPIX1"), header.get("CRPIX2")],
+                "source_cdelt": [header.get("CDELT1"), header.get("CDELT2")],
+                "source_cd": [
+                    [header.get("CD1_1"), header.get("CD1_2")],
+                    [header.get("CD2_1"), header.get("CD2_2")],
+                ],
+                "source_pc": [
+                    [header.get("PC1_1"), header.get("PC1_2")],
+                    [header.get("PC2_1"), header.get("PC2_2")],
+                ],
+                "pixel_scale_arcsec": {
+                    "mean": arcsec_per_pixel,
+                    "x": arcsec_per_pixel_x,
+                    "y": arcsec_per_pixel_y,
+                },
+                "target_world": {"ra": payload.ra, "dec": payload.dec},
+                "target_pixel": {"x": float(px), "y": float(py)},
+            }
 
             def _positive_float(value):
                 try:
