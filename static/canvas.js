@@ -4179,6 +4179,11 @@ async function _retargetZoomInsetToRgbChannel(z, channelId) {
         const headers = { 'Content-Type': 'application/json' };
         if (window.__sid) headers['X-Session-ID'] = window.__sid;
         try { z.spinner.style.display = 'block'; } catch (_) {}
+        _logZoomInsetDebug('retarget request', {
+            insetId: z.id,
+            chosenChannel: chosen,
+            request: regionData
+        });
         const resp = await fetch('/region-cutout/', {
             method: 'POST',
             headers,
@@ -4189,6 +4194,12 @@ async function _retargetZoomInsetToRgbChannel(z, channelId) {
             throw new Error(err.detail || 'Failed to create cutout');
         }
         const result = await resp.json();
+        _logZoomInsetDebug('retarget response', {
+            insetId: z.id,
+            chosenChannel: chosen,
+            request: regionData,
+            response: result
+        });
         z.filepathRel = `uploads/${result.filename}`;
         z.sourceRegionData = regionData;
         await z.reload();
@@ -4433,6 +4444,12 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
 
                     // UI
                     try { znow.spinner.style.display = 'block'; } catch (_) {}
+                    _logZoomInsetDebug('open-other request', {
+                        insetId,
+                        pickedPath: p,
+                        pickedHdu,
+                        request: regionData
+                    });
 
                     const resp = await fetch('/region-cutout/', {
                         method: 'POST',
@@ -4444,6 +4461,13 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
                         throw new Error(err.detail || 'Failed to create cutout');
                     }
                     const result = await resp.json();
+                    _logZoomInsetDebug('open-other response', {
+                        insetId,
+                        pickedPath: p,
+                        pickedHdu,
+                        request: regionData,
+                        response: result
+                    });
                     const cutoutRel = `uploads/${result.filename}`;
                     znow.filepathRel = cutoutRel;
                     await znow.reload();
@@ -7250,6 +7274,11 @@ function showSimpleRegionPopup(content, anchor) {
                             }
                             const headers = { 'Content-Type': 'application/json' };
                             if (window.__sid) headers['X-Session-ID'] = window.__sid;
+                            _logZoomInsetDebug('create request', {
+                                regionId: content.region_id,
+                                regionType: content.region_type,
+                                request: regionData
+                            });
                             const response = await fetch('/region-cutout/', {
                                 method: 'POST',
                                 headers,
@@ -7326,6 +7355,12 @@ function showSimpleRegionPopup(content, anchor) {
                                 throw new Error(error.detail || 'Failed to create cutout');
                             }
                             const result = await response.json();
+                            _logZoomInsetDebug('create response', {
+                                regionId: content.region_id,
+                                regionType: content.region_type,
+                                request: regionData,
+                                response: result
+                            });
                             const cutoutRel = `uploads/${result.filename}`;
                             await showRegionZoomInsetFromCutout(
                                 cutoutRel,
