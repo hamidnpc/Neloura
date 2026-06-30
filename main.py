@@ -10533,6 +10533,10 @@ class RegionCutoutRequest(BaseModel):
     width_pixels: Optional[float] = None
     height_pixels: Optional[float] = None
     minor_radius_pixels: Optional[float] = None
+    radius_arcsec: Optional[float] = None
+    width_arcsec: Optional[float] = None
+    height_arcsec: Optional[float] = None
+    minor_radius_arcsec: Optional[float] = None
     fits_path: Optional[str] = None
     hdu_index: Optional[int] = None
     vertices: Optional[List[RegionVertex]] = None
@@ -10649,11 +10653,33 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
         val = _to_float(value)
         return val if val and val > 0 else None
 
+    try:
+        arcsec_per_pixel = _compute_arcsec_per_pixel(source_wcs)
+        arcsec_per_pixel_x, arcsec_per_pixel_y = _compute_arcsec_per_pixel_xy(source_wcs)
+    except Exception:
+        arcsec_per_pixel = arcsec_per_pixel_x = arcsec_per_pixel_y = None
+
+    def _pixels_from_arcsec(value, scale):
+        val = _positive(value)
+        if val and scale and scale > 0:
+            return val / scale
+        return None
+
+    has_angular_size = any(
+        _positive(value)
+        for value in (
+            payload.radius_arcsec,
+            payload.width_arcsec,
+            payload.height_arcsec,
+            payload.minor_radius_arcsec,
+        )
+    )
+
     # IMPORTANT:
     # The frontend may provide polygon vertices in "display coordinates" (e.g. after flip_y for viewer rendering).
     # For hexagon cutouts we build the region from the WCS-derived center + width/height instead of trusting
     # payload.vertices to avoid intermittent mask failures (falling back to a square cutout) and partial leaks.
-    if payload.vertices and region_type != "hexagon":
+    if payload.vertices and region_type != "hexagon" and not has_angular_size:
         xs = []
         ys = []
         for vertex in payload.vertices:
@@ -10668,13 +10694,13 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
             return PolygonPixelRegion(vertices=vertices)
 
     if region_type == "circle":
-        radius = _positive(payload.radius_pixels)
+        radius = _pixels_from_arcsec(payload.radius_arcsec, arcsec_per_pixel) or _positive(payload.radius_pixels)
         if radius:
             return CirclePixelRegion(center=center, radius=radius)
 
     elif region_type == "rectangle":
-        width = _positive(payload.width_pixels)
-        height = _positive(payload.height_pixels)
+        width = _pixels_from_arcsec(payload.width_arcsec, arcsec_per_pixel_x) or _positive(payload.width_pixels)
+        height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
             return RectanglePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
 
@@ -10682,20 +10708,20 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
         # Prefer explicit width/height when provided so we preserve whether the ellipse was
         # "tall" (major axis along Y) vs "wide" (major axis along X). If we only accept
         # major/minor, we lose orientation information and the cutout mask appears horizontal.
-        width = _positive(payload.width_pixels)
-        height = _positive(payload.height_pixels)
+        width = _pixels_from_arcsec(payload.width_arcsec, arcsec_per_pixel_x) or _positive(payload.width_pixels)
+        height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
             return EllipsePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
 
         # Backward-compatibility fallback: major/minor (assumes major is along X)
-        major = _positive(payload.radius_pixels)
-        minor = _positive(payload.minor_radius_pixels) or major
+        major = _pixels_from_arcsec(payload.radius_arcsec, arcsec_per_pixel) or _positive(payload.radius_pixels)
+        minor = _pixels_from_arcsec(payload.minor_radius_arcsec, arcsec_per_pixel) or _positive(payload.minor_radius_pixels) or major
         if major and minor:
             return EllipsePixelRegion(center=center, width=2 * major, height=2 * minor, angle=0 * u.deg)
 
     elif region_type == "hexagon":
-        width = _positive(payload.width_pixels)
-        height = _positive(payload.height_pixels)
+        width = _pixels_from_arcsec(payload.width_arcsec, arcsec_per_pixel_x) or _positive(payload.width_pixels)
+        height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
             if abs(width - height) <= 1e-6:
                 return RegularPolygonPixelRegion(center=center, nvertices=6, radius=width / 2.0, angle=30 * u.deg)
@@ -10862,13 +10888,24 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             size_arcsec_xy = None  # Optional (y_arcsec, x_arcsec) for rectangular cutouts
 
             if region_type == 'circle':
+                radius_arcsec = _positive_float(payload.radius_arcsec)
                 radius = _positive_float(payload.radius_pixels)
-                if radius:
+                if radius_arcsec:
+                    size_arcsec = radius_arcsec * 2
+                elif radius:
                     size_arcsec = radius * arcsec_per_pixel * 2
             elif region_type in ['rectangle', 'hexagon']:
+                width_arcsec = _positive_float(payload.width_arcsec)
+                height_arcsec = _positive_float(payload.height_arcsec)
                 width = _positive_float(payload.width_pixels)
                 height = _positive_float(payload.height_pixels)
-                if width and height:
+                if width_arcsec and height_arcsec:
+                    size_arcsec_xy = (
+                        max(2.0, height_arcsec),
+                        max(2.0, width_arcsec),
+                    )
+                    size_arcsec = max(width_arcsec, height_arcsec)
+                elif width and height:
                     # Preserve aspect ratio of the requested region by using a rectangular cutout size.
                     # Cutout2D supports a 2-tuple size; this avoids "vertical ellipse -> horizontal/square cutout" confusion.
                     size_arcsec_xy = (
@@ -10877,17 +10914,28 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                     )
                     size_arcsec = max(width, height) * arcsec_per_pixel
             elif region_type == 'ellipse':
+                width_arcsec = _positive_float(payload.width_arcsec)
+                height_arcsec = _positive_float(payload.height_arcsec)
                 width = _positive_float(payload.width_pixels)
                 height = _positive_float(payload.height_pixels)
-                if width and height:
+                if width_arcsec and height_arcsec:
+                    size_arcsec_xy = (
+                        max(2.0, height_arcsec),
+                        max(2.0, width_arcsec),
+                    )
+                    size_arcsec = max(width_arcsec, height_arcsec)
+                elif width and height:
                     size_arcsec_xy = (
                         max(2.0, height * arcsec_per_pixel_y),
                         max(2.0, width * arcsec_per_pixel_x),
                     )
                     size_arcsec = max(width, height) * arcsec_per_pixel
                 else:
+                    major_arcsec = _positive_float(payload.radius_arcsec)
                     major = _positive_float(payload.radius_pixels)
-                    if major:
+                    if major_arcsec:
+                        size_arcsec = major_arcsec * 2
+                    elif major:
                         size_arcsec = major * arcsec_per_pixel * 2
 
             size_arcsec = max(size_arcsec, 2.0)
@@ -10905,6 +10953,11 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                     wcs=wcs,
                     mode='partial',
                     fill_value=np.nan
+                )
+                debug_wcs_info["cutout_size_arcsec"] = (
+                    [float(size_arcsec_xy[0]), float(size_arcsec_xy[1])]
+                    if size_arcsec_xy is not None
+                    else float(size_arcsec)
                 )
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to create cutout: {str(e)}")
@@ -10929,6 +10982,9 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             cutout_header['NAXIS1'] = cutout.data.shape[1]
             cutout_header['NAXIS2'] = cutout.data.shape[0]
             cutout_header['NAXIS'] = 2
+            debug_wcs_info["cutout_shape"] = [int(cutout.data.shape[0]), int(cutout.data.shape[1])]
+            debug_wcs_info["cutout_crval"] = [cutout_header.get("CRVAL1"), cutout_header.get("CRVAL2")]
+            debug_wcs_info["cutout_crpix"] = [cutout_header.get("CRPIX1"), cutout_header.get("CRPIX2")]
             
             # Copy important keywords from original header
             for key in ['BUNIT', 'BSCALE', 'BZERO']:
@@ -10965,7 +11021,9 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                 "filename": filename,
                 "path": f"files/uploads/{filename}",
                 "size_arcsec": size_arcsec,
-                "mask_applied": region_mask_array is not None
+                "size_arcsec_xy": list(size_arcsec_xy) if size_arcsec_xy is not None else [size_arcsec, size_arcsec],
+                "mask_applied": region_mask_array is not None,
+                "debug": debug_wcs_info,
             }
             if mask_fraction is not None:
                 response_payload["mask_fraction"] = mask_fraction
