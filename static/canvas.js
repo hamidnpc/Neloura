@@ -1,5 +1,3 @@
-// canvas-catalog-overlay.js - Pure Canvas Implementation
-
 // Utility functions for throttling and debouncing
 function throttle(func, wait) {
     let lastCall = 0;
@@ -4113,6 +4111,29 @@ function _getRgbZoomInsetChannels() {
             };
         })
         .filter(Boolean);
+}
+
+
+function _logZoomInsetDebug(label, details) {
+    try {
+        const payload = Object.assign({
+            currentFitsFile: window.currentFitsFile || null,
+            currentHduIndex: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null,
+            fitsData: window.fitsData ? {
+                width: window.fitsData.width,
+                height: window.fitsData.height,
+                flip_y: window.fitsData.flip_y,
+                rgb_mode: window.fitsData.rgb_mode,
+                filename: window.fitsData.filename || window.fitsData.filepath || null
+            } : null,
+            rgbChannels: _getRgbZoomInsetChannels()
+        }, details || {});
+        console.groupCollapsed(`[zoom-inset-debug] ${label}`);
+        console.log(payload);
+        console.groupEnd();
+    } catch (err) {
+        console.log('[zoom-inset-debug]', label, details || {}, err);
+    }
 }
 
 function _syncZoomInsetChannelSelector(z) {
