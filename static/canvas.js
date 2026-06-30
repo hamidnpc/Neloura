@@ -4136,6 +4136,24 @@ function _logZoomInsetDebug(label, details) {
     }
 }
 
+function _withZoomInsetAngularSize(regionData, result) {
+    const next = Object.assign({}, regionData || {});
+    const xy = result && Array.isArray(result.size_arcsec_xy) ? result.size_arcsec_xy : null;
+    if (xy && Number.isFinite(Number(xy[0])) && Number.isFinite(Number(xy[1]))) {
+        // Backend uses Cutout2D order: (height/y arcsec, width/x arcsec).
+        next.height_arcsec = Number(xy[0]);
+        next.width_arcsec = Number(xy[1]);
+    } else if (result && Number.isFinite(Number(result.size_arcsec))) {
+        const size = Number(result.size_arcsec);
+        next.height_arcsec = size;
+        next.width_arcsec = size;
+    }
+    if (next.radius_pixels != null && Number.isFinite(Number(next.radius_pixels)) && Number.isFinite(Number(next.width_arcsec))) {
+        next.radius_arcsec = Number(next.width_arcsec) / 2;
+    }
+    return next;
+}
+
 function _syncZoomInsetChannelSelector(z) {
     if (!z || !z.rgbChannelSelect) return;
     const src = z.sourceRegionData || {};
@@ -4201,7 +4219,7 @@ async function _retargetZoomInsetToRgbChannel(z, channelId) {
             response: result
         });
         z.filepathRel = `uploads/${result.filename}`;
-        z.sourceRegionData = regionData;
+        z.sourceRegionData = _withZoomInsetAngularSize(regionData, result);
         await z.reload();
         _syncZoomInsetChannelSelector(z);
         try { renderRegionOverlay(); } catch (_) {}
@@ -4470,6 +4488,7 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
                     });
                     const cutoutRel = `uploads/${result.filename}`;
                     znow.filepathRel = cutoutRel;
+                    znow.sourceRegionData = _withZoomInsetAngularSize(regionData, result);
                     await znow.reload();
                     try { renderRegionOverlay(); } catch (_) {}
                 } catch (err) {
@@ -7362,11 +7381,12 @@ function showSimpleRegionPopup(content, anchor) {
                                 response: result
                             });
                             const cutoutRel = `uploads/${result.filename}`;
+                            const insetRegionData = _withZoomInsetAngularSize(regionData, result);
                             await showRegionZoomInsetFromCutout(
                                 cutoutRel,
                                 (content.region_type || 'Zoom').toString(),
                                 content.region_id,
-                                regionData
+                                insetRegionData
                             );
                         } catch (err) {
                             if (typeof window.showNotification === 'function') {
