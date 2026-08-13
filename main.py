@@ -6333,16 +6333,39 @@ async def generate_sed_optimized(
         try:
             handles, labels = ax.get_legend_handles_labels()
             if any(lbl and not str(lbl).startswith('_') for lbl in labels):
-                ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR,        facecolor="white",
+                legend= ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR,        facecolor="white",
         framealpha=1.0,
         edgecolor="gray")
+                legend.set_zorder(100)
+
         except Exception:
             pass
 
-        bbox = dict(boxstyle=SED_INFO_BOX_BOXSTYLE, alpha=SED_INFO_BOX_FACE_ALPHA, facecolor=SED_INFO_BOX_FACE_COLOR)
-        galaxy_name_display = (str(closest_obj.get(SED_COL_GALAXY)).upper() if SED_COL_GALAXY in available_cols else target_galaxy_name.upper())
-        ax.text(SED_INFO_BOX_X, SED_INFO_BOX_Y, f"Galaxy: {galaxy_name_display}\nRA: {ra:.4f}, DEC: {dec:.4f}",
-                transform=ax.transAxes, ha="right", va="bottom", fontsize=SED_FONTSIZE_INFO, bbox=bbox)
+        bbox = dict(
+            boxstyle=SED_INFO_BOX_BOXSTYLE,
+            facecolor=SED_INFO_BOX_FACE_COLOR,
+            alpha=1.0,
+            edgecolor="gray"
+        )
+        
+        galaxy_name_display = (
+            str(closest_obj.get(SED_COL_GALAXY)).upper()
+            if SED_COL_GALAXY in available_cols
+            else target_galaxy_name.upper()
+        )
+        
+        info_text = ax.text(
+            SED_INFO_BOX_X,
+            SED_INFO_BOX_Y,
+            f"Galaxy: {galaxy_name_display}\n"
+            f"RA: {ra:.4f}, DEC: {dec:.4f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=SED_FONTSIZE_INFO,
+            bbox=bbox,
+            zorder=100
+        )
 
         fig.canvas.draw()
         transform = ax.transAxes.inverted()
