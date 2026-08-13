@@ -6221,78 +6221,78 @@ async def generate_sed_optimized(
                     alpha=SED_ALPHA,
                 )
         
-        if cigale_wave is not None:
-        
-            good_total = (
-                np.isfinite(cigale_total)
-                & (cigale_total > 0)
-            )
-        
-            ax.plot(
-                cigale_wave[good_total],
-                cigale_total[good_total],
-                color='red',
-                linewidth=1.6,
-                alpha=0.9,
-                label='CIGALE Total',
-                zorder=7
-            )
-        
-        
-            # Attenuated stellar emission
-            good_stellar = (
-                np.isfinite(cigale_stellar)
-                & (cigale_stellar > 0)
-            )
-        
-            ax.plot(
-                cigale_wave[good_stellar],
-                cigale_stellar[good_stellar],
-                linestyle='--',
-                linewidth=1.2,
-                alpha=0.8,
-                label='Stellar',
-                zorder=6
-            )
-        
-        
-            # Attenuated nebular emission
-            good_nebular = (
-                np.isfinite(cigale_nebular)
-                & (cigale_nebular > 0)
-            )
-        
-            ax.plot(
-                cigale_wave[good_nebular],
-                cigale_nebular[good_nebular],
-                linestyle=':',
-                linewidth=1.2,
-                alpha=0.8,
-                label='Nebular',
-                zorder=6
-            )
-        
-        
-        # ============================================================
-        # CIGALE SYNTHETIC PHOTOMETRY
-        # ============================================================
-        
-        if any(np.isfinite(y_cigale_plot)):
-        
-            ax.scatter(
-                sed_filter_wavelengths,
-                y_cigale_plot,
-                marker='s',
-                facecolors='none',
-                edgecolors='red',
-                linewidths=1.5,
-                s=max(
-                    60,
-                    SED_MARKERSIZE * 3
-                ),
-                label='_nolegend_',
-                zorder=12
-            )
+            if cigale_wave is not None:
+            
+                good_total = (
+                    np.isfinite(cigale_total)
+                    & (cigale_total > 0)
+                )
+            
+                ax.plot(
+                    cigale_wave[good_total],
+                    cigale_total[good_total],
+                    color='red',
+                    linewidth=1.6,
+                    alpha=0.9,
+                    label='CIGALE Total',
+                    zorder=7
+                )
+            
+            
+                # Attenuated stellar emission
+                good_stellar = (
+                    np.isfinite(cigale_stellar)
+                    & (cigale_stellar > 0)
+                )
+            
+                ax.plot(
+                    cigale_wave[good_stellar],
+                    cigale_stellar[good_stellar],
+                    linestyle='--',
+                    linewidth=1.2,
+                    alpha=0.8,
+                    label='Stellar',
+                    zorder=6
+                )
+            
+            
+                # Attenuated nebular emission
+                good_nebular = (
+                    np.isfinite(cigale_nebular)
+                    & (cigale_nebular > 0)
+                )
+            
+                ax.plot(
+                    cigale_wave[good_nebular],
+                    cigale_nebular[good_nebular],
+                    linestyle=':',
+                    linewidth=1.2,
+                    alpha=0.8,
+                    label='Nebular',
+                    zorder=6
+                )
+            
+            
+            # ============================================================
+            # CIGALE SYNTHETIC PHOTOMETRY
+            # ============================================================
+            
+            if any(np.isfinite(y_cigale_plot)):
+            
+                ax.scatter(
+                    sed_filter_wavelengths,
+                    y_cigale_plot,
+                    marker='s',
+                    facecolors='none',
+                    edgecolors='red',
+                    linewidths=1.5,
+                    s=max(
+                        60,
+                        SED_MARKERSIZE * 3
+                    ),
+                    label='_nolegend_',
+                    zorder=12
+                )
         except Exception:
             # Fallback minimal plot to avoid total failure
             if any(np.isfinite(y_bkg_plot)):
