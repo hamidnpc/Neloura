@@ -6116,12 +6116,23 @@ async def generate_sed_optimized(
                 & (cigale_wave >= SED_X_LIM_MIN)
                 & (cigale_wave <= SED_X_LIM_MAX)
             )
-        
+            
             cigale_wave = cigale_wave[good]
             cigale_total = cigale_total[good]
             cigale_stellar = cigale_stellar[good]
             cigale_nebular = cigale_nebular[good]
-        
+            
+            
+            # --------------------------------------------------------
+            # IMPORTANT: sort by wavelength
+            # --------------------------------------------------------
+            
+            order = np.argsort(cigale_wave)
+            
+            cigale_wave = cigale_wave[order]
+            cigale_total = cigale_total[order]
+            cigale_stellar = cigale_stellar[order]
+            cigale_nebular = cigale_nebular[order]
         
         except Exception as e:
         
