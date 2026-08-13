@@ -6262,7 +6262,7 @@ async def generate_sed_optimized(
                     linestyle='--',
                     linewidth=1.2,
                     alpha=0.8,
-                    label='Stellar',
+                    label='',
                     zorder=6
                 )
             
@@ -6279,7 +6279,7 @@ async def generate_sed_optimized(
                     linestyle=':',
                     linewidth=1.2,
                     alpha=0.8,
-                    label='Nebular',
+                    label='',
                     zorder=6
                 )
             
@@ -6333,7 +6333,9 @@ async def generate_sed_optimized(
         try:
             handles, labels = ax.get_legend_handles_labels()
             if any(lbl and not str(lbl).startswith('_') for lbl in labels):
-                ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR)
+                ax.legend(loc=SED_LEGEND_LOC, bbox_to_anchor=SED_LEGEND_BBOX_ANCHOR,        facecolor="white",
+        framealpha=1.0,
+        edgecolor="gray")
         except Exception:
             pass
 
