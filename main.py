@@ -5915,6 +5915,224 @@ async def generate_sed_optimized(
             sed_fluxes_cigale.append(resolve_cigale_flux('MIRI', filter_name))
 
         # 5) Plot
+
+                # ============================================================
+        # FULL CIGALE BEST-FIT SED COMPONENTS
+        # ============================================================
+        
+        cigale_wave = None
+        cigale_total = None
+        cigale_stellar = None
+        cigale_nebular = None
+        
+        
+        def get_model_array(column_name):
+            """Read one vector-valued best_model column from closest_obj."""
+            try:
+                col = resolve_existing_column([column_name])
+        
+                if col is None:
+                    return None
+        
+                return np.asarray(
+                    closest_obj[col],
+                    dtype=float
+                )
+        
+            except Exception:
+                return None
+        
+        
+        def llambda_to_ujy(llambda, wavelength_nm, distance_mpc):
+            """
+            Convert L_lambda [W / nm] to F_nu [microJy].
+        
+            wavelength_nm : nm
+            distance_mpc  : Mpc
+            """
+        
+            c = 299792458.0
+        
+            D_m = distance_mpc * 3.085677581491367e22
+        
+            wavelength_m = wavelength_nm * 1e-9
+        
+            # L_lambda [W/nm] -> F_lambda [W/m^2/nm]
+            f_lambda_nm = llambda / (
+                4.0 * np.pi * D_m**2
+            )
+        
+            # W/m^2/nm -> W/m^2/m
+            f_lambda_m = f_lambda_nm * 1e9
+        
+            # F_lambda -> F_nu
+            f_nu = (
+                f_lambda_m
+                * wavelength_m**2
+                / c
+            )
+        
+            # W/m^2/Hz -> microJy
+            return f_nu / 1e-32
+        
+        
+        try:
+        
+            # --------------------------------------------------------
+            # wavelength
+            # --------------------------------------------------------
+        
+            wave_nm = get_model_array(
+                "best_model_wavelength"
+            )
+        
+            total_mjy = get_model_array(
+                "best_model_Fnu"
+            )
+        
+        
+            # --------------------------------------------------------
+            # Stellar components
+            # --------------------------------------------------------
+        
+            stellar_old = get_model_array(
+                "best_model_stellar.old"
+            )
+        
+            stellar_young = get_model_array(
+                "best_model_stellar.young"
+            )
+        
+            att_stellar_old = get_model_array(
+                "best_model_attenuation.stellar.old"
+            )
+        
+            att_stellar_young = get_model_array(
+                "best_model_attenuation.stellar.young"
+            )
+        
+        
+            # --------------------------------------------------------
+            # Nebular components
+            # --------------------------------------------------------
+        
+            neb_old = get_model_array(
+                "best_model_nebular.emission_old"
+            )
+        
+            neb_young = get_model_array(
+                "best_model_nebular.emission_young"
+            )
+        
+            att_neb_old = get_model_array(
+                "best_model_attenuation.nebular.emission_old"
+            )
+        
+            att_neb_young = get_model_array(
+                "best_model_attenuation.nebular.emission_young"
+            )
+        
+        
+            # --------------------------------------------------------
+            # Distance
+            # --------------------------------------------------------
+        
+            distance_col = resolve_existing_column([
+                "D",
+                "distance",
+                "distance_mpc",
+                "dist_mpc"
+            ])
+        
+            if distance_col is None:
+                raise ValueError(
+                    "Could not find galaxy distance column."
+                )
+        
+            distance_mpc = float(
+                closest_obj[distance_col]
+            )
+        
+        
+            # --------------------------------------------------------
+            # Build components in L_lambda
+            # --------------------------------------------------------
+        
+            stellar_llambda = (
+                stellar_old
+                + stellar_young
+                + att_stellar_old
+                + att_stellar_young
+            )
+        
+            nebular_llambda = (
+                neb_old
+                + neb_young
+                + att_neb_old
+                + att_neb_young
+            )
+        
+        
+            # --------------------------------------------------------
+            # Convert wavelength nm -> micron
+            # --------------------------------------------------------
+        
+            cigale_wave = wave_nm / 1000.0
+        
+        
+            # --------------------------------------------------------
+            # Total is already Fnu in mJy
+            # --------------------------------------------------------
+        
+            cigale_total = (
+                total_mjy
+                * SED_CIGALE_MULTIPLIER
+            )
+        
+        
+            # --------------------------------------------------------
+            # Components are L_lambda, convert to microJy
+            # --------------------------------------------------------
+        
+            cigale_stellar = llambda_to_ujy(
+                stellar_llambda,
+                wave_nm,
+                distance_mpc
+            )
+        
+            cigale_nebular = llambda_to_ujy(
+                nebular_llambda,
+                wave_nm,
+                distance_mpc
+            )
+        
+        
+            # --------------------------------------------------------
+            # Restrict to visible SED range
+            # --------------------------------------------------------
+        
+            good = (
+                np.isfinite(cigale_wave)
+                & (cigale_wave >= SED_X_LIM_MIN)
+                & (cigale_wave <= SED_X_LIM_MAX)
+            )
+        
+            cigale_wave = cigale_wave[good]
+            cigale_total = cigale_total[good]
+            cigale_stellar = cigale_stellar[good]
+            cigale_nebular = cigale_nebular[good]
+        
+        
+        except Exception as e:
+        
+            print(
+                f"[SED] Could not prepare CIGALE model components: {e}"
+            )
+        
+            cigale_wave = None
+            cigale_total = None
+            cigale_stellar = None
+            cigale_nebular = None
         fig = plt.figure(figsize=(SED_FIGURE_SIZE_WIDTH, SED_FIGURE_SIZE_HEIGHT))
         ax = fig.add_subplot(111)
         # Ensure main plot renders above inset RGB panels without hiding them
@@ -6002,10 +6220,79 @@ async def generate_sed_optimized(
                     zorder=10,
                     alpha=SED_ALPHA,
                 )
-            # Plot CIGALE only if at least one finite, non-zero after sanitization
-            if any(np.isfinite(y_cigale_plot)):
-                ax.plot(sed_filter_wavelengths, y_cigale_plot, '-', color='red', alpha=0.8, linewidth=1.5, label='CIGALE', zorder=11)
-                ax.scatter(sed_filter_wavelengths, y_cigale_plot, marker='s', facecolors='none', edgecolors='red', linewidths=1.5, s=max(60, SED_MARKERSIZE*3), label='_nolegend_', zorder=12)
+        
+        if cigale_wave is not None:
+        
+            good_total = (
+                np.isfinite(cigale_total)
+                & (cigale_total > 0)
+            )
+        
+            ax.plot(
+                cigale_wave[good_total],
+                cigale_total[good_total],
+                color='red',
+                linewidth=1.6,
+                alpha=0.9,
+                label='CIGALE Total',
+                zorder=7
+            )
+        
+        
+            # Attenuated stellar emission
+            good_stellar = (
+                np.isfinite(cigale_stellar)
+                & (cigale_stellar > 0)
+            )
+        
+            ax.plot(
+                cigale_wave[good_stellar],
+                cigale_stellar[good_stellar],
+                linestyle='--',
+                linewidth=1.2,
+                alpha=0.8,
+                label='Stellar',
+                zorder=6
+            )
+        
+        
+            # Attenuated nebular emission
+            good_nebular = (
+                np.isfinite(cigale_nebular)
+                & (cigale_nebular > 0)
+            )
+        
+            ax.plot(
+                cigale_wave[good_nebular],
+                cigale_nebular[good_nebular],
+                linestyle=':',
+                linewidth=1.2,
+                alpha=0.8,
+                label='Nebular',
+                zorder=6
+            )
+        
+        
+        # ============================================================
+        # CIGALE SYNTHETIC PHOTOMETRY
+        # ============================================================
+        
+        if any(np.isfinite(y_cigale_plot)):
+        
+            ax.scatter(
+                sed_filter_wavelengths,
+                y_cigale_plot,
+                marker='s',
+                facecolors='none',
+                edgecolors='red',
+                linewidths=1.5,
+                s=max(
+                    60,
+                    SED_MARKERSIZE * 3
+                ),
+                label='_nolegend_',
+                zorder=12
+            )
         except Exception:
             # Fallback minimal plot to avoid total failure
             if any(np.isfinite(y_bkg_plot)):
