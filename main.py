@@ -6243,7 +6243,7 @@ async def generate_sed_optimized(
                     cigale_wave[good_total],
                     cigale_total[good_total],
                     color='red',
-                    linewidth=1.6,
+                    linewidth=1,
                     alpha=0.9,
                     label='CIGALE Total',
                     zorder=7
@@ -6260,7 +6260,7 @@ async def generate_sed_optimized(
                     cigale_wave[good_stellar],
                     cigale_stellar[good_stellar],
                     linestyle='--',
-                    linewidth=1.2,
+                    linewidth=0.9,
                     alpha=0.8,
                     label='',
                     zorder=6
@@ -6277,7 +6277,7 @@ async def generate_sed_optimized(
                     cigale_wave[good_nebular],
                     cigale_nebular[good_nebular],
                     linestyle=':',
-                    linewidth=1.2,
+                    linewidth=0.9,
                     alpha=0.8,
                     label='',
                     zorder=6
