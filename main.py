@@ -5568,7 +5568,9 @@ async def generate_sed_optimized(
         if not ra_col_name or not dec_col_name:
             return JSONResponse(status_code=400, content={"error": "Could not find RA and DEC columns in catalog"})
 
-        # Robust RA/DEC normalization to degrees (supports sexagesimal strings, astropy quantities, radians, hours)
+        # Robust RA/DEC normalization to degrees. Do not infer radians from
+        # magnitude alone: valid degree coordinates (especially declinations)
+        # commonly fall inside [-2*pi, 2*pi].
         def _parse_sexagesimal(s: str, is_ra: bool) -> float:
             try:
                 import re
@@ -5605,16 +5607,19 @@ async def generate_sed_optimized(
                 except Exception:
                     pass
 
-                # Strings (sexagesimal or numeric)
+                name = (col_name or '').lower()
+
+                # Plain numeric strings are degrees unless the column explicitly
+                # identifies hours/radians. Formatted values remain sexagesimal.
                 if isinstance(val, str):
-                    out = _parse_sexagesimal(val, is_ra)
-                    if np.isfinite(out):
-                        return out
+                    txt = val.strip()
                     try:
-                        v = float(val)
+                        val = float(txt)
                     except Exception:
+                        out = _parse_sexagesimal(txt, is_ra)
+                        if np.isfinite(out):
+                            return out
                         return float('nan')
-                    val = v
 
                 # numpy scalar -> python
                 if hasattr(val, 'item'):
@@ -5624,14 +5629,12 @@ async def generate_sed_optimized(
                     v = float(val)
                     if not np.isfinite(v):
                         return float('nan')
-                    # radians
-                    if abs(v) <= (2*np.pi + 1e-6):
+                    # Convert only when the column explicitly declares radians.
+                    if ('rad' in name) and ('radius' not in name):
                         return v * (180.0/np.pi)
                     # hours for RA
-                    if is_ra:
-                        name = (col_name or '').lower()
-                        if ('hms' in name) or ('hour' in name):
-                            return v * 15.0
+                    if is_ra and (('hms' in name) or ('hour' in name)):
+                        return v * 15.0
                     return v
             except Exception:
                 return float('nan')
@@ -5777,25 +5780,38 @@ async def generate_sed_optimized(
             aliases = SED_FILTER_COLUMN_ALIASES.get(key, [])
             return _unique_preserve_order([filter_name, key] + aliases)
 
+        def sed_mapping_get_ci(mapping, key, default=None):
+            """Read profile mappings without depending on key capitalization."""
+            if not isinstance(mapping, dict):
+                return default
+            if key in mapping:
+                return mapping[key]
+            wanted = str(key).strip().lower()
+            for map_key, value in mapping.items():
+                if str(map_key).strip().lower() == wanted:
+                    return value
+            return default
+
         def resolve_sed_filter_wavelength(filter_name: str) -> float:
             for variant in sed_filter_variants(filter_name):
-                wave = SED_FILTER_WAVELENGTH_BY_NAME.get(str(variant).upper())
+                wave = sed_mapping_get_ci(SED_FILTER_WAVELENGTH_BY_NAME, variant)
                 if wave is not None:
                     return float(wave)
             return float('nan')
 
         def canonical_sed_filter_name(filter_name: str) -> str:
             key = str(filter_name or '').strip().upper()
-            return SED_CANONICAL_FILTER_NAME.get(key, key)
+            return str(sed_mapping_get_ci(SED_CANONICAL_FILTER_NAME, key, key))
 
         def resolve_sed_cutout_wavelength(filter_name: str, fallback: float) -> float:
             canonical = canonical_sed_filter_name(filter_name)
-            return float(SED_CUTOUT_WAVELENGTH_BY_FILTER.get(canonical, fallback))
+            return float(sed_mapping_get_ci(SED_CUTOUT_WAVELENGTH_BY_FILTER, canonical, fallback))
 
         def resolve_sed_cutout_x_offset(filter_name: str, index: int) -> float:
             canonical = canonical_sed_filter_name(filter_name)
-            if canonical in SED_CUTOUT_X_OFFSET_BY_FILTER:
-                return float(SED_CUTOUT_X_OFFSET_BY_FILTER[canonical])
+            mapped_offset = sed_mapping_get_ci(SED_CUTOUT_X_OFFSET_BY_FILTER, canonical)
+            if mapped_offset is not None:
+                return float(mapped_offset)
             return float(SED_X_OFFSETS[index]) if index < len(SED_X_OFFSETS) else 0.0
 
         def resolve_existing_column(candidates):
@@ -5851,9 +5867,26 @@ async def generate_sed_optimized(
                 target_keys.update(str(v).upper() for v in sed_filter_variants(target))
             return bool(filter_keys & target_keys)
 
-        sed_hst_filters = _unique_preserve_order(SED_HST_FILTERS)
-        sed_nircam_filters = _unique_preserve_order(SED_JWST_NIRCAM_FILTERS)
-        sed_miri_filters = _unique_preserve_order(SED_JWST_MIRI_FILTERS)
+        def sed_filter_is_in_plot_range(filter_name: str) -> bool:
+            wavelength = resolve_sed_filter_wavelength(filter_name)
+            return (
+                np.isfinite(wavelength)
+                and float(SED_X_LIM_MIN) <= wavelength <= float(SED_X_LIM_MAX)
+            )
+
+        # Keep points and cutouts consistent with the configured wavelength range.
+        sed_hst_filters = [
+            f for f in _unique_preserve_order(SED_HST_FILTERS)
+            if sed_filter_is_in_plot_range(f)
+        ]
+        sed_nircam_filters = [
+            f for f in _unique_preserve_order(SED_JWST_NIRCAM_FILTERS)
+            if sed_filter_is_in_plot_range(f)
+        ]
+        sed_miri_filters = [
+            f for f in _unique_preserve_order(SED_JWST_MIRI_FILTERS)
+            if sed_filter_is_in_plot_range(f)
+        ]
         sed_filter_names = sed_hst_filters + sed_nircam_filters + sed_miri_filters
         sed_filter_wavelengths = [resolve_sed_filter_wavelength(f) for f in sed_filter_names]
 
@@ -6144,8 +6177,58 @@ async def generate_sed_optimized(
             cigale_total = None
             cigale_stellar = None
             cigale_nebular = None
-        fig = plt.figure(figsize=(SED_FIGURE_SIZE_WIDTH, SED_FIGURE_SIZE_HEIGHT))
-        ax = fig.add_subplot(111)
+        # Keep every filter cutout in one automatically spaced horizontal row.
+        # Large profiles widen the figure instead of relying on SED_X_OFFSETS.
+        sed_cutout_count = max(1, len(sed_filter_names))
+        sed_cutout_columns = sed_cutout_count
+        sed_cutout_rows = 1
+        sed_figure_width = max(float(SED_FIGURE_SIZE_WIDTH), 0.55 * sed_cutout_count)
+        sed_figure_height = max(float(SED_FIGURE_SIZE_HEIGHT), 4.2)
+        sed_grid_left, sed_grid_right = 0.075, 0.985
+        sed_grid_top = 0.975
+        sed_grid_height = 0.16
+        sed_grid_bottom = sed_grid_top - sed_grid_height
+        sed_plot_bottom = 0.16
+        sed_plot_top = sed_grid_bottom - 0.005
+
+        fig = plt.figure(figsize=(sed_figure_width, sed_figure_height))
+        ax = fig.add_axes([
+            0.075,
+            sed_plot_bottom,
+            0.91,
+            max(0.28, sed_plot_top - sed_plot_bottom),
+        ])
+
+        def create_sed_cutout_axes(index: int):
+            """Create one non-overlapping panel in the single cutout row."""
+            row = int(index) // sed_cutout_columns
+            col = int(index) % sed_cutout_columns
+            cell_width = (sed_grid_right - sed_grid_left) / sed_cutout_columns
+            cell_height = sed_grid_height / sed_cutout_rows
+            gap_x = min(0.006, cell_width * 0.08)
+            gap_y = min(0.025, cell_height * 0.18)
+            panel_width = max(0.01, cell_width - gap_x)
+            panel_height = max(0.01, cell_height - gap_y)
+            panel_x = sed_grid_left + col * cell_width + gap_x / 2
+            panel_y = sed_grid_top - (row + 1) * cell_height + gap_y / 2
+            return fig.add_axes([panel_x, panel_y, panel_width, panel_height])
+
+        def create_sed_rgb_axes(x_position: float, y_position: float):
+            """Create an RGB inset using the live profile position settings."""
+            return inset_axes(
+                ax,
+                width=SED_RGB_WIDTH,
+                height=SED_RGB_HEIGHT,
+                loc='center',
+                bbox_to_anchor=(
+                    float(x_position),
+                    float(y_position)-0.16,
+                    SED_RGB_BBOX_SIZE,
+                    SED_RGB_BBOX_SIZE,
+                ),
+                bbox_transform=fig.transFigure,
+            )
+
         # Ensure main plot renders above inset RGB panels without hiding them
         ax.set_zorder(3)
         ax.set_facecolor('none')
@@ -6326,7 +6409,28 @@ async def generate_sed_optimized(
         ax.set_xscale(SED_XSCALE)
         ax.set_yscale(yscale_mode)
         ax.set_xticks(sed_filter_wavelengths)
-        ax.set_xticklabels([SED_XTICK_LABEL_FORMAT.format(w=w) for w in sed_filter_wavelengths], rotation=SED_XTICK_ROTATION_DEGREES, fontsize=SED_FONTSIZE_TICKS)
+        # Keep dense profiles readable without removing any plotted points.
+        sed_tick_stride = max(1, int(np.ceil(len(sed_filter_wavelengths) / 14)))
+        sed_tick_labels = [
+            SED_XTICK_LABEL_FORMAT.format(w=w)
+            if (i % sed_tick_stride == 0 or i == len(sed_filter_wavelengths) - 1)
+            else ""
+            for i, w in enumerate(sed_filter_wavelengths)
+        ]
+        sed_tick_rotation = max(
+            float(SED_XTICK_ROTATION_DEGREES),
+            60.0 if sed_cutout_count > 16 else 45.0,
+        )
+        sed_tick_fontsize = min(
+            float(SED_FONTSIZE_TICKS),
+            8.0 if sed_cutout_count > 16 else 9.0,
+        )
+        ax.set_xticklabels(
+            sed_tick_labels,
+            rotation=sed_tick_rotation,
+            fontsize=sed_tick_fontsize,
+            ha="right",
+        )
         ax.set_xlim(SED_X_LIM_MIN, SED_X_LIM_MAX)
 
         # Only add legend if there are visible labeled artists
@@ -6364,7 +6468,7 @@ async def generate_sed_optimized(
             va="bottom",
             fontsize=SED_FONTSIZE_INFO,
             bbox=bbox,
-            zorder=100
+            zorder=1000
         )
 
         fig.canvas.draw()
@@ -6490,18 +6594,7 @@ async def generate_sed_optimized(
 
         def add_sed_no_data_inset(filter_name: str, wavelength: float, index: int, message: str = "No data"):
             try:
-                cutout_wavelength = resolve_sed_cutout_wavelength(filter_name, wavelength)
-                x_norm, _ = transform.transform(ax.transData.transform((cutout_wavelength, 0)))
-                x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0)
-                x_norm += resolve_sed_cutout_x_offset(filter_name, index)
-                ax_inset = inset_axes(
-                    ax,
-                    width=SED_INSET_WIDTH,
-                    height=SED_INSET_HEIGHT,
-                    loc='center',
-                    bbox_to_anchor=(x_norm, SED_CUTOUT_BASE_Y, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
-                    bbox_transform=fig.transFigure,
-                )
+                ax_inset = create_sed_cutout_axes(index)
                 ax_inset.imshow(np.zeros((12, 12)), origin='lower', cmap=SED_CUTOUT_CMAP, vmin=0, vmax=1)
                 ax_inset.text(
                     0.5,
@@ -6552,13 +6645,7 @@ async def generate_sed_optimized(
                     cutout_data[np.isnan(cutout_data)] = 0
                     cutout_data[np.isinf(cutout_data)] = 0
 
-                    x_norm, _ = transform.transform(ax.transData.transform((cutout_wavelength, 0)))
-                    x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0)
-                    x_norm += resolve_sed_cutout_x_offset(filter_name, i)
-
-                    ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
-                                          bbox_to_anchor=(x_norm, SED_CUTOUT_BASE_Y, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
-                                          bbox_transform=fig.transFigure)
+                    ax_inset = create_sed_cutout_axes(i)
 
                     # Determine instrument group and percentile, then resolve norm mode
                     if filter_name in sed_nircam_filters:
@@ -6666,9 +6753,9 @@ async def generate_sed_optimized(
                         cutout_data[np.isnan(cutout_data)] = 0
                         cutout_data[np.isinf(cutout_data)] = 0
                         x_norm, _ = transform.transform(ax.transData.transform((SED_HA_WAVELENGTH, 0)))
-                        x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0); x_norm += SED_HA_X_OFFSET
+                        x_norm = max(min(x_norm, 1 - SED_INSET_RIGHT_MARGIN), 0.0); x_norm += SED_HA_X_OFFSET+0.03
                         ax_inset = inset_axes(ax, width=SED_INSET_WIDTH, height=SED_INSET_HEIGHT, loc='center',
-                                             bbox_to_anchor=(x_norm, SED_HA_Y_POSITION, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
+                                             bbox_to_anchor=(x_norm, SED_HA_Y_POSITION-0.13, SED_INSET_BBOX_SIZE, SED_INSET_BBOX_SIZE),
                                              bbox_transform=fig.transFigure)
                         norm_mode = resolve_sed_norm_mode_for_filter('HA', default_group='HA')
                         norm = build_sed_norm(norm_mode, SED_HA_CUTOUT_DISPLAY_MAX_PERCENTILE, cutout_data)
@@ -6701,9 +6788,7 @@ async def generate_sed_optimized(
                 imgs_nircam[:, :, 1] = linear(nircam_cutouts['green'], scale_min=np.percentile(nircam_cutouts['green'], SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE), scale_max=np.nanpercentile(nircam_cutouts['green'], SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE))
                 imgs_nircam[:, :, 2] = linear(nircam_cutouts['blue'], scale_min=np.percentile(nircam_cutouts['blue'], SED_RGB_NIRCAM_COMPOSITE_MIN_PERCENTILE), scale_max=np.nanpercentile(nircam_cutouts['blue'], SED_RGB_NIRCAM_COMPOSITE_MAX_PERCENTILE))
                 
-                ax_nircam_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
-                                  bbox_to_anchor=(SED_RGB_NIRCAM_X, SED_RGB_NIRCAM_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
-                                  bbox_transform=fig.transFigure)
+                ax_nircam_rgb = create_sed_rgb_axes(SED_RGB_NIRCAM_X, SED_RGB_NIRCAM_Y)
                 
                 target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
                 region_sky_nircam = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
@@ -6727,9 +6812,7 @@ async def generate_sed_optimized(
                 imgs_miri[:, :, 1] = linear(miri_cutouts['green'], scale_min=np.percentile(miri_cutouts['green'], SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(miri_cutouts['green'], SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE))
                 imgs_miri[:, :, 2] = linear(miri_cutouts['blue'], scale_min=np.percentile(miri_cutouts['blue'], SED_RGB_MIRI_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(miri_cutouts['blue'], SED_RGB_MIRI_COMPOSITE_MAX_PERCENTILE))
                 
-                ax_miri_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
-                                  bbox_to_anchor=(SED_RGB_MIRI_X, SED_RGB_MIRI_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
-                                  bbox_transform=fig.transFigure)
+                ax_miri_rgb = create_sed_rgb_axes(SED_RGB_MIRI_X+0.015, SED_RGB_MIRI_Y)
                 
                 target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
                 region_sky_miri = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
@@ -6767,9 +6850,7 @@ async def generate_sed_optimized(
                 imgs_hst[:, :, 1] = linear(hst_cutouts['green'], scale_min=np.percentile(hst_cutouts['green'], SED_RGB_HST_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(hst_cutouts['green'], SED_RGB_HST_COMPOSITE_MAX_PERCENTILE))
                 imgs_hst[:, :, 2] = linear(hst_cutouts['blue'], scale_min=np.percentile(hst_cutouts['blue'], SED_RGB_HST_COMPOSITE_MIN_PERCENTILE), scale_max=np.percentile(hst_cutouts['blue'], SED_RGB_HST_COMPOSITE_MAX_PERCENTILE))
                 
-                ax_hst_rgb = inset_axes(ax, width=SED_RGB_WIDTH, height=SED_RGB_HEIGHT, loc='center',
-                                  bbox_to_anchor=(SED_RGB_HST_X, SED_RGB_HST_Y, SED_RGB_BBOX_SIZE, SED_RGB_BBOX_SIZE),
-                                  bbox_transform=fig.transFigure)
+                ax_hst_rgb = create_sed_rgb_axes(SED_RGB_HST_X, SED_RGB_HST_Y-0.007)
                 
                 target_coord_sky = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
                 region_sky_hst = CircleSkyRegion(center=target_coord_sky, radius=SED_CIRCLE_RADIUS_ARCSEC * u.arcsec)
@@ -6801,13 +6882,8 @@ async def generate_sed_optimized(
                 print(f"Error creating HST RGB: {e}")
         # 9) Save
         freeze_sed_inset_axes_for_save(fig, ax)
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning,
-                                        message="This figure includes Axes that are not compatible with tight_layout")
-                plt.tight_layout()
-        except Exception as e_layout:
-            print(f"Error during plt.tight_layout(): {e_layout}")
+        # Axes positions are explicitly managed by the automatic SED layout.
+        # tight_layout would move the main axis back into the cutout row.
 
         filename = SED_FILENAME_TEMPLATE.format(ra=ra, dec=dec)
         # Save into images/ under the current working directory (~/Neloura in the Qt app)
