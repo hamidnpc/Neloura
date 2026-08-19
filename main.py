@@ -38,6 +38,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.colors import PowerNorm, LogNorm
 from astropy.visualization import ImageNormalize
 from regions import (
+    Regions,
     CircleSkyRegion,
     CirclePixelRegion,
     EllipsePixelRegion,
@@ -1968,16 +1969,17 @@ async def admin_erase_uploads(request: Request):
     if not is_admin:
         return JSONResponse(status_code=403, content={"error": "Admin mode required"})
     try:
-        uploads_dir = Path(UPLOADS_DIRECTORY)
-        if uploads_dir.exists() and uploads_dir.is_dir():
-            for p in uploads_dir.iterdir():
-                try:
-                    if p.is_file() or p.is_symlink():
-                        p.unlink()
-                    elif p.is_dir():
-                        shutil.rmtree(p)
-                except Exception:
-                    continue
+        upload_dirs = [Path(UPLOADS_DIRECTORY), Path(FILES_DIRECTORY) / "regions"]
+        for uploads_dir in upload_dirs:
+            if uploads_dir.exists() and uploads_dir.is_dir():
+                for p in uploads_dir.iterdir():
+                    try:
+                        if p.is_file() or p.is_symlink():
+                            p.unlink()
+                        elif p.is_dir():
+                            shutil.rmtree(p)
+                    except Exception:
+                        continue
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -7460,23 +7462,24 @@ def _resolve_uploads_dir() -> Path:
 
 def _clean_uploads_dir_once() -> dict:
     global _CLEANER_LAST_RUN_TS, _CLEANER_LAST_PATH
-    uploads_dir = _resolve_uploads_dir()
+    upload_dirs = [_resolve_uploads_dir(), (Path(FILES_DIRECTORY) / "regions").resolve()]
     cleaned = 0
     errors = 0
-    if uploads_dir.exists() and uploads_dir.is_dir():
-        for p in uploads_dir.iterdir():
-            try:
-                if p.is_file() or p.is_symlink():
-                    p.unlink()
-                elif p.is_dir():
-                    shutil.rmtree(p)
-                cleaned += 1
-            except Exception:
-                errors += 1
-                continue
+    for uploads_dir in upload_dirs:
+        if uploads_dir.exists() and uploads_dir.is_dir():
+            for p in uploads_dir.iterdir():
+                try:
+                    if p.is_file() or p.is_symlink():
+                        p.unlink()
+                    elif p.is_dir():
+                        shutil.rmtree(p)
+                    cleaned += 1
+                except Exception:
+                    errors += 1
+                    continue
     _CLEANER_LAST_RUN_TS = time.time()
-    _CLEANER_LAST_PATH = str(uploads_dir)
-    return {"path": str(uploads_dir), "cleaned": cleaned, "errors": errors}
+    _CLEANER_LAST_PATH = ", ".join(str(path) for path in upload_dirs)
+    return {"path": _CLEANER_LAST_PATH, "cleaned": cleaned, "errors": errors}
 
 async def uploads_auto_clean_worker():
     """Periodically cleans files in UPLOADS_DIRECTORY if enabled by settings."""
@@ -10917,6 +10920,281 @@ async def download_file(filepath: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+REGION_UPLOAD_DIRECTORY = Path(FILES_DIRECTORY) / "regions"
+
+
+class RegionImportRequest(BaseModel):
+    filename: str
+    fits_path: Optional[str] = None
+    hdu_index: Optional[int] = None
+
+
+def _region_session_data(request: Request) -> dict:
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return session.data
+
+
+def _region_upload_path(filename: str) -> Path:
+    safe_name = Path(str(filename or "")).name
+    if not safe_name or safe_name != str(filename) or Path(safe_name).suffix.lower() != ".reg":
+        raise HTTPException(status_code=400, detail="A valid .reg filename is required")
+    target = (REGION_UPLOAD_DIRECTORY / safe_name).resolve()
+    base = REGION_UPLOAD_DIRECTORY.resolve()
+    if target.parent != base:
+        raise HTTPException(status_code=403, detail="Invalid region filename")
+    return target
+
+
+def _parse_ds9_regions(content: str):
+    import warnings
+
+    def _parse(text: str):
+        with warnings.catch_warnings(record=True) as caught_items:
+            warnings.simplefilter("always")
+            try:
+                result = Regions.parse(text, format="ds9")
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Malformed DS9 region file: {exc}") from exc
+        return result, [str(item.message) for item in caught_items if str(item.message).strip()]
+
+    parsed, parser_warnings = _parse(content)
+    coordinate_frames = re.compile(
+        r"(?im)^\s*(fk5|icrs|j2000|fk4|b1950|galactic|ecliptic|image|physical|detector|amplifier|linear)\s*$"
+    )
+    explicit_degree_coordinates = re.search(
+        r"(?im)^\s*(?:circle|ellipse|box|polygon|line|point|text|annulus)\s*\([^)]*\d(?:\.\d+)?d\s*,",
+        content,
+    )
+    if not parsed and not coordinate_frames.search(content) and explicit_degree_coordinates:
+        parsed, inferred_warnings = _parse(f"fk5\n{content}")
+        if parsed:
+            parser_warnings = [
+                "No DS9 coordinate frame was declared; coordinates with a 'd' suffix were interpreted as FK5."
+            ] + inferred_warnings
+    if not parsed:
+        raise HTTPException(status_code=400, detail="DS9 region file does not contain any supported shapes")
+    return parsed, parser_warnings
+
+
+def _region_float(value) -> float:
+    try:
+        result = float(value)
+    except Exception as exc:
+        raise ValueError(f"Invalid region coordinate: {value}") from exc
+    if not np.isfinite(result):
+        raise ValueError("Region coordinate is not finite")
+    return result
+
+
+def _region_point(value) -> dict:
+    return {"x": _region_float(value.x), "y": _region_float(value.y)}
+
+
+def _region_visual(region) -> dict:
+    visual = dict(getattr(region, "visual", {}) or {})
+    meta = dict(getattr(region, "meta", {}) or {})
+    color = visual.get("color") or visual.get("edgecolor") or meta.get("color") or "#38BDF8"
+    width = visual.get("linewidth") or meta.get("width") or 2
+    linestyle = visual.get("linestyle") or meta.get("dash") or "solid"
+    if isinstance(linestyle, (tuple, list)):
+        linestyle = "dashed"
+    label = meta.get("text") or getattr(region, "text", "") or ""
+    return {
+        "borderColor": str(color),
+        "borderWidth": max(0.5, min(16.0, _region_float(width))),
+        "borderStyle": str(linestyle),
+        "label": str(label),
+    }
+
+
+def _pixel_region_to_canvas_shape(region, index: int, source_name: str) -> dict:
+    class_name = region.__class__.__name__
+    visual = _region_visual(region)
+    shape = {
+        "id": f"imported-{hashlib.sha1(source_name.encode('utf-8')).hexdigest()[:10]}-{index}",
+        "source": "ds9",
+        "sourceFile": source_name,
+        "importGroup": source_name,
+        "createdAt": int(time.time() * 1000),
+        **visual,
+    }
+
+    if class_name == "CirclePixelRegion":
+        shape.update(type="circle", center=_region_point(region.center),
+                     radius=_region_float(region.radius), readOnly=False)
+    elif class_name == "RectanglePixelRegion":
+        center = _region_point(region.center)
+        width = _region_float(region.width)
+        height = _region_float(region.height)
+        angle = _region_float(region.angle.to_value(u.deg))
+        if abs(angle) < 1e-10:
+            shape.update(
+                type="rectangle",
+                x1=center["x"] - width / 2.0,
+                y1=center["y"] - height / 2.0,
+                x2=center["x"] + width / 2.0,
+                y2=center["y"] + height / 2.0,
+                readOnly=False,
+            )
+        else:
+            shape.update(type="rotated_rectangle", center=center, width=width,
+                         height=height, angle=angle, readOnly=True)
+    elif class_name == "EllipsePixelRegion":
+        angle = _region_float(region.angle.to_value(u.deg))
+        shape.update(
+            type="ellipse",
+            center=_region_point(region.center),
+            radiusX=_region_float(region.width) / 2.0,
+            radiusY=_region_float(region.height) / 2.0,
+            angle=angle,
+            readOnly=abs(angle) >= 1e-10,
+        )
+    elif class_name == "PolygonPixelRegion":
+        vertices = [
+            {"x": _region_float(x), "y": _region_float(y)}
+            for x, y in zip(region.vertices.x, region.vertices.y)
+        ]
+        shape.update(type="polygon", vertices=vertices, readOnly=True)
+    elif class_name in {"CircleAnnulusPixelRegion", "EllipseAnnulusPixelRegion",
+                        "RectangleAnnulusPixelRegion"}:
+        shape.update(type="annulus", annulusType=class_name.replace("PixelRegion", ""),
+                     center=_region_point(region.center), readOnly=True)
+        if class_name == "CircleAnnulusPixelRegion":
+            shape.update(innerRadius=_region_float(region.inner_radius),
+                         outerRadius=_region_float(region.outer_radius))
+        else:
+            shape.update(
+                innerWidth=_region_float(region.inner_width),
+                outerWidth=_region_float(region.outer_width),
+                innerHeight=_region_float(region.inner_height),
+                outerHeight=_region_float(region.outer_height),
+                angle=_region_float(region.angle.to_value(u.deg)),
+            )
+    elif class_name == "LinePixelRegion":
+        shape.update(type="line", start=_region_point(region.start),
+                     end=_region_point(region.end), readOnly=True)
+    elif class_name == "PointPixelRegion":
+        shape.update(type="point", center=_region_point(region.center), readOnly=True)
+    elif class_name == "TextPixelRegion":
+        shape.update(type="text", center=_region_point(region.center),
+                     text=str(region.text or visual["label"] or ""), readOnly=True)
+        if not shape["label"]:
+            shape["label"] = shape["text"]
+    else:
+        raise ValueError(f"Unsupported DS9 geometry: {class_name}")
+    return shape
+
+
+def _resolve_region_import_wcs(session_data: dict, payload: RegionImportRequest):
+    fits_path = payload.fits_path or session_data.get("current_fits_file")
+    hdu_index = int(
+        payload.hdu_index
+        if payload.hdu_index is not None
+        else session_data.get("current_hdu_index", 0)
+    )
+    if not fits_path:
+        return None
+    path = Path(str(fits_path))
+    if not path.exists() and not path.is_absolute():
+        path = Path(FILES_DIRECTORY) / path
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Active FITS file not found: {fits_path}")
+    try:
+        with fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+            if not (0 <= hdu_index < len(hdul)):
+                raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu_index}")
+            header = _prepare_jwst_header_for_wcs(hdul[hdu_index].header)
+            wcs_obj = WCS(header)
+            if getattr(wcs_obj, "has_celestial", False):
+                wcs_obj = wcs_obj.celestial
+            return wcs_obj
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to read active image WCS: {exc}") from exc
+
+
+@app.post("/regions/upload")
+async def upload_ds9_region(request: Request, file: UploadFile = File(...)):
+    _region_session_data(request)
+    original_name = Path(file.filename or "").name
+    if Path(original_name).suffix.lower() != ".reg":
+        raise HTTPException(status_code=400, detail="Only DS9 .reg files are accepted")
+    content_bytes = await file.read()
+    try:
+        content = content_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Region file must be UTF-8 text") from exc
+    parsed, parser_warnings = _parse_ds9_regions(content)
+
+    REGION_UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    safe_stem = _safe_filename_component(Path(original_name).stem, "regions")
+    stored_name = f"{safe_stem}.reg"
+    target = _region_upload_path(stored_name)
+    if target.exists():
+        stored_name = f"{safe_stem}-{secrets.token_hex(4)}.reg"
+        target = _region_upload_path(stored_name)
+    target.write_bytes(content_bytes)
+    return {
+        "filename": stored_name,
+        "original_name": original_name,
+        "shape_count": len(parsed),
+        "warnings": parser_warnings,
+    }
+
+
+@app.get("/regions/files")
+async def list_ds9_regions(request: Request):
+    _region_session_data(request)
+    REGION_UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    files = []
+    for path in sorted(REGION_UPLOAD_DIRECTORY.glob("*.reg"), key=lambda item: item.stat().st_mtime, reverse=True):
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        files.append({
+            "filename": path.name,
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+        })
+    return {"files": files}
+
+
+@app.post("/regions/open")
+async def open_ds9_region(payload: RegionImportRequest, request: Request):
+    session_data = _region_session_data(request)
+    path = _region_upload_path(payload.filename)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Region file not found")
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Region file must be UTF-8 text") from exc
+    parsed, parser_warnings = _parse_ds9_regions(content)
+    needs_wcs = any(region.__class__.__name__.endswith("SkyRegion") for region in parsed)
+    wcs_obj = _resolve_region_import_wcs(session_data, payload) if needs_wcs else None
+    if needs_wcs and (wcs_obj is None or not getattr(wcs_obj, "has_celestial", False)):
+        raise HTTPException(status_code=400, detail="A celestial WCS is required for sky-coordinate regions")
+
+    shapes = []
+    conversion_warnings = []
+    for index, region in enumerate(parsed):
+        try:
+            pixel_region = region.to_pixel(wcs_obj) if region.__class__.__name__.endswith("SkyRegion") else region
+            shapes.append(_pixel_region_to_canvas_shape(pixel_region, index, path.name))
+        except Exception as exc:
+            conversion_warnings.append(f"Region {index + 1}: {exc}")
+    return {
+        "filename": path.name,
+        "shapes": shapes,
+        "warnings": parser_warnings + conversion_warnings,
+        "shape_count": len(shapes),
+    }
+
 
 class RegionVertex(BaseModel):
     x: float
