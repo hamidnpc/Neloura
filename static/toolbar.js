@@ -343,10 +343,15 @@
             dropdown.className = 'region-tool-dropdown';
             Object.assign(dropdown.style, {
                 position: 'absolute',
-                top: 'calc(100% + 20px)',
+                top: 'calc(100% + 8px)',
                 right: '0',
                 // Ensure region type icons fit in a single row
-                minWidth: '220px',
+                width: '380px',
+                minWidth: '380px',
+                maxWidth: '380px',
+                maxHeight: '300px',
+                overflowY: 'auto',
+                fontFamily: "'Raleway', sans-serif",
                 /* iOS-style glass (less transparent, more blur) */
                 background: 'rgba(18, 18, 20, 0.88)',
                 border: '1px solid rgba(255, 255, 255, 0.16)',
@@ -354,11 +359,11 @@
                 boxShadow: '0 18px 50px rgba(0,0,0,0.55)',
                 backdropFilter: 'saturate(200%) blur(24px)',
                 WebkitBackdropFilter: 'saturate(200%) blur(24px)',
-                padding: '8px',
+                padding: '0',
                 display: 'none',
                 flexDirection: 'column',
-                gap: '4px',
-                zIndex: '5000'
+                gap: '0',
+                zIndex: '60000'
             });
 
             const sectionLabel = (text) => {
@@ -453,8 +458,8 @@
             Object.assign(regionTypesRow.style, {
                 display: 'flex',
                 flexWrap: 'nowrap',
-                justifyContent: 'space-between',
-                gap: '6px',
+                justifyContent: 'center',
+                gap: '8px',
                 padding: '4px 6px 6px'
             });
             regionOptions.forEach((opt) => {
@@ -479,8 +484,268 @@
             });
             dropdown.appendChild(regionTypesRow);
 
-            dropdown.appendChild(sectionLabel('Actions'));
+            const uploadBtn = makeOptionButton({
+                id: '__upload_region__',
+                label: 'Upload Region',
+                hint: 'Upload a DS9 .reg file'
+            });
+            uploadBtn.classList.add('region-menu-action');
+            const regionFileInput = document.createElement('input');
+            regionFileInput.type = 'file';
+            regionFileInput.accept = '.reg';
+            regionFileInput.style.display = 'none';
+            const regionSearchWrap = document.createElement('div');
+            regionSearchWrap.className = 'region-search-wrap';
+            regionSearchWrap.style.display = 'none';
+            const regionSearchInput = document.createElement('input');
+            regionSearchInput.type = 'text';
+            regionSearchInput.className = 'region-search-input';
+            regionSearchInput.placeholder = 'Search regions...';
+            regionSearchInput.autocomplete = 'off';
+            regionSearchInput.spellcheck = false;
+            regionSearchWrap.appendChild(regionSearchInput);
+            const uploadedList = document.createElement('div');
+            uploadedList.className = 'region-uploaded-list';
+            uploadedList.style.display = 'none';
+
+            const getTargetSid = (target) => {
+                try {
+                    const params = new URLSearchParams(target.location.search || '');
+                    return target.__forcedSid || target.__sid || params.get('sid') || params.get('pane_sid')
+                        || (target.sessionStorage && target.sessionStorage.getItem('sid')) || null;
+                } catch (_) {
+                    try { return window.__sid || sessionStorage.getItem('sid') || null; } catch (__) { return null; }
+                }
+            };
+            const ensureTargetSid = async (target) => {
+                const existing = getTargetSid(target);
+                if (existing) return existing;
+                const response = await fetch('/session/start', { credentials: 'same-origin' });
+                const body = await response.json().catch(() => ({}));
+                if (!response.ok || !body.session_id) throw new Error('Unable to start a region session');
+                try { target.__sid = body.session_id; } catch (_) {}
+                if (target === window) {
+                    try { window.__sid = body.session_id; } catch (_) {}
+                    try { sessionStorage.setItem('sid', body.session_id); } catch (_) {}
+                }
+                return body.session_id;
+            };
+            const regionRequestHeaders = (target, extra) => {
+                const headers = Object.assign({}, extra || {});
+                const sid = getTargetSid(target);
+                if (sid) headers['X-Session-ID'] = sid;
+                return headers;
+            };
+            const getRegionNotificationHost = () => {
+                const hosts = [window];
+                try {
+                    const target = getRegionTargetWindow();
+                    if (target && target !== window) hosts.push(target);
+                } catch (_) {}
+                for (const host of hosts) {
+                    try {
+                        if (host && typeof host.showNotification === 'function') return host;
+                    } catch (_) {}
+                }
+                return null;
+            };
+            const showRegionNotification = (message, type = 'error', duration = 4500) => {
+                const text = String(message || '').trim();
+                if (!text) return;
+                const host = getRegionNotificationHost();
+                if (host) {
+                    host.showNotification(text, duration, type);
+                    return;
+                }
+                if (type === 'error') console.error(`[regions] ${text}`);
+                else console.warn(`[regions] ${text}`);
+            };
+            const showRegionLoading = (message) => {
+                const host = getRegionNotificationHost();
+                if (host) host.showNotification(true, String(message || 'Loading regions…'));
+            };
+            const clearRegionLoading = () => {
+                const host = getRegionNotificationHost();
+                if (host) host.showNotification(false);
+            };
+            const regionErrorMessage = (error, fallback) => {
+                const message = String(error && error.message ? error.message : fallback || 'Region operation failed');
+                if (/^(not found|unable to list region files)$/i.test(message.trim())) {
+                    return 'Region upload service is unavailable. Restart the server and try again.';
+                }
+                return message;
+            };
+            const applyRegionFilter = () => {
+                const query = String(regionSearchInput.value || '').trim().toLowerCase();
+                const files = Array.from(uploadedList.querySelectorAll('.region-uploaded-file'));
+                let shown = 0;
+                files.forEach((item) => {
+                    const matches = !query || String(item.textContent || '').toLowerCase().includes(query);
+                    item.style.display = matches ? '' : 'none';
+                    if (matches) shown += 1;
+                });
+                let noMatches = uploadedList.querySelector('.region-no-matches');
+                if (query && files.length && shown === 0) {
+                    if (!noMatches) {
+                        noMatches = document.createElement('div');
+                        noMatches.className = 'region-uploaded-empty region-no-matches';
+                        noMatches.textContent = 'No matches.';
+                        uploadedList.appendChild(noMatches);
+                    }
+                    noMatches.style.display = 'block';
+                } else if (noMatches) {
+                    noMatches.style.display = 'none';
+                }
+            };
+            let regionSearchTimer = null;
+            regionSearchInput.addEventListener('input', () => {
+                if (regionSearchTimer) clearTimeout(regionSearchTimer);
+                regionSearchTimer = setTimeout(applyRegionFilter, 80);
+            });
+            const refreshUploadedRegions = async () => {
+                const target = getRegionTargetWindow();
+                uploadedList.textContent = '';
+                regionSearchWrap.style.display = 'none';
+                uploadedList.style.display = 'none';
+                try {
+                    await ensureTargetSid(target);
+                    const response = await fetch('/regions/files', {
+                        credentials: 'same-origin',
+                        headers: regionRequestHeaders(target)
+                    });
+                    const body = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(body.detail || 'Unable to list region files');
+                    uploadedList.textContent = '';
+                    const files = Array.isArray(body.files) ? body.files : [];
+                    if (!files.length) {
+                        return;
+                    }
+                    regionSearchWrap.style.display = 'block';
+                    uploadedList.style.display = 'flex';
+                    files.forEach((item) => {
+                        const fileBtn = document.createElement('button');
+                        fileBtn.type = 'button';
+                        fileBtn.className = 'region-uploaded-file';
+                        fileBtn.textContent = item.filename || 'Unnamed region';
+                        fileBtn.title = `Show ${item.filename || 'region file'} in the active pane`;
+                        fileBtn.addEventListener('click', async (event) => {
+                            event.preventDefault();
+                            const pane = getRegionTargetWindow();
+                            if (!pane || typeof pane.loadDs9RegionFile !== 'function') {
+                                showRegionNotification('Active pane is not ready for regions.');
+                                return;
+                            }
+                            fileBtn.disabled = true;
+                            showRegionLoading(`Loading ${item.filename}…`);
+                            try {
+                                const result = await pane.loadDs9RegionFile(item.filename);
+                                const warningCount = result && Array.isArray(result.warnings) ? result.warnings.length : 0;
+                                clearRegionLoading();
+                                const shownCount = result && Number.isFinite(Number(result.shape_count))
+                                    ? Number(result.shape_count)
+                                    : 0;
+                                showRegionNotification(
+                                    `${shownCount} region${shownCount === 1 ? '' : 's'} shown from ${item.filename}.`,
+                                    'success',
+                                    3000
+                                );
+                                if (warningCount) {
+                                    console.warn(`[regions] ${item.filename} opened with ${warningCount} warning(s)`, result.warnings);
+                                    showRegionNotification(
+                                        `${item.filename} opened with ${warningCount} parser warning(s). See the browser console for details.`,
+                                        'warning',
+                                        5000
+                                    );
+                                }
+                                dropdown.style.display = 'none';
+                            } catch (error) {
+                                clearRegionLoading();
+                                showRegionNotification(regionErrorMessage(error, 'Unable to open region file'));
+                            } finally {
+                                fileBtn.disabled = false;
+                            }
+                        });
+                        uploadedList.appendChild(fileBtn);
+                    });
+                    applyRegionFilter();
+                } catch (error) {
+                    uploadedList.textContent = '';
+                    uploadedList.style.display = 'none';
+                    regionSearchWrap.style.display = 'none';
+                    showRegionNotification(regionErrorMessage(error, 'Unable to list region files'));
+                }
+            };
+            uploadBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                regionFileInput.value = '';
+                regionFileInput.click();
+            });
+            regionFileInput.addEventListener('change', async () => {
+                const file = regionFileInput.files && regionFileInput.files[0];
+                if (!file) return;
+                if (!String(file.name || '').toLowerCase().endsWith('.reg')) {
+                    showRegionNotification('Only .reg files are accepted.');
+                    return;
+                }
+                const target = getRegionTargetWindow();
+                const form = new FormData();
+                form.append('file', file, file.name);
+                uploadBtn.disabled = true;
+                const progressContainer = document.getElementById('progress-container');
+                const progressBar = document.getElementById('progress-bar');
+                const progressEta = document.getElementById('progress-eta');
+                const showUploadProgress = (show) => {
+                    if (!progressContainer) return;
+                    progressContainer.style.display = show ? '' : 'none';
+                    if (progressEta && show) progressEta.textContent = 'Uploading region...';
+                };
+                const updateUploadProgress = (percent) => {
+                    const value = Math.max(0, Math.min(100, Number(percent || 0)));
+                    if (progressBar) progressBar.style.strokeDashoffset = String(100 - value);
+                    if (progressEta) progressEta.textContent = `${Math.round(value)}%`;
+                };
+                try {
+                    await ensureTargetSid(target);
+                    showUploadProgress(true);
+                    updateUploadProgress(0);
+                    const body = await new Promise((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/regions/upload', true);
+                        const sid = getTargetSid(target);
+                        if (sid) xhr.setRequestHeader('X-Session-ID', sid);
+                        xhr.upload.onprogress = (uploadEvent) => {
+                            if (uploadEvent.lengthComputable) {
+                                updateUploadProgress((uploadEvent.loaded / Math.max(1, uploadEvent.total)) * 100);
+                            }
+                        };
+                        xhr.onload = () => {
+                            let responseBody = {};
+                            try { responseBody = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                updateUploadProgress(100);
+                                resolve(responseBody);
+                            } else {
+                                reject(new Error(responseBody.detail || responseBody.error || `Region upload failed (${xhr.status})`));
+                            }
+                        };
+                        xhr.onerror = () => reject(new Error('Network error while uploading region file'));
+                        xhr.send(form);
+                    });
+                    showRegionNotification(`${body.filename} uploaded`, 'success', 3000);
+                    await refreshUploadedRegions();
+                } catch (error) {
+                    showRegionNotification(regionErrorMessage(error, 'Region upload failed'));
+                } finally {
+                    showUploadProgress(false);
+                    updateUploadProgress(0);
+                    uploadBtn.disabled = false;
+                }
+            });
+            dropdown.appendChild(uploadBtn);
+            dropdown.appendChild(regionFileInput);
+
             const removeBtn = makeOptionButton({ id: '__remove__', label: 'Remove All Regions', hint: 'Clear every drawn region' });
+            removeBtn.classList.add('region-menu-action');
             removeBtn.style.color = '#FCA5A5';
             removeBtn.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -497,11 +762,14 @@
                 }
             });
             dropdown.appendChild(removeBtn);
+            dropdown.appendChild(regionSearchWrap);
+            dropdown.appendChild(uploadedList);
 
             let hideTimeout = null;
             const showDropdown = () => {
                 clearTimeout(hideTimeout);
                 dropdown.style.display = 'flex';
+                refreshUploadedRegions();
             };
             const hideDropdown = () => {
                 hideTimeout = setTimeout(() => { dropdown.style.display = 'none'; }, 150);

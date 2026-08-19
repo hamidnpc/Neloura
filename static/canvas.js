@@ -4081,6 +4081,89 @@ function _restoreRegionsFromSerialized(shapes) {
     }
 }
 
+function _flipImportedRegionShapeY(shape) {
+    const height = getImageHeight();
+    if (!shape || height == null || !window?.fitsData?.flip_y) return shape;
+    const flipPoint = (point) => {
+        if (point && Number.isFinite(Number(point.y))) point.y = (height - 1) - Number(point.y);
+    };
+    flipPoint(shape.center);
+    flipPoint(shape.start);
+    flipPoint(shape.end);
+    if (Array.isArray(shape.vertices)) shape.vertices.forEach(flipPoint);
+    if (Number.isFinite(Number(shape.y1))) shape.y1 = (height - 1) - Number(shape.y1);
+    if (Number.isFinite(Number(shape.y2))) shape.y2 = (height - 1) - Number(shape.y2);
+    if (Number.isFinite(Number(shape.angle))) shape.angle = -Number(shape.angle);
+    return shape;
+}
+
+function _fitViewerToRegionShapes(shapes) {
+    const viewer = getActiveOsdViewer();
+    if (!viewer || !viewer.viewport || !Array.isArray(shapes) || !shapes.length
+        || typeof OpenSeadragon === 'undefined') return;
+    const points = [];
+    shapes.forEach((shape) => getRegionShapeImageSamples(shape).forEach((point) => points.push(point)));
+    if (!points.length) return;
+    const xs = points.map((point) => Number(point.x)).filter(Number.isFinite);
+    const ys = points.map((point) => Number(point.y)).filter(Number.isFinite);
+    if (!xs.length || !ys.length) return;
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const pad = Math.max(10, Math.max(maxX - minX, maxY - minY) * 0.12);
+    try {
+        const tiledImage = viewer.world && viewer.world.getItemAt && viewer.world.getItemAt(0);
+        if (!tiledImage || typeof tiledImage.imageToViewportRectangle !== 'function') return;
+        const rect = tiledImage.imageToViewportRectangle(
+            new OpenSeadragon.Rect(minX - pad, minY - pad, Math.max(2, maxX - minX + pad * 2), Math.max(2, maxY - minY + pad * 2))
+        );
+        viewer.viewport.fitBounds(rect, false);
+    } catch (error) {
+        console.warn('[regions] Unable to fit imported regions', error);
+    }
+}
+
+async function loadDs9RegionFile(filename) {
+    if (!filename) throw new Error('A region filename is required');
+    if (!window.__sid) {
+        const sessionResponse = await fetch('/session/start', { credentials: 'same-origin' });
+        const sessionBody = await sessionResponse.json().catch(() => ({}));
+        if (!sessionResponse.ok || !sessionBody.session_id) throw new Error('Unable to start a region session');
+        window.__sid = sessionBody.session_id;
+        try { sessionStorage.setItem('sid', sessionBody.session_id); } catch (_) {}
+    }
+    const headers = { 'Content-Type': 'application/json' };
+    if (window.__sid) headers['X-Session-ID'] = window.__sid;
+    const response = await fetch('/regions/open', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify({
+            filename,
+            fits_path: window.currentFitsFile || (window.fitsData && window.fitsData.filename) || null,
+            hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
+        })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || 'Unable to open DS9 region file');
+    const imported = (Array.isArray(body.shapes) ? body.shapes : [])
+        .map((shape) => _flipImportedRegionShapeY(shape));
+    regionDrawingState.shapes = regionDrawingState.shapes
+        .filter((shape) => !shape || shape.source !== 'ds9')
+        .concat(imported);
+    regionDrawingState.previewShape = null;
+    regionDrawingState.selectedShapeId = null;
+    ensureRegionInfrastructure();
+    renderRegionOverlay();
+    refreshRegionMouseModeBar();
+    window.requestAnimationFrame(() => _fitViewerToRegionShapes(imported));
+    if (Array.isArray(body.warnings) && body.warnings.length) {
+        console.warn(`[regions] ${filename} imported with warnings`, body.warnings);
+    }
+    return body;
+}
+
 function _getRgbZoomInsetChannels() {
     let info = null;
     try {
@@ -5273,6 +5356,17 @@ function attachRegionViewerHandlers(viewer) {
                     return;
                 }
             }
+            const readOnlyHit = hitTestRegions(imagePoint);
+            if (readOnlyHit && readOnlyHit.readOnly) {
+                regionDrawingState.selectedShapeId = readOnlyHit.id;
+                regionDrawingState.isDrawing = false;
+                regionDrawingState.startImagePoint = null;
+                regionDrawingState.currentImagePoint = null;
+                regionDrawingState.previewShape = null;
+                if (event) event.preventDefaultAction = true;
+                renderRegionOverlay();
+                return;
+            }
         }
 
         if (!regionDrawingState.activeTool) {
@@ -5689,6 +5783,15 @@ function hitTestRegions(imagePoint) {
 
 function isPointInsideShape(shape, point) {
     if (!shape || !point) return false;
+    const rotateIntoShape = (center, angleDegrees) => {
+        const angle = -(Number(angleDegrees) || 0) * Math.PI / 180;
+        const dx = point.x - center.x;
+        const dy = point.y - center.y;
+        return {
+            x: dx * Math.cos(angle) - dy * Math.sin(angle),
+            y: dx * Math.sin(angle) + dy * Math.cos(angle)
+        };
+    };
 
     if (shape.type === 'circle') {
         const dx = point.x - shape.center.x;
@@ -5705,8 +5808,9 @@ function isPointInsideShape(shape, point) {
     }
 
     if (shape.type === 'ellipse') {
-        const dx = point.x - shape.center.x;
-        const dy = point.y - shape.center.y;
+        const local = rotateIntoShape(shape.center, shape.angle);
+        const dx = local.x;
+        const dy = local.y;
         const rx = Math.max(shape.radiusX, 1);
         const ry = Math.max(shape.radiusY, 1);
         const value = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
@@ -5718,7 +5822,105 @@ function isPointInsideShape(shape, point) {
         return pointInPolygon(point, vertices);
     }
 
+    if (shape.type === 'rotated_rectangle' && shape.center) {
+        const local = rotateIntoShape(shape.center, shape.angle);
+        return Math.abs(local.x) <= Math.max(1, Number(shape.width) / 2)
+            && Math.abs(local.y) <= Math.max(1, Number(shape.height) / 2);
+    }
+
+    if (shape.type === 'polygon' && Array.isArray(shape.vertices)) {
+        return pointInPolygon(point, shape.vertices);
+    }
+
+    if (shape.type === 'annulus' && shape.center) {
+        const local = rotateIntoShape(shape.center, shape.angle);
+        if (shape.annulusType === 'CircleAnnulus') {
+            const distance = Math.hypot(local.x, local.y);
+            return distance >= Number(shape.innerRadius) && distance <= Number(shape.outerRadius);
+        }
+        const outerX = Math.max(1, Number(shape.outerWidth) / 2);
+        const outerY = Math.max(1, Number(shape.outerHeight) / 2);
+        const innerX = Math.max(1, Number(shape.innerWidth) / 2);
+        const innerY = Math.max(1, Number(shape.innerHeight) / 2);
+        const outerValue = (local.x * local.x) / (outerX * outerX) + (local.y * local.y) / (outerY * outerY);
+        const innerValue = (local.x * local.x) / (innerX * innerX) + (local.y * local.y) / (innerY * innerY);
+        if (shape.annulusType === 'RectangleAnnulus') {
+            const inOuter = Math.abs(local.x) <= outerX && Math.abs(local.y) <= outerY;
+            const inInner = Math.abs(local.x) < innerX && Math.abs(local.y) < innerY;
+            return inOuter && !inInner;
+        }
+        return outerValue <= 1 && innerValue >= 1;
+    }
+
+    if (shape.type === 'line' && shape.start && shape.end) {
+        return isPixelNearSegment(point, shape.start, shape.end, 5);
+    }
+
+    if ((shape.type === 'point' || shape.type === 'text') && shape.center) {
+        return Math.hypot(point.x - shape.center.x, point.y - shape.center.y) <= 8;
+    }
+
     return false;
+}
+
+function getRegionShapeImageSamples(shape) {
+    if (!shape) return [];
+    const ellipsePoints = (center, rx, ry, angleDegrees, count = 48) => {
+        if (!center) return [];
+        const angle = (Number(angleDegrees) || 0) * Math.PI / 180;
+        const cosAngle = Math.cos(angle);
+        const sinAngle = Math.sin(angle);
+        const points = [];
+        for (let index = 0; index < count; index += 1) {
+            const phase = (index / count) * Math.PI * 2;
+            const x = Number(rx) * Math.cos(phase);
+            const y = Number(ry) * Math.sin(phase);
+            points.push({
+                x: center.x + x * cosAngle - y * sinAngle,
+                y: center.y + x * sinAngle + y * cosAngle
+            });
+        }
+        return points;
+    };
+    const rectanglePoints = (center, width, height, angleDegrees) => {
+        if (!center) return [];
+        const angle = (Number(angleDegrees) || 0) * Math.PI / 180;
+        const cosAngle = Math.cos(angle);
+        const sinAngle = Math.sin(angle);
+        return [
+            [-Number(width) / 2, -Number(height) / 2],
+            [Number(width) / 2, -Number(height) / 2],
+            [Number(width) / 2, Number(height) / 2],
+            [-Number(width) / 2, Number(height) / 2]
+        ].map(([x, y]) => ({
+            x: center.x + x * cosAngle - y * sinAngle,
+            y: center.y + x * sinAngle + y * cosAngle
+        }));
+    };
+
+    if (shape.type === 'circle') return ellipsePoints(shape.center, shape.radius, shape.radius, 0);
+    if (shape.type === 'ellipse') return ellipsePoints(shape.center, shape.radiusX, shape.radiusY, shape.angle);
+    if (shape.type === 'hexagon') return buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY);
+    if (shape.type === 'rectangle') {
+        return [
+            { x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y1 },
+            { x: shape.x2, y: shape.y2 }, { x: shape.x1, y: shape.y2 }
+        ];
+    }
+    if (shape.type === 'rotated_rectangle') return rectanglePoints(shape.center, shape.width, shape.height, shape.angle);
+    if (shape.type === 'polygon') return Array.isArray(shape.vertices) ? shape.vertices : [];
+    if (shape.type === 'line') return [shape.start, shape.end].filter(Boolean);
+    if (shape.type === 'point' || shape.type === 'text') return shape.center ? [shape.center] : [];
+    if (shape.type === 'annulus') {
+        if (shape.annulusType === 'CircleAnnulus') {
+            return ellipsePoints(shape.center, shape.outerRadius, shape.outerRadius, 0);
+        }
+        if (shape.annulusType === 'RectangleAnnulus') {
+            return rectanglePoints(shape.center, shape.outerWidth, shape.outerHeight, shape.angle);
+        }
+        return ellipsePoints(shape.center, Number(shape.outerWidth) / 2, Number(shape.outerHeight) / 2, shape.angle);
+    }
+    return [];
 }
 
 function renderRegionOverlay() {
@@ -5994,17 +6196,17 @@ function drawRegionShape(ctx, shape, options = {}) {
     }
 
     if (shape.type === 'ellipse') {
-        const centerScreen = imagePointToScreen(shape.center);
-        const xAxisPoint = imagePointToScreen({ x: shape.center.x + shape.radiusX, y: shape.center.y });
-        const yAxisPoint = imagePointToScreen({ x: shape.center.x, y: shape.center.y + shape.radiusY });
-        if (!centerScreen || !xAxisPoint || !yAxisPoint) {
+        const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+        if (vertices.length < 3) {
             ctx.restore();
             return;
         }
-        const radiusX = Math.sqrt(Math.pow(xAxisPoint.x - centerScreen.x, 2) + Math.pow(xAxisPoint.y - centerScreen.y, 2));
-        const radiusY = Math.sqrt(Math.pow(yAxisPoint.x - centerScreen.x, 2) + Math.pow(yAxisPoint.y - centerScreen.y, 2));
         ctx.beginPath();
-        ctx.ellipse(centerScreen.x, centerScreen.y, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.moveTo(vertices[0].x, vertices[0].y);
+        for (let index = 1; index < vertices.length; index += 1) {
+            ctx.lineTo(vertices[index].x, vertices[index].y);
+        }
+        ctx.closePath();
         ctx.stroke();
         ctx.restore();
         return;
@@ -6029,6 +6231,90 @@ function drawRegionShape(ctx, shape, options = {}) {
         return;
     }
 
+    if (shape.type === 'rotated_rectangle' || shape.type === 'polygon') {
+        const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+        if (vertices.length >= 3) {
+            ctx.beginPath();
+            ctx.moveTo(vertices[0].x, vertices[0].y);
+            for (let index = 1; index < vertices.length; index += 1) {
+                ctx.lineTo(vertices[index].x, vertices[index].y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'annulus') {
+        const drawLoop = (sampleShape) => {
+            const vertices = getRegionShapeImageSamples(sampleShape).map(imagePointToScreen).filter(Boolean);
+            if (vertices.length < 3) return;
+            ctx.beginPath();
+            ctx.moveTo(vertices[0].x, vertices[0].y);
+            for (let index = 1; index < vertices.length; index += 1) ctx.lineTo(vertices[index].x, vertices[index].y);
+            ctx.closePath();
+            ctx.stroke();
+        };
+        drawLoop(shape);
+        if (shape.annulusType === 'CircleAnnulus') {
+            drawLoop({ type: 'circle', center: shape.center, radius: shape.innerRadius });
+        } else if (shape.annulusType === 'RectangleAnnulus') {
+            drawLoop({
+                type: 'rotated_rectangle', center: shape.center,
+                width: shape.innerWidth, height: shape.innerHeight, angle: shape.angle
+            });
+        } else {
+            drawLoop({
+                type: 'ellipse', center: shape.center,
+                radiusX: Number(shape.innerWidth) / 2,
+                radiusY: Number(shape.innerHeight) / 2,
+                angle: shape.angle
+            });
+        }
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'line') {
+        const start = imagePointToScreen(shape.start);
+        const end = imagePointToScreen(shape.end);
+        if (start && end) {
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+        }
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'point') {
+        const center = imagePointToScreen(shape.center);
+        if (center) {
+            const radius = 5;
+            ctx.beginPath();
+            ctx.moveTo(center.x - radius, center.y);
+            ctx.lineTo(center.x + radius, center.y);
+            ctx.moveTo(center.x, center.y - radius);
+            ctx.lineTo(center.x, center.y + radius);
+            ctx.stroke();
+        }
+        ctx.restore();
+        return;
+    }
+
+    if (shape.type === 'text') {
+        const center = imagePointToScreen(shape.center);
+        if (center) {
+            ctx.font = '600 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.fillText(String(shape.text || shape.label || ''), center.x + 4, center.y - 4);
+        }
+        ctx.restore();
+        return;
+    }
+
     ctx.restore();
 }
 
@@ -6049,40 +6335,7 @@ function canvasRoundRectPath(ctx, x, y, w, h, r) {
 
 function getShapeLabelAnchorScreen(shape) {
     if (!shape) return null;
-    const samples = [];
-    if (shape.type === 'circle' && shape.center && Number.isFinite(shape.radius)) {
-        const n = 16;
-        for (let i = 0; i < n; i += 1) {
-            const a = (i / n) * Math.PI * 2;
-            samples.push({
-                x: shape.center.x + shape.radius * Math.cos(a),
-                y: shape.center.y + shape.radius * Math.sin(a)
-            });
-        }
-    } else if (shape.type === 'rectangle') {
-        samples.push(
-            { x: shape.x1, y: shape.y1 },
-            { x: shape.x2, y: shape.y1 },
-            { x: shape.x1, y: shape.y2 },
-            { x: shape.x2, y: shape.y2 }
-        );
-    } else if ((shape.type === 'ellipse' || shape.type === 'hexagon') && shape.center) {
-        const rx = Math.max(shape.radiusX || 0, 1);
-        const ry = Math.max(shape.radiusY || 0, 1);
-        if (shape.type === 'hexagon') {
-            const verts = buildHexagonVertices(shape.center, rx, ry) || [];
-            verts.forEach((v) => samples.push({ x: v.x, y: v.y }));
-        } else {
-            const n = 24;
-            for (let i = 0; i < n; i += 1) {
-                const a = (i / n) * Math.PI * 2;
-                samples.push({
-                    x: shape.center.x + rx * Math.cos(a),
-                    y: shape.center.y + ry * Math.sin(a)
-                });
-            }
-        }
-    }
+    const samples = getRegionShapeImageSamples(shape);
     if (!samples.length) return null;
     const screen = samples.map(imagePointToScreen).filter(Boolean);
     if (!screen.length) return null;
@@ -6151,14 +6404,24 @@ function drawRegionLabel(ctx, shape, options = {}) {
 
 function getShapeCenter(shape) {
     if (!shape) return null;
-    if (shape.type === 'circle') return { x: shape.center.x, y: shape.center.y };
-    if (shape.type === 'ellipse') return { x: shape.center.x, y: shape.center.y };
-    if (shape.type === 'hexagon') return { x: shape.center.x, y: shape.center.y };
+    if (shape.center && Number.isFinite(Number(shape.center.x)) && Number.isFinite(Number(shape.center.y))) {
+        return { x: Number(shape.center.x), y: Number(shape.center.y) };
+    }
     if (shape.type === 'rectangle') {
         return {
             x: (shape.x1 + shape.x2) / 2,
             y: (shape.y1 + shape.y2) / 2
         };
+    }
+    if (shape.type === 'polygon' && Array.isArray(shape.vertices) && shape.vertices.length) {
+        const total = shape.vertices.reduce((acc, point) => ({
+            x: acc.x + Number(point.x || 0),
+            y: acc.y + Number(point.y || 0)
+        }), { x: 0, y: 0 });
+        return { x: total.x / shape.vertices.length, y: total.y / shape.vertices.length };
+    }
+    if (shape.type === 'line' && shape.start && shape.end) {
+        return { x: (shape.start.x + shape.end.x) / 2, y: (shape.start.y + shape.end.y) / 2 };
     }
     return null;
 }
@@ -6391,6 +6654,7 @@ function findRegionPointerInteraction(imagePoint, pixelPoint) {
 /** @returns {null | { action:'move' } | { action:'resize-circle' } | { action:'resize-rect', handle:'n'|'s'|'e'|'w'|'nw'|'ne'|'sw'|'se' } | { action:'resize-bbox', handle:'n'|'s'|'e'|'w'|'nw'|'ne'|'sw'|'se' }} */
 function classifyRegionPointerAction(shape, p, pixelPoint) {
     if (!shape || !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    if (shape.readOnly) return null;
 
     if (shape.type === 'circle' && shape.center) {
         if (!pixelPoint) return isPointInsideShape(shape, p) ? { action: 'move' } : null;
@@ -7626,6 +7890,8 @@ function positionRegionMouseModeBar(bar) {
 function syncRegionMouseModeBarButtons(bar) {
     if (!bar) return;
     const mode = regionDrawingState.mouseMode;
+    const total = bar.querySelector('#region-mouse-mode-bar-total');
+    if (total) total.textContent = `Total: ${regionDrawingState.shapes.length}`;
     bar.querySelectorAll('.region-mouse-mode-bar-btn').forEach((btn) => {
         const m = btn.dataset.mode;
         const on = (m === 'pointer' && mode === 'pointer') || (m === 'pan' && mode === 'pan');
@@ -7657,37 +7923,226 @@ function syncRegionMouseModeBarButtons(bar) {
     });
 }
 
+function regionShapeToDs9(shape) {
+    if (!shape) return null;
+    const worldPoint = (value) => {
+        if (!value || !Number.isFinite(Number(value.x)) || !Number.isFinite(Number(value.y))) return null;
+        const world = getWorldCoordinatesFromImage(Number(value.x), Number(value.y));
+        if (!world || !Number.isFinite(Number(world.ra)) || !Number.isFinite(Number(world.dec))) return null;
+        return { ra: Number(world.ra), dec: Number(world.dec) };
+    };
+    const number = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? Number(parsed.toFixed(10)) : 0;
+    };
+    const separationArcsec = (a, b) => {
+        if (!a || !b) return null;
+        const toRadians = Math.PI / 180;
+        const dec1 = a.dec * toRadians;
+        const dec2 = b.dec * toRadians;
+        const deltaDec = (b.dec - a.dec) * toRadians;
+        let deltaRaDegrees = b.ra - a.ra;
+        if (deltaRaDegrees > 180) deltaRaDegrees -= 360;
+        if (deltaRaDegrees < -180) deltaRaDegrees += 360;
+        const deltaRa = deltaRaDegrees * toRadians;
+        const sinDec = Math.sin(deltaDec / 2);
+        const sinRa = Math.sin(deltaRa / 2);
+        const haversine = sinDec * sinDec + Math.cos(dec1) * Math.cos(dec2) * sinRa * sinRa;
+        return 2 * Math.asin(Math.min(1, Math.sqrt(Math.max(0, haversine)))) / toRadians * 3600;
+    };
+    const angularRadius = (centerImage, radiusPixels) => {
+        if (!centerImage || !Number.isFinite(Number(radiusPixels))) return null;
+        const centerWorld = worldPoint(centerImage);
+        const xWorld = worldPoint({ x: centerImage.x + Number(radiusPixels), y: centerImage.y });
+        const yWorld = worldPoint({ x: centerImage.x, y: centerImage.y + Number(radiusPixels) });
+        const values = [separationArcsec(centerWorld, xWorld), separationArcsec(centerWorld, yWorld)]
+            .filter((value) => Number.isFinite(value) && value > 0);
+        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    };
+    const skyPolygon = (vertices, excluded = false) => {
+        const sky = (vertices || []).map(worldPoint).filter(Boolean);
+        if (sky.length < 3 || sky.length !== (vertices || []).length) return null;
+        return `${excluded ? '-' : ''}polygon(${sky.map((vertex) => `${number(vertex.ra)},${number(vertex.dec)}`).join(',')})`;
+    };
+    const centerImage = shape.center || getShapeCenter(shape);
+    const center = worldPoint(centerImage);
+    const geometries = [];
+
+    if (shape.type === 'circle' && center) {
+        const radius = angularRadius(centerImage, shape.radius);
+        if (radius) geometries.push(`circle(${number(center.ra)},${number(center.dec)},${number(radius)}")`);
+    } else if (['rectangle', 'rotated_rectangle', 'ellipse', 'hexagon', 'polygon'].includes(shape.type)) {
+        const polygon = skyPolygon(getRegionShapeImageSamples(shape));
+        if (polygon) geometries.push(polygon);
+    } else if (shape.type === 'line') {
+        const start = worldPoint(shape.start);
+        const end = worldPoint(shape.end);
+        if (start && end) geometries.push(`line(${number(start.ra)},${number(start.dec)},${number(end.ra)},${number(end.dec)})`);
+    } else if (shape.type === 'point' && center) {
+        geometries.push(`point(${number(center.ra)},${number(center.dec)})`);
+    } else if (shape.type === 'text' && center) {
+        geometries.push(`text(${number(center.ra)},${number(center.dec)})`);
+    } else if (shape.type === 'annulus' && center) {
+        if (shape.annulusType === 'CircleAnnulus') {
+            const inner = angularRadius(centerImage, shape.innerRadius);
+            const outer = angularRadius(centerImage, shape.outerRadius);
+            if (inner && outer) geometries.push(`annulus(${number(center.ra)},${number(center.dec)},${number(inner)}",${number(outer)}")`);
+        } else if (shape.annulusType === 'RectangleAnnulus') {
+            const outer = getRegionShapeImageSamples(shape);
+            const inner = getRegionShapeImageSamples({
+                type: 'rotated_rectangle',
+                center: shape.center,
+                width: shape.innerWidth,
+                height: shape.innerHeight,
+                angle: shape.angle
+            });
+            const outerPolygon = skyPolygon(outer);
+            const innerPolygon = skyPolygon(inner, true);
+            if (outerPolygon && innerPolygon) geometries.push(outerPolygon, innerPolygon);
+        } else {
+            const outer = getRegionShapeImageSamples(shape);
+            const inner = getRegionShapeImageSamples({
+                type: 'ellipse',
+                center: shape.center,
+                radiusX: Number(shape.innerWidth) / 2,
+                radiusY: Number(shape.innerHeight) / 2,
+                angle: shape.angle
+            });
+            const outerPolygon = skyPolygon(outer);
+            const innerPolygon = skyPolygon(inner, true);
+            if (outerPolygon && innerPolygon) geometries.push(outerPolygon, innerPolygon);
+        }
+    }
+    if (!geometries.length) return null;
+
+    const metadata = [];
+    if (shape.borderColor) metadata.push(`color=${String(shape.borderColor).trim()}`);
+    if (Number.isFinite(Number(shape.borderWidth))) metadata.push(`width=${Math.max(1, Math.round(Number(shape.borderWidth)))}`);
+    if (String(shape.borderStyle || '').toLowerCase() !== 'solid') metadata.push('dash=1');
+    const rawText = shape.type === 'text' ? (shape.text || shape.label) : shape.label;
+    const cleanText = String(rawText || '').replace(/[\r\n{}]+/g, ' ').trim();
+    if (cleanText) metadata.push(`text={${cleanText}}`);
+    if (shape.type === 'point') metadata.push('point=circle');
+    return geometries
+        .map((geometry) => metadata.length ? `${geometry} # ${metadata.join(' ')}` : geometry)
+        .join('\n');
+}
+
+function downloadRegionsAsDs9() {
+    const lines = regionDrawingState.shapes.map(regionShapeToDs9).filter(Boolean);
+    if (!lines.length) {
+        try { window.showNotification('No regions could be converted to sky coordinates. Check the image WCS.', 3000, 'warning'); } catch (_) {}
+        return false;
+    }
+    const content = [
+        '# Region file format: DS9 version 4.1',
+        'global color=green dashlist=8 3 width=1 select=1 highlite=1 edit=1 move=1 delete=1 include=1 source=1',
+        'icrs',
+        ...lines,
+        ''
+    ].join('\n');
+    let stem = 'regions';
+    try {
+        const source = String(window.currentFitsFile || window?.fitsData?.filename || '').split(/[\\/]/).pop() || '';
+        const cleaned = source.replace(/\.(fits?|fts)(\.gz)?$/i, '').replace(/[^A-Za-z0-9._-]+/g, '_');
+        if (cleaned) stem = `${cleaned}_regions`;
+    } catch (_) {}
+    try {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `${stem}.reg`;
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        try {
+            window.showNotification(
+                `${lines.length} region${lines.length === 1 ? '' : 's'} saved as ${stem}.reg`,
+                3000,
+                'success'
+            );
+        } catch (_) {}
+        return true;
+    } catch (error) {
+        try { window.showNotification(`Unable to save regions: ${error.message}`, 3500, 'error'); } catch (_) {}
+        return false;
+    }
+}
+
 function ensureRegionShapeToolRow(bar) {
-    if (!bar || bar.querySelector('#region-mouse-mode-shapes')) return;
-    const sep = document.createElement('div');
-    sep.className = 'region-mouse-mode-bar-sep';
-    sep.setAttribute('aria-hidden', 'true');
-    const wrap = document.createElement('div');
-    wrap.id = 'region-mouse-mode-shapes';
-    wrap.setAttribute('role', 'group');
-    wrap.setAttribute('aria-label', 'Region shape tools');
-    REGION_SHAPE_BAR_OPTIONS.forEach((opt) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'region-mouse-mode-shape-btn';
-        btn.dataset.shapeTool = opt.id;
-        btn.title = opt.title;
-        btn.setAttribute('aria-label', opt.label);
-        btn.innerHTML = opt.iconSvg;
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setRegionDrawingTool(opt.id);
+    if (!bar) return;
+    let wrap = bar.querySelector('#region-mouse-mode-shapes');
+    if (!wrap) {
+        const sep = document.createElement('div');
+        sep.className = 'region-mouse-mode-bar-sep';
+        sep.setAttribute('aria-hidden', 'true');
+        wrap = document.createElement('div');
+        wrap.id = 'region-mouse-mode-shapes';
+        wrap.setAttribute('role', 'group');
+        wrap.setAttribute('aria-label', 'Region shape tools');
+        REGION_SHAPE_BAR_OPTIONS.forEach((opt) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'region-mouse-mode-shape-btn';
+            btn.dataset.shapeTool = opt.id;
+            btn.title = opt.title;
+            btn.setAttribute('aria-label', opt.label);
+            btn.innerHTML = opt.iconSvg;
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setRegionDrawingTool(opt.id);
+            });
+            wrap.appendChild(btn);
         });
-        wrap.appendChild(btn);
-    });
-    bar.appendChild(sep);
-    bar.appendChild(wrap);
+        bar.appendChild(sep);
+        bar.appendChild(wrap);
+    }
+    if (!wrap.querySelector('#region-mouse-mode-save-reg')) {
+        const saveReg = document.createElement('button');
+        saveReg.type = 'button';
+        saveReg.id = 'region-mouse-mode-save-reg';
+        saveReg.textContent = 'Save .reg';
+        saveReg.title = 'Download all regions as a DS9 .reg file';
+        saveReg.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            downloadRegionsAsDs9();
+        });
+        const removeButton = wrap.querySelector('#region-mouse-mode-remove-all');
+        wrap.insertBefore(saveReg, removeButton || null);
+    }
+    if (!wrap.querySelector('#region-mouse-mode-remove-all')) {
+        const removeAll = document.createElement('button');
+        removeAll.type = 'button';
+        removeAll.id = 'region-mouse-mode-remove-all';
+        removeAll.textContent = 'Remove All';
+        removeAll.title = 'Remove all regions';
+        removeAll.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            clearAllRegions();
+        });
+        wrap.appendChild(removeAll);
+    }
+}
+
+function ensureRegionMouseModeTotal(bar) {
+    if (!bar || bar.querySelector('#region-mouse-mode-bar-total')) return;
+    const total = document.createElement('span');
+    total.id = 'region-mouse-mode-bar-total';
+    total.textContent = `Total: ${regionDrawingState.shapes.length}`;
+    const caption = bar.querySelector('#region-mouse-mode-bar-caption');
+    bar.insertBefore(total, caption || bar.firstChild);
 }
 
 function ensureRegionMouseModeBar() {
     let bar = document.getElementById('region-mouse-mode-bar');
     if (bar) {
+        ensureRegionMouseModeTotal(bar);
         ensureRegionShapeToolRow(bar);
         return bar;
     }
@@ -7727,6 +8182,10 @@ function ensureRegionMouseModeBar() {
     label.style.fontSize = '11px';
     label.style.letterSpacing = '0.02em';
 
+    const total = document.createElement('span');
+    total.id = 'region-mouse-mode-bar-total';
+    total.textContent = `Total: ${regionDrawingState.shapes.length}`;
+
     const toggle = document.createElement('div');
     Object.assign(toggle.style, {
         display: 'flex',
@@ -7752,6 +8211,7 @@ function ensureRegionMouseModeBar() {
     toggle.appendChild(makeBtn('pointer', REGION_MOUSE_MODE_UI.pointer.label, REGION_MOUSE_MODE_UI.pointer.title));
     toggle.appendChild(makeBtn('pan', REGION_MOUSE_MODE_UI.pan.label, REGION_MOUSE_MODE_UI.pan.title));
 
+    bar.appendChild(total);
     bar.appendChild(label);
     bar.appendChild(toggle);
     ensureRegionShapeToolRow(bar);
@@ -7902,6 +8362,7 @@ document.addEventListener('keydown', (event) => {
                         try {
                             resetRegionMouseModeToPanIfNoShapes();
                         } catch (_) {}
+                        try { refreshRegionMouseModeBar(); } catch (_) {}
                     }
                 }
             }
@@ -7925,10 +8386,12 @@ window.setRegionMouseMode = setRegionMouseMode;
 window.listDrawnRegions = () => regionDrawingState.shapes.slice();
 window.clearRegionSelections = clearRegionSelections;
 window.clearAllRegions = clearAllRegions;
+window.downloadRegionsAsDs9 = downloadRegionsAsDs9;
 window.removeAllZoomInsets = _removeAllZoomInsets;
 window.serializeZoomInsets = _serializeZoomInsets;
 window.restoreZoomInsetsFromSerialized = _restoreZoomInsetsFromSerialized;
 window.restoreRegionsFromSerialized = _restoreRegionsFromSerialized;
+window.loadDs9RegionFile = loadDs9RegionFile;
 window.deleteRegionById = (regionId) => {
     if (!regionId) return;
     const idx = regionDrawingState.shapes.findIndex((shape) => shape.id === regionId);
@@ -7955,6 +8418,7 @@ window.deleteRegionById = (regionId) => {
         try {
             resetRegionMouseModeToPanIfNoShapes();
         } catch (_) {}
+        try { refreshRegionMouseModeBar(); } catch (_) {}
     }
 };
 

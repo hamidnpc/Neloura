@@ -15,6 +15,13 @@
 #region-mouse-mode-bar {
     box-sizing: border-box;
 }
+#region-mouse-mode-bar-total {
+    color: rgba(249, 250, 251, 0.9);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
 #region-mouse-mode-bar .region-mouse-mode-bar-btn {
     font-size: 11px;
     font-weight: 600;
@@ -65,6 +72,38 @@
     background: rgba(56, 189, 248, 0.32);
     border-color: rgba(56, 189, 248, 0.55);
     color: #fff;
+}
+#region-mouse-mode-remove-all {
+    height: 32px;
+    padding: 0 9px;
+    border: 1px solid rgba(248, 113, 113, 0.42);
+    border-radius: 8px;
+    color: #fca5a5;
+    background: rgba(127, 29, 29, 0.22);
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+#region-mouse-mode-save-reg {
+    height: 32px;
+    padding: 0 9px;
+    border: 1px solid rgba(74, 222, 128, 0.46);
+    border-radius: 8px;
+    color: #86efac;
+    background: rgba(20, 83, 45, 0.28);
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+#region-mouse-mode-save-reg:hover {
+    border-color: rgba(74, 222, 128, 0.72);
+    background: rgba(21, 128, 61, 0.38);
+}
+#region-mouse-mode-remove-all:hover {
+    border-color: rgba(248, 113, 113, 0.68);
+    background: rgba(185, 28, 28, 0.32);
 }
 
 /* Source information popup for drawn regions — match catalog #canvas-dom-popup (canvas.js) */
@@ -784,6 +823,100 @@ color: black !important;
             background-color: rgba(255, 255, 255, 0.10);
         }
         .dropdown:hover .dropdown-content { display: block; }
+
+        .region-upload-status {
+            min-height: 16px;
+            padding: 2px 8px 4px;
+            color: rgba(226, 232, 240, 0.82);
+            font-size: 11px;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+        .region-upload-status.error,
+        .region-uploaded-empty.error {
+            color: #fca5a5;
+        }
+        .region-search-wrap {
+            margin: 4px 0 10px;
+            padding: 0 12px;
+        }
+        .region-search-input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 13px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 12px;
+            outline: none;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.22);
+            font: 13px 'Raleway', sans-serif;
+            transition: border-color 160ms ease, box-shadow 160ms ease;
+        }
+        .region-search-input:focus {
+            border-color: rgba(255, 255, 255, 0.26);
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+        }
+        #region-tools-dropdown .region-menu-action {
+            display: block !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+            height: auto !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 12px 16px !important;
+            border: 0 !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.10) !important;
+            border-radius: 0 !important;
+            color: #fff;
+            background: transparent;
+            font-family: 'Raleway', sans-serif !important;
+            font-size: inherit !important;
+            line-height: normal !important;
+            text-align: left;
+        }
+        #region-tools-dropdown .region-menu-action:hover {
+            background: rgba(255, 255, 255, 0.10) !important;
+        }
+        #region-tools-dropdown .region-menu-action:last-of-type {
+            color: #fca5a5 !important;
+        }
+        .region-uploaded-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            max-height: none;
+            overflow: visible;
+            padding: 0;
+        }
+        #region-tools-dropdown .region-uploaded-file {
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+            height: auto;
+            min-height: 0;
+            margin: 0;
+            padding: 12px 16px;
+            border: 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 0;
+            color: #fff;
+            background: transparent;
+            font-family: 'Raleway', sans-serif;
+            font-size: inherit;
+            line-height: normal;
+            text-align: left;
+            overflow-wrap: anywhere;
+            cursor: pointer;
+            transition: background-color 160ms ease;
+        }
+        #region-tools-dropdown .region-uploaded-file:hover {
+            background: rgba(255, 255, 255, 0.10);
+        }
+        .region-uploaded-empty {
+            padding: 10px 12px;
+            color: rgba(226, 232, 240, 0.62);
+            font-size: 12px;
+        }
 
         /* When the screen color bar is on the right, reserve the right lane: bar flush to edge, UI shifts left. */
         body.neloura-screen-cbar-right .toolbar {
