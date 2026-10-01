@@ -3547,6 +3547,7 @@ let regionOverlayPixelRatio = window.devicePixelRatio || 1;
 let regionViewerHandlersBound = false;
 let regionResizeTimeoutId = null;
 let regionViewerPollId = null;
+let regionOverlayRedrawRaf = 0;
 const REGION_CLICK_TOLERANCE_PX = 8;
 const REGION_RESIZE_HIT_TOLERANCE_PX = 8;
 const REGION_RESIZE_CORNER_TOLERANCE_PX = 12;
@@ -3599,6 +3600,7 @@ const regionWorldCache = { header: null, wcs: null };
 // -------------------------------------------------------------
 let __regionZoomInsets = [];
 let __regionZoomInsetIdCounter = 1;
+const __regionMapReplacements = new Map();
 
 function _iosGlassStyle() {
     return {
@@ -4063,6 +4065,7 @@ async function _restoreZoomInsetsFromSerialized(list) {
 function _restoreRegionsFromSerialized(shapes) {
     try {
         if (!Array.isArray(shapes)) return 0;
+        _clearRegionMapReplacements();
         try { if (typeof ensureRegionInfrastructure === 'function') ensureRegionInfrastructure(); } catch (_) {}
         // Deep clone to avoid cross-window object graph issues
         const cloned = JSON.parse(JSON.stringify(shapes));
@@ -4224,17 +4227,914 @@ function _withZoomInsetAngularSize(regionData, result) {
     const xy = result && Array.isArray(result.size_arcsec_xy) ? result.size_arcsec_xy : null;
     if (xy && Number.isFinite(Number(xy[0])) && Number.isFinite(Number(xy[1]))) {
         // Backend uses Cutout2D order: (height/y arcsec, width/x arcsec).
-        next.height_arcsec = Number(xy[0]);
-        next.width_arcsec = Number(xy[1]);
+        if (!Number.isFinite(Number(next.height_arcsec))) next.height_arcsec = Number(xy[0]);
+        if (!Number.isFinite(Number(next.width_arcsec))) next.width_arcsec = Number(xy[1]);
     } else if (result && Number.isFinite(Number(result.size_arcsec))) {
         const size = Number(result.size_arcsec);
-        next.height_arcsec = size;
-        next.width_arcsec = size;
+        if (!Number.isFinite(Number(next.height_arcsec))) next.height_arcsec = size;
+        if (!Number.isFinite(Number(next.width_arcsec))) next.width_arcsec = size;
     }
     if (next.radius_pixels != null && Number.isFinite(Number(next.radius_pixels)) && Number.isFinite(Number(next.width_arcsec))) {
         next.radius_arcsec = Number(next.width_arcsec) / 2;
     }
     return next;
+}
+
+function _zoomInsetAngularSeparationArcsec(a, b) {
+    if (!a || !b || !Number.isFinite(Number(a.ra)) || !Number.isFinite(Number(a.dec))
+        || !Number.isFinite(Number(b.ra)) || !Number.isFinite(Number(b.dec))) return null;
+    const toRadians = Math.PI / 180;
+    const dec1 = Number(a.dec) * toRadians;
+    const dec2 = Number(b.dec) * toRadians;
+    const deltaDec = (Number(b.dec) - Number(a.dec)) * toRadians;
+    let deltaRaDegrees = Number(b.ra) - Number(a.ra);
+    if (deltaRaDegrees > 180) deltaRaDegrees -= 360;
+    if (deltaRaDegrees < -180) deltaRaDegrees += 360;
+    const deltaRa = deltaRaDegrees * toRadians;
+    const sinDec = Math.sin(deltaDec / 2);
+    const sinRa = Math.sin(deltaRa / 2);
+    const haversine = sinDec * sinDec + Math.cos(dec1) * Math.cos(dec2) * sinRa * sinRa;
+    return 2 * Math.asin(Math.min(1, Math.sqrt(Math.max(0, haversine)))) / toRadians * 3600;
+}
+
+function _withZoomInsetAngularSizeFromShape(regionData, shape) {
+    const next = Object.assign({}, regionData || {});
+    const center = shape ? getShapeCenter(shape) : null;
+    if (!center) return next;
+    const centerWorld = getWorldCoordinatesFromImage(center.x, center.y);
+    if (!centerWorld) return next;
+
+    const separationTo = (x, y) => {
+        const world = getWorldCoordinatesFromImage(x, y);
+        return _zoomInsetAngularSeparationArcsec(centerWorld, world);
+    };
+    if (shape.type === 'circle' && Number.isFinite(Number(shape.radius))) {
+        const rx = separationTo(center.x + Number(shape.radius), center.y);
+        const ry = separationTo(center.x, center.y + Number(shape.radius));
+        const values = [rx, ry].filter((value) => Number.isFinite(value) && value > 0);
+        if (values.length) next.radius_arcsec = values.reduce((sum, value) => sum + value, 0) / values.length;
+    } else {
+        let widthPixels = Number(next.width_pixels);
+        let heightPixels = Number(next.height_pixels);
+        if (shape.type === 'rectangle') {
+            widthPixels = Math.abs(Number(shape.x2) - Number(shape.x1));
+            heightPixels = Math.abs(Number(shape.y2) - Number(shape.y1));
+        } else if (shape.type === 'ellipse' || shape.type === 'hexagon') {
+            widthPixels = Number(shape.radiusX) * 2;
+            heightPixels = Number(shape.radiusY) * 2;
+        }
+        if (Number.isFinite(widthPixels) && widthPixels > 0) {
+            const halfWidth = separationTo(center.x + widthPixels / 2, center.y);
+            if (Number.isFinite(halfWidth) && halfWidth > 0) next.width_arcsec = halfWidth * 2;
+        }
+        if (Number.isFinite(heightPixels) && heightPixels > 0) {
+            const halfHeight = separationTo(center.x, center.y + heightPixels / 2);
+            if (Number.isFinite(halfHeight) && halfHeight > 0) next.height_arcsec = halfHeight * 2;
+        }
+    }
+    return next;
+}
+
+async function _ensureZoomInsetSession() {
+    if (!window.__sid) {
+        try { window.__sid = window.__nelouraSid || sessionStorage.getItem('sid') || null; } catch (_) {}
+    }
+    if (!window.__sid && typeof window.ensureSession === 'function') {
+        try { window.__sid = await window.ensureSession(); } catch (_) {}
+    }
+    if (!window.__sid) {
+        const response = await fetch('/session/start', { credentials: 'same-origin' });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.session_id) throw new Error('Unable to start a session');
+        window.__sid = body.session_id;
+        try { sessionStorage.setItem('sid', body.session_id); } catch (_) {}
+    }
+    return window.__sid;
+}
+
+async function _recommendedZoomInsetHdu(filepath) {
+    const send = (sid) => {
+        const headers = {};
+        if (sid) headers['X-Session-ID'] = sid;
+        return fetch(`/fits-hdu-info/${encodeURI(filepath)}`, {
+            headers,
+            cache: 'no-store',
+            credentials: 'same-origin'
+        });
+    };
+    let response = await send(await _ensureZoomInsetSession());
+    if (response.status === 401) {
+        window.__sid = null;
+        window.__nelouraSid = null;
+        window.__nelouraSessionPromise = null;
+        try { sessionStorage.removeItem('sid'); } catch (_) {}
+        const sessionResponse = await fetch('/session/start', { credentials: 'same-origin' });
+        const sessionBody = await sessionResponse.json().catch(() => ({}));
+        if (sessionResponse.ok && sessionBody.session_id) {
+            window.__sid = sessionBody.session_id;
+            window.__nelouraSid = sessionBody.session_id;
+            try { sessionStorage.setItem('sid', sessionBody.session_id); } catch (_) {}
+            response = await send(sessionBody.session_id);
+        }
+    }
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || `Unable to inspect FITS HDUs (HTTP ${response.status})`);
+    }
+
+    const body = await response.json();
+    const list = Array.isArray(body && body.hduList) ? body.hduList : [];
+    const imageHdus = list.filter((item) => {
+        if (!item || !Number.isFinite(Number(item.index))) return false;
+        const type = String(item.type || '').toLowerCase();
+        return type === 'image' || type === 'primary';
+    });
+    const celestialHdus = imageHdus.filter((item) => item.hasWCS === true);
+    const chosen = celestialHdus.find((item) => item.isRecommended) || celestialHdus[0];
+    if (!chosen) {
+        throw new Error('Selected FITS has no image HDU with celestial WCS (RA/Dec)');
+    }
+    return Number(chosen.index);
+}
+
+async function _requestZoomInsetCutout(regionData) {
+    const send = async (sid) => {
+        const headers = { 'Content-Type': 'application/json' };
+        if (sid) headers['X-Session-ID'] = sid;
+        return fetch('/region-cutout/', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers,
+            body: JSON.stringify(regionData)
+        });
+    };
+
+    let response = await send(await _ensureZoomInsetSession());
+    if (response.status === 401) {
+        // A tab can retain an expired server session. Start a fresh one and retry once.
+        window.__sid = null;
+        window.__nelouraSid = null;
+        window.__nelouraSessionPromise = null;
+        try { sessionStorage.removeItem('sid'); } catch (_) {}
+        const sessionResponse = await fetch('/session/start', { credentials: 'same-origin' });
+        const sessionBody = await sessionResponse.json().catch(() => ({}));
+        if (sessionResponse.ok && sessionBody.session_id) {
+            window.__sid = sessionBody.session_id;
+            window.__nelouraSid = sessionBody.session_id;
+            try { sessionStorage.setItem('sid', sessionBody.session_id); } catch (_) {}
+            response = await send(sessionBody.session_id);
+        }
+    }
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || `Failed to create cutout (HTTP ${response.status})`);
+    }
+    return response.json();
+}
+
+function _removeRegionMapReplacement(regionId) {
+    const key = String(regionId || '');
+    const replacement = __regionMapReplacements.get(key);
+    if (replacement && replacement.objectUrl) {
+        try { URL.revokeObjectURL(replacement.objectUrl); } catch (_) {}
+    }
+    _clearRegionReplacementDetail(replacement);
+    if (replacement && replacement.resolutionTimer) clearTimeout(replacement.resolutionTimer);
+    if (replacement && replacement.controlsEl) {
+        try { replacement.controlsEl.remove(); } catch (_) {}
+    }
+    if (replacement && replacement.panelEl) {
+        try { replacement.panelEl.remove(); } catch (_) {}
+    }
+    __regionMapReplacements.delete(key);
+}
+
+function _clearRegionReplacementDetail(replacement) {
+    if (!replacement || !replacement.detail) return false;
+    if (replacement.detail.objectUrl) {
+        try { URL.revokeObjectURL(replacement.detail.objectUrl); } catch (_) {}
+    }
+    replacement.detail = null;
+    replacement.loadingDetailKey = '';
+    return true;
+}
+
+function _clearRegionMapReplacements() {
+    Array.from(__regionMapReplacements.keys()).forEach(_removeRegionMapReplacement);
+}
+
+async function _decodeReplacementImage(objectUrl) {
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = objectUrl;
+    try {
+        if (typeof image.decode === 'function') {
+            await image.decode();
+        } else {
+            await new Promise((resolve, reject) => {
+                image.onload = resolve;
+                image.onerror = () => reject(new Error('Unable to decode replacement image'));
+            });
+        }
+    } catch (error) {
+        try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+        throw error;
+    }
+    return image;
+}
+
+async function _reloadRegionMapReplacement(replacement, options = {}) {
+    if (!replacement) return;
+    const force = !!options.force;
+    const crop = options.crop || null;
+    const asDetail = !!(options.asDetail && crop);
+    const requestedMaxDim = Math.max(256, Math.min(8192, Number(options.maxDim || replacement.desiredMaxDim || 1024)));
+    if (!asDetail && !force && replacement.image && requestedMaxDim <= Number(replacement.loadedMaxDim || 0)) return;
+    const requestToken = Number(replacement.previewRequestToken || 0) + 1;
+    if (asDetail) replacement.detailRequestToken = requestToken;
+    else replacement.previewRequestToken = requestToken;
+    replacement.loadingMaxDim = requestedMaxDim;
+    const sid = await _ensureZoomInsetSession();
+    const headers = {};
+    if (sid) headers['X-Session-ID'] = sid;
+    const params = new URLSearchParams({
+        filepath: String(replacement.filepathRel || ''),
+        max_dim: String(Math.round(requestedMaxDim)),
+        color_map: replacement.display.colorMap || 'grayscale',
+        scaling_function: replacement.display.scaling || 'linear',
+        invert_colormap: replacement.display.invert ? 'true' : 'false',
+        v: String(Date.now())
+    });
+    if (replacement.display.min != null && Number.isFinite(Number(replacement.display.min))) {
+        params.set('min_value', String(replacement.display.min));
+    }
+    if (replacement.display.max != null && Number.isFinite(Number(replacement.display.max))) {
+        params.set('max_value', String(replacement.display.max));
+    }
+    if (asDetail) {
+        params.set('src_x', String(crop.x));
+        params.set('src_y', String(crop.y));
+        params.set('src_w', String(crop.w));
+        params.set('src_h', String(crop.h));
+    }
+    if (sid) params.set('sid', sid);
+    const nativeMaxDim = asDetail
+        ? Math.max(Number(crop.w || 0), Number(crop.h || 0))
+        : Math.max(Number(replacement.sourceWidth || 0), Number(replacement.sourceHeight || 0));
+    if (nativeMaxDim > 0 && requestedMaxDim >= nativeMaxDim) params.set('native_resolution', 'true');
+    const response = await fetch(`/fits/preview/?${params.toString()}`, {
+        headers,
+        cache: 'no-store',
+        credentials: 'same-origin'
+    });
+    if (!response.ok) throw new Error(`Replacement preview failed (HTTP ${response.status})`);
+    const sourceWidth = Number(response.headers.get('X-FITS-SOURCE-WIDTH'));
+    const sourceHeight = Number(response.headers.get('X-FITS-SOURCE-HEIGHT'));
+    const cropX = Number(response.headers.get('X-FITS-CROP-X'));
+    const cropY = Number(response.headers.get('X-FITS-CROP-Y'));
+    const cropW = Number(response.headers.get('X-FITS-CROP-WIDTH'));
+    const cropH = Number(response.headers.get('X-FITS-CROP-HEIGHT'));
+    const headerMin = Number(response.headers.get('X-FITS-VMIN'));
+    const headerMax = Number(response.headers.get('X-FITS-VMAX'));
+
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const image = await _decodeReplacementImage(objectUrl);
+
+    if (asDetail && replacement.detailRequestToken !== requestToken) {
+        try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+        return;
+    }
+    if (!asDetail && replacement.previewRequestToken !== requestToken) {
+        try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+        return;
+    }
+    if (Number.isFinite(sourceWidth) && sourceWidth > 0) replacement.sourceWidth = sourceWidth;
+    if (Number.isFinite(sourceHeight) && sourceHeight > 0) replacement.sourceHeight = sourceHeight;
+    if (!asDetail
+        && replacement.display.min == null
+        && Number.isFinite(headerMin)
+        && Number.isFinite(headerMax)
+        && headerMax > headerMin) {
+        replacement.display.min = headerMin;
+        replacement.display.max = headerMax;
+    }
+    if (asDetail) {
+        if (replacement.detail && replacement.detail.objectUrl) {
+            try { URL.revokeObjectURL(replacement.detail.objectUrl); } catch (_) {}
+        }
+        replacement.detail = {
+            image,
+            objectUrl,
+            x: Number.isFinite(cropX) ? cropX : crop.x,
+            y: Number.isFinite(cropY) ? cropY : crop.y,
+            w: Number.isFinite(cropW) && cropW > 0 ? cropW : crop.w,
+            h: Number.isFinite(cropH) && cropH > 0 ? cropH : crop.h,
+            maxDim: Math.max(image.naturalWidth, image.naturalHeight),
+            key: options.detailKey || ''
+        };
+        replacement.loadingDetailKey = '';
+    } else {
+        if (replacement.objectUrl) {
+            try { URL.revokeObjectURL(replacement.objectUrl); } catch (_) {}
+        }
+        if (force) _clearRegionReplacementDetail(replacement);
+        replacement.image = image;
+        replacement.objectUrl = objectUrl;
+        replacement.loadedMaxDim = Math.max(image.naturalWidth, image.naturalHeight);
+    }
+    replacement.loadingMaxDim = 0;
+    renderRegionOverlay();
+}
+
+async function _setRegionMapReplacement(shape, filepathRel, title, sourceRegionData) {
+    if (!shape || !shape.id) throw new Error('The selected region is no longer available');
+    _removeRegionMapReplacement(shape.id);
+    const replacement = {
+        regionId: String(shape.id),
+        image: null,
+        objectUrl: null,
+        filepathRel,
+        title: title || 'Replacement Map',
+        baseTitle: title || 'Replacement Map',
+        sourceRegionData: sourceRegionData || null,
+        display: {
+            min: null, max: null, dataMin: null, dataMax: null,
+            colorMap: 'grayscale', scaling: 'linear', invert: false,
+            colorBar: { vis: false, pos: 'right', unit: '', ticks: 5, labelColor: '#eaeaea', numFmt: 'auto', dec: 2 }
+        },
+        controlsEl: null,
+        histogramLoaded: false,
+        desiredMaxDim: 1024,
+        loadedMaxDim: 0,
+        loadingMaxDim: 0,
+        sourceWidth: 0,
+        sourceHeight: 0,
+        previewRequestToken: 0,
+        detailRequestToken: 0,
+        detail: null,
+        loadingDetailKey: '',
+        resolutionTimer: null
+    };
+    __regionMapReplacements.set(String(shape.id), replacement);
+    try {
+        await _reloadRegionMapReplacement(replacement);
+        _ensureRegionMapReplacementControls(shape, replacement);
+    } catch (error) {
+        _removeRegionMapReplacement(shape.id);
+        throw error;
+    }
+}
+
+function _drawRegionReplacementHistogram(canvas, data) {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, width, height);
+    const counts = Array.isArray(data && data.counts) ? data.counts.map(Number) : [];
+    if (!counts.length) return;
+    const maxCount = Math.max(1, ...counts.filter(Number.isFinite));
+    ctx.fillStyle = '#60a5fa';
+    const barWidth = width / counts.length;
+    counts.forEach((count, index) => {
+        const normalized = Math.log1p(Math.max(0, count)) / Math.log1p(maxCount);
+        const barHeight = normalized * (height - 16);
+        ctx.fillRect(index * barWidth, height - barHeight, Math.max(1, barWidth), barHeight);
+    });
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+}
+
+async function _loadRegionReplacementHistogram(replacement, canvas, minInput, maxInput) {
+    if (!replacement || replacement.histogramLoaded) return;
+    const sid = await _ensureZoomInsetSession();
+    const params = new URLSearchParams({
+        filepath: String(replacement.filepathRel || ''),
+        hdu: '0',
+        bins: '128'
+    });
+    if (sid) params.set('sid', sid);
+    const headers = {};
+    if (sid) headers['X-Session-ID'] = sid;
+    const response = await fetch(`/fits-histogram/?${params.toString()}`, {
+        headers,
+        cache: 'no-store',
+        credentials: 'same-origin'
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || `Histogram failed (HTTP ${response.status})`);
+    replacement.histogramLoaded = true;
+    replacement.histogramData = data;
+    _drawRegionReplacementHistogram(canvas, data);
+    if (minInput && minInput.value === '' && Number.isFinite(Number(data.min_value))) {
+        minInput.value = String(data.min_value);
+    }
+    if (maxInput && maxInput.value === '' && Number.isFinite(Number(data.max_value))) {
+        maxInput.value = String(data.max_value);
+    }
+}
+
+async function _showRegionReplacementConvolutionPopup(replacement, triggerButton) {
+    if (!replacement) return;
+    const sid = await _ensureZoomInsetSession();
+    const headers = {};
+    if (sid) headers['X-Session-ID'] = sid;
+    const beamParams = new URLSearchParams({
+        filepath: String(replacement.filepathRel || ''),
+        hdu: '0'
+    });
+    if (sid) beamParams.set('sid', sid);
+    const beamResponse = await fetch(`/fits-beam/?${beamParams.toString()}`, {
+        headers,
+        credentials: 'same-origin',
+        cache: 'no-store'
+    });
+    const beamData = await beamResponse.json().catch(() => ({}));
+    if (!beamResponse.ok) throw new Error(beamData.detail || beamData.error || `Beam lookup failed (HTTP ${beamResponse.status})`);
+
+    const old = document.getElementById('replacement-convolution-popup');
+    if (old) old.remove();
+    const panel = document.createElement('div');
+    panel.id = 'replacement-convolution-popup';
+    Object.assign(panel.style, {
+        position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+        width: '500px', maxWidth: 'calc(100vw - 24px)', padding: '15px',
+        borderRadius: '5px', border: '1px solid #555', background: '#333',
+        boxShadow: '0 4px 8px rgba(0,0,0,0.3)', color: '#fff',
+        fontFamily: 'Arial, sans-serif', fontSize: '14px', zIndex: '70050',
+        boxSizing: 'border-box'
+    });
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+        marginBottom: '15px', paddingBottom: '10px', paddingRight: '28px',
+        borderBottom: '1px solid #555', cursor: 'grab', userSelect: 'none'
+    });
+    header.innerHTML = `<div style="font-size:18px">Convolve Replacement</div>
+      <div style="font-size:13px;opacity:.8;margin-top:4px"></div>`;
+    header.lastElementChild.textContent = replacement.title || 'Replacement map';
+    panel.appendChild(header);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    Object.assign(close.style, {
+        position: 'absolute', top: '7px', right: '9px', border: '0',
+        background: 'transparent', color: '#aaa', fontSize: '20px', cursor: 'pointer'
+    });
+    close.onclick = () => panel.remove();
+    panel.appendChild(close);
+
+    const description = document.createElement('div');
+    description.textContent = 'Convolve this replacement FITS image to a larger circular target beam.';
+    Object.assign(description.style, { color: '#bbb', lineHeight: '1.45', marginBottom: '14px' });
+    panel.appendChild(description);
+
+    const inputStyle = {
+        width: '100%', boxSizing: 'border-box', padding: '7px 9px',
+        borderRadius: '4px', border: '1px solid #555', background: '#444',
+        color: '#fff', fontFamily: 'monospace'
+    };
+    const makeField = (labelText, hint) => {
+        const wrap = document.createElement('label');
+        Object.assign(wrap.style, { display: 'block', marginBottom: '13px' });
+        const label = document.createElement('div');
+        label.textContent = labelText;
+        Object.assign(label.style, { color: '#ccc', marginBottom: '5px' });
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.min = '0';
+        Object.assign(input.style, inputStyle);
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        if (hint) {
+            const help = document.createElement('div');
+            help.textContent = hint;
+            Object.assign(help.style, { color: '#888', fontSize: '11px', marginTop: '4px' });
+            wrap.appendChild(help);
+        }
+        panel.appendChild(wrap);
+        return input;
+    };
+    const headerBeam = Number(beamData.input_beam_arcsec);
+    const beamHint = beamData.available
+        ? `Read from FITS header${Number.isFinite(Number(beamData.beam_major_arcsec)) && Number.isFinite(Number(beamData.beam_minor_arcsec)) ? ` (${Number(beamData.beam_major_arcsec).toPrecision(5)} × ${Number(beamData.beam_minor_arcsec).toPrecision(5)} arcsec)` : ''}.`
+        : 'No BMAJ/BMIN beam was found in the FITS header; enter it manually.';
+    const inputBeam = makeField('Input beam (arcsec)', beamHint);
+    const targetBeam = makeField('Target beam (arcsec)', 'Must be larger than the input beam.');
+    if (Number.isFinite(headerBeam) && headerBeam > 0) {
+        inputBeam.value = String(headerBeam);
+        targetBeam.value = String(Number((headerBeam * 1.5).toPrecision(6)));
+    }
+
+    const actions = document.createElement('div');
+    Object.assign(actions.style, { display: 'flex', justifyContent: 'flex-end', gap: '9px', marginTop: '18px' });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const convolve = document.createElement('button');
+    convolve.type = 'button';
+    convolve.textContent = 'Convolve';
+    [cancel, convolve].forEach((element) => Object.assign(element.style, {
+        padding: '8px 15px', border: '0', borderRadius: '3px', color: '#fff', cursor: 'pointer'
+    }));
+    cancel.style.background = '#555';
+    convolve.style.background = '#007bff';
+    cancel.onclick = () => panel.remove();
+    convolve.onclick = async () => {
+        const inputValue = Number(inputBeam.value);
+        const targetValue = Number(targetBeam.value);
+        if (!Number.isFinite(inputValue) || inputValue <= 0) {
+            inputBeam.focus();
+            try { window.showNotification && window.showNotification('Input beam must be greater than zero.', 3500, 'error'); } catch (_) {}
+            return;
+        }
+        if (!Number.isFinite(targetValue) || targetValue <= inputValue) {
+            targetBeam.focus();
+            try { window.showNotification && window.showNotification('Target beam must be larger than input beam.', 3500, 'error'); } catch (_) {}
+            return;
+        }
+        try {
+            convolve.disabled = true;
+            cancel.disabled = true;
+            if (triggerButton) triggerButton.disabled = true;
+            convolve.textContent = 'Convolving…';
+            const response = await fetch('/convolve-fits/', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                body: JSON.stringify({
+                    filepath: replacement.filepathRel,
+                    hdu: 0,
+                    input_beam_arcsec: inputValue,
+                    target_beam_arcsec: targetValue
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || result.error || `Convolution failed (HTTP ${response.status})`);
+            replacement.filepathRel = result.filepath || `uploads/${result.filename}`;
+            replacement.title = `${replacement.baseTitle || replacement.title || 'Replacement map'} — ${targetValue} arcsec`;
+            replacement.histogramLoaded = false;
+            replacement.histogramData = null;
+            replacement.display.min = null;
+            replacement.display.max = null;
+            replacement.display.dataMin = null;
+            replacement.display.dataMax = null;
+            await _reloadRegionMapReplacement(replacement, { force: true });
+            panel.remove();
+            try { window.showNotification && window.showNotification(`Convolved to ${targetValue} arcsec`, 3000, 'success'); } catch (_) {}
+        } catch (error) {
+            try { window.showNotification && window.showNotification(`Convolution: ${error.message}`, 4500, 'error'); } catch (_) {}
+        } finally {
+            convolve.disabled = false;
+            cancel.disabled = false;
+            if (triggerButton) triggerButton.disabled = false;
+            convolve.textContent = 'Convolve';
+        }
+    };
+    actions.appendChild(cancel);
+    actions.appendChild(convolve);
+    panel.appendChild(actions);
+    panel.addEventListener('mousedown', (event) => event.stopPropagation());
+    panel.addEventListener('click', (event) => event.stopPropagation());
+    document.body.appendChild(panel);
+    if (typeof enablePopupDrag === 'function') {
+        enablePopupDrag(panel, header, document);
+    }
+    if (!beamData.available) inputBeam.focus();
+}
+
+function _ensureRegionMapReplacementControls(shape, replacement) {
+    if (!shape || !replacement || replacement.controlsEl) return;
+    const viewerElement = document.getElementById('openseadragon');
+    if (!viewerElement) return;
+
+    const root = document.createElement('div');
+    root.dataset.regionReplacementControl = 'true';
+    Object.assign(root.style, {
+        position: 'absolute',
+        left: '0',
+        top: '0',
+        width: 'auto',
+        height: '32px',
+        display: 'flex',
+        gap: '8px',
+        transform: 'translateX(-50%)',
+        zIndex: '60030',
+        pointerEvents: 'none'
+    });
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.title = 'Scaling controls for this map cutout';
+    button.setAttribute('aria-label', 'Cutout scaling controls');
+    button.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 19V5M4 19H20M7 19V11M11 19V7M15 19V14M19 19V9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>`;
+    Object.assign(button.style, {
+        position: 'relative',
+        width: '32px',
+        height: '32px',
+        padding: '0',
+        borderRadius: '999px',
+        border: '1px solid rgba(255,255,255,0.45)',
+        background: 'rgba(17,24,39,0.82)',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
+        color: '#fff',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.45)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+    });
+    const convolveButton = button.cloneNode(false);
+    convolveButton.title = 'Convolve this replacement to a target beam';
+    convolveButton.setAttribute('aria-label', 'Convolve replacement image');
+    convolveButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="8" cy="12" r="5" stroke="currentColor" stroke-width="1.8"/>
+      <circle cx="16" cy="12" r="5" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M3 12h18" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".75"/>
+    </svg>`;
+    convolveButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+            await _showRegionReplacementConvolutionPopup(replacement, convolveButton);
+        } catch (error) {
+            try { window.showNotification && window.showNotification(`Convolution: ${error.message}`, 4500, 'error'); } catch (_) {}
+        }
+    });
+
+    // The replacement uses the same full scaling popup as the main map.  A target
+    // adapter keeps every control scoped to this cutout.
+    button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+            if (!replacement.histogramLoaded) {
+                await _loadRegionReplacementHistogram(replacement, null, null, null);
+                const hist = replacement.histogramData || {};
+                replacement.display.dataMin = Number(hist.data_overall_min ?? hist.min_value);
+                replacement.display.dataMax = Number(hist.data_overall_max ?? hist.max_value);
+                if (!Number.isFinite(Number(replacement.display.min))) replacement.display.min = replacement.display.dataMin;
+                if (!Number.isFinite(Number(replacement.display.max))) replacement.display.max = replacement.display.dataMax;
+            }
+            const sid = await _ensureZoomInsetSession();
+            if (typeof window.showDynamicRangePopup !== 'function') throw new Error('Scaling controls are unavailable');
+            window.showDynamicRangePopup({
+                forceRebuild: true,
+                target: {
+                    key: String(replacement.regionId),
+                    label: replacement.title || 'Replacement map',
+                    filepath: replacement.filepathRel,
+                    hdu: 0,
+                    sid,
+                    getState: () => replacement.display,
+                    apply: async (next) => {
+                        Object.assign(replacement.display, next || {});
+                        try {
+                            button.disabled = true;
+                            await _reloadRegionMapReplacement(replacement, { force: true });
+                        } catch (error) {
+                            try { window.showNotification && window.showNotification(`Cutout scaling: ${error.message}`, 4000, 'error'); } catch (_) {}
+                        } finally {
+                            button.disabled = false;
+                        }
+                    },
+                    onColorBarChange: () => renderRegionOverlay()
+                }
+            });
+        } catch (error) {
+            try { window.showNotification && window.showNotification(`Cutout scaling: ${error.message}`, 4000, 'error'); } catch (_) {}
+        }
+    });
+    root.appendChild(button);
+    root.appendChild(convolveButton);
+    viewerElement.appendChild(root);
+    replacement.controlsEl = root;
+    _updateRegionMapReplacementControlPosition(shape, replacement);
+    return;
+
+    const panel = document.createElement('div');
+    panel.dataset.regionReplacementControl = 'true';
+    Object.assign(panel.style, {
+        position: 'fixed',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: '500px',
+        maxWidth: 'calc(100vw - 24px)',
+        maxHeight: 'calc(100vh - 24px)',
+        overflowY: 'auto',
+        padding: '15px',
+        borderRadius: '5px',
+        border: '1px solid #555',
+        background: '#333',
+        boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
+        color: '#fff',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '14px',
+        display: 'none',
+        pointerEvents: 'auto',
+        boxSizing: 'border-box',
+        zIndex: '60000'
+    });
+
+    const title = document.createElement('div');
+    Object.assign(title.style, {
+        margin: '0 0 15px 0',
+        borderBottom: '1px solid #555',
+        paddingBottom: '10px',
+        paddingRight: '28px'
+    });
+    const titleText = document.createElement('div');
+    titleText.textContent = 'Scaling Controls';
+    Object.assign(titleText.style, { fontSize: '18px', fontWeight: 'normal' });
+    const filenameText = document.createElement('div');
+    filenameText.textContent = replacement.title;
+    Object.assign(filenameText.style, { fontSize: '13px', opacity: '0.8', marginTop: '4px' });
+    title.appendChild(titleText);
+    title.appendChild(filenameText);
+    panel.appendChild(title);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    Object.assign(close.style, {
+        position: 'absolute', top: '5px', right: '7px', border: '0', background: 'transparent',
+        color: '#fff', fontSize: '20px', cursor: 'pointer'
+    });
+    panel.appendChild(close);
+
+    const histogram = document.createElement('canvas');
+    histogram.width = 470;
+    histogram.height = 200;
+    Object.assign(histogram.style, { width: '100%', height: '200px', display: 'block', marginBottom: '15px', borderRadius: '3px' });
+    panel.appendChild(histogram);
+
+    const percentileContainer = document.createElement('div');
+    Object.assign(percentileContainer.style, { display: 'flex', justifyContent: 'space-between', gap: '4px', marginBottom: '15px' });
+    panel.appendChild(percentileContainer);
+
+    const makeRow = (label, control) => {
+        const row = document.createElement('label');
+        Object.assign(row.style, { display: 'grid', gridTemplateColumns: '90px 1fr', alignItems: 'center', gap: '10px', marginTop: '10px' });
+        const text = document.createElement('span');
+        text.textContent = label;
+        text.style.color = '#d1d5db';
+        row.appendChild(text);
+        row.appendChild(control);
+        panel.appendChild(row);
+    };
+    const inputStyle = {
+        width: '100%', boxSizing: 'border-box', padding: '5px 7px', borderRadius: '5px',
+        border: '1px solid #4b5563', background: '#111827', color: '#fff'
+    };
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.step = 'any';
+    Object.assign(minInput.style, inputStyle);
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.step = 'any';
+    Object.assign(maxInput.style, inputStyle);
+    const cmap = document.createElement('select');
+    cmap.innerHTML = '<option value="grayscale">Grayscale</option><option value="viridis">Viridis</option><option value="inferno">Inferno</option><option value="plasma">Plasma</option><option value="cividis">Cividis</option><option value="spectral">Spectral</option><option value="rdbu">RdBu</option><option value="hot">Hot</option><option value="cool">Cool</option><option value="rainbow">Rainbow</option><option value="jet">Jet</option>';
+    Object.assign(cmap.style, inputStyle);
+    const scaling = document.createElement('select');
+    scaling.innerHTML = '<option value="linear">Linear</option><option value="logarithmic">Logarithmic</option><option value="sqrt">Square Root</option><option value="power">Power</option><option value="asinh">Asinh</option>';
+    Object.assign(scaling.style, inputStyle);
+    const invert = document.createElement('input');
+    invert.type = 'checkbox';
+
+    [
+        { label: '99.9%', fraction: 0.999 },
+        { label: '99%', fraction: 0.99 },
+        { label: '95%', fraction: 0.95 },
+        { label: '90%', fraction: 0.90 }
+    ].forEach(({ label, fraction }) => {
+        const percentileButton = document.createElement('button');
+        percentileButton.type = 'button';
+        percentileButton.textContent = label;
+        Object.assign(percentileButton.style, {
+            flex: '1', padding: '8px 0', background: '#444', color: '#fff', border: '0',
+            borderRadius: '3px', cursor: 'pointer', fontSize: '13px'
+        });
+        percentileButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const data = replacement.histogramData || {};
+            const counts = Array.isArray(data.counts) ? data.counts.map(Number) : [];
+            const edges = Array.isArray(data.bin_edges) ? data.bin_edges.map(Number) : [];
+            const total = counts.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+            if (!total || edges.length < counts.length + 1) return;
+            const target = total * fraction;
+            let cumulative = 0;
+            let index = counts.length - 1;
+            for (let i = 0; i < counts.length; i += 1) {
+                cumulative += Number.isFinite(counts[i]) ? counts[i] : 0;
+                if (cumulative >= target) { index = i; break; }
+            }
+            const minimum = Number.isFinite(Number(data.data_overall_min)) ? Number(data.data_overall_min) : Number(edges[0]);
+            const maximum = Number(edges[Math.min(index + 1, edges.length - 1)]);
+            if (Number.isFinite(minimum)) minInput.value = String(minimum);
+            if (Number.isFinite(maximum)) maxInput.value = String(maximum);
+            apply();
+        });
+        percentileContainer.appendChild(percentileButton);
+    });
+
+    makeRow('Min', minInput);
+    makeRow('Max', maxInput);
+    makeRow('Colormap', cmap);
+    makeRow('Scaling', scaling);
+    makeRow('Invert', invert);
+
+    let applyTimer = null;
+    const apply = async () => {
+        replacement.display.min = minInput.value === '' ? null : Number(minInput.value);
+        replacement.display.max = maxInput.value === '' ? null : Number(maxInput.value);
+        replacement.display.colorMap = cmap.value || 'grayscale';
+        replacement.display.scaling = scaling.value || 'linear';
+        replacement.display.invert = !!invert.checked;
+        try {
+            button.disabled = true;
+            await _reloadRegionMapReplacement(replacement);
+        } catch (error) {
+            try { window.showNotification && window.showNotification(`Cutout scaling: ${error.message}`, 4000, 'error'); } catch (_) {}
+        } finally {
+            button.disabled = false;
+        }
+    };
+    const scheduleApply = () => {
+        clearTimeout(applyTimer);
+        applyTimer = setTimeout(apply, 220);
+    };
+    minInput.addEventListener('input', scheduleApply);
+    maxInput.addEventListener('input', scheduleApply);
+    cmap.addEventListener('change', apply);
+    scaling.addEventListener('change', apply);
+    invert.addEventListener('change', apply);
+
+    button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const opening = !panel.isConnected || panel.style.display === 'none';
+        if (opening) {
+            if (!panel.isConnected) document.body.appendChild(panel);
+            const existing = document.getElementById('dynamic-range-popup');
+            if (existing && existing !== panel) {
+                existing.style.display = 'none';
+                existing.removeAttribute('id');
+            }
+            panel.id = 'dynamic-range-popup';
+        } else {
+            panel.removeAttribute('id');
+        }
+        panel.style.display = opening ? 'block' : 'none';
+        if (opening && !replacement.histogramLoaded) {
+            try {
+                await _loadRegionReplacementHistogram(replacement, histogram, minInput, maxInput);
+            } catch (error) {
+                try { window.showNotification && window.showNotification(`Cutout histogram: ${error.message}`, 4000, 'error'); } catch (_) {}
+            }
+        }
+    });
+    close.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        panel.style.display = 'none';
+        panel.removeAttribute('id');
+    });
+    [root, button, panel].forEach((element) => {
+        element.addEventListener('mousedown', (event) => event.stopPropagation());
+        element.addEventListener('click', (event) => event.stopPropagation());
+    });
+
+    root.appendChild(button);
+    viewerElement.appendChild(root);
+    document.body.appendChild(panel);
+    replacement.controlsEl = root;
+    replacement.panelEl = panel;
+    _updateRegionMapReplacementControlPosition(shape, replacement);
+}
+
+function _updateRegionMapReplacementControlPosition(shape, replacement) {
+    if (!shape || !replacement || !replacement.controlsEl) return;
+    const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+    if (vertices.length < 3) {
+        replacement.controlsEl.style.display = 'none';
+        return;
+    }
+    const xs = vertices.map((point) => point.x);
+    const ys = vertices.map((point) => point.y);
+    replacement.controlsEl.style.display = 'flex';
+    replacement.controlsEl.style.left = `${(Math.min(...xs) + Math.max(...xs)) / 2}px`;
+    replacement.controlsEl.style.top = `${Math.max(...ys) + 8}px`;
 }
 
 function _syncZoomInsetChannelSelector(z) {
@@ -4509,39 +5409,14 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
                     const znow = getInset();
                     if (!znow) return;
 
-                    // Pick best image HDU for this file (prevents 400 on multi-HDU FITS)
-                    let pickedHdu = 0;
-                    try {
-                        // Important: keep slashes unescaped for FastAPI {filepath:path}
-                        // and include session header (some deployments require it even for this endpoint).
-                        const hHeaders = {};
-                        if (window.__sid) hHeaders['X-Session-ID'] = window.__sid;
-                        const hduResp = await fetch(`/fits-hdu-info/${encodeURI(p)}`, { headers: hHeaders, cache: 'no-store' });
-                        if (hduResp.ok) {
-                            const hj = await hduResp.json();
-                            const list = Array.isArray(hj?.hduList) ? hj.hduList : [];
-                            const rec = list.find(x => x && x.isRecommended);
-                            if (rec && Number.isFinite(rec.index)) pickedHdu = Number(rec.index);
-                        }
-                    } catch (_) {}
+                    // Prefer an actual image HDU with celestial WCS, not merely the largest HDU.
+                    const pickedHdu = await _recommendedZoomInsetHdu(p);
 
                     // Re-cutout at same RA/Dec (and same region geometry if available), but from chosen FITS
                     const regionData = Object.assign({}, src, {
                         fits_path: p,
                         hdu_index: pickedHdu
                     });
-
-                    // Ensure session for region-cutout (existing backend expects it in some flows)
-                    if (!window.__sid) {
-                        try {
-                            const sessionRes = await fetch('/session/start');
-                            const sessionJson = await sessionRes.json();
-                            if (sessionJson && sessionJson.session_id) window.__sid = sessionJson.session_id;
-                        } catch (_) {}
-                    }
-
-                    const headers = { 'Content-Type': 'application/json' };
-                    if (window.__sid) headers['X-Session-ID'] = window.__sid;
 
                     // UI
                     try { znow.spinner.style.display = 'block'; } catch (_) {}
@@ -4552,16 +5427,7 @@ function createRegionZoomInsetOverlay({ filepathRel, titleText, regionId }) {
                         request: regionData
                     });
 
-                    const resp = await fetch('/region-cutout/', {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify(regionData)
-                    });
-                    if (!resp.ok) {
-                        const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}: ${resp.statusText}` }));
-                        throw new Error(err.detail || 'Failed to create cutout');
-                    }
-                    const result = await resp.json();
+                    const result = await _requestZoomInsetCutout(regionData);
                     _logZoomInsetDebug('open-other response', {
                         insetId,
                         pickedPath: p,
@@ -5190,16 +6056,21 @@ function resolveGalaxyNameForCutout(content) {
     return fallback;
 }
 
-function buildHexagonVertices(center, radiusX, radiusY) {
+function buildHexagonVertices(center, radiusX, radiusY, angleDegrees = 0) {
     if (!center) return [];
     const rx = Math.max(radiusX || 0, 1);
     const ry = Math.max(radiusY || 0, 1);
+    const rotation = (Number(angleDegrees) || 0) * Math.PI / 180;
+    const cosRotation = Math.cos(rotation);
+    const sinRotation = Math.sin(rotation);
     const verts = [];
     for (let i = 0; i < 6; i += 1) {
         const angle = (Math.PI / 3) * i + Math.PI / 6; // flat-top orientation
+        const x = rx * Math.cos(angle);
+        const y = ry * Math.sin(angle);
         verts.push({
-            x: center.x + rx * Math.cos(angle),
-            y: center.y + ry * Math.sin(angle)
+            x: center.x + x * cosRotation - y * sinRotation,
+            y: center.y + x * sinRotation + y * cosRotation
         });
     }
     return verts;
@@ -5286,6 +6157,31 @@ function scheduleRegionCanvasResize() {
         regionResizeTimeoutId = null;
         resizeRegionCanvas();
     }, 120);
+}
+
+function _regionViewerIsAnimating() {
+    const viewer = getActiveOsdViewer();
+    try {
+        return !!(viewer && typeof viewer.isAnimating === 'function' && viewer.isAnimating());
+    } catch (_) {
+        return false;
+    }
+}
+
+function scheduleRegionOverlayRedraw() {
+    if (regionOverlayRedrawRaf) return;
+    regionOverlayRedrawRaf = window.requestAnimationFrame(() => {
+        regionOverlayRedrawRaf = 0;
+        renderRegionOverlay();
+    });
+}
+
+function redrawRegionOverlayNow() {
+    if (regionOverlayRedrawRaf) {
+        window.cancelAnimationFrame(regionOverlayRedrawRaf);
+        regionOverlayRedrawRaf = 0;
+    }
+    renderRegionOverlay();
 }
 
 function attachRegionViewerHandlers(viewer) {
@@ -5529,7 +6425,11 @@ function attachRegionViewerHandlers(viewer) {
     };
 
     const scheduleRedraw = () => {
-        window.requestAnimationFrame(() => renderRegionOverlay());
+        if (_regionViewerIsAnimating()) {
+            redrawRegionOverlayNow();
+            return;
+        }
+        scheduleRegionOverlayRedraw();
     };
 
     // Fallback DOM click handler, for cases where OSD canvas-click doesn't fire (e.g. complex layouts)
@@ -5544,6 +6444,7 @@ function attachRegionViewerHandlers(viewer) {
             const viewerElement = document.getElementById('openseadragon');
             if (!viewerElement) return;
             if (ev.target && ev.target.closest && ev.target.closest('#simple-region-popup')) return;
+            if (ev.target && ev.target.closest && ev.target.closest('[data-region-replacement-control="true"]')) return;
             if (!viewerElement.contains(ev.target)) return;
             const rect = viewerElement.getBoundingClientRect();
             const pixelPoint = {
@@ -5604,12 +6505,13 @@ function attachRegionViewerHandlers(viewer) {
     viewer.addHandler('canvas-drag', dragHandler);
     viewer.addHandler('canvas-release', releaseHandler);
     viewer.addHandler('canvas-click', clickHandler);
-    viewer.addHandler('animation', scheduleRedraw);
+    viewer.addHandler('animation', redrawRegionOverlayNow);
+    viewer.addHandler('animation-finish', redrawRegionOverlayNow);
     viewer.addHandler('zoom', scheduleRedraw);
     viewer.addHandler('pan', scheduleRedraw);
     viewer.addHandler('open', () => {
         resizeRegionCanvas();
-        scheduleRedraw();
+        redrawRegionOverlayNow();
     });
 
     // Also listen to DOM click events (capturing) for robustness (multi-grid panes, etc.)
@@ -5666,9 +6568,12 @@ function convertPixelPointToImage(pixelPoint) {
             osPixelPoint = new OpenSeadragon.Point(pixelPoint.x, pixelPoint.y);
         }
 
-        const viewportPoint = viewer.viewport.pointFromPixel(osPixelPoint);
+        const viewportPoint = viewer.viewport.pointFromPixel(osPixelPoint, true);
         if (!viewportPoint) return null;
-        const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+        const tiledImage = viewer.world && viewer.world.getItemAt && viewer.world.getItemAt(0);
+        const imagePoint = (tiledImage && typeof tiledImage.viewportToImageCoordinates === 'function')
+            ? tiledImage.viewportToImageCoordinates(viewportPoint)
+            : viewer.viewport.viewportToImageCoordinates(viewportPoint);
         if (!imagePoint) return null;
         return { x: imagePoint.x, y: imagePoint.y };
     } catch (err) {
@@ -5704,6 +6609,7 @@ function buildRegionShape(type, start, end, isPreview = false) {
             y1: Math.min(start.y, end.y),
             x2: Math.max(start.x, end.x),
             y2: Math.max(start.y, end.y),
+            angle: 0,
             isPreview
         };
     }
@@ -5717,6 +6623,7 @@ function buildRegionShape(type, start, end, isPreview = false) {
             center: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
             radiusX,
             radiusY,
+            angle: 0,
             isPreview
         };
     }
@@ -5730,6 +6637,7 @@ function buildRegionShape(type, start, end, isPreview = false) {
             center: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
             radiusX,
             radiusY,
+            angle: 0,
             isPreview
         };
     }
@@ -5800,11 +6708,9 @@ function isPointInsideShape(shape, point) {
     }
 
     if (shape.type === 'rectangle') {
-        const xMin = Math.min(shape.x1, shape.x2);
-        const xMax = Math.max(shape.x1, shape.x2);
-        const yMin = Math.min(shape.y1, shape.y2);
-        const yMax = Math.max(shape.y1, shape.y2);
-        return point.x >= xMin && point.x <= xMax && point.y >= yMin && point.y <= yMax;
+        const local = rotateIntoShape(getShapeCenter(shape), shape.angle);
+        return Math.abs(local.x) <= Math.abs(shape.x2 - shape.x1) / 2
+            && Math.abs(local.y) <= Math.abs(shape.y2 - shape.y1) / 2;
     }
 
     if (shape.type === 'ellipse') {
@@ -5818,7 +6724,7 @@ function isPointInsideShape(shape, point) {
     }
 
     if (shape.type === 'hexagon') {
-        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY);
+        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY, shape.angle);
         return pointInPolygon(point, vertices);
     }
 
@@ -5900,12 +6806,14 @@ function getRegionShapeImageSamples(shape) {
 
     if (shape.type === 'circle') return ellipsePoints(shape.center, shape.radius, shape.radius, 0);
     if (shape.type === 'ellipse') return ellipsePoints(shape.center, shape.radiusX, shape.radiusY, shape.angle);
-    if (shape.type === 'hexagon') return buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY);
+    if (shape.type === 'hexagon') return buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY, shape.angle);
     if (shape.type === 'rectangle') {
-        return [
-            { x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y1 },
-            { x: shape.x2, y: shape.y2 }, { x: shape.x1, y: shape.y2 }
-        ];
+        return rectanglePoints(
+            getShapeCenter(shape),
+            Math.abs(shape.x2 - shape.x1),
+            Math.abs(shape.y2 - shape.y1),
+            shape.angle
+        );
     }
     if (shape.type === 'rotated_rectangle') return rectanglePoints(shape.center, shape.width, shape.height, shape.angle);
     if (shape.type === 'polygon') return Array.isArray(shape.vertices) ? shape.vertices : [];
@@ -5921,6 +6829,231 @@ function getRegionShapeImageSamples(shape) {
         return ellipsePoints(shape.center, Number(shape.outerWidth) / 2, Number(shape.outerHeight) / 2, shape.angle);
     }
     return [];
+}
+
+function _drawRegionReplacementColorBar(ctx, replacement, left, top, right, bottom) {
+    const bar = replacement && replacement.display && replacement.display.colorBar;
+    if (!bar || !bar.vis) return;
+    const vertical = bar.pos === 'left' || bar.pos === 'right';
+    const pad = 8;
+    const thickness = 10;
+    const length = vertical ? Math.max(30, (bottom - top) * 0.55) : Math.max(30, (right - left) * 0.55);
+    let x = bar.pos === 'left' ? left + pad : bar.pos === 'right' ? right - pad - thickness : (left + right - length) / 2;
+    let y = bar.pos === 'top' ? top + pad : bar.pos === 'bottom' ? bottom - pad - thickness : (top + bottom - length) / 2;
+    const w = vertical ? thickness : length;
+    const h = vertical ? length : thickness;
+    const gradient = vertical ? ctx.createLinearGradient(0, y + h, 0, y) : ctx.createLinearGradient(x, 0, x + w, 0);
+    const mapName = replacement.display.colorMap || 'grayscale';
+    const cmap = (typeof COLOR_MAPS !== 'undefined' && COLOR_MAPS[mapName]) ? COLOR_MAPS[mapName] : null;
+    for (let i = 0; i <= 32; i += 1) {
+        let value = i / 32;
+        if (replacement.display.invert) value = 1 - value;
+        let rgb = cmap ? cmap(value * 255) : [value * 255, value * 255, value * 255];
+        if (!Array.isArray(rgb)) rgb = [value * 255, value * 255, value * 255];
+        gradient.addColorStop(i / 32, `rgb(${Math.round(rgb[0])},${Math.round(rgb[1])},${Math.round(rgb[2])})`);
+    }
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+
+    const min = Number(replacement.display.min);
+    const max = Number(replacement.display.max);
+    const ticks = Math.max(2, Math.min(25, Math.round(Number(bar.ticks) || 5)));
+    const format = (value) => {
+        if (bar.numFmt === 'integer') return String(Math.round(value));
+        if (bar.numFmt === 'scientific') return value.toExponential(Math.max(0, Number(bar.dec) || 0));
+        if (bar.numFmt === 'fixed') return value.toFixed(Math.max(0, Number(bar.dec) || 0));
+        return Number(value.toPrecision(4)).toString();
+    };
+    ctx.fillStyle = bar.labelColor || '#eaeaea';
+    ctx.strokeStyle = bar.labelColor || '#eaeaea';
+    ctx.font = '10px Arial, sans-serif';
+    for (let i = 0; i < ticks; i += 1) {
+        const fraction = i / (ticks - 1);
+        const value = min + fraction * (max - min);
+        if (vertical) {
+            const ty = y + h - fraction * h;
+            const rightSide = bar.pos !== 'left';
+            ctx.beginPath();
+            ctx.moveTo(rightSide ? x + w : x, ty);
+            ctx.lineTo(rightSide ? x + w + 3 : x - 3, ty);
+            ctx.stroke();
+            ctx.textAlign = rightSide ? 'left' : 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(format(value), rightSide ? x + w + 5 : x - 5, ty);
+        } else {
+            const tx = x + fraction * w;
+            const below = bar.pos !== 'top';
+            ctx.beginPath();
+            ctx.moveTo(tx, below ? y + h : y);
+            ctx.lineTo(tx, below ? y + h + 3 : y - 3);
+            ctx.stroke();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = below ? 'top' : 'bottom';
+            ctx.fillText(format(value), tx, below ? y + h + 4 : y - 4);
+        }
+    }
+    if (bar.unit) {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(String(bar.unit), x + w / 2, y - 5);
+    }
+}
+
+function _scheduleRegionReplacementResolution(replacement, left, top, right, bottom) {
+    if (!replacement || !(right > left && bottom > top)) return;
+    if (_regionViewerIsAnimating()) return;
+    const viewerElement = document.getElementById('openseadragon');
+    const viewW = viewerElement ? viewerElement.clientWidth : window.innerWidth;
+    const viewH = viewerElement ? viewerElement.clientHeight : window.innerHeight;
+    const visLeft = Math.max(left, 0);
+    const visTop = Math.max(top, 0);
+    const visRight = Math.min(right, viewW);
+    const visBottom = Math.min(bottom, viewH);
+    const visW = visRight - visLeft;
+    const visH = visBottom - visTop;
+    if (!(visW > 8 && visH > 8)) return;
+
+    const pixelRatio = Math.max(1, Number(window.devicePixelRatio) || 1);
+    const demand = Math.ceil(Math.max(visW, visH) * pixelRatio);
+    const sourceW = Number(replacement.sourceWidth || replacement.image.naturalWidth || 0);
+    const sourceH = Number(replacement.sourceHeight || replacement.image.naturalHeight || 0);
+    if (!(sourceW > 0 && sourceH > 0)) return;
+
+    const boxW = right - left;
+    const boxH = bottom - top;
+    const padX = visW * 0.18;
+    const padY = visH * 0.18;
+    const fetchLeft = Math.max(left, visLeft - padX);
+    const fetchTop = Math.max(top, visTop - padY);
+    const fetchRight = Math.min(right, visRight + padX);
+    const fetchBottom = Math.min(bottom, visBottom + padY);
+    let srcX = ((fetchLeft - left) / boxW) * sourceW;
+    let srcY = ((fetchTop - top) / boxH) * sourceH;
+    let srcW = ((fetchRight - fetchLeft) / boxW) * sourceW;
+    let srcH = ((fetchBottom - fetchTop) / boxH) * sourceH;
+    srcX = Math.max(0, srcX);
+    srcY = Math.max(0, srcY);
+    srcW = Math.min(sourceW - srcX, srcW);
+    srcH = Math.min(sourceH - srcY, srcH);
+    if (!(srcW > 1 && srcH > 1)) return;
+
+    const coversFull = srcW >= sourceW * 0.92 && srcH >= sourceH * 0.92;
+    const target = Math.max(256, Math.min(4096, demand));
+    if (coversFull) {
+        if (replacement.detail || replacement.loadingDetailKey) {
+            replacement.detailRequestToken = Number(replacement.detailRequestToken || 0) + 1;
+            _clearRegionReplacementDetail(replacement);
+        }
+        if (target <= Number(replacement.loadedMaxDim || 0) * 1.05) return;
+        if (replacement.resolutionTimer) clearTimeout(replacement.resolutionTimer);
+        replacement.resolutionTimer = setTimeout(async () => {
+            replacement.resolutionTimer = null;
+            try {
+                await _reloadRegionMapReplacement(replacement, { maxDim: target, force: true });
+            } catch (error) {
+                replacement.loadingMaxDim = 0;
+                console.warn('[regions] Adaptive replacement preview failed:', error);
+            }
+        }, 120);
+        return;
+    }
+
+    const q = Math.max(8, Math.round(Math.max(srcW, srcH) / 24));
+    const crop = {
+        x: Math.floor(srcX / q) * q,
+        y: Math.floor(srcY / q) * q,
+        w: Math.min(sourceW, Math.ceil(srcW / q) * q + q),
+        h: Math.min(sourceH, Math.ceil(srcH / q) * q + q)
+    };
+    crop.w = Math.min(sourceW - crop.x, Math.max(1, crop.w));
+    crop.h = Math.min(sourceH - crop.y, Math.max(1, crop.h));
+    const nativeCrop = Math.max(crop.w, crop.h);
+    const maxDim = Math.max(256, Math.min(4096, Math.max(target, Math.min(nativeCrop, 4096))));
+    const detailKey = `${crop.x},${crop.y},${crop.w},${crop.h},${maxDim}`;
+    if (replacement.detail && replacement.detail.key === detailKey) return;
+    if (replacement.loadingDetailKey === detailKey) return;
+    if (replacement.detail) {
+        const d = replacement.detail;
+        const overlaps = crop.x < (d.x + d.w) && (crop.x + crop.w) > d.x
+            && crop.y < (d.y + d.h) && (crop.y + crop.h) > d.y;
+        const zoomedOut = crop.w > d.w * 1.12 || crop.h > d.h * 1.12;
+        if (!overlaps || zoomedOut) _clearRegionReplacementDetail(replacement);
+        else {
+            const covers = crop.x >= d.x && crop.y >= d.y
+                && (crop.x + crop.w) <= (d.x + d.w)
+                && (crop.y + crop.h) <= (d.y + d.h);
+            const sharpEnough = Number(d.maxDim || 0) >= Math.min(nativeCrop, maxDim) * 0.9;
+            if (covers && sharpEnough) return;
+        }
+    }
+
+    replacement.loadingDetailKey = detailKey;
+    if (replacement.resolutionTimer) clearTimeout(replacement.resolutionTimer);
+    replacement.resolutionTimer = setTimeout(async () => {
+        replacement.resolutionTimer = null;
+        try {
+            await _reloadRegionMapReplacement(replacement, {
+                asDetail: true,
+                crop,
+                maxDim,
+                detailKey
+            });
+        } catch (error) {
+            replacement.loadingDetailKey = '';
+            replacement.loadingMaxDim = 0;
+            console.warn('[regions] Viewport replacement crop failed:', error);
+        }
+    }, 90);
+}
+
+function drawRegionMapReplacement(ctx, shape) {
+    if (!shape || !shape.id) return;
+    const replacement = __regionMapReplacements.get(String(shape.id));
+    const image = replacement && replacement.image;
+    if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
+
+    const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+    if (vertices.length < 3) return;
+    const xs = vertices.map((point) => point.x);
+    const ys = vertices.map((point) => point.y);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    const width = right - left;
+    const height = bottom - top;
+    if (!(width > 0 && height > 0)) return;
+    _scheduleRegionReplacementResolution(replacement, left, top, right, bottom);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(vertices[0].x, vertices[0].y);
+    for (let index = 1; index < vertices.length; index += 1) {
+        ctx.lineTo(vertices[index].x, vertices[index].y);
+    }
+    ctx.closePath();
+    ctx.clip();
+    ctx.globalAlpha = 1;
+    const sourceW = Number(replacement.sourceWidth || image.naturalWidth || 0);
+    const sourceH = Number(replacement.sourceHeight || image.naturalHeight || 0);
+    ctx.imageSmoothingEnabled = image.naturalWidth >= width && image.naturalHeight >= height;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(image, left, top, width, height);
+    const detail = replacement.detail;
+    if (detail && detail.image && sourceW > 0 && sourceH > 0) {
+        const dx = left + (Number(detail.x) / sourceW) * width;
+        const dy = top + (Number(detail.y) / sourceH) * height;
+        const dw = (Number(detail.w) / sourceW) * width;
+        const dh = (Number(detail.h) / sourceH) * height;
+        ctx.imageSmoothingEnabled = detail.image.naturalWidth >= dw && detail.image.naturalHeight >= dh;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(detail.image, dx, dy, dw, dh);
+    }
+    _drawRegionReplacementColorBar(ctx, replacement, left, top, right, bottom);
+    ctx.restore();
 }
 
 function renderRegionOverlay() {
@@ -5940,8 +7073,11 @@ function renderRegionOverlay() {
         : regionDrawingState.selectedShapeId;
     regionDrawingState.shapes.forEach((shape) => {
         const hi = shape.id === effectiveSelectedId;
+        drawRegionMapReplacement(ctx, shape);
         drawRegionShape(ctx, shape, { highlight: hi });
         drawRegionLabel(ctx, shape, { highlight: hi });
+        const replacement = __regionMapReplacements.get(String(shape.id || ''));
+        if (replacement) _updateRegionMapReplacementControlPosition(shape, replacement);
     });
 
     if (regionDrawingState.previewShape) {
@@ -6107,20 +7243,15 @@ function imagePointToScreen(point) {
     if (!viewer || !viewer.viewport || typeof OpenSeadragon === 'undefined' || !point) return null;
     try {
         const osPoint = new OpenSeadragon.Point(point.x, point.y);
-        // Use base TiledImage (index 0) for accurate coordinate conversion (fixes multi-image warning)
         const tiledImage = viewer.world && viewer.world.getItemAt && viewer.world.getItemAt(0);
-        const hasTiledImageMethod = tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function';
-        // If multiple images exist (base + segments), we MUST use TiledImage to avoid warnings
-        const hasMultipleImages = viewer.world && typeof viewer.world.getItemsCount === 'function' && viewer.world.getItemsCount() > 1;
-        const mustUseTiledImage = hasMultipleImages && hasTiledImageMethod;
-        
-        let viewportPoint;
-        if (mustUseTiledImage || hasTiledImageMethod) {
-            viewportPoint = tiledImage.imageToViewportCoordinates(osPoint);
-        } else {
-            // Fallback only if TiledImage method truly unavailable and single image
-            viewportPoint = viewer.viewport.imageToViewportCoordinates(osPoint);
+        if (tiledImage && typeof tiledImage.imageToViewerElementCoordinates === 'function') {
+            return tiledImage.imageToViewerElementCoordinates(osPoint);
         }
+        if (tiledImage && typeof tiledImage.imageToViewportCoordinates === 'function') {
+            const viewportPoint = tiledImage.imageToViewportCoordinates(osPoint);
+            return viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
+        }
+        const viewportPoint = viewer.viewport.imageToViewportCoordinates(osPoint);
         return viewer.viewport.viewportToViewerElementCoordinates(viewportPoint);
     } catch (err) {
         console.warn('[regions] Failed to convert image point to screen', err);
@@ -6137,10 +7268,12 @@ function drawRegionShape(ctx, shape, options = {}) {
     ctx.globalAlpha = isPreview ? 0.5 : 0.85;
     const baseWidth = (() => {
         const w = Number(shape.borderWidth);
-        return Number.isFinite(w) && w > 0 ? Math.max(0.5, Math.min(16, w)) : 2;
+        return Number.isFinite(w) && w >= 0 ? Math.max(0, Math.min(16, w)) : 2;
     })();
-    ctx.lineWidth = isPreview ? Math.max(1, baseWidth * 0.85) : baseWidth;
-    ctx.strokeStyle = highlight ? '#FBBF24' : (shape.borderColor || '#38BDF8');
+    ctx.lineWidth = highlight ? Math.max(2, baseWidth) : Math.max(0.5, baseWidth);
+    ctx.strokeStyle = baseWidth === 0
+        ? 'rgba(0,0,0,0)'
+        : (highlight ? '#FBBF24' : (shape.borderColor || '#38BDF8'));
     // Always keep region interior transparent (per request).
     ctx.fillStyle = 'rgba(0,0,0,0)';
     try {
@@ -6178,18 +7311,15 @@ function drawRegionShape(ctx, shape, options = {}) {
     }
 
     if (shape.type === 'rectangle') {
-        const topLeft = imagePointToScreen({ x: shape.x1, y: shape.y1 });
-        const bottomRight = imagePointToScreen({ x: shape.x2, y: shape.y2 });
-        if (!topLeft || !bottomRight) {
+        const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+        if (vertices.length < 3) {
             ctx.restore();
             return;
         }
-        const x = Math.min(topLeft.x, bottomRight.x);
-        const y = Math.min(topLeft.y, bottomRight.y);
-        const width = Math.abs(bottomRight.x - topLeft.x);
-        const height = Math.abs(bottomRight.y - topLeft.y);
         ctx.beginPath();
-        ctx.rect(x, y, width, height);
+        ctx.moveTo(vertices[0].x, vertices[0].y);
+        for (let index = 1; index < vertices.length; index += 1) ctx.lineTo(vertices[index].x, vertices[index].y);
+        ctx.closePath();
         ctx.stroke();
         ctx.restore();
         return;
@@ -6213,7 +7343,7 @@ function drawRegionShape(ctx, shape, options = {}) {
     }
 
     if (shape.type === 'hexagon') {
-        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY)
+        const vertices = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY, shape.angle)
             .map(imagePointToScreen)
             .filter(Boolean);
         if (vertices.length < 3) {
@@ -6430,7 +7560,13 @@ function getWorldCoordinatesFromImage(x, y) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     const parsed = window.parsedWCS;
     const yForWorld = convertYForWorld(y);
-    if (parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
+    const header = window.fitsData && window.fitsData.wcs;
+    const ctype1 = String((header && (header.CTYPE1 || header.ctype1)) || '');
+    const ctype2 = String((header && (header.CTYPE2 || header.ctype2)) || '');
+    const isSin = ctype1.toUpperCase().includes('SIN') && ctype2.toUpperCase().includes('SIN');
+    // ALMA RA---SIN headers: the generic JS SIN converter historically mirrored RA.
+    // Use the WCS-lock converter (and skip parseWCS, which is TAN-oriented).
+    if (!isSin && parsed && parsed.hasWCS && typeof parsed.pixelsToWorld === 'function') {
         try {
             const world = parsed.pixelsToWorld(x, yForWorld);
             if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
@@ -6440,12 +7576,13 @@ function getWorldCoordinatesFromImage(x, y) {
             console.warn('[regions] pixelsToWorld (parsed) failed', err);
         }
     }
-    const header = window.fitsData && window.fitsData.wcs;
     if (header) {
-        // Prefer header-based direct converter which supports SIN as well as TAN (implemented in main.js)
+        const headerConverter = (typeof pixelsToWorldFromHeaderForWcsLock === 'function')
+            ? pixelsToWorldFromHeaderForWcsLock
+            : pixelsToWorldFromHeader;
         try {
-            if (typeof pixelsToWorldFromHeader === 'function') {
-                const world = pixelsToWorldFromHeader(header, x, yForWorld);
+            if (typeof headerConverter === 'function') {
+                const world = headerConverter(header, x, yForWorld);
                 if (world && Number.isFinite(world.ra) && Number.isFinite(world.dec)) {
                     return world;
                 }
@@ -6804,6 +7941,7 @@ function fillRegionPopupGeometryInputs(box, content, shape, partialMode) {
     const ir = box.querySelector('#srp-inp-r');
     const iw = box.querySelector('#srp-inp-w');
     const ih = box.querySelector('#srp-inp-h');
+    const irotate = box.querySelector('#srp-inp-rotate');
 
     if (fillImage) {
         const c = shape ? getShapeCenter(shape) : null;
@@ -6815,6 +7953,7 @@ function fillRegionPopupGeometryInputs(box, content, shape, partialMode) {
 
         if (ix && xbl != null && Number.isFinite(Number(xbl))) ix.value = String(Number(xbl).toFixed(4));
         if (iy && ybl != null && Number.isFinite(Number(ybl))) iy.value = String(Number(ybl).toFixed(4));
+        if (irotate && shape) irotate.value = String(Number(Number(shape.angle) || 0).toFixed(2));
 
         if (shape) {
             if (ir && shape.type === 'circle' && Number.isFinite(shape.radius)) {
@@ -6859,7 +7998,7 @@ function fillRegionPopupGeometryInputs(box, content, shape, partialMode) {
                 : '#38BDF8';
             if (bc) bc.value = col;
             const w = Number(shape.borderWidth);
-            if (bw) bw.value = String(Number.isFinite(w) && w > 0 ? Math.max(0.5, Math.min(16, w)) : 2);
+            if (bw) bw.value = String(Number.isFinite(w) && w >= 0 ? Math.max(0, Math.min(16, w)) : 2);
             const st = String(shape.borderStyle || 'solid').toLowerCase();
             if (bs) bs.value = (st === 'dashed') ? 'dashed' : 'solid';
         }
@@ -6985,6 +8124,7 @@ function showSimpleRegionPopup(content, anchor) {
         const isRegion = content.source_type === 'region';
         const linkedShape = findLinkedToolbarRegionShape(content);
         const useEditableRegionGeometry = !!(isRegion && linkedShape);
+        const hasRotationControl = !!(linkedShape && ['rectangle', 'ellipse', 'hexagon'].includes(linkedShape.type));
         // Track which region this popup is showing (so deletes can close it)
         try {
             box.dataset.regionId = (isRegion && content.region_id) ? String(content.region_id) : '';
@@ -7061,13 +8201,13 @@ function showSimpleRegionPopup(content, anchor) {
                         </div>
                         <div class="srp-cell">
                             <label class="srp-sublabel" for="srp-inp-border-width">Thickness</label>
-                            <input type="number" step="0.5" min="0.5" max="16" id="srp-inp-border-width" class="srp-input" />
+                            <input type="number" step="0.5" min="0" max="16" id="srp-inp-border-width" class="srp-input" />
                         </div>
                     </div>
                 </div>
                 <div class="srp-section">
                     <label class="srp-field-label">Image position <span class="srp-hint">pixels, bottom-left origin</span></label>
-                    <div class="srp-grid srp-grid--2">
+                    <div class="srp-grid ${hasRotationControl ? 'srp-grid--3' : 'srp-grid--2'}">
                         <div class="srp-cell">
                             <label class="srp-sublabel" for="srp-inp-x">x</label>
                             <input type="number" step="0.0001" id="srp-inp-x" class="srp-input" />
@@ -7076,6 +8216,10 @@ function showSimpleRegionPopup(content, anchor) {
                             <label class="srp-sublabel" for="srp-inp-y">y</label>
                             <input type="number" step="0.0001" id="srp-inp-y" class="srp-input" />
                         </div>
+                        ${hasRotationControl ? `<div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-rotate">Rotate °</label>
+                            <input type="number" step="0.1" id="srp-inp-rotate" class="srp-input" />
+                        </div>` : ''}
                     </div>
                 </div>
                 <div class="srp-section">
@@ -7138,6 +8282,7 @@ function showSimpleRegionPopup(content, anchor) {
                     <button type="button" id="simple-show-rgb-btn" class="srp-btn srp-btn--rgb">Show RGB</button>
                     ${isRegion ? '<button type="button" id="simple-cutout-region-btn" class="srp-btn srp-btn--cutout">Cutout</button>' : ''}
                     ${isRegion ? '<button type="button" id="simple-zoom-inset-btn" class="srp-btn srp-btn--inset">Zoom inset</button>' : ''}
+                    ${isRegion ? '<button type="button" id="simple-other-map-inset-btn" class="srp-btn srp-btn--inset">Swap</button>' : ''}
                     ${isRegion ? '<button type="button" id="simple-delete-region-btn" class="srp-btn srp-btn--delete">Delete Region</button>' : ''}
                 </div>
             `;
@@ -7167,6 +8312,7 @@ function showSimpleRegionPopup(content, anchor) {
                 const rgbButton = box.querySelector('#simple-show-rgb-btn');
                 const cutoutRegionButton = box.querySelector('#simple-cutout-region-btn');
                 const zoomInsetButton = box.querySelector('#simple-zoom-inset-btn');
+                const otherMapInsetButton = box.querySelector('#simple-other-map-inset-btn');
                 const deleteRegionButton = box.querySelector('#simple-delete-region-btn');
 
                 // Ensure RA/Dec exist for actions (cutout/inset/RGB). Some maps (e.g. RA---SIN/DEC--SIN)
@@ -7247,6 +8393,7 @@ function showSimpleRegionPopup(content, anchor) {
                     const runFromImageFields = () => {
                         const ix = box.querySelector('#srp-inp-x');
                         const iy = box.querySelector('#srp-inp-y');
+                        const irotate = box.querySelector('#srp-inp-rotate');
                         const ira = box.querySelector('#srp-inp-ra');
                         const idec = box.querySelector('#srp-inp-dec');
                         const ir = box.querySelector('#srp-inp-r');
@@ -7262,6 +8409,10 @@ function showSimpleRegionPopup(content, anchor) {
                             : ((fields.w != null && fields.w !== '') && (fields.h != null && fields.h !== ''));
                         if (hasSize && !applyToolbarRegionSizeFromInputs(linkedShape, fields)) return;
                         if (!applyToolbarRegionCenterFromImageInputs(linkedShape, ix && ix.value, iy && iy.value)) return;
+                        if (irotate && irotate.value !== '') {
+                            const angle = Number(irotate.value);
+                            if (Number.isFinite(angle)) linkedShape.angle = ((angle % 360) + 360) % 360;
+                        }
                         refreshToolbarRegionContentFromShape(content, linkedShape);
                         const c = getShapeCenter(linkedShape);
                         if (c) {
@@ -7323,7 +8474,7 @@ function showSimpleRegionPopup(content, anchor) {
                     const onGeomInput = (e) => {
                         e.stopPropagation();
                     };
-                    ['srp-inp-x', 'srp-inp-y', 'srp-inp-r', 'srp-inp-w', 'srp-inp-h'].forEach((id) => {
+                    ['srp-inp-x', 'srp-inp-y', 'srp-inp-rotate', 'srp-inp-r', 'srp-inp-w', 'srp-inp-h'].forEach((id) => {
                         const el = box.querySelector(`#${id}`);
                         if (el) {
                             el.addEventListener('input', scheduleImageGeom);
@@ -7371,8 +8522,8 @@ function showSimpleRegionPopup(content, anchor) {
                     if (borderWidth) {
                         borderWidth.addEventListener('input', () => {
                             const w = Number(borderWidth.value);
-                            if (Number.isFinite(w) && w > 0) {
-                                try { linkedShape.borderWidth = Math.max(0.5, Math.min(16, w)); } catch (_) {}
+                            if (Number.isFinite(w) && w >= 0) {
+                                try { linkedShape.borderWidth = Math.max(0, Math.min(16, w)); } catch (_) {}
                                 try { renderRegionOverlay(); } catch (_) {}
                             }
                         });
@@ -7530,6 +8681,7 @@ function showSimpleRegionPopup(content, anchor) {
                             width_pixels: content.width_pixels,
                             height_pixels: content.height_pixels,
                             minor_radius_pixels: content.minor_radius_pixels,
+                            angle_degrees: content.rotation_degrees,
                             vertices: Array.isArray(content.vertices) ? content.vertices : null,
                             fits_path: window.currentFitsFile || null,
                             hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
@@ -7611,6 +8763,7 @@ function showSimpleRegionPopup(content, anchor) {
                             width_pixels: content.width_pixels,
                             height_pixels: content.height_pixels,
                             minor_radius_pixels: content.minor_radius_pixels,
+                            angle_degrees: content.rotation_degrees,
                             vertices: Array.isArray(content.vertices) ? content.vertices : null,
                             fits_path: window.currentFitsFile || null,
                             hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
@@ -7663,6 +8816,103 @@ function showSimpleRegionPopup(content, anchor) {
                     };
                 }
 
+                if (otherMapInsetButton) {
+                    otherMapInsetButton.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!(Number.isFinite(content.ra) && Number.isFinite(content.dec))) {
+                            const ok = await ensureRegionWorldCoords();
+                            if (!ok) {
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification('Cannot replace region: Missing coordinates', 3500, 'error');
+                                }
+                                return;
+                            }
+                        }
+
+                        if (typeof window.showFileBrowser !== 'function') {
+                            if (typeof window.showNotification === 'function') {
+                                window.showNotification('File browser not available.', 3500, 'error');
+                            }
+                            return;
+                        }
+
+                        window.showFileBrowser(async (pickedPath) => {
+                            const filepath = String(pickedPath || '');
+                            if (!/\.(fits?|fts)(\.gz)?$/i.test(filepath)) {
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification('Please select a FITS file.', 3000, 'error');
+                                }
+                                return;
+                            }
+
+                            const regionData = _withZoomInsetAngularSizeFromShape({
+                                ra: content.ra,
+                                dec: content.dec,
+                                region_type: content.region_type,
+                                region_id: content.region_id,
+                                radius_pixels: content.radius_pixels,
+                                width_pixels: content.width_pixels,
+                                height_pixels: content.height_pixels,
+                                minor_radius_pixels: content.minor_radius_pixels,
+                                angle_degrees: content.rotation_degrees,
+                                vertices: Array.isArray(content.vertices) ? content.vertices : null,
+                                galaxy_name: galaxyName
+                            }, linkedShape);
+
+                            try {
+                                otherMapInsetButton.disabled = true;
+                                otherMapInsetButton.textContent = 'Creating...';
+                                const pickedHdu = await _recommendedZoomInsetHdu(filepath);
+                                const requestData = Object.assign({}, regionData, {
+                                    fits_path: filepath,
+                                    hdu_index: pickedHdu
+                                });
+                                const pixelShape = linkedShape || findLinkedToolbarRegionShape(content);
+                                const pixelCenter = pixelShape ? getShapeCenter(pixelShape) : null;
+                                if (pixelCenter && Number.isFinite(pixelCenter.x) && Number.isFinite(pixelCenter.y)) {
+                                    requestData.display_x = pixelCenter.x;
+                                    requestData.display_y = pixelCenter.y;
+                                }
+                                _logZoomInsetDebug('replace region from map request', {
+                                    regionId: content.region_id,
+                                    filepath,
+                                    pickedHdu,
+                                    request: requestData
+                                });
+                                const result = await _requestZoomInsetCutout(requestData);
+                                _logZoomInsetDebug('replace region from map response', {
+                                    regionId: content.region_id,
+                                    filepath,
+                                    pickedHdu,
+                                    request: requestData,
+                                    response: result
+                                });
+                                const sourceData = _withZoomInsetAngularSize(requestData, result);
+                                const title = filepath.split(/[\\/]/).pop()
+                                    .replace(/\.(fits?|fts)(\.gz)?$/i, '')
+                                    .trim() || 'Replacement Map';
+                                const targetShape = linkedShape || findLinkedToolbarRegionShape(content);
+                                await _setRegionMapReplacement(
+                                    targetShape,
+                                    `uploads/${result.filename}`,
+                                    title,
+                                    sourceData
+                                );
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification(`Region replaced with ${title}`, 3000, 'success');
+                                }
+                            } catch (error) {
+                                if (typeof window.showNotification === 'function') {
+                                    window.showNotification(`Map replacement: ${error.message}`, 4500, 'error');
+                                }
+                            } finally {
+                                otherMapInsetButton.disabled = false;
+                                otherMapInsetButton.textContent = 'Swap';
+                            }
+                        });
+                    };
+                }
+
                 if (deleteRegionButton) {
                     deleteRegionButton.onclick = (e) => {
                         e.stopPropagation();
@@ -7711,6 +8961,7 @@ function computeRegionPopupContent(shape) {
         region_type: shape?.type || 'unknown',
         region_label: (typeof shape?.label === 'string') ? shape.label : '',
         region_id: shape?.id || null,
+        rotation_degrees: Number(Number(shape?.angle) || 0),
         x_bottom_left: center && Number.isFinite(center.x) ? Number(center.x.toFixed(2)) : undefined,
         y_bottom_left: center && Number.isFinite(center.y)
             ? Number(convertYToBottomOrigin(center.y).toFixed(2))
@@ -7734,7 +8985,7 @@ function computeRegionPopupContent(shape) {
     } else if (shape.type === 'hexagon') {
         content.width_pixels = Number((shape.radiusX * 2).toFixed(2));
         content.height_pixels = Number((shape.radiusY * 2).toFixed(2));
-        const verts = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY) || [];
+        const verts = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY, shape.angle) || [];
         content.vertices = verts.map((v) => ({
             x: Number(v.x.toFixed(3)),
             y: Number(v.y.toFixed(3))
@@ -8318,6 +9569,7 @@ function resetRegionMouseModeToPanIfNoShapes() {
 
 function clearAllRegions() {
     if (!regionDrawingState.shapes.length && !regionDrawingState.previewShape) return 0;
+    _clearRegionMapReplacements();
     regionDrawingState.shapes = [];
     regionDrawingState.previewShape = null;
     regionDrawingState.selectedShapeId = null;
@@ -8356,6 +9608,7 @@ document.addEventListener('keydown', (event) => {
                     // Fallback: delete locally
                     const idx = regionDrawingState.shapes.findIndex((shape) => shape.id === selId);
                     if (idx >= 0) {
+                        _removeRegionMapReplacement(selId);
                         regionDrawingState.shapes.splice(idx, 1);
                         regionDrawingState.selectedShapeId = null;
                         renderRegionOverlay();
@@ -8396,6 +9649,7 @@ window.deleteRegionById = (regionId) => {
     if (!regionId) return;
     const idx = regionDrawingState.shapes.findIndex((shape) => shape.id === regionId);
     if (idx >= 0) {
+        _removeRegionMapReplacement(regionId);
         regionDrawingState.shapes.splice(idx, 1);
         if (regionDrawingState.selectedShapeId === regionId) {
             regionDrawingState.selectedShapeId = null;

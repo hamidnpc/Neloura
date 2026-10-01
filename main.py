@@ -3747,6 +3747,8 @@ class RGBTileGenerator:
         self.channel_meta = {name: {} for name in self.CHANNELS}
         self.base_channel = None
         self.channel_executor = ThreadPoolExecutor(max_workers=len(self.CHANNELS), thread_name_prefix="rgb-channel")
+        self._cached_rgb_frame = None
+        self._cached_rgb_frame_key = None
 
     def _max_level_for_dimensions(self, width, height):
         return max(0, int(np.ceil(np.log2(max(int(width), int(height)) / self.tile_size))))
@@ -3798,6 +3800,7 @@ class RGBTileGenerator:
             "bunit": generator.header.get("BUNIT"),
             "visible": bool(previous_meta.get("visible", True)),
         }
+        self._invalidate_rgb_frame()
         if self.base_channel is None or self.channels.get(self.base_channel) is None:
             self.base_channel = channel
         # On Colab the channel lives on slow Drive/FUSE storage; start reading it into
@@ -3881,6 +3884,23 @@ class RGBTileGenerator:
         except Exception:
             pass
         return pixel_area
+
+    def _invalidate_rgb_frame(self):
+        self._cached_rgb_frame = None
+        self._cached_rgb_frame_key = None
+
+    def _celestial_wcs(self, gen):
+        wcs = getattr(gen, "wcs", None) if gen is not None else None
+        if wcs is None:
+            return None
+        try:
+            if int(getattr(wcs, "naxis", 2) or 2) > 2:
+                celestial = getattr(wcs, "celestial", None)
+                if celestial is not None:
+                    return celestial
+        except Exception:
+            pass
+        return wcs
 
     def _base_channel(self):
         if self.base_channel in self.CHANNELS and self.channels.get(self.base_channel) is not None:
@@ -3968,8 +3988,26 @@ class RGBTileGenerator:
     def _rgb_frame(self):
         visible = self._visible_channel_items()
         loaded = self._loaded_channel_items()
+        cache_key = (
+            tuple(
+                (
+                    name,
+                    id(gen),
+                    int(getattr(gen, "width", 0) or 0),
+                    int(getattr(gen, "height", 0) or 0),
+                    bool(getattr(gen, "wcs", None) is not None),
+                    bool((self.channel_meta.get(name) or {}).get("visible", True)),
+                )
+                for name, gen in loaded
+            ),
+            self.base_channel,
+        )
+        if cache_key == getattr(self, "_cached_rgb_frame_key", None) and getattr(self, "_cached_rgb_frame", None) is not None:
+            return self._cached_rgb_frame
         frame_channels = visible if visible else loaded
         if not frame_channels:
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = None
             return None
 
         base_channel = self._base_channel()
@@ -3977,6 +4015,8 @@ class RGBTileGenerator:
             base_channel = frame_channels[0][0]
         base = self.channels.get(base_channel) if base_channel else None
         if base is None:
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = None
             return None
 
         frame = {
@@ -3991,14 +4031,20 @@ class RGBTileGenerator:
         }
 
         if len(frame_channels) <= 1:
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = frame
             return frame
-        if any(gen.wcs is None for _, gen in frame_channels) or base.wcs is None:
+        if any(self._celestial_wcs(gen) is None for _, gen in frame_channels) or self._celestial_wcs(base) is None:
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = frame
             return frame
 
         xs = []
         ys = []
         try:
+            base_wcs = self._celestial_wcs(base)
             for _, gen in frame_channels:
+                gen_wcs = self._celestial_wcs(gen)
                 sample_count = 17
                 x_edge = np.linspace(-0.5, float(gen.width) - 0.5, sample_count)
                 y_edge = np.linspace(-0.5, float(gen.height) - 0.5, sample_count)
@@ -4015,18 +4061,25 @@ class RGBTileGenerator:
                     y_edge,
                 ])
                 gen_wcs_x, gen_wcs_y = self._display_to_wcs_pixels(gen, edge_x, edge_y)
-                world = gen.wcs.all_pix2world(gen_wcs_x, gen_wcs_y, 0)
-                base_wcs_x, base_wcs_y = base.wcs.all_world2pix(world[0], world[1], 0)
-                base_display_x, base_display_y = self._wcs_to_display_pixels(base, base_wcs_x, base_wcs_y)
+                world = gen_wcs.all_pix2world(gen_wcs_x, gen_wcs_y, 0)
+                try:
+                    base_pix = base_wcs.all_world2pix(world[0], world[1], 0, quiet=True)
+                except TypeError:
+                    base_pix = base_wcs.all_world2pix(world[0], world[1], 0)
+                base_display_x, base_display_y = self._wcs_to_display_pixels(base, base_pix[0], base_pix[1])
                 finite = np.isfinite(base_display_x) & np.isfinite(base_display_y)
                 if np.any(finite):
                     xs.extend(np.asarray(base_display_x)[finite].tolist())
                     ys.extend(np.asarray(base_display_y)[finite].tolist())
         except Exception as exc:
             logger.debug("RGB WCS union frame failed; using base channel canvas: %s", exc)
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = frame
             return frame
 
         if not xs or not ys:
+            self._cached_rgb_frame_key = cache_key
+            self._cached_rgb_frame = frame
             return frame
 
         pad = 2.0
@@ -4044,6 +4097,8 @@ class RGBTileGenerator:
             "offset_y": min_y,
             "use_wcs_union": True,
         })
+        self._cached_rgb_frame_key = cache_key
+        self._cached_rgb_frame = frame
         return frame
 
     def clear_except(self, keep_channel):
@@ -4060,8 +4115,10 @@ class RGBTileGenerator:
             self.channel_meta[name] = {}
         if keep_channel not in self.CHANNELS or self.channels.get(self.base_channel) is None:
             self.base_channel = keep_channel if keep_channel in self.CHANNELS and self.channels.get(keep_channel) is not None else None
+        self._invalidate_rgb_frame()
 
     def cleanup(self):
+        self._invalidate_rgb_frame()
         for gen in list(self.channels.values()):
             if gen is not None:
                 try:
@@ -4110,6 +4167,7 @@ class RGBTileGenerator:
         if "visible" in settings:
             meta = self.channel_meta.setdefault(channel, {})
             meta["visible"] = bool(settings["visible"])
+            self._invalidate_rgb_frame()
 
     def get_tile_info(self):
         frame = self._rgb_frame()
@@ -4259,13 +4317,68 @@ class RGBTileGenerator:
             y_arr = (float(gen.height) - 1.0) - y_arr
         return x_arr, y_arr
 
+    def _empty_channel_tile(self):
+        return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
+
+    def _world_to_pixel(self, wcs, ra, dec):
+        try:
+            return wcs.all_world2pix(ra, dec, 0, quiet=True)
+        except TypeError:
+            return wcs.all_world2pix(ra, dec, 0)
+
+    def _render_base_union_tile(self, gen, frame, level, x, y):
+        """Slice the base channel in union-canvas space without a WCS round-trip.
+
+        Mixing ALMA SIN with HST/JWST SIP used to resample the base through WCS.
+        A single non-finite probe then blacked out the whole RGB tile on zoom-in.
+        """
+        data = self._source_array_for_tile(gen)
+        if data is None:
+            return self._empty_channel_tile()
+        T = int(self.tile_size)
+        scale = float(2 ** (int(frame["max_level"]) - int(level)))
+        x0 = float(frame.get("offset_x", 0.0)) + float(x) * T * scale
+        y0 = float(frame.get("offset_y", 0.0)) + float(y) * T * scale
+        width = int(gen.width)
+        height = int(gen.height)
+        img_arr = np.asarray(data)
+        tile_data = np.full((T, T), np.nan, dtype=float)
+
+        if abs(scale - 1.0) < 1e-9:
+            ix0 = int(np.floor(x0 + 1e-9))
+            iy0 = int(np.floor(y0 + 1e-9))
+            src_x0 = max(0, ix0)
+            src_y0 = max(0, iy0)
+            src_x1 = min(width, ix0 + T)
+            src_y1 = min(height, iy0 + T)
+            if src_x0 < src_x1 and src_y0 < src_y1:
+                region = np.asarray(img_arr[src_y0:src_y1, src_x0:src_x1], dtype=float)
+                h, w = region.shape[:2]
+                dst_y0 = src_y0 - iy0
+                dst_x0 = src_x0 - ix0
+                tile_data[dst_y0:dst_y0 + h, dst_x0:dst_x0 + w] = region
+            return self._normalized_rgb_tile(gen, tile_data)
+
+        all_col, all_row = np.meshgrid(np.arange(T, dtype=float), np.arange(T, dtype=float))
+        ix = np.rint(x0 + all_col.ravel() * scale).astype(np.int64)
+        iy = np.rint(y0 + all_row.ravel() * scale).astype(np.int64)
+        valid = (ix >= 0) & (ix < width) & (iy >= 0) & (iy < height)
+        out = np.full(T * T, np.nan, dtype=float)
+        if np.any(valid):
+            out[valid] = np.asarray(img_arr[iy[valid], ix[valid]], dtype=float)
+        return self._normalized_rgb_tile(gen, out.reshape(T, T))
+
     def _render_channel_tile_wcs(self, gen, frame, level, x, y):
         base = frame["base"]
         if gen is None:
-            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
-        if gen is base and not frame.get("use_wcs_union"):
+            return self._empty_channel_tile()
+        if gen is base:
+            if frame.get("use_wcs_union"):
+                return self._render_base_union_tile(gen, frame, level, x, y)
             return self._render_channel_tile_scaled(gen, base, level, x, y)
-        if base.wcs is None or gen.wcs is None:
+        base_wcs = self._celestial_wcs(base)
+        gen_wcs = self._celestial_wcs(gen)
+        if base_wcs is None or gen_wcs is None:
             return None
         try:
             gen._ensure_image_data_loaded()
@@ -4285,41 +4398,50 @@ class RGBTileGenerator:
             base_display_y = float(frame.get("offset_y", 0.0)) + (y * T + probe_row + 0.5) * base_scale - 0.5
             base_wcs_x, base_wcs_y = self._display_to_wcs_pixels(base, base_display_x, base_display_y)
 
-            # Only 9 WCS calls instead of T*T (65 536)
-            world = base.wcs.all_pix2world(base_wcs_x, base_wcs_y, 0)
-            tgt_x, tgt_y = gen.wcs.all_world2pix(world[0], world[1], 0)
-            tgt_x, tgt_y = self._wcs_to_display_pixels(gen, tgt_x, tgt_y)
+            world = base_wcs.all_pix2world(base_wcs_x, base_wcs_y, 0)
+            tgt_pix = self._world_to_pixel(gen_wcs, world[0], world[1])
+            tgt_x, tgt_y = self._wcs_to_display_pixels(gen, tgt_pix[0], tgt_pix[1])
+            tgt_x = np.asarray(tgt_x, dtype=float)
+            tgt_y = np.asarray(tgt_y, dtype=float)
 
-            if not (np.all(np.isfinite(tgt_x)) and np.all(np.isfinite(tgt_y))):
-                raise ValueError("Non-finite WCS probe values; cannot fit affine")
+            # ALMA SIN (and SIP edges) often make a corner probe non-finite.
+            # Fit on the finite probes instead of aborting the whole tile.
+            finite = np.isfinite(tgt_x) & np.isfinite(tgt_y)
+            n_finite = int(np.count_nonzero(finite))
+            if n_finite < 3:
+                raise ValueError("Too few finite WCS probe values; cannot fit affine")
 
-            # Fit affine: [tgt] = [probe_col, probe_row, 1] @ A  (least squares, 9 pts -> 2 unknowns each)
-            A_src = np.column_stack([probe_col, probe_row, np.ones(9)])  # (9, 3)
-            cx, _, _, _ = np.linalg.lstsq(A_src, tgt_x, rcond=None)    # coeffs for target-x
-            cy, _, _, _ = np.linalg.lstsq(A_src, tgt_y, rcond=None)    # coeffs for target-y
+            A_src = np.column_stack([
+                probe_col[finite],
+                probe_row[finite],
+                np.ones(n_finite),
+            ])
+            cx, _, _, _ = np.linalg.lstsq(A_src, tgt_x[finite], rcond=None)
+            cy, _, _, _ = np.linalg.lstsq(A_src, tgt_y[finite], rcond=None)
 
-            # Build full-tile source coordinates via the fitted affine (no WCS calls here)
             all_col, all_row = np.meshgrid(np.arange(T, dtype=float), np.arange(T, dtype=float))
             all_col = all_col.ravel()
             all_row = all_row.ravel()
-            src_x = cx[0] * all_col + cx[1] * all_row + cx[2]   # target image col
-            src_y = cy[0] * all_col + cy[1] * all_row + cy[2]   # target image row
+            src_x = cx[0] * all_col + cx[1] * all_row + cx[2]
+            src_y = cy[0] * all_col + cy[1] * all_row + cy[2]
 
+            width = int(gen.width)
+            height = int(gen.height)
+            ix = np.rint(src_x).astype(np.int64)
+            iy = np.rint(src_y).astype(np.int64)
             valid = (
                 np.isfinite(src_x) & np.isfinite(src_y) &
-                (src_x >= 0) & (src_x < int(gen.width)) &
-                (src_y >= 0) & (src_y < int(gen.height))
+                (ix >= 0) & (ix < width) &
+                (iy >= 0) & (iy < height)
             )
             tile_data = np.full(T * T, np.nan, dtype=float)
             if np.any(valid):
                 img_arr = np.asarray(gen.image_data)
-                ix = np.rint(src_x[valid]).astype(np.int64)
-                iy = np.rint(src_y[valid]).astype(np.int64)
-                tile_data[valid] = img_arr[iy, ix]
+                tile_data[valid] = img_arr[iy[valid], ix[valid]]
             tile_data = tile_data.reshape(T, T)
             return self._normalized_rgb_tile(gen, tile_data)
         except Exception as exc:
-            logger.debug("RGB WCS tile alignment failed; falling back to scaled sampling: %s", exc)
+            logger.debug("RGB WCS tile alignment failed; leaving channel empty: %s", exc)
             return None
 
     def _render_channel_tile_scaled(self, gen, base, level, x, y):
@@ -4370,16 +4492,18 @@ class RGBTileGenerator:
 
     def _render_channel_tile(self, gen, frame, level, x, y):
         if gen is None:
-            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
+            return self._empty_channel_tile()
         base = frame["base"]
         if gen is base and not frame.get("use_wcs_union"):
             return self._render_channel_tile_scaled(gen, base, level, x, y)
         aligned = self._render_channel_tile_wcs(gen, frame, level, x, y)
         if aligned is not None:
             return aligned
-        if frame.get("use_wcs_union"):
-            return np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
-        return self._render_channel_tile_scaled(gen, base, level, x, y)
+        if gen is base:
+            if frame.get("use_wcs_union"):
+                return self._render_base_union_tile(gen, frame, level, x, y)
+            return self._render_channel_tile_scaled(gen, base, level, x, y)
+        return self._empty_channel_tile()
 
     def get_tile(self, level, x, y):
         frame = self._rgb_frame()
@@ -4395,12 +4519,18 @@ class RGBTileGenerator:
             return None
 
         def _render(name_gen):
-            return self._render_channel_tile(name_gen[1], frame, level, x, y)
+            try:
+                return self._render_channel_tile(name_gen[1], frame, level, x, y)
+            except Exception as exc:
+                logger.debug("RGB channel tile failed (%s): %s", name_gen[0], exc)
+                return self._empty_channel_tile()
 
         results = list(self.channel_executor.map(_render, active))
 
         composed = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint16)
         for r in results:
+            if r is None:
+                continue
             composed += r
         composed = np.clip(composed, 0, 255).astype(np.uint8)
         img = Image.fromarray(composed, "RGB")
@@ -4880,7 +5010,9 @@ async def get_fits_histogram(
     request: Request,
     bins: int = Query(FITS_HISTOGRAM_DEFAULT_BINS),
     min_val: float = Query(None),
-    max_val: float = Query(None)
+    max_val: float = Query(None),
+    filepath: str | None = Query(None, description="Optional FITS path; does not change the active image"),
+    hdu: int | None = Query(None, description="Optional HDU for filepath")
 ):
     """Generate histogram data for the current FITS file (session-aware, robust sampling, no all-zero bins)."""
     try:
@@ -4888,7 +5020,11 @@ async def get_fits_histogram(
         session = getattr(request.state, "session", None)
         session_data = session.data if session is not None else None
 
-        if session_data is not None:
+        explicit_file = bool(filepath and str(filepath).strip())
+        if explicit_file:
+            current_file = str(_resolve_browser_fits_path(str(filepath)))
+            hdu_index = int(hdu if hdu is not None else 0)
+        elif session_data is not None:
             current_file = session_data.get("current_fits_file")
             hdu_index = int(session_data.get("current_hdu_index", DEFAULT_HDU_INDEX))
         else:
@@ -4901,7 +5037,7 @@ async def get_fits_histogram(
         # Try to use the session tile generator data (matches displayed image and orientation)
         image_data_raw = None
         height = width = None
-        if session_data is not None:
+        if session_data is not None and not explicit_file:
             file_id = make_file_id(current_file, hdu_index)
             session_generators = session_data.setdefault("active_tile_generators", {})
             gen = session_generators.get(file_id)
@@ -7484,6 +7620,7 @@ def _clean_uploads_dir_once() -> dict:
 async def uploads_auto_clean_worker():
     """Periodically cleans files in UPLOADS_DIRECTORY if enabled by settings."""
     try:
+        first_cycle = True
         while True:
             try:
                 # Use module-level constants (do not override from profiles)
@@ -7493,6 +7630,14 @@ async def uploads_auto_clean_worker():
                 # Compute sleep period first (supports fractional minutes); min 1 second
                 period_sec = float(current_minutes) * 60.0
                 sleep_for = period_sec
+
+                # Do not erase active temporary cutouts every time the development
+                # server restarts; the configured interval should elapse first.
+                if first_cycle:
+                    first_cycle = False
+                    _neloura_print(f"[uploads_auto_clean] initial sleep for {sleep_for:.1f}s (enable={current_enable})")
+                    await asyncio.sleep(sleep_for)
+                    continue
 
                 # Perform clean if enabled
                 if current_enable:
@@ -8329,6 +8474,129 @@ def _resolve_browser_fits_path(filepath: str) -> Path:
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
     return path
+
+
+class FitsConvolutionRequest(BaseModel):
+    filepath: str
+    hdu: int = 0
+    input_beam_arcsec: float
+    target_beam_arcsec: float
+
+
+@app.get("/fits-beam/")
+async def get_fits_beam(
+    request: Request,
+    filepath: str = Query(...),
+    hdu: int = Query(0, ge=0),
+):
+    """Return the circularized restoring beam and its original major/minor values."""
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+    path = _resolve_browser_fits_path(filepath)
+    with fits.open(path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+        if hdu >= len(hdul):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {hdu}")
+        header = hdul[hdu].header
+
+        def _beam_arcsec(key: str):
+            try:
+                value = float(header.get(key))
+                return value * 3600.0 if np.isfinite(value) and value > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        major = _beam_arcsec("BMAJ")
+        minor = _beam_arcsec("BMIN")
+        values = [value for value in (major, minor) if value is not None]
+        return {
+            "available": bool(values),
+            "input_beam_arcsec": max(values) if values else None,
+            "beam_major_arcsec": major,
+            "beam_minor_arcsec": minor,
+            "beam_pa_degrees": header.get("BPA"),
+        }
+
+
+@app.post("/convolve-fits/")
+async def convolve_fits(request: Request, payload: FitsConvolutionRequest):
+    """Convolve a temporary FITS image from its current circular beam to a larger target beam."""
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing session")
+
+    input_beam = float(payload.input_beam_arcsec)
+    target_beam = float(payload.target_beam_arcsec)
+    if not np.isfinite(input_beam) or input_beam <= 0:
+        raise HTTPException(status_code=400, detail="Input beam must be greater than zero")
+    if not np.isfinite(target_beam) or target_beam <= input_beam:
+        raise HTTPException(status_code=400, detail="Target beam must be larger than the input beam")
+
+    path = _resolve_browser_fits_path(payload.filepath)
+    with fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+        if payload.hdu < 0 or payload.hdu >= len(hdul):
+            raise HTTPException(status_code=400, detail=f"Invalid HDU index: {payload.hdu}")
+        source_hdu = hdul[payload.hdu]
+        if source_hdu.data is None:
+            raise HTTPException(status_code=400, detail="Selected HDU has no image data")
+        data = np.squeeze(np.asarray(source_hdu.data, dtype=np.float32))
+        if data.ndim != 2:
+            raise HTTPException(status_code=400, detail="Convolution requires a 2D FITS image")
+        header = source_hdu.header.copy()
+
+    try:
+        celestial_wcs = WCS(header).celestial
+        scale_x, scale_y = _compute_arcsec_per_pixel_xy(celestial_wcs)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to determine FITS pixel scale: {exc}") from exc
+
+    kernel_fwhm = math.sqrt(max(0.0, target_beam * target_beam - input_beam * input_beam))
+    sigma_x = kernel_fwhm / (2.0 * math.sqrt(2.0 * math.log(2.0)) * scale_x)
+    sigma_y = kernel_fwhm / (2.0 * math.sqrt(2.0 * math.log(2.0)) * scale_y)
+    if not np.isfinite(sigma_x) or not np.isfinite(sigma_y):
+        raise HTTPException(status_code=400, detail="Calculated convolution kernel is invalid")
+
+    from astropy.convolution import Gaussian2DKernel, convolve_fft
+    kernel = Gaussian2DKernel(
+        x_stddev=sigma_x,
+        y_stddev=sigma_y,
+        mode="oversample",
+        factor=5,
+    )
+    result = convolve_fft(
+        data,
+        kernel,
+        boundary="fill",
+        fill_value=0.0,
+        nan_treatment="interpolate",
+        normalize_kernel=True,
+        preserve_nan=True,
+        allow_huge=True,
+    ).astype(np.float32, copy=False)
+
+    header["BMAJ"] = target_beam / 3600.0
+    header["BMIN"] = target_beam / 3600.0
+    header["BPA"] = 0.0
+    header.add_history(
+        f"Convolved by Neloura from {input_beam:.8g} arcsec to {target_beam:.8g} arcsec circular beam"
+    )
+
+    uploads_dir = _resolve_uploads_dir()
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{path.stem}_convolved_{target_beam:.4g}arcsec_{int(time.time())}.fits"
+    filename = _safe_filename_component(filename, f"convolved_{int(time.time())}.fits")
+    if not filename.lower().endswith(".fits"):
+        filename += ".fits"
+    output_path = uploads_dir / filename
+    fits.PrimaryHDU(data=result, header=header).writeto(output_path, overwrite=True)
+    return {
+        "success": True,
+        "filename": filename,
+        "filepath": f"uploads/{filename}",
+        "input_beam_arcsec": input_beam,
+        "target_beam_arcsec": target_beam,
+        "kernel_fwhm_arcsec": kernel_fwhm,
+    }
 
 
 def _pick_first_image_hdu(path: Path, requested_hdu=None) -> int:
@@ -10509,12 +10777,17 @@ async def fits_preview(
     filepath: str = Query(..., description="FITS filepath relative to server files directory"),
     hdu: int | None = Query(None, description="Optional HDU index; if omitted, first image-like HDU is used"),
     slice_index: int | None = Query(None, ge=0, description="Optional cube slice/channel (0-based); defaults to 0 for cubes"),
-    max_dim: int = Query(384, ge=64, le=4096, description="Max preview dimension (keeps aspect ratio)"),
+    max_dim: int = Query(384, ge=64, le=8192, description="Max preview dimension (keeps aspect ratio)"),
     min_value: float | None = Query(None, description="Optional display min (overrides session for this preview only)"),
     max_value: float | None = Query(None, description="Optional display max (overrides session for this preview only)"),
     color_map: str | None = Query(None, description="Optional colormap (overrides session for this preview only)"),
     scaling_function: str | None = Query(None, description="Optional scaling function (overrides session for this preview only)"),
     invert_colormap: bool | None = Query(None, description="Optional invert flag (overrides session for this preview only)"),
+    native_resolution: bool = Query(False, description="Render every source pixel without preview downsampling"),
+    src_x: float | None = Query(None, description="Optional source-pixel crop origin X"),
+    src_y: float | None = Query(None, description="Optional source-pixel crop origin Y"),
+    src_w: float | None = Query(None, description="Optional source-pixel crop width"),
+    src_h: float | None = Query(None, description="Optional source-pixel crop height"),
 ):
     """
     Return a PNG preview for an arbitrary FITS file from the file browser.
@@ -10522,7 +10795,7 @@ async def fits_preview(
     - No caching (server returns no-store headers)
     - Applies flip_y orientation logic to match displayed orientation (quiet; no log spam)
     - For cubes (ndim>=3): uses the requested slice_index (default 0)
-    - Low-quality / fast: downsampled directly from memmap, keeps original aspect ratio
+    - Normally returns a fast downsampled preview; native_resolution returns every source pixel
     """
     session = getattr(request.state, "session", None)
     if session is None:
@@ -10712,11 +10985,44 @@ async def fits_preview(
         w = int(arr2d_view.shape[-1])
         if h <= 0 or w <= 0:
             raise HTTPException(status_code=400, detail="Invalid image dimensions")
+        full_w, full_h = w, h
+        crop_x = crop_y = 0
+        crop_w, crop_h = w, h
+        try:
+            flip_y = bool(_flip_y_from_header_quiet(header))
+        except Exception:
+            flip_y = False
+        if src_w is not None and src_h is not None and float(src_w) > 0 and float(src_h) > 0:
+            # Query coordinates are in displayed PNG space (origin = top-left).
+            # The FITS array is still native; convert Y before slicing, then
+            # report the crop back in display space after the later flipud.
+            dx0 = int(math.floor(float(src_x or 0)))
+            dy0 = int(math.floor(float(src_y or 0)))
+            dx1 = dx0 + max(1, int(math.ceil(float(src_w))))
+            dy1 = dy0 + max(1, int(math.ceil(float(src_h))))
+            dx0 = min(max(0, dx0), full_w)
+            dy0 = min(max(0, dy0), full_h)
+            dx1 = min(max(dx0, dx1), full_w)
+            dy1 = min(max(dy0, dy1), full_h)
+            if dx1 > dx0 and dy1 > dy0:
+                if flip_y:
+                    fy0 = full_h - dy1
+                    fy1 = full_h - dy0
+                else:
+                    fy0, fy1 = dy0, dy1
+                arr2d_view = arr2d_view[fy0:fy1, dx0:dx1]
+                h = int(arr2d_view.shape[-2])
+                w = int(arr2d_view.shape[-1])
+                crop_x, crop_y = dx0, dy0
+                crop_w, crop_h = w, h
 
         # Use a UNIFORM stride in both axes. For Colab Drive, avoid striding across
         # the full file because that becomes slow random I/O through Drive FUSE.
         # A contiguous central window is much faster and good enough for hover preview.
-        if is_colab_drive_preview:
+        if native_resolution or max(h, w) <= int(max_dim):
+            stride = 1
+            small = np.asarray(arr2d_view)
+        elif is_colab_drive_preview:
             win_size = int(os.getenv("COLAB_DRIVE_PREVIEW_WINDOW", "1024"))
             win_h = max(1, min(h, win_size))
             win_w = max(1, min(w, win_size))
@@ -10748,7 +11054,7 @@ async def fits_preview(
 
         # Flip Y if required (quiet, no expensive logging)
         try:
-            if _flip_y_from_header_quiet(header):
+            if flip_y:
                 small = np.flipud(small)
         except Exception:
             pass
@@ -10854,6 +11160,15 @@ async def fits_preview(
         "X-FITS-BPA-DEG": bpa_deg,
         "X-FITS-PIXSCALE-X-ARCSEC": pix_x_arcsec,
         "X-FITS-PIXSCALE-Y-ARCSEC": pix_y_arcsec,
+        "X-FITS-SOURCE-WIDTH": str(full_w),
+        "X-FITS-SOURCE-HEIGHT": str(full_h),
+        "X-FITS-CROP-X": str(crop_x),
+        "X-FITS-CROP-Y": str(crop_y),
+        "X-FITS-CROP-WIDTH": str(crop_w),
+        "X-FITS-CROP-HEIGHT": str(crop_h),
+        "X-FITS-VMIN": str(vmin),
+        "X-FITS-VMAX": str(vmax),
+        "X-FITS-PREVIEW-STRIDE": str(stride),
         "X-FITS-PREVIEW-MODE": "central" if is_colab_drive_preview else "full",
     }
     return Response(content=png, media_type="image/png", headers=headers)
@@ -11214,10 +11529,13 @@ class RegionCutoutRequest(BaseModel):
     width_arcsec: Optional[float] = None
     height_arcsec: Optional[float] = None
     minor_radius_arcsec: Optional[float] = None
+    angle_degrees: Optional[float] = None
     fits_path: Optional[str] = None
     hdu_index: Optional[int] = None
     vertices: Optional[List[RegionVertex]] = None
     galaxy_name: Optional[str] = None
+    display_x: Optional[float] = None
+    display_y: Optional[float] = None
 
 def _compute_arcsec_per_pixel(wcs: WCS) -> float:
     try:
@@ -11298,10 +11616,19 @@ def _safe_filename_component(value: Optional[str], fallback: str, max_length: in
     return sanitized[:max_length]
 
 
-def _build_hexagon_vertices(center_x: float, center_y: float, radius_x: float, radius_y: float) -> PixCoord:
+def _build_hexagon_vertices(
+    center_x: float,
+    center_y: float,
+    radius_x: float,
+    radius_y: float,
+    angle_degrees: float = 0.0,
+) -> PixCoord:
     angles = (np.pi / 3.0) * np.arange(6) + (np.pi / 6.0)
-    xs = center_x + radius_x * np.cos(angles)
-    ys = center_y + radius_y * np.sin(angles)
+    x = radius_x * np.cos(angles)
+    y = radius_y * np.sin(angles)
+    rotation = np.deg2rad(float(angle_degrees or 0.0))
+    xs = center_x + x * np.cos(rotation) - y * np.sin(rotation)
+    ys = center_y + x * np.sin(rotation) + y * np.cos(rotation)
     return PixCoord(x=np.asarray(xs, dtype=float), y=np.asarray(ys, dtype=float))
 
 
@@ -11379,7 +11706,9 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
         width = _pixels_from_arcsec(payload.width_arcsec, arcsec_per_pixel_x) or _positive(payload.width_pixels)
         height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
-            return RectanglePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
+            # Browser/display Y grows downward; FITS pixel Y grows upward.
+            angle = -float(payload.angle_degrees or 0)
+            return RectanglePixelRegion(center=center, width=width, height=height, angle=angle * u.deg)
 
     elif region_type == "ellipse":
         # Prefer explicit width/height when provided so we preserve whether the ellipse was
@@ -11388,7 +11717,8 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
         width = _pixels_from_arcsec(payload.width_arcsec, arcsec_per_pixel_x) or _positive(payload.width_pixels)
         height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
-            return EllipsePixelRegion(center=center, width=width, height=height, angle=0 * u.deg)
+            angle = -float(payload.angle_degrees or 0)
+            return EllipsePixelRegion(center=center, width=width, height=height, angle=angle * u.deg)
 
         # Backward-compatibility fallback: major/minor (assumes major is along X)
         major = _pixels_from_arcsec(payload.radius_arcsec, arcsec_per_pixel) or _positive(payload.radius_pixels)
@@ -11401,11 +11731,106 @@ def _build_pixel_region(payload: RegionCutoutRequest, source_wcs: WCS, target_co
         height = _pixels_from_arcsec(payload.height_arcsec, arcsec_per_pixel_y) or _positive(payload.height_pixels)
         if width and height:
             if abs(width - height) <= 1e-6:
-                return RegularPolygonPixelRegion(center=center, nvertices=6, radius=width / 2.0, angle=30 * u.deg)
-            vertices = _build_hexagon_vertices(center.x, center.y, width / 2.0, height / 2.0)
+                return RegularPolygonPixelRegion(
+                    center=center,
+                    nvertices=6,
+                    radius=width / 2.0,
+                    angle=(30.0 - float(payload.angle_degrees or 0.0)) * u.deg,
+                )
+            vertices = _build_hexagon_vertices(
+                center.x,
+                center.y,
+                width / 2.0,
+                height / 2.0,
+                -float(payload.angle_degrees or 0.0),
+            )
             return PolygonPixelRegion(vertices=vertices)
 
     return None
+
+
+def _fits_paths_equal(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except Exception:
+        return os.path.normpath(str(a)) == os.path.normpath(str(b))
+
+
+def _world_from_display_pixel(fits_path: Path, hdu_index: int, x: float, y: float):
+    """Convert displayed (origin=top, post-flip) pixels to RA/Dec with Astropy WCS."""
+    with fits.open(str(fits_path), memmap=True, lazy_load_hdus=True) as hdul:
+        if not (0 <= int(hdu_index) < len(hdul)):
+            hdu_index = 0
+        hdu = hdul[int(hdu_index)]
+        data, header, wcs = _hdu_2d_celestial(hdu)
+        if data is None or wcs is None or header is None:
+            raise RuntimeError("Displayed FITS has no celestial WCS")
+        height = int(data.shape[-2])
+        flip_y = bool(_flip_y_from_header_quiet(header))
+        y_idx = float(y)
+        if flip_y:
+            y_idx = float(height - 1 - y_idx)
+        ra_deg, dec_deg = wcs.all_pix2world([[float(x), y_idx]], 0)[0]
+        if not (np.isfinite(ra_deg) and np.isfinite(dec_deg)):
+            raise RuntimeError("Display pixel is outside WCS")
+        return float(ra_deg), float(dec_deg)
+
+
+def _hdu_2d_celestial(hdu):
+    if hdu is None:
+        return None, None, None
+    try:
+        data = getattr(hdu, "data", None)
+        header = getattr(hdu, "header", None)
+        if data is None or header is None or getattr(data, "ndim", 0) < 2:
+            return None, None, None
+        while getattr(data, "ndim", 0) > 2:
+            data = np.asarray(data[0])
+        wcs_full = WCS(header)
+        if not wcs_full.has_celestial:
+            return None, None, None
+        return data, header, wcs_full.celestial
+    except Exception:
+        return None, None, None
+
+
+def _reproject_source_onto_reference_cutout(
+    source_data,
+    source_wcs,
+    reference_path: Path,
+    reference_hdu_index: int,
+    target_coord: SkyCoord,
+    cutout_size,
+):
+    """Sample another FITS onto the currently displayed image's WCS/orientation."""
+    with fits.open(str(reference_path), memmap=True, lazy_load_hdus=True) as ref_hdul:
+        ref_hdu = None
+        if 0 <= int(reference_hdu_index) < len(ref_hdul):
+            ref_hdu = ref_hdul[int(reference_hdu_index)]
+        if _hdu_2d_celestial(ref_hdu)[2] is None:
+            ref_hdu = None
+            for candidate in ref_hdul:
+                if _hdu_2d_celestial(candidate)[2] is not None:
+                    ref_hdu = candidate
+                    break
+        ref_data, _ref_header, ref_wcs = _hdu_2d_celestial(ref_hdu)
+        if ref_data is None or ref_wcs is None:
+            raise RuntimeError("Displayed FITS has no celestial WCS to align against")
+        ref_cutout = Cutout2D(
+            ref_data,
+            target_coord,
+            cutout_size,
+            wcs=ref_wcs,
+            mode="partial",
+            fill_value=np.nan,
+        )
+        reprojected, _footprint = reproject_interp(
+            (np.asarray(source_data, dtype=np.float32), source_wcs),
+            ref_cutout.wcs,
+            shape_out=ref_cutout.data.shape,
+            order=1,
+        )
+        return np.array(reprojected, copy=True), ref_cutout.wcs, ref_wcs
 
 
 def _project_region_to_cutout(pixel_region, source_wcs: WCS, cutout_wcs: WCS):
@@ -11517,12 +11942,47 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to parse WCS: {str(e)}")
             
-            # Convert RA/Dec to pixel coordinates
+            # Convert RA/Dec to pixel coordinates.  Prefer displayed pixel coords
+            # (origin=top, matching OpenSeadragon) so ALMA SIN / flip_y cannot
+            # send the cutout to the mirrored side of the galaxy.
             try:
-                target_coord = SkyCoord(ra=payload.ra * u.deg, dec=payload.dec * u.deg, frame='icrs')
+                ra_deg = float(payload.ra)
+                dec_deg = float(payload.dec)
+                if payload.display_x is not None and payload.display_y is not None:
+                    reference_file = session_data.get("current_fits_file")
+                    if reference_file:
+                        try:
+                            reference_path = _resolve_fits_path(str(reference_file))
+                            ref_hdu_index = int(session_data.get("current_hdu_index", 0) or 0)
+                            ra_deg, dec_deg = _world_from_display_pixel(
+                                reference_path,
+                                ref_hdu_index,
+                                float(payload.display_x),
+                                float(payload.display_y),
+                            )
+                            debug_wcs_info_seed = {
+                                "display_pixel": {
+                                    "x": float(payload.display_x),
+                                    "y": float(payload.display_y),
+                                }
+                            }
+                        except Exception as display_err:
+                            logger.warning(
+                                "Display-pixel WCS lookup failed (%s); using payload RA/Dec",
+                                display_err,
+                                exc_info=True,
+                            )
+                            debug_wcs_info_seed = {}
+                    else:
+                        debug_wcs_info_seed = {}
+                else:
+                    debug_wcs_info_seed = {}
+                target_coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
                 px, py = wcs.world_to_pixel(target_coord)
                 if not (np.isfinite(px) and np.isfinite(py)):
                     raise HTTPException(status_code=400, detail="Coordinates outside image bounds")
+            except HTTPException:
+                raise
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to convert coordinates: {str(e)}")
 
@@ -11549,9 +12009,13 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                     "x": arcsec_per_pixel_x,
                     "y": arcsec_per_pixel_y,
                 },
-                "target_world": {"ra": payload.ra, "dec": payload.dec},
+                "target_world": {"ra": ra_deg, "dec": dec_deg},
                 "target_pixel": {"x": float(px), "y": float(py)},
             }
+            try:
+                debug_wcs_info.update(debug_wcs_info_seed)
+            except Exception:
+                pass
 
             def _positive_float(value):
                 try:
@@ -11615,22 +12079,94 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                     elif major:
                         size_arcsec = major * arcsec_per_pixel * 2
 
+            # A rotated shape occupies a larger axis-aligned FITS cutout.  The
+            # preview is drawn into that same bounding box and clipped by the
+            # rotated region, so these dimensions must match or the image is
+            # stretched/zoomed relative to the border.
+            angle_degrees = float(payload.angle_degrees or 0.0)
+            if size_arcsec_xy is not None and region_type in {'rectangle', 'ellipse', 'hexagon'}:
+                height_arcsec, width_arcsec = size_arcsec_xy
+                angle_radians = math.radians(angle_degrees)
+                cos_angle = abs(math.cos(angle_radians))
+                sin_angle = abs(math.sin(angle_radians))
+                if region_type == 'ellipse':
+                    bbox_width = math.sqrt(
+                        (width_arcsec * cos_angle) ** 2 + (height_arcsec * sin_angle) ** 2
+                    )
+                    bbox_height = math.sqrt(
+                        (width_arcsec * sin_angle) ** 2 + (height_arcsec * cos_angle) ** 2
+                    )
+                elif region_type == 'hexagon':
+                    phases = (np.pi / 3.0) * np.arange(6) + (np.pi / 6.0)
+                    local_x = (width_arcsec / 2.0) * np.cos(phases)
+                    local_y = (height_arcsec / 2.0) * np.sin(phases)
+                    rotated_x = local_x * math.cos(angle_radians) - local_y * math.sin(angle_radians)
+                    rotated_y = local_x * math.sin(angle_radians) + local_y * math.cos(angle_radians)
+                    bbox_width = float(np.max(rotated_x) - np.min(rotated_x))
+                    bbox_height = float(np.max(rotated_y) - np.min(rotated_y))
+                else:
+                    bbox_width = width_arcsec * cos_angle + height_arcsec * sin_angle
+                    bbox_height = width_arcsec * sin_angle + height_arcsec * cos_angle
+                size_arcsec_xy = (max(2.0, bbox_height), max(2.0, bbox_width))
+                size_arcsec = max(size_arcsec_xy)
+
             size_arcsec = max(size_arcsec, 2.0)
-            
-            # Create cutout
+
+            # Create cutout.  If the source is a different FITS than the map
+            # currently on screen (Replace with Map), reproject onto that
+            # displayed WCS so rotation/flip/pixel scale match.
             try:
                 cutout_size = (size_arcsec * u.arcsec)
                 if size_arcsec_xy is not None:
                     # Cutout2D expects (ny, nx) i.e. (y, x)
                     cutout_size = (size_arcsec_xy[0] * u.arcsec, size_arcsec_xy[1] * u.arcsec)
-                cutout = Cutout2D(
-                    image_data,
-                    target_coord,
-                    cutout_size,
-                    wcs=wcs,
-                    mode='partial',
-                    fill_value=np.nan
-                )
+
+                aligned_to_display = False
+                output_wcs = None
+                region_wcs = wcs
+                cutout_data = None
+                reference_file = session_data.get("current_fits_file")
+                if payload.fits_path and reference_file:
+                    try:
+                        reference_path = _resolve_fits_path(str(reference_file))
+                        if not _fits_paths_equal(reference_path, fits_path):
+                            ref_hdu_index = int(session_data.get("current_hdu_index", 0) or 0)
+                            cutout_data, output_wcs, region_wcs = _reproject_source_onto_reference_cutout(
+                                image_data,
+                                wcs,
+                                reference_path,
+                                ref_hdu_index,
+                                target_coord,
+                                cutout_size,
+                            )
+                            aligned_to_display = True
+                            pixel_region = _build_pixel_region(payload, region_wcs, target_coord)
+                            debug_wcs_info["aligned_to_display"] = True
+                            debug_wcs_info["reference_fits"] = str(reference_path)
+                    except Exception as align_err:
+                        logger.warning(
+                            "Replacement WCS alignment failed (%s); using native cutout",
+                            align_err,
+                            exc_info=True,
+                        )
+                        cutout_data = None
+                        output_wcs = None
+                        region_wcs = wcs
+
+                if cutout_data is None:
+                    cutout = Cutout2D(
+                        image_data,
+                        target_coord,
+                        cutout_size,
+                        wcs=wcs,
+                        mode='partial',
+                        fill_value=np.nan
+                    )
+                    cutout_data = np.array(cutout.data, copy=True)
+                    output_wcs = cutout.wcs
+                    region_wcs = wcs
+                    debug_wcs_info["aligned_to_display"] = False
+
                 debug_wcs_info["cutout_size_arcsec"] = (
                     [float(size_arcsec_xy[0]), float(size_arcsec_xy[1])]
                     if size_arcsec_xy is not None
@@ -11638,12 +12174,11 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                 )
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to create cutout: {str(e)}")
-            
-            cutout_data = np.array(cutout.data, copy=True)
+
             region_mask_array = None
             mask_fraction = None
             try:
-                projected_region = _project_region_to_cutout(pixel_region, wcs, cutout.wcs)
+                projected_region = _project_region_to_cutout(pixel_region, region_wcs, output_wcs)
                 mask_bool = _compute_region_mask(projected_region, cutout_data.shape)
                 if mask_bool is not None and mask_bool.any():
                     mask_fraction = float(mask_bool.mean())
@@ -11655,16 +12190,16 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                 mask_fraction = None
 
             # Create new header from cutout WCS
-            cutout_header = cutout.wcs.to_header()
-            cutout_header['NAXIS1'] = cutout.data.shape[1]
-            cutout_header['NAXIS2'] = cutout.data.shape[0]
+            cutout_header = output_wcs.to_header()
+            cutout_header['NAXIS1'] = cutout_data.shape[1]
+            cutout_header['NAXIS2'] = cutout_data.shape[0]
             cutout_header['NAXIS'] = 2
-            debug_wcs_info["cutout_shape"] = [int(cutout.data.shape[0]), int(cutout.data.shape[1])]
+            debug_wcs_info["cutout_shape"] = [int(cutout_data.shape[0]), int(cutout_data.shape[1])]
             debug_wcs_info["cutout_crval"] = [cutout_header.get("CRVAL1"), cutout_header.get("CRVAL2")]
             debug_wcs_info["cutout_crpix"] = [cutout_header.get("CRPIX1"), cutout_header.get("CRPIX2")]
             
             # Copy important keywords from original header
-            for key in ['BUNIT', 'BSCALE', 'BZERO']:
+            for key in ['BUNIT', 'BSCALE', 'BZERO', 'BMAJ', 'BMIN', 'BPA']:
                 if key in header:
                     cutout_header[key] = header[key]
             
@@ -11678,7 +12213,7 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             )
             galaxy_slug = _safe_filename_component(galaxy_source, SED_DEFAULT_GALAXY_NAME)
             region_slug = _safe_filename_component(payload.region_type or "region", "region")
-            filename = f"{region_slug}_RA{payload.ra:.4f}_DEC{payload.dec:.4f}_{timestamp}.fits"
+            filename = f"{region_slug}_RA{ra_deg:.4f}_DEC{dec_deg:.4f}_{timestamp}.fits"
             
             # Save to uploads folder
             uploads_dir = _resolve_uploads_dir()

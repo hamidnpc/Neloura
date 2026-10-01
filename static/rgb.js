@@ -1549,6 +1549,19 @@
         } catch (_) { /* noop */ }
     }
 
+    function applyRgbViewerPerformanceSettings(viewer) {
+        if (!viewer) return;
+        try { viewer.timeout = 120000; } catch (_) { /* noop */ }
+        try { viewer.imageLoaderLimit = 4; } catch (_) { /* noop */ }
+        try { viewer.placeholderFillStyle = 'transparent'; } catch (_) { /* noop */ }
+        try {
+            if (viewer.imageLoader) {
+                viewer.imageLoader.timeout = 120000;
+                viewer.imageLoader.jobLimit = 4;
+            }
+        } catch (_) { /* noop */ }
+    }
+
     function openRgbTiles(info, options) {
         if (!info || !Number.isFinite(info.width) || !Number.isFinite(info.height)) return;
         const preserveView = !!(options && options.preserveView);
@@ -1696,10 +1709,14 @@
                 minZoomLevel: 0.05,
                 maxZoomLevel: 75,
                 imageSmoothingEnabled: false,
+                timeout: 120000,
+                imageLoaderLimit: 4,
+                placeholderFillStyle: 'transparent',
                 loadTilesWithAjax: true,
                 ajaxWithCredentials: true
             });
             window.viewer = window.tiledViewer;
+            applyRgbViewerPerformanceSettings(window.tiledViewer);
             window.tiledViewer.addOnceHandler('open', () => {
                 try {
                     if (openRequestId !== state.openRequestId) return;
@@ -1709,6 +1726,7 @@
             });
             scheduleCatalogOverlayRgbRefresh(window.tiledViewer);
         } else if (window.tiledViewer) {
+            applyRgbViewerPerformanceSettings(window.tiledViewer);
             const viewport = window.tiledViewer.viewport;
             const zoom = preserveView && viewport && viewport.getZoom ? viewport.getZoom() : null;
             const center = preserveView && viewport && viewport.getCenter ? viewport.getCenter() : null;

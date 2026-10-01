@@ -171,6 +171,7 @@ function ensureColorcetFunctionsRegistered() {
 }
 
 function createSearchableDropdown(labelText, selectId, optionsArray, globalVarName, defaultSelectedValue, hasSwatches = false) {
+    const popupTarget = (typeof window !== 'undefined') ? window.__dynamicRangePopupTarget : null;
     const container = document.createElement('div');
     container.style.marginBottom = '10px';
     container.style.display = 'flex';
@@ -240,7 +241,9 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
     hiddenSelect.id = selectId;
     hiddenSelect.style.display = 'none';
 
-    let currentSelectionValue = window[globalVarName] || defaultSelectedValue;
+    let currentSelectionValue = (popupTarget && popupTarget.getState)
+        ? ((selectId === 'color-map-select' ? popupTarget.getState().colorMap : popupTarget.getState().scaling) || defaultSelectedValue)
+        : (window[globalVarName] || defaultSelectedValue);
     const initialSelection = optionsArray.find(opt => opt.value === currentSelectionValue) || optionsArray.find(opt => opt.value === defaultSelectedValue);
     if (initialSelection) {
         selectedText.textContent = initialSelection.label;
@@ -282,7 +285,7 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
             selectedText.textContent = opt.label;
             if (hasSwatches && opt.gradient) selectedSwatch.style.background = opt.gradient;
             currentSelectionValue = opt.value;
-            window[globalVarName] = opt.value;
+            if (!popupTarget) window[globalVarName] = opt.value;
 
             optionsListContainer.querySelectorAll('.custom-dropdown-option').forEach(vOpt => {
                 vOpt.style.backgroundColor = (vOpt.dataset.value === currentSelectionValue) ? '#555' : 'transparent';
@@ -330,7 +333,7 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
     customSelectContainer.appendChild(hiddenSelect);
 
     hiddenSelect.addEventListener('change', () => {
-        window[globalVarName] = hiddenSelect.value;
+        if (!popupTarget) window[globalVarName] = hiddenSelect.value;
         const selOpt = optionsArray.find(o => o.value === hiddenSelect.value);
         if (selOpt) {
             selectedText.textContent = selOpt.label;
@@ -338,12 +341,16 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
         }
 
         const ensureMinMax = () => {
-            const minInput = document.getElementById('min-range-input');
-            const maxInput = document.getElementById('max-range-input');
+            const doc = (typeof getHistogramDocument === 'function') ? getHistogramDocument() : document;
+            const minInput = doc.getElementById('min-range-input');
+            const maxInput = doc.getElementById('max-range-input');
             const needsPrefill = !minInput || !maxInput || minInput.value === '' || maxInput.value === '' ||
                                  isNaN(parseFloat(minInput.value)) || isNaN(parseFloat(maxInput.value));
             if (needsPrefill) {
-                const fallback = { min: (window.fitsData?.min_value ?? 0), max: (window.fitsData?.max_value ?? 1) };
+                const targetState = popupTarget && popupTarget.getState ? popupTarget.getState() : null;
+                const fallback = targetState
+                    ? { min: targetState.min ?? targetState.dataMin ?? 0, max: targetState.max ?? targetState.dataMax ?? 1 }
+                    : { min: (window.fitsData?.min_value ?? 0), max: (window.fitsData?.max_value ?? 1) };
                 const defaults = (typeof resolveDefaultRange === 'function') ? resolveDefaultRange() : fallback;
                 if (typeof setRangeInputs === 'function') setRangeInputs(defaults.min, defaults.max);
             }
@@ -351,7 +358,9 @@ function createSearchableDropdown(labelText, selectId, optionsArray, globalVarNa
 
         if (selectId === 'color-map-select') {
             ensureMinMax();
-            if (typeof applyColorMap === 'function') {
+            if (popupTarget && typeof applyDynamicRange === 'function') {
+                applyDynamicRange();
+            } else if (typeof applyColorMap === 'function') {
                 applyColorMap(hiddenSelect.value);
             } else if (typeof applyDynamicRange === 'function') {
                 applyDynamicRange();
@@ -5756,6 +5765,35 @@ function stopProgressSimulation() {
 
 async function applyPercentile(percentileValue) {
     console.log(`Attempting to apply ${percentileValue * 100}% percentile`);
+    const popupTarget = window.__dynamicRangePopupTarget;
+    if (popupTarget) {
+        try {
+            showNotification(true, 'Applying percentile...');
+            const histData = await fetchServerHistogram(null, null, 4096);
+            const counts = Array.isArray(histData.counts) ? histData.counts.map(Number) : [];
+            const edges = Array.isArray(histData.bin_edges) ? histData.bin_edges.map(Number) : [];
+            const overallMin = Number(histData.data_overall_min ?? histData.min_value);
+            const overallMax = Number(histData.data_overall_max ?? histData.max_value);
+            const total = counts.reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
+            if (!total || !Number.isFinite(overallMin) || !Number.isFinite(overallMax)) throw new Error('Invalid histogram');
+            let cumulative = 0;
+            let index = counts.length - 1;
+            for (let i = 0; i < counts.length; i += 1) {
+                cumulative += Number.isFinite(counts[i]) ? counts[i] : 0;
+                if (cumulative >= total * percentileValue) { index = i; break; }
+            }
+            const cutoff = Number.isFinite(edges[index + 1])
+                ? edges[index + 1]
+                : overallMin + ((index + 1) / counts.length) * (overallMax - overallMin);
+            setRangeInputs(overallMin, cutoff);
+            drawHistogramLines(overallMin, cutoff, false);
+            applyDynamicRange();
+            showNotification(`Applied ${percentileValue * 100}% percentile`, 1200, 'success');
+        } catch (e) {
+            showNotification(`Error applying percentile: ${e.message || e}`, 2500, 'error');
+        }
+        return;
+    }
 
     // Multi-panel: toolbar/popups may invoke this in the top window which has no fitsData.
     // Delegate to the active pane (or a best-effort pane with fitsData) instead of erroring.
@@ -7140,6 +7178,8 @@ function nelouraMapColorBarEffectivelyVisible(w) {
  */
 function createScreenColorBarControls(options) {
     options = options || {};
+    const customState = options.state || null;
+    const customOnChange = typeof options.onChange === 'function' ? options.onChange : null;
     const idPrefix = (options.idPrefix && String(options.idPrefix).trim()) ? String(options.idPrefix).trim() + '-' : '';
     const defaultLeftWhenEnabling = !!options.defaultLeftWhenEnabling;
     const bindCatalog = !!options.bindCatalog;
@@ -7164,8 +7204,11 @@ function createScreenColorBarControls(options) {
             numFmt: 'screenColorBarNumberFormat',
             dec: 'screenColorBarDecimals'
         };
-    const gv = (k) => window[PK[k]];
-    const sv = (k, v) => { window[PK[k]] = v; };
+    const gv = (k) => customState ? customState[k] : window[PK[k]];
+    const sv = (k, v) => {
+        if (customState) customState[k] = v;
+        else window[PK[k]] = v;
+    };
     const defaultPos = bindCatalog ? 'left' : 'right';
 
     const container = document.createElement('div');
@@ -7176,7 +7219,15 @@ function createScreenColorBarControls(options) {
     container.style.width = '100%';
     container.style.boxSizing = 'border-box';
 
-    if (bindCatalog) {
+    if (customState) {
+        if (typeof customState.vis !== 'boolean') customState.vis = false;
+        if (!customState.pos) customState.pos = 'right';
+        if (typeof customState.unit !== 'string') customState.unit = '';
+        if (!Number.isFinite(Number(customState.ticks))) customState.ticks = 5;
+        if (!/^#[0-9a-fA-F]{6}$/.test(String(customState.labelColor || ''))) customState.labelColor = '#eaeaea';
+        if (!['auto', 'scientific', 'fixed', 'integer'].includes(customState.numFmt)) customState.numFmt = 'auto';
+        if (!Number.isFinite(Number(customState.dec))) customState.dec = 2;
+    } else if (bindCatalog) {
         nelouraEnsureCatalogScreenColorBarDefaults(window);
     } else {
         if (typeof window.screenColorBarVisible !== 'boolean') window.screenColorBarVisible = false;
@@ -7413,10 +7464,10 @@ function createScreenColorBarControls(options) {
         optionsPanel.style.display = checkbox.checked ? 'block' : 'none';
     };
 
-    const mapBarLayoutBlocked = () => !bindCatalog && nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(window);
+    const mapBarLayoutBlocked = () => !customState && !bindCatalog && nelouraIsMapScreenColorBarUnsupportedMultiPanelLayout(window);
 
     const applyMapBarBlockedUi = () => {
-        if (bindCatalog) return;
+        if (bindCatalog || customState) return;
         const blocked = mapBarLayoutBlocked();
         checkbox.disabled = blocked;
         row1.style.cursor = blocked ? 'not-allowed' : 'pointer';
@@ -7465,12 +7516,13 @@ function createScreenColorBarControls(options) {
         decInp.value = String(d);
         syncDecEnabled();
         syncOptsVisibility();
-        if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
+        if (customOnChange) customOnChange(customState);
+        else if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
         applyMapBarBlockedUi();
     };
 
     container.syncFromGlobals = function nelouraSyncScreenColorBarFormFromGlobals() {
-        if (bindCatalog) nelouraEnsureCatalogScreenColorBarDefaults(window);
+        if (bindCatalog && !customState) nelouraEnsureCatalogScreenColorBarDefaults(window);
         const blocked = mapBarLayoutBlocked();
         checkbox.checked = blocked ? false : !!gv('vis');
         sel.value = gv('pos') || defaultPos;
@@ -7524,13 +7576,17 @@ if (typeof window !== 'undefined') {
 // PASTE THE FOLLOWING CODE INTO static/main.js, REPLACING THE EXISTING showDynamicRangePopup function
 
 function showDynamicRangePopup(options = {}) {
-    if (window.__rgbModeActive) {
+    const opts = options || {};
+    const popupTarget = opts.target || null;
+    if (popupTarget) window.__dynamicRangePopupTarget = popupTarget;
+    else if (!opts.forceRebind) window.__dynamicRangePopupTarget = null;
+    const targetState = popupTarget && typeof popupTarget.getState === 'function' ? popupTarget.getState() : null;
+    if (!popupTarget && window.__rgbModeActive) {
         if (typeof showNotification === 'function') {
             showNotification('Use RGB Image controls for RGB mode.', 2200, 'info');
         }
         return;
     }
-    const opts = options || {};
     console.log("showDynamicRangePopup called.");
     const isTiledViewActive = !!(window.tiledViewer && typeof window.tiledViewer.isOpen === 'function' && window.tiledViewer.isOpen());
     console.log(`isTiledViewActive: ${isTiledViewActive}`);
@@ -7539,7 +7595,7 @@ function showDynamicRangePopup(options = {}) {
     // but the actual image metadata lives inside the active iframe pane.
     // If we're the top window and multi-panel is visible, delegate to the active pane
     // (or a best-effort pane that has metadata) so histogram works in 2x2/diagonal/etc.
-    try {
+    if (!popupTarget) try {
         const appRoot = getNelouraSameOriginRootWindow();
         const isAppRoot = (appRoot === window);
         if (isAppRoot) {
@@ -7575,8 +7631,8 @@ function showDynamicRangePopup(options = {}) {
     const hasMinMax = (fd) => !!(fd && fd.dynamic_range_pending !== true &&
                                 typeof fd.min_value !== 'undefined' && typeof fd.max_value !== 'undefined' &&
                                 isFinite(fd.min_value) && isFinite(fd.max_value) && fd.max_value > fd.min_value);
-    if (!window.fitsData) window.fitsData = {};
-    if (!hasMinMax(window.fitsData)) {
+    if (!popupTarget && !window.fitsData) window.fitsData = {};
+    if (!popupTarget && !hasMinMax(window.fitsData)) {
         try {
             const ti = (typeof currentTileInfo !== 'undefined' && currentTileInfo) ? currentTileInfo : (window.currentTileInfo || null);
             const pickMinMax = (tileInfo) => {
@@ -7597,7 +7653,7 @@ function showDynamicRangePopup(options = {}) {
             }
         } catch (_) { }
     }
-    if (!hasMinMax(window.fitsData)) {
+    if (!popupTarget && !hasMinMax(window.fitsData)) {
         if (isTiledViewActive && !opts.__retryMeta) {
             try {
                 showNotification(true, 'Loading image metadata...');
@@ -7647,7 +7703,7 @@ function showDynamicRangePopup(options = {}) {
         return;
     }
 
-    if (!isTiledViewActive && (!window.fitsData.data || (Array.isArray(window.fitsData.data) && window.fitsData.data.length === 0))) {
+    if (!popupTarget && !isTiledViewActive && (!window.fitsData.data || (Array.isArray(window.fitsData.data) && window.fitsData.data.length === 0))) {
         showNotification('Image pixel data not available for local histogram. Please wait or reload.', 3000, 'warning');
         return;
     }
@@ -7677,7 +7733,7 @@ function showDynamicRangePopup(options = {}) {
     const popupDoc = hostDocument;
     const document = hostDocument;
 
-    const currentPaneId = getCurrentPaneId();
+    const currentPaneId = popupTarget ? `replacement:${popupTarget.key || 'region'}` : getCurrentPaneId();
     let popup = document.getElementById('dynamic-range-popup');
     const titleElementId = 'dynamic-range-popup-title'; // For drag handling
     let preservedPosition = null;
@@ -7700,12 +7756,12 @@ function showDynamicRangePopup(options = {}) {
         const doc = getHistogramDocument();
         const minInput = doc.getElementById('min-range-input');
         const maxInput = doc.getElementById('max-range-input');
-        if (minInput && maxInput && window.fitsData) {
-            setRangeInputs(window.fitsData.min_value, window.fitsData.max_value);
+        if (minInput && maxInput && (targetState || window.fitsData)) {
+            setRangeInputs(targetState ? targetState.min : window.fitsData.min_value, targetState ? targetState.max : window.fitsData.max_value);
         }
         const invertToggle = doc.getElementById('invert-colormap-toggle');
         if (invertToggle) {
-            invertToggle.checked = !!window.currentColorMapInverted;
+            invertToggle.checked = targetState ? !!targetState.invert : !!window.currentColorMapInverted;
         }
         const screenBarToggle = doc.getElementById('screen-colorbar-toggle');
         const screenBarPos = doc.getElementById('screen-colorbar-position');
@@ -7764,10 +7820,10 @@ function showDynamicRangePopup(options = {}) {
         if (screenBarOptsPanel && screenBarToggle) {
             screenBarOptsPanel.style.display = (screenBarToggle.checked && !mpBarBlocked) ? 'block' : 'none';
         }
-        if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
+        if (!popupTarget && typeof updateScreenColorBar === 'function') updateScreenColorBar();
         const fileNameLabel = popup.querySelector('.scaling-popup-filename');
         if (fileNameLabel) {
-            fileNameLabel.textContent = window.fitsData?.filename || window.currentFitsFile || 'Current image';
+            fileNameLabel.textContent = popupTarget ? (popupTarget.label || 'Replacement map') : (window.fitsData?.filename || window.currentFitsFile || 'Current image');
         }
         requestHistogramUpdate();
         attachHistogramInteractionWhenReady();
@@ -7819,7 +7875,7 @@ function showDynamicRangePopup(options = {}) {
     const fileNameLabel = document.createElement('div');
     fileNameLabel.className = 'scaling-popup-filename';
     Object.assign(fileNameLabel.style, { fontSize: '13px', opacity: 0.8 });
-    const fileName = (window.fitsData?.filename || window.currentFitsFile || 'Current image');
+    const fileName = popupTarget ? (popupTarget.label || 'Replacement map') : (window.fitsData?.filename || window.currentFitsFile || 'Current image');
     fileNameLabel.textContent = fileName;
     title.appendChild(titleText);
     title.appendChild(fileNameLabel);
@@ -7850,6 +7906,9 @@ function showDynamicRangePopup(options = {}) {
     });
     closeButton.addEventListener('click', () => {
         popup.style.display = 'none';
+        if (popupTarget && window.__dynamicRangePopupTarget === popupTarget) {
+            window.__dynamicRangePopupTarget = null;
+        }
     });
 
     enablePopupDrag(popup, title, popupDoc);
@@ -7934,10 +7993,10 @@ function showDynamicRangePopup(options = {}) {
     maxInput.id = 'max-range-input'; maxInput.type = 'text';
     Object.assign(maxInput.style, { flex: '1', backgroundColor: '#444', color: '#fff', border: '1px solid #555', borderRadius: '3px', padding: '5px', fontFamily: 'monospace', fontSize: '14px' });
 
-    if (window.fitsData) {
-        minInput.value = window.fitsData.min_value
-        maxInput.value = window.fitsData.max_value
-        setRangeInputs(window.fitsData.min_value, window.fitsData.max_value);
+    if (targetState || window.fitsData) {
+        minInput.value = targetState ? targetState.min : window.fitsData.min_value
+        maxInput.value = targetState ? targetState.max : window.fitsData.max_value
+        setRangeInputs(minInput.value, maxInput.value);
     }
     const debouncedHistogramUpdate = debounce(requestHistogramUpdate, 150);
     minInput.addEventListener('input', debouncedHistogramUpdate);
@@ -7968,7 +8027,7 @@ function showDynamicRangePopup(options = {}) {
         checkbox.type = 'checkbox';
         checkbox.id = 'invert-colormap-toggle';
         checkbox.style.marginRight = '8px';
-        checkbox.checked = !!window.currentColorMapInverted;
+        checkbox.checked = targetState ? !!targetState.invert : !!window.currentColorMapInverted;
 
         const labelText = document.createElement('span');
         labelText.textContent = 'Invert color map';
@@ -7984,9 +8043,14 @@ function showDynamicRangePopup(options = {}) {
 
         checkbox.addEventListener('change', () => {
             const checked = checkbox.checked;
-            window.currentColorMapInverted = checked;
-            currentColorMapInverted = checked;
-            if (typeof applyColorMap === 'function' && window.currentColorMap) {
+            if (popupTarget) {
+                applyDynamicRange();
+                return;
+            } else {
+                window.currentColorMapInverted = checked;
+                currentColorMapInverted = checked;
+            }
+            if (!popupTarget && typeof applyColorMap === 'function' && window.currentColorMap) {
                 applyColorMap(window.currentColorMap);
             } else if (typeof applyDynamicRange === 'function') {
                 applyDynamicRange();
@@ -8014,7 +8078,12 @@ function showDynamicRangePopup(options = {}) {
         window.__baseColorMapOptions = colorMaps.map(opt => ({ ...opt }));
     }
     const invertToggleControl = createInvertColorMapToggle();
-    const screenColorBarControl = createScreenColorBarControls();
+    const screenColorBarControl = createScreenColorBarControls(popupTarget ? {
+        state: targetState.colorBar,
+        onChange: () => {
+            if (typeof popupTarget.onColorBarChange === 'function') popupTarget.onColorBarChange(targetState.colorBar);
+        }
+    } : undefined);
     const scalingDropdown = createSearchableDropdown('Scaling:', 'scaling-select', scalingFunctions, 'currentScaling', 'linear', false);
     
     // Close dropdowns when clicking outside
@@ -8121,7 +8190,7 @@ function showDynamicRangePopup(options = {}) {
 
     addHistogramInteraction(linesCanvas, minInput, maxInput);
     requestHistogramUpdate(); // Initial histogram draw
-    if (typeof updateScreenColorBar === 'function') updateScreenColorBar();
+    if (!popupTarget && typeof updateScreenColorBar === 'function') updateScreenColorBar();
 }
 
 function attachRangeInputAutoApply(minInput, maxInput) {
@@ -9375,6 +9444,20 @@ function applyDynamicRange() {
     
     if (minValue >= maxValue) {
         showNotification('Min value must be less than max value', 2000, 'error');
+        return;
+    }
+
+    const popupTarget = window.__dynamicRangePopupTarget;
+    if (popupTarget && typeof popupTarget.apply === 'function') {
+        const state = popupTarget.getState ? popupTarget.getState() : {};
+        popupTarget.apply({
+            min: minValue,
+            max: maxValue,
+            colorMap: colorMapSelect ? colorMapSelect.value : (state.colorMap || 'grayscale'),
+            scaling: scalingSelect ? scalingSelect.value : (state.scaling || 'linear'),
+            invert: invertToggle ? !!invertToggle.checked : !!state.invert,
+            colorBar: state.colorBar
+        });
         return;
     }
     
@@ -15887,6 +15970,15 @@ async function updateHistogramBackground() { // Renamed and made async
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     try {
+        if (window.__dynamicRangePopupTarget) {
+            const minEl = doc.getElementById('min-range-input');
+            const maxEl = doc.getElementById('max-range-input');
+            const uiMin = minEl ? parseFloat(minEl.value) : null;
+            const uiMax = maxEl ? parseFloat(maxEl.value) : null;
+            const haveUi = isFinite(uiMin) && isFinite(uiMax) && uiMin < uiMax;
+            await fetchServerHistogram(haveUi ? uiMin : null, haveUi ? uiMax : null);
+            return;
+        }
         const dataSource = await getHistogramPixelDataSource();
         if (dataSource.source === 'server_needed') {
             console.log('Client-side data unavailable or not ideal, fetching histogram from server.', dataSource.message);
@@ -16064,7 +16156,7 @@ function drawHistogramLines(targetMinVal, targetMaxVal, animate = false) {
 
 // Modify requestHistogramUpdate
 function requestHistogramUpdate() {
-    if (window.__rgbModeActive) return;
+    if (!window.__dynamicRangePopupTarget && window.__rgbModeActive) return;
     // If an update is already queued or running, do nothing for now
     // The finally block of updateHistogramBackground will handle queuing.
     // We might need more sophisticated debouncing/throttling here if needed.
@@ -16128,6 +16220,13 @@ function fetchServerHistogram(minVal = null, maxVal = null, bins = 1024) {
     }
 
     let fetchUrl = `/fits-histogram/?bins=${encodeURIComponent(bins)}`;
+    const popupTarget = window.__dynamicRangePopupTarget;
+    if (popupTarget) {
+        if (popupTarget.filepath) fetchUrl += `&filepath=${encodeURIComponent(popupTarget.filepath)}`;
+        fetchUrl += `&hdu=${encodeURIComponent(popupTarget.hdu == null ? 0 : popupTarget.hdu)}`;
+        const sid = popupTarget.sid || window.__sid || window.__nelouraSid;
+        if (sid) fetchUrl += `&sid=${encodeURIComponent(sid)}`;
+    }
     if (minVal !== null && maxVal !== null) {
         fetchUrl += `&min_val=${encodeURIComponent(minVal)}&max_val=${encodeURIComponent(maxVal)}`;
     }
