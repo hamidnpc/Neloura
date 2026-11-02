@@ -4773,8 +4773,12 @@
                                 if (!w.__forwardedFileBrowser) {
                                     const parentShow = (typeof window.showFileBrowser === 'function') ? window.showFileBrowser.bind(window) : null;
                                     const parentHide = (typeof window.hideFileBrowser === 'function') ? window.hideFileBrowser.bind(window) : null;
-                                    if (parentShow) w.showFileBrowser = function () { try { parentShow(); } catch (_) { } };
+                                    const parentSegments = (typeof window.openSegmentsFileBrowser === 'function') ? window.openSegmentsFileBrowser.bind(window) : null;
+                                    // Keep the caller's callback. RGB channel loads pass one so the
+                                    // file opens as a colored channel; dropping it loads a gray FITS.
+                                    if (parentShow) w.showFileBrowser = function (cb) { try { parentShow(cb); } catch (_) { } };
                                     if (parentHide) w.hideFileBrowser = function () { try { parentHide(); } catch (_) { } };
+                                    if (parentSegments) w.openSegmentsFileBrowser = function () { try { parentSegments(); } catch (_) { } };
                                     w.__DISABLE_AUTO_FILE_BROWSER = true;
                                     w.__forwardedFileBrowser = true;
                                 }
