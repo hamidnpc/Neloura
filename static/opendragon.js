@@ -246,9 +246,6 @@ function inspectCurrentWCS() {
     }
 }
 
-// Run the inspection to check the current FITS data
-inspectCurrentWCS();
-
 function createPeakFinderModal(filepath) {
     let popup = document.getElementById('peak-finder-modal');
     if (popup) {

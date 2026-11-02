@@ -3,8 +3,8 @@
     'use strict';
 
     // Order after Files; Plotter and Local Coding always visible; others only when image is loaded
-    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'settings', 'rgb', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
-    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings', 'rgb']);
+    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'settings', 'rgb', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
+    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings', 'rgb']);
     const WHEN_LOADED = new Set();
 
     // Admin flag (fetched once on init)
@@ -48,6 +48,7 @@
             'zoom-in': 'zoom-in-button',
             'zoom-out': 'zoom-out-button',
             'reset': 'reset-button',
+            'rotate': 'rotate-view-button',
             'plotter': 'plotter-button',
             'local-coding': 'local-coding-button',
             'catalog': 'catalog-button',
@@ -136,6 +137,7 @@
         if (id === 'zoom-in-button') return 'zoom-in';
         if (id === 'zoom-out-button') return 'zoom-out';
         if (id === 'reset-button') return 'reset';
+        if (id === 'rotate-view-button') return 'rotate';
         if (id === 'histogram-button') return 'histogram';
         if (id === 'rgb-composer-button') return 'rgb';
         if (id === 'catalog-button') return 'catalog';
@@ -234,6 +236,22 @@
                 const v = (w && (w.tiledViewer || w.viewer)) || window.tiledViewer || window.viewer;
                 if (v && v.viewport) v.viewport.goHome(true);
             });
+            return b;
+        },
+        'rotate': () => {
+            const a = anchorBtn(); if (!a) return null;
+            const b = document.createElement('button');
+            b.id = 'rotate-view-button'; b.type = 'button'; b.className = a.className || '';
+            b.title = 'Set rotation angle'; b.setAttribute('aria-label', 'Set rotation angle');
+            b.innerHTML = `
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <g transform="rotate(-16 11 13.2)">
+    <rect x="4.6" y="9.1" width="12.4" height="8.4" rx="1.3"></rect>
+    <path d="M7.4 13.4h3.4" stroke-width="1.4"></path>
+  </g>
+  <path d="M16.1 5.1a5.4 5.4 0 0 1 3.8 3.5"></path>
+  <path d="M15.2 4.7l1.15 1.55 1.7-.55"></path>
+</svg>`;
             return b;
         },
         'histogram': () => {
@@ -843,6 +861,7 @@
             'zoom-in': 'zoom-in-button',
             'zoom-out': 'zoom-out-button',
             'reset': 'reset-button',
+            'rotate': 'rotate-view-button',
             'histogram': 'histogram-button',
             'catalog': 'catalog-button',
             'segments': 'segments-button',
@@ -902,7 +921,20 @@
         };
         bindZoomLike('zoom-in-button', (v) => v.viewport.zoomBy(1.2));
         bindZoomLike('zoom-out-button', (v) => v.viewport.zoomBy(1 / 1.2));
-        bindZoomLike('reset-button', (v) => v.viewport.goHome(true));
+        bindZoomLike('reset-button', (v) => {
+            if (v && v.viewport && typeof v.viewport.setRotation === 'function') v.viewport.setRotation(0);
+            if (v && v.viewport) v.viewport.goHome(true);
+        });
+        const rotateBtn = document.getElementById('rotate-view-button');
+        if (rotateBtn && !rotateBtn.dataset.bound) {
+            try { rotateBtn.removeAttribute('onclick'); } catch (_) {}
+            rotateBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof window.showRotateAnglePopup === 'function') window.showRotateAnglePopup(rotateBtn);
+            });
+            rotateBtn.dataset.bound = '1';
+        }
 
         const localCoding = document.getElementById('local-coding-button');
         if (localCoding && !localCoding.dataset.bound) {
@@ -954,7 +986,7 @@
             peak.dataset.bound = '1';
         }
 
-        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'histogram-button', 'catalog-button', 'peak-finder-button', 'settings-button', 'rgb-composer-button', 'save-png-toolbar-btn', 'region-tools-button']
+        ['plotter-button', 'local-coding-button', 'zoom-in-button', 'zoom-out-button', 'reset-button', 'rotate-view-button', 'histogram-button', 'catalog-button', 'peak-finder-button', 'settings-button', 'rgb-composer-button', 'save-png-toolbar-btn', 'region-tools-button']
             .forEach(id => { const el = document.getElementById(id); if (el) inheritAnchorClasses(el); });
     }
 
@@ -969,6 +1001,7 @@
             'zoom-in-button',
             'zoom-out-button',
             'reset-button',
+            'rotate-view-button',
             'histogram-button',
             'catalog-button',
             'segments-button',
@@ -1016,6 +1049,7 @@
             'zoom-in-button',
             'zoom-out-button',
             'reset-button',
+            'rotate-view-button',
             'histogram-button',
             'catalog-button',
             'segments-button',

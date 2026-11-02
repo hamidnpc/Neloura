@@ -4357,6 +4357,31 @@ async function _recommendedZoomInsetHdu(filepath) {
     return Number(chosen.index);
 }
 
+function _regionCutoutDisplayContext(content, shape) {
+    const pixelShape = shape || findLinkedToolbarRegionShape(content);
+    const pixelCenter = pixelShape ? getShapeCenter(pixelShape) : null;
+    const extra = {
+        reference_fits_path: window.currentFitsFile || null,
+        reference_hdu: (typeof window.currentHduIndex === 'number') ? window.currentHduIndex : 0
+    };
+    if (pixelCenter && Number.isFinite(pixelCenter.x) && Number.isFinite(pixelCenter.y)) {
+        let x = pixelCenter.x;
+        let y = pixelCenter.y;
+        // RGB union canvases place the base image at an offset. Cutouts need base-image pixels.
+        try {
+            if (window.fitsData && window.fitsData.rgb_mode && window.currentTileInfo) {
+                const ox = Number(window.currentTileInfo.rgb_wcs_offset_x);
+                const oy = Number(window.currentTileInfo.rgb_wcs_offset_y);
+                if (Number.isFinite(ox)) x -= ox;
+                if (Number.isFinite(oy)) y -= oy;
+            }
+        } catch (_) {}
+        extra.display_x = x;
+        extra.display_y = y;
+    }
+    return extra;
+}
+
 async function _requestZoomInsetCutout(regionData) {
     const send = async (sid) => {
         const headers = { 'Content-Type': 'application/json' };
@@ -6507,6 +6532,7 @@ function attachRegionViewerHandlers(viewer) {
     viewer.addHandler('canvas-click', clickHandler);
     viewer.addHandler('animation', redrawRegionOverlayNow);
     viewer.addHandler('animation-finish', redrawRegionOverlayNow);
+    viewer.addHandler('rotate', redrawRegionOverlayNow);
     viewer.addHandler('zoom', scheduleRedraw);
     viewer.addHandler('pan', scheduleRedraw);
     viewer.addHandler('open', () => {
@@ -7009,6 +7035,45 @@ function _scheduleRegionReplacementResolution(replacement, left, top, right, bot
     }, 90);
 }
 
+function currentViewerRotationDegrees() {
+    const viewer = getActiveOsdViewer();
+    if (!viewer || !viewer.viewport || typeof viewer.viewport.getRotation !== 'function') return 0;
+    const value = Number(viewer.viewport.getRotation());
+    if (!Number.isFinite(value)) return 0;
+    return ((value % 360) + 360) % 360;
+}
+
+function _regionImageBounds(shape) {
+    const samples = getRegionShapeImageSamples(shape).filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+    if (samples.length < 3) return null;
+    const xs = samples.map((point) => point.x);
+    const ys = samples.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    if (!(maxX > minX && maxY > minY)) return null;
+    return { minX, maxX, minY, maxY };
+}
+
+function _scheduleRotatedReplacementResolution(replacement, screenW, screenH) {
+    if (!replacement || _regionViewerIsAnimating()) return;
+    const pixelRatio = Math.max(1, Number(window.devicePixelRatio) || 1);
+    const demand = Math.ceil(Math.max(screenW, screenH) * pixelRatio);
+    const target = Math.max(256, Math.min(4096, demand));
+    if (target <= Number(replacement.loadedMaxDim || 0) * 1.05) return;
+    if (replacement.resolutionTimer) clearTimeout(replacement.resolutionTimer);
+    replacement.resolutionTimer = setTimeout(async () => {
+        replacement.resolutionTimer = null;
+        try {
+            await _reloadRegionMapReplacement(replacement, { maxDim: target, force: true });
+        } catch (error) {
+            replacement.loadingMaxDim = 0;
+            console.warn('[regions] Rotated replacement preview failed:', error);
+        }
+    }, 120);
+}
+
 function drawRegionMapReplacement(ctx, shape) {
     if (!shape || !shape.id) return;
     const replacement = __regionMapReplacements.get(String(shape.id));
@@ -7016,7 +7081,8 @@ function drawRegionMapReplacement(ctx, shape) {
     if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
 
     const vertices = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
-    if (vertices.length < 3) return;
+    const bounds = _regionImageBounds(shape);
+    if (vertices.length < 3 || !bounds) return;
     const xs = vertices.map((point) => point.x);
     const ys = vertices.map((point) => point.y);
     const left = Math.min(...xs);
@@ -7026,7 +7092,19 @@ function drawRegionMapReplacement(ctx, shape) {
     const width = right - left;
     const height = bottom - top;
     if (!(width > 0 && height > 0)) return;
-    _scheduleRegionReplacementResolution(replacement, left, top, right, bottom);
+
+    const p00 = imagePointToScreen({ x: bounds.minX, y: bounds.minY });
+    const p10 = imagePointToScreen({ x: bounds.maxX, y: bounds.minY });
+    const p01 = imagePointToScreen({ x: bounds.minX, y: bounds.maxY });
+    if (!p00 || !p10 || !p01) return;
+    const sourceW = Number(replacement.sourceWidth || image.naturalWidth || 0);
+    const sourceH = Number(replacement.sourceHeight || image.naturalHeight || 0);
+    if (!(sourceW > 0 && sourceH > 0)) return;
+
+    const rotation = currentViewerRotationDegrees();
+    const upright = rotation < 0.5 || rotation > 359.5;
+    if (upright) _scheduleRegionReplacementResolution(replacement, left, top, right, bottom);
+    else _scheduleRotatedReplacementResolution(replacement, Math.hypot(p10.x - p00.x, p10.y - p00.y), Math.hypot(p01.x - p00.x, p01.y - p00.y));
 
     ctx.save();
     ctx.beginPath();
@@ -7037,29 +7115,61 @@ function drawRegionMapReplacement(ctx, shape) {
     ctx.closePath();
     ctx.clip();
     ctx.globalAlpha = 1;
-    const sourceW = Number(replacement.sourceWidth || image.naturalWidth || 0);
-    const sourceH = Number(replacement.sourceHeight || image.naturalHeight || 0);
-    ctx.imageSmoothingEnabled = image.naturalWidth >= width && image.naturalHeight >= height;
+    ctx.transform(
+        (p10.x - p00.x) / sourceW,
+        (p10.y - p00.y) / sourceW,
+        (p01.x - p00.x) / sourceH,
+        (p01.y - p00.y) / sourceH,
+        p00.x,
+        p00.y
+    );
+    ctx.imageSmoothingEnabled = image.naturalWidth >= Math.hypot(p10.x - p00.x, p10.y - p00.y)
+        && image.naturalHeight >= Math.hypot(p01.x - p00.x, p01.y - p00.y);
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(image, left, top, width, height);
+    ctx.drawImage(image, 0, 0, sourceW, sourceH);
     const detail = replacement.detail;
-    if (detail && detail.image && sourceW > 0 && sourceH > 0) {
-        const dx = left + (Number(detail.x) / sourceW) * width;
-        const dy = top + (Number(detail.y) / sourceH) * height;
-        const dw = (Number(detail.w) / sourceW) * width;
-        const dh = (Number(detail.h) / sourceH) * height;
-        ctx.imageSmoothingEnabled = detail.image.naturalWidth >= dw && detail.image.naturalHeight >= dh;
+    if (detail && detail.image && upright) {
+        ctx.imageSmoothingEnabled = detail.image.naturalWidth >= Number(detail.w)
+            && detail.image.naturalHeight >= Number(detail.h);
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(detail.image, dx, dy, dw, dh);
+        ctx.drawImage(detail.image, Number(detail.x), Number(detail.y), Number(detail.w), Number(detail.h));
     }
-    _drawRegionReplacementColorBar(ctx, replacement, left, top, right, bottom);
     ctx.restore();
+    _drawRegionReplacementColorBar(ctx, replacement, left, top, right, bottom);
+}
+
+function _syncZoomInsetsToViewRotation() {
+    const rotation = currentViewerRotationDegrees();
+    const transform = rotation < 0.5 || rotation > 359.5 ? '' : `rotate(${rotation}deg)`;
+    if (!Array.isArray(__regionZoomInsets)) return;
+    __regionZoomInsets.forEach((zinset) => {
+        const img = zinset && zinset.img;
+        if (!img || !img.style) return;
+        img.style.transformOrigin = 'center center';
+        img.style.transform = transform;
+    });
+}
+
+function _calloutAnchorsFacingInset(points, preferMaxX) {
+    if (!points || points.length < 2) return null;
+    const extreme = preferMaxX
+        ? Math.max(...points.map((point) => point.x))
+        : Math.min(...points.map((point) => point.x));
+    const span = Math.max(...points.map((point) => point.x)) - Math.min(...points.map((point) => point.x));
+    const tolerance = Math.max(8, span * 0.2);
+    let side = points.filter((point) => Math.abs(point.x - extreme) <= tolerance);
+    if (side.length < 2) {
+        side = points.slice().sort((a, b) => Math.abs(a.x - extreme) - Math.abs(b.x - extreme)).slice(0, 2);
+    }
+    side.sort((a, b) => a.y - b.y);
+    return [side[0], side[side.length - 1]];
 }
 
 function renderRegionOverlay() {
     const canvas = ensureRegionOverlayCanvas();
     const viewer = getActiveOsdViewer();
     if (!canvas || !viewer || !viewer.viewport) return;
+    _syncZoomInsetsToViewRotation();
 
     const ctx = canvas.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -7134,65 +7244,9 @@ function renderRegionOverlay() {
                         const p1 = (shape.type === 'rectangle') ? insetA : { x: xEdge, y: insetTop + (insetBottom - insetTop) * 0.30 };
                         const p2 = (shape.type === 'rectangle') ? insetB : { x: xEdge, y: insetTop + (insetBottom - insetTop) * 0.70 };
 
-                        // Pick two anchor points ON THE REGION BOUNDARY (not center)
-                        const anchors = (() => {
-                            // Circle
-                            if (shape.type === 'circle' && shape.center) {
-                                const edgeScreen = imagePointToScreen({ x: shape.center.x + shape.radius, y: shape.center.y });
-                                if (!edgeScreen) return null;
-                                const r = Math.hypot(edgeScreen.x - centerScreen.x, edgeScreen.y - centerScreen.y);
-                                // Start callout from TOP and BOTTOM of the circle (matches reference style)
-                                return [
-                                    { x: centerScreen.x, y: centerScreen.y - r },
-                                    { x: centerScreen.x, y: centerScreen.y + r }
-                                ];
-                            }
-                            // Ellipse
-                            if (shape.type === 'ellipse' && shape.center) {
-                                const xAxisPoint = imagePointToScreen({ x: shape.center.x + shape.radiusX, y: shape.center.y });
-                                const yAxisPoint = imagePointToScreen({ x: shape.center.x, y: shape.center.y + shape.radiusY });
-                                if (!xAxisPoint || !yAxisPoint) return null;
-                                const rx = Math.hypot(xAxisPoint.x - centerScreen.x, xAxisPoint.y - centerScreen.y);
-                                const ry = Math.hypot(yAxisPoint.x - centerScreen.x, yAxisPoint.y - centerScreen.y);
-                                // Start callout from TOP and BOTTOM of the ellipse
-                                return [
-                                    { x: centerScreen.x, y: centerScreen.y - ry },
-                                    { x: centerScreen.x, y: centerScreen.y + ry }
-                                ];
-                            }
-                            // Rectangle: use side nearest inset
-                            if (shape.type === 'rectangle') {
-                                const topLeft = imagePointToScreen({ x: shape.x1, y: shape.y1 });
-                                const bottomRight = imagePointToScreen({ x: shape.x2, y: shape.y2 });
-                                if (!topLeft || !bottomRight) return null;
-                                const x0 = Math.min(topLeft.x, bottomRight.x);
-                                const x1 = Math.max(topLeft.x, bottomRight.x);
-                                const y0 = Math.min(topLeft.y, bottomRight.y);
-                                const y1 = Math.max(topLeft.y, bottomRight.y);
-                                const xSide = useLeft ? x1 : x0;
-                                // Use corners on that side (matches the trapezoid look)
-                                return [
-                                    { x: xSide, y: y0 },
-                                    { x: xSide, y: y1 }
-                                ];
-                            }
-                            // Hexagon: choose extreme x vertices on the side toward inset
-                            if (shape.type === 'hexagon' && shape.center) {
-                                const verts = buildHexagonVertices(shape.center, shape.radiusX, shape.radiusY)
-                                    .map(imagePointToScreen)
-                                    .filter(Boolean);
-                                if (verts.length < 3) return null;
-                                const extremeX = useLeft
-                                    ? Math.max(...verts.map(v => v.x))
-                                    : Math.min(...verts.map(v => v.x));
-                                const near = verts.filter(v => Math.abs(v.x - extremeX) < 2.5);
-                                const pool = near.length ? near : verts;
-                                const topV = pool.reduce((a, b) => (a.y < b.y ? a : b));
-                                const botV = pool.reduce((a, b) => (a.y > b.y ? a : b));
-                                return [topV, botV];
-                            }
-                            return null;
-                        })();
+                        // Anchors stay on the rotated region edge that faces the inset.
+                        const boundary = getRegionShapeImageSamples(shape).map(imagePointToScreen).filter(Boolean);
+                        const anchors = _calloutAnchorsFacingInset(boundary, useLeft);
                         const a1 = anchors && anchors[0] ? anchors[0] : centerScreen;
                         const a2 = anchors && anchors[1] ? anchors[1] : centerScreen;
 
@@ -8754,7 +8808,7 @@ function showSimpleRegionPopup(content, anchor) {
                                 return;
                             }
                         }
-                        const regionData = {
+                        const regionData = Object.assign({
                             ra: content.ra,
                             dec: content.dec,
                             region_type: content.region_type,
@@ -8767,7 +8821,7 @@ function showSimpleRegionPopup(content, anchor) {
                             vertices: Array.isArray(content.vertices) ? content.vertices : null,
                             fits_path: window.currentFitsFile || null,
                             hdu_index: typeof window.currentHduIndex === 'number' ? window.currentHduIndex : null
-                        };
+                        }, _regionCutoutDisplayContext(content, linkedShape));
                         regionData.galaxy_name = galaxyName;
                         try {
                             zoomInsetButton.disabled = true;
@@ -8863,16 +8917,10 @@ function showSimpleRegionPopup(content, anchor) {
                                 otherMapInsetButton.disabled = true;
                                 otherMapInsetButton.textContent = 'Creating...';
                                 const pickedHdu = await _recommendedZoomInsetHdu(filepath);
-                                const requestData = Object.assign({}, regionData, {
+                                const requestData = Object.assign({}, regionData, _regionCutoutDisplayContext(content, linkedShape), {
                                     fits_path: filepath,
                                     hdu_index: pickedHdu
                                 });
-                                const pixelShape = linkedShape || findLinkedToolbarRegionShape(content);
-                                const pixelCenter = pixelShape ? getShapeCenter(pixelShape) : null;
-                                if (pixelCenter && Number.isFinite(pixelCenter.x) && Number.isFinite(pixelCenter.y)) {
-                                    requestData.display_x = pixelCenter.x;
-                                    requestData.display_y = pixelCenter.y;
-                                }
                                 _logZoomInsetDebug('replace region from map request', {
                                     regionId: content.region_id,
                                     filepath,

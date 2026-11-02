@@ -581,9 +581,6 @@ function inspectCurrentWCS() {
     }
 }
 
-// Run the inspection to check the current FITS data
-inspectCurrentWCS();
-
 function createPeakFinderModal(filepath) {
     // Local helpers: animate open/close and close-on-Escape
     const ensureAnim = (popup) => {

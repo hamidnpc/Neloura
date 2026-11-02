@@ -787,6 +787,114 @@ color: black !important;
         .toolbar button:hover {
             background: rgba(255, 255, 255, 0.3);
         }
+        #rotate-view-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            vertical-align: middle;
+            line-height: 0;
+        }
+        .rotate-angle-popup {
+            position: fixed;
+            z-index: 1200;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            width: 232px;
+            padding: 8px 14px 12px;
+            background: rgba(18, 18, 20, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 16px;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+            backdrop-filter: saturate(200%) blur(24px);
+            -webkit-backdrop-filter: saturate(200%) blur(24px);
+            color: #fff;
+            font-family: 'Raleway', sans-serif;
+            animation: rotateDialIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .rotate-angle-popup[hidden] {
+            display: none !important;
+        }
+        @keyframes rotateDialIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .rotate-dial {
+            width: 204px;
+            height: 118px;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+        }
+        .rotate-dial.is-dragging {
+            cursor: grabbing;
+        }
+        .rotate-dial-ring {
+            opacity: 0;
+            transform-box: fill-box;
+            transform-origin: center;
+            pointer-events: none;
+        }
+        .rotate-dial.is-detent .rotate-dial-ring {
+            animation: rotateRing 200ms ease-out;
+        }
+        .rotate-dial.is-detent-strong .rotate-dial-ring {
+            animation: rotateRingStrong 260ms ease-out;
+        }
+        @keyframes rotateRing {
+            from { opacity: 0.8; transform: scale(1); }
+            to { opacity: 0; transform: scale(2.15); }
+        }
+        @keyframes rotateRingStrong {
+            from { opacity: 1; transform: scale(1); }
+            to { opacity: 0; transform: scale(2.8); }
+        }
+        .rotate-dial-field.is-detent input {
+            animation: rotateDetent 200ms ease-out;
+        }
+        .rotate-dial-field.is-detent-strong input {
+            animation: rotateDetentStrong 240ms ease-out;
+        }
+        @keyframes rotateDetent {
+            40% { background: rgba(255, 255, 255, 0.22); }
+        }
+        @keyframes rotateDetentStrong {
+            35% { transform: scale(1.12); background: rgba(255, 255, 255, 0.32); }
+        }
+        .rotate-dial-field {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-top: -6px;
+            color: rgba(255, 255, 255, 0.82);
+            font-size: 13px;
+        }
+        .rotate-dial-field input {
+            width: 64px;
+            height: 28px;
+            padding: 0 8px;
+            color: #fff;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            border-radius: 999px;
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+        }
+        .rotate-dial-field input:focus {
+            border-color: rgba(255, 255, 255, 0.7);
+        }
+        .rotate-dial-field input::-webkit-outer-spin-button,
+        .rotate-dial-field input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .rotate-dial-field input[type="number"] {
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
         .dropdown {
                 margin-left: -5px;
             position: relative;

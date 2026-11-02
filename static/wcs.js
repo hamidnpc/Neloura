@@ -542,6 +542,56 @@ function buildLinearWcsTransform() {
           }
           return NaN;
         }
+
+        function sampleScreenEdge(p0, p1, n = 280) {
+          const samples = [];
+          for (let i = 0; i < n; i++) {
+            const t = n === 1 ? 0 : i / (n - 1);
+            const sx = p0.x + t * (p1.x - p0.x);
+            const sy = p0.y + t * (p1.y - p0.y);
+            const img = toImg(sx, sy);
+            if (!img || !isFinite(img.x) || !isFinite(img.y)) continue;
+            const world = pixelToWorldTL(img.x, img.y);
+            if (!world || !isFinite(world.ra) || !isFinite(world.dec)) continue;
+            samples.push({ sx: sx, sy: sy, ra: world.ra, dec: world.dec });
+          }
+          for (let i = 1; i < samples.length; i++) {
+            let delta = samples[i].ra - samples[i - 1].ra;
+            while (delta > 180) { samples[i].ra -= 360; delta -= 360; }
+            while (delta < -180) { samples[i].ra += 360; delta += 360; }
+          }
+          return samples;
+        }
+        function edgeSpan(samples, key) {
+          if (!samples || samples.length < 2) return 0;
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let i = 0; i < samples.length; i++) {
+            const value = samples[i][key];
+            if (!isFinite(value)) continue;
+            if (value < lo) lo = value;
+            if (value > hi) hi = value;
+          }
+          return (isFinite(lo) && isFinite(hi)) ? (hi - lo) : 0;
+        }
+        function dominantEdgeKey(samples) {
+          return edgeSpan(samples, 'ra') >= edgeSpan(samples, 'dec') ? 'ra' : 'dec';
+        }
+        function interpScreenForValue(samples, key, target) {
+          for (let i = 1; i < samples.length; i++) {
+            const a = samples[i - 1][key];
+            const b = samples[i][key];
+            if (!isFinite(a) || !isFinite(b)) continue;
+            if ((a <= target && target <= b) || (b <= target && target <= a)) {
+              const t = (target - a) / ((b - a) || 1);
+              return {
+                sx: samples[i - 1].sx + t * (samples[i].sx - samples[i - 1].sx),
+                sy: samples[i - 1].sy + t * (samples[i].sy - samples[i - 1].sy)
+              };
+            }
+          }
+          return null;
+        }
       
         async function draw() {
           // Check enable and hide overlay if disabled
@@ -557,30 +607,6 @@ function buildLinearWcsTransform() {
           const W = rect.width, H = rect.height;
           if (W < 2 || H < 2) return;
 
-          const tl = toImg(0, 0), br = toImg(W, H);
-          if (!tl || !br) return;
-          let xL = tl.x, yT = tl.y, xR = br.x, yB = br.y;
-          if (![xL, yT, xR, yB].every(isFinite)) return;
-
-          // clamp to image
-          const ix0 = 0, ix1 = Math.max(0, (imgSz.width || 0) - 1);
-          const iy0 = 0, iy1 = Math.max(0, (imgSz.height || 0) - 1);
-          const xLc = clamp(xL, ix0, ix1), xRc = clamp(xR, ix0, ix1);
-          const yTc = clamp(yT, iy0, iy1), yBc = clamp(yB, iy0, iy1);
-
-          // sample and build ranges
-          const topS = sampleTopRA(xLc, xRc, yTc, 400);
-          const leftS = sampleLeftDec(yTc, yBc, xLc, 400);
-          const raMin = Math.min(topS.ras[0], topS.ras[topS.ras.length - 1]);
-          const raMax = Math.max(topS.ras[0], topS.ras[topS.ras.length - 1]);
-          const decMin = Math.min(leftS.decs[0], leftS.decs[leftS.decs.length - 1]);
-          const decMax = Math.max(leftS.decs[0], leftS.decs[leftS.decs.length - 1]);
-          const raStep = chooseDegStep(Math.max(1e-9, raMax - raMin), 4);
-          const decStep = chooseDegStep(Math.max(1e-9, decMax - decMin), 4);
-          const raStart = Math.ceil(raMin / raStep) * raStep;
-          const decStart = Math.ceil(decMin / decStep) * decStep;
-
-          // axes box
           ctx.save();
           try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_AXIS_COLOR) || 'rgba(115,26,84,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(115,26,84,0.8)'; }
           ctx.lineWidth = 1;
@@ -592,59 +618,79 @@ function buildLinearWcsTransform() {
           ctx.stroke();
           ctx.restore();
 
-          // RA ticks
+          const topEdge = sampleScreenEdge({ x: 0, y: 0 }, { x: W, y: 0 });
+          const bottomEdge = sampleScreenEdge({ x: 0, y: H }, { x: W, y: H });
+          const leftEdge = sampleScreenEdge({ x: 0, y: 0 }, { x: 0, y: H });
+          const rightEdge = sampleScreenEdge({ x: W, y: 0 }, { x: W, y: H });
+          if (topEdge.length < 2 && bottomEdge.length < 2 && leftEdge.length < 2 && rightEdge.length < 2) return;
+
+          const horizontalEdge = topEdge.length >= bottomEdge.length ? topEdge : bottomEdge;
+          const verticalEdge = leftEdge.length >= rightEdge.length ? leftEdge : rightEdge;
+          const topKey = dominantEdgeKey(horizontalEdge);
+          let leftKey = dominantEdgeKey(verticalEdge);
+          if (leftKey === topKey) {
+            const other = topKey === 'ra' ? 'dec' : 'ra';
+            if (edgeSpan(leftEdge, other) > 1e-9) leftKey = other;
+          }
+
+          function drawEdgeTicks(samples, key, horizontal) {
+            if (!samples || samples.length < 2) return;
+            const values = samples.map((sample) => sample[key]);
+            const lo = Math.min(...values);
+            const hi = Math.max(...values);
+            const span = hi - lo;
+            if (!(span > 1e-12)) return;
+            const step = chooseDegStep(Math.max(1e-9, span), 4);
+            const start = Math.ceil(lo / step) * step;
+            const format = key === 'ra' ? formatRAUnified : formatDecUnified;
+            for (let value = start; value <= hi + 1e-12; value += step) {
+              const hit = interpScreenForValue(samples, key, value);
+              if (!hit) continue;
+              const label = format(value, step);
+              if (horizontal) {
+                if (hit.sx < -20 || hit.sx > W + 20) continue;
+                const onTop = hit.sy < H / 2;
+                ctx.beginPath();
+                ctx.moveTo(hit.sx, onTop ? 0 : H);
+                ctx.lineTo(hit.sx, onTop ? 8 : H - 8);
+                try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
+                ctx.stroke();
+                const m = ctx.measureText(label);
+                const labelY = onTop ? 12 : H - 28;
+                ctx.save();
+                try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_BG_COLOR) || 'rgba(0,0,0,0.15)'; } catch(_) { ctx.fillStyle = 'rgba(0,0,0,0.15)'; }
+                ctx.fillRect(hit.sx - m.width / 2 - 3, onTop ? 10 : H - 30, m.width + 6, 16);
+                ctx.restore();
+                try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_TEXT_COLOR) || '#9d5281'; } catch(_) { ctx.fillStyle = '#9d5281'; }
+                ctx.textBaseline = 'top';
+                ctx.textAlign = 'left';
+                ctx.fillText(label, hit.sx - m.width / 2, labelY);
+              } else {
+                if (hit.sy < -20 || hit.sy > H + 20) continue;
+                const onLeft = hit.sx < W / 2;
+                ctx.beginPath();
+                ctx.moveTo(onLeft ? 0 : W, hit.sy);
+                ctx.lineTo(onLeft ? 8 : W - 8, hit.sy);
+                try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
+                ctx.stroke();
+                const m = ctx.measureText(label);
+                ctx.save();
+                try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_BG_COLOR) || 'rgba(0,0,0,0.15)'; } catch(_) { ctx.fillStyle = 'rgba(0,0,0,0.15)'; }
+                ctx.fillRect(onLeft ? 12 : W - m.width - 18, hit.sy - 8, m.width + 6, 16);
+                ctx.restore();
+                try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_TEXT_COLOR) || '#9d5281'; } catch(_) { ctx.fillStyle = '#9d5281'; }
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'left';
+                ctx.fillText(label, onLeft ? 15 : W - m.width - 15, hit.sy);
+              }
+            }
+          }
+
           ctx.font = '12px Arial';
-          ctx.textBaseline = 'top';
-          for (let ra = raStart; ra <= raMax + 1e-12; ra += raStep) {
-            const xi = interpXForRA(topS, ra);
-            if (!isFinite(xi)) continue;
-            const sc = imgToScreen(xi, yTc);
-            if (!sc || sc.x < -20 || sc.x > W + 20) continue;
-      
-            ctx.beginPath(); ctx.moveTo(sc.x, 0); ctx.lineTo(sc.x, 8);
-            try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
-            ctx.stroke();
-
-            const label = formatRAUnified(ra, raStep);
-            const m = ctx.measureText(label);
-            ctx.save();
-            try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_BG_COLOR) || 'rgba(0,0,0,0.15)'; } catch(_) { ctx.fillStyle = 'rgba(0,0,0,0.15)'; }
-            ctx.fillRect(sc.x - m.width / 2 - 3, 10, m.width + 6, 16);
-            ctx.restore();
-            try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_TEXT_COLOR) || '#9d5281'; } catch(_) { ctx.fillStyle = '#9d5281'; }
-            ctx.fillText(label, sc.x - m.width / 2, 12);
-
-            ctx.beginPath(); ctx.moveTo(sc.x, H); ctx.lineTo(sc.x, H - 8);
-            try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
-            ctx.stroke();
-          }
-      
-          // Dec ticks
-          ctx.textBaseline = 'middle';
-          ctx.textAlign = 'left';
-          for (let dec = decStart; dec <= decMax + 1e-12; dec += decStep) {
-            const yi = interpYForDec(leftS, dec);
-            if (!isFinite(yi)) continue;
-            const sc = imgToScreen(xLc, yi);
-            if (!sc || sc.y < -20 || sc.y > H + 20) continue;
-      
-            ctx.beginPath(); ctx.moveTo(0, sc.y); ctx.lineTo(8, sc.y);
-            try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
-            ctx.stroke();
-
-            const label = formatDecUnified(dec, decStep);
-            const m = ctx.measureText(label);
-            ctx.save();
-            try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_BG_COLOR) || 'rgba(0,0,0,0.15)'; } catch(_) { ctx.fillStyle = 'rgba(0,0,0,0.15)'; }
-            ctx.fillRect(12, sc.y - 8, m.width + 6, 16);
-            ctx.restore();
-            try { ctx.fillStyle = (window.__wcsEffective && window.__wcsEffective.WCS_LABEL_TEXT_COLOR) || '#9d5281'; } catch(_) { ctx.fillStyle = '#9d5281'; }
-            ctx.fillText(label, 15, sc.y);
-
-            ctx.beginPath(); ctx.moveTo(W, sc.y); ctx.lineTo(W - 8, sc.y);
-            try { ctx.strokeStyle = (window.__wcsEffective && window.__wcsEffective.WCS_TICK_COLOR) || 'rgba(91,48,75,0.8)'; } catch(_) { ctx.strokeStyle = 'rgba(91,48,75,0.8)'; }
-            ctx.stroke();
-          }
+          drawEdgeTicks(topEdge, topKey, true);
+          drawEdgeTicks(bottomEdge, topKey, true);
+          drawEdgeTicks(leftEdge, leftKey, false);
+          drawEdgeTicks(rightEdge, leftKey, false);
         }
       
 // Replace existing schedule() with this
@@ -703,6 +749,7 @@ function buildLinearWcsTransform() {
         })();
         viewer.addHandler('open', debouncedSchedule);
         viewer.addHandler('animation-finish', debouncedSchedule);
+        viewer.addHandler('rotate', debouncedSchedule);
         viewer.addHandler('resize', debouncedSchedule);
         window.addEventListener('resize', schedule);
         // One-time global settings bridge (prevents duplicate fetches/listeners on re-attach)

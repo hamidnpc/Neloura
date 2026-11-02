@@ -15465,8 +15465,18 @@ function loadCatalogWithFlags(catalogName) {
              }
 
             // Coordinates are in the image coordinate system (0 to width, 0 to height)
-            const imageX = Math.round(viewportPoint.x);
-            const imageY = Math.round(viewportPoint.y);
+            const tiled = currentViewer.world.getItemAt(0);
+            const imagePoint = (tiled && typeof tiled.viewportToImageCoordinates === 'function')
+                ? tiled.viewportToImageCoordinates(viewportPoint)
+                : (currentViewer.viewport.viewportToImageCoordinates
+                    ? currentViewer.viewport.viewportToImageCoordinates(viewportPoint)
+                    : null);
+            if (!imagePoint || !Number.isFinite(imagePoint.x) || !Number.isFinite(imagePoint.y)) {
+                if (innerContainer) innerContainer.classList.remove('visible');
+                return;
+            }
+            const imageX = Math.round(imagePoint.x);
+            const imageY = Math.round(imagePoint.y);
             // console.log(`mousemove: Image coords: (${imageX}, ${imageY})`); // Optional log
 
 
@@ -17692,6 +17702,328 @@ function zoomOut() {
 function resetView() {
     const activeViewer = window.tiledViewer || window.viewer;
     if (activeViewer && activeViewer.viewport) {
+        if (typeof activeViewer.viewport.setRotation === 'function') activeViewer.viewport.setRotation(0);
         activeViewer.viewport.goHome();
     }
+}
+
+function viewerForRotation(viewer) {
+    if (viewer) return viewer;
+    const pane = (typeof window.getActivePaneWindow === 'function' && window.getActivePaneWindow()) || window;
+    return (pane && (pane.tiledViewer || pane.viewer)) || window.tiledViewer || window.viewer;
+}
+
+function currentViewRotation(viewer) {
+    const activeViewer = viewerForRotation(viewer);
+    if (!activeViewer || !activeViewer.viewport || typeof activeViewer.viewport.getRotation !== 'function') return 0;
+    const current = Number(activeViewer.viewport.getRotation());
+    return Number.isFinite(current) ? current : 0;
+}
+
+function normalizeViewAngle(degrees) {
+    const n = Number(degrees);
+    if (!Number.isFinite(n)) return null;
+    return ((n % 360) + 360) % 360;
+}
+
+function formatViewAngle(degrees) {
+    const n = normalizeViewAngle(degrees);
+    if (n == null) return '0';
+    const rounded = Math.round(n * 100) / 100;
+    return String(rounded);
+}
+
+function rotateViewBy(viewer, degrees) {
+    const activeViewer = viewerForRotation(viewer);
+    if (!activeViewer || !activeViewer.viewport || typeof activeViewer.viewport.setRotation !== 'function') return null;
+    const next = degrees == null ? normalizeViewAngle(currentViewRotation(activeViewer) + 90) : normalizeViewAngle(degrees);
+    if (next == null) return null;
+    activeViewer.viewport.setRotation(next);
+    try { if (typeof activeViewer.forceRedraw === 'function') activeViewer.forceRedraw(); } catch (_) {}
+    try { if (typeof window.canvasUpdateOverlay === 'function') window.canvasUpdateOverlay(); } catch (_) {}
+    return next;
+}
+
+function ensureRotateAnglePopup() {
+    let popup = document.getElementById('rotate-angle-popup');
+    if (popup) return popup;
+    popup = document.createElement('div');
+    popup.id = 'rotate-angle-popup';
+    popup.className = 'rotate-angle-popup';
+    popup.hidden = true;
+    popup.innerHTML = `
+        <svg class="rotate-dial" viewBox="0 0 200 118" role="slider" aria-label="Rotation angle" aria-valuemin="0" aria-valuemax="360" aria-valuenow="0" tabindex="0">
+            <path d="M28 104 A72 72 0 0 1 172 104" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="8" stroke-linecap="round"></path>
+            <path id="rotate-dial-progress" d="M28 104 A72 72 0 0 1 172 104" fill="none" stroke="rgba(255,255,255,0.92)" stroke-width="8" stroke-linecap="round"></path>
+            <g id="rotate-dial-ticks" fill="rgba(255,255,255,0.72)" font-size="9" font-family="Raleway, sans-serif" text-anchor="middle"></g>
+            <circle cx="100" cy="104" r="3.5" fill="rgba(255,255,255,0.9)"></circle>
+            <g id="rotate-dial-needle">
+                <line x1="100" y1="104" x2="28" y2="104" stroke="#fff" stroke-width="2" stroke-linecap="round"></line>
+                <circle class="rotate-dial-ring" cx="28" cy="104" r="7" fill="none" stroke="#fff" stroke-width="1.5"></circle>
+                <circle cx="28" cy="104" r="7" fill="#fff"></circle>
+                <circle cx="28" cy="104" r="3" fill="#1a1a1c"></circle>
+            </g>
+        </svg>
+        <label class="rotate-dial-field">
+            <input id="rotate-angle-input" type="number" step="any" inputmode="decimal" aria-label="Rotation angle in degrees">
+            <span>°</span>
+        </label>
+    `;
+    document.body.appendChild(popup);
+
+    const dial = popup.querySelector('.rotate-dial');
+    const input = popup.querySelector('#rotate-angle-input');
+    const needle = popup.querySelector('#rotate-dial-needle');
+    const progress = popup.querySelector('#rotate-dial-progress');
+    const ticks = popup.querySelector('#rotate-dial-ticks');
+    const field = popup.querySelector('.rotate-dial-field');
+    const arcLength = Math.PI * 72;
+    const tickMarks = [];
+    progress.style.strokeDasharray = `0 ${arcLength}`;
+    const innerArc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    innerArc.setAttribute('d', 'M38 104 A62 62 0 0 1 162 104');
+    innerArc.setAttribute('fill', 'none');
+    innerArc.setAttribute('stroke', 'rgba(255,255,255,0.22)');
+    innerArc.setAttribute('stroke-width', '1');
+    ticks.appendChild(innerArc);
+    const baseline = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    baseline.setAttribute('x1', '28');
+    baseline.setAttribute('y1', '104');
+    baseline.setAttribute('x2', '172');
+    baseline.setAttribute('y2', '104');
+    baseline.setAttribute('stroke', 'rgba(255,255,255,0.28)');
+    baseline.setAttribute('stroke-width', '1');
+    ticks.appendChild(baseline);
+    for (let mark = 0; mark <= 360; mark += 5) {
+        const theta = Math.PI * (1 - mark / 360);
+        const major = mark % 90 === 0;
+        const medium = mark % 30 === 0;
+        const ten = mark % 10 === 0;
+        const outer = 66;
+        const inner = major ? 48 : medium ? 54 : ten ? 59 : 62;
+        const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        tick.setAttribute('x1', String(100 + inner * Math.cos(theta)));
+        tick.setAttribute('y1', String(104 - inner * Math.sin(theta)));
+        tick.setAttribute('x2', String(100 + outer * Math.cos(theta)));
+        tick.setAttribute('y2', String(104 - outer * Math.sin(theta)));
+        tick.setAttribute('stroke', major ? 'rgba(255,255,255,0.9)' : medium ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.38)');
+        tick.setAttribute('stroke-width', major ? '1.5' : medium ? '1.1' : '0.7');
+        ticks.appendChild(tick);
+        tickMarks.push({ mark, line: tick, major, medium, label: null });
+        if (medium) {
+            const ray = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            ray.setAttribute('x1', String(100 + 12 * Math.cos(theta)));
+            ray.setAttribute('y1', String(104 - 12 * Math.sin(theta)));
+            ray.setAttribute('x2', String(100 + 32 * Math.cos(theta)));
+            ray.setAttribute('y2', String(104 - 32 * Math.sin(theta)));
+            ray.setAttribute('stroke', 'rgba(255,255,255,0.16)');
+            ray.setAttribute('stroke-width', '0.8');
+            ticks.insertBefore(ray, innerArc);
+        }
+        if (major) {
+            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            const labelY = (mark === 0 || mark === 360) ? 94 : (104 - 40 * Math.sin(theta) + 3);
+            const labelX = mark === 0 ? 48 : mark === 360 ? 152 : (100 + 40 * Math.cos(theta));
+            label.setAttribute('x', String(labelX));
+            label.setAttribute('y', String(labelY));
+            label.textContent = String(mark);
+            ticks.appendChild(label);
+            tickMarks[tickMarks.length - 1].label = label;
+        }
+    }
+
+    let shownAngle = 0;
+    let targetAngle = 0;
+    let needleFrame = 0;
+    let viewerFrame = 0;
+    let detentBucket = null;
+    let detentTimer = 0;
+    const paintNeedle = (angle) => {
+        needle.setAttribute('transform', `rotate(${angle / 2} 100 104)`);
+        progress.style.strokeDasharray = `${(angle / 360) * arcLength} ${arcLength}`;
+        dial.setAttribute('aria-valuenow', String(Math.round(angle)));
+        const nearest = Math.round(angle / 5) * 5;
+        tickMarks.forEach((item) => {
+            const onMark = item.mark === nearest || (nearest >= 360 && item.mark === 360) || (nearest <= 0 && item.mark === 0);
+            const passed = item.mark <= angle + 0.4;
+            const stroke = onMark
+                ? '#fff'
+                : passed
+                    ? (item.major ? 'rgba(255,255,255,0.95)' : item.medium ? 'rgba(255,255,255,0.78)' : 'rgba(255,255,255,0.5)')
+                    : (item.major ? 'rgba(255,255,255,0.42)' : item.medium ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.18)');
+            const width = onMark
+                ? (item.major ? '2.4' : item.medium ? '1.8' : '1.25')
+                : (item.major ? '1.5' : item.medium ? '1.1' : '0.7');
+            item.line.setAttribute('stroke', stroke);
+            item.line.setAttribute('stroke-width', width);
+            if (item.label) item.label.setAttribute('fill', onMark ? '#fff' : passed ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.38)');
+        });
+    };
+    const pulseDetent = (angle) => {
+        if (!dial.classList.contains('is-dragging')) return;
+        const bucket = Math.round(angle / 15);
+        if (bucket === detentBucket) return;
+        detentBucket = bucket;
+        const mark = ((bucket * 15) % 360 + 360) % 360;
+        const cls = mark % 90 === 0 ? 'is-detent-strong' : 'is-detent';
+        dial.classList.remove('is-detent', 'is-detent-strong');
+        field.classList.remove('is-detent', 'is-detent-strong');
+        void dial.getBoundingClientRect();
+        dial.classList.add(cls);
+        field.classList.add(cls);
+        clearTimeout(detentTimer);
+        detentTimer = setTimeout(() => {
+            dial.classList.remove('is-detent', 'is-detent-strong');
+            field.classList.remove('is-detent', 'is-detent-strong');
+        }, 260);
+    };
+    const stepNeedle = () => {
+        const delta = targetAngle - shownAngle;
+        if (Math.abs(delta) < 0.15) {
+            shownAngle = targetAngle;
+            paintNeedle(shownAngle);
+            needleFrame = 0;
+            return;
+        }
+        shownAngle += delta * 0.28;
+        paintNeedle(shownAngle);
+        needleFrame = requestAnimationFrame(stepNeedle);
+    };
+    const moveNeedle = (angle, animate) => {
+        targetAngle = angle;
+        if (!animate) {
+            if (needleFrame) cancelAnimationFrame(needleFrame);
+            needleFrame = 0;
+            shownAngle = angle;
+            paintNeedle(angle);
+            return;
+        }
+        if (!needleFrame) needleFrame = requestAnimationFrame(stepNeedle);
+    };
+    const commitAngle = (angle, animate) => {
+        const next = normalizeViewAngle(angle);
+        if (next == null) return null;
+        moveNeedle(next, animate);
+        input.value = formatViewAngle(next);
+        pulseDetent(next);
+        const rotateBtn = document.getElementById('rotate-view-button');
+        if (rotateBtn) {
+            const label = next ? `Rotation ${formatViewAngle(next)}°` : 'Set rotation angle';
+            rotateBtn.title = label;
+            rotateBtn.setAttribute('aria-label', label);
+        }
+        if (viewerFrame) cancelAnimationFrame(viewerFrame);
+        if (!animate) {
+            rotateViewBy(null, next);
+            return next;
+        }
+        const start = currentViewRotation();
+        let delta = next - start;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+        const started = performance.now();
+        const tick = (now) => {
+            const t = Math.min(1, (now - started) / 220);
+            const eased = 1 - Math.pow(1 - t, 3);
+            rotateViewBy(null, start + delta * eased);
+            if (t < 1) viewerFrame = requestAnimationFrame(tick);
+            else viewerFrame = 0;
+        };
+        viewerFrame = requestAnimationFrame(tick);
+        return next;
+    };
+    const angleFromEvent = (event) => {
+        const rect = dial.getBoundingClientRect();
+        const cx = rect.left + (100 / 200) * rect.width;
+        const cy = rect.top + (104 / 118) * rect.height;
+        const dx = event.clientX - cx;
+        const dy = cy - event.clientY;
+        let theta = Math.atan2(dy, dx);
+        if (theta < 0) theta = dx >= 0 ? 0 : Math.PI;
+        theta = Math.max(0, Math.min(Math.PI, theta));
+        return Math.round((1 - theta / Math.PI) * 3600) / 10;
+    };
+
+    dial.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dial.classList.add('is-dragging');
+        detentBucket = Math.round(currentViewRotation() / 15);
+        try { dial.setPointerCapture(event.pointerId); } catch (_) {}
+        commitAngle(angleFromEvent(event), false);
+    });
+    dial.addEventListener('pointermove', (event) => {
+        if (!dial.classList.contains('is-dragging')) return;
+        event.preventDefault();
+        commitAngle(angleFromEvent(event), false);
+    });
+    const endDrag = () => {
+        dial.classList.remove('is-dragging');
+        detentBucket = null;
+    };
+    dial.addEventListener('pointerup', endDrag);
+    dial.addEventListener('pointercancel', endDrag);
+    dial.addEventListener('keydown', (event) => {
+        const step = event.shiftKey ? 15 : 1;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            commitAngle(currentViewRotation() + step, true);
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            commitAngle(currentViewRotation() - step, true);
+        } else if (event.key === 'Escape') {
+            popup.hidden = true;
+        }
+    });
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            commitAngle(input.value, true);
+        } else if (event.key === 'Escape') {
+            popup.hidden = true;
+        }
+    });
+    input.addEventListener('change', () => commitAngle(input.value, true));
+    input.addEventListener('pointerdown', (event) => event.stopPropagation());
+    document.addEventListener('click', (event) => {
+        if (popup.hidden) return;
+        if (popup.contains(event.target)) return;
+        if (event.target && event.target.closest && event.target.closest('#rotate-view-button')) return;
+        popup.hidden = true;
+    });
+    window.addEventListener('resize', () => {
+        if (!popup.hidden) placeRotateAnglePopup();
+    });
+    popup._setRotateAngle = (angle, animate) => commitAngle(angle, animate);
+    return popup;
+}
+
+function placeRotateAnglePopup(anchor) {
+    const popup = document.getElementById('rotate-angle-popup');
+    const btn = anchor || document.getElementById('rotate-view-button');
+    if (!popup || !btn) return;
+    const rect = btn.getBoundingClientRect();
+    const width = popup.offsetWidth || 232;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    popup.style.left = Math.round(left) + 'px';
+    popup.style.top = Math.round(rect.bottom + 8) + 'px';
+}
+
+function showRotateAnglePopup(anchor) {
+    const popup = ensureRotateAnglePopup();
+    const btn = anchor || document.getElementById('rotate-view-button');
+    if (!popup.hidden) {
+        popup.hidden = true;
+        return;
+    }
+    if (typeof popup._setRotateAngle === 'function') popup._setRotateAngle(currentViewRotation(), false);
+    popup.hidden = false;
+    placeRotateAnglePopup(btn);
+}
+
+function rotateView(event) {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    const btn = (event && event.currentTarget) || document.getElementById('rotate-view-button');
+    showRotateAnglePopup(btn);
 }

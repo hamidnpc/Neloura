@@ -16,9 +16,34 @@
     <script>
       // Bump this value on each deployment to force-refresh JS/CSS in user browsers.
       window.APP_ASSET_VERSION = "20260201-17";
+      // A restart link adds ?new_session=<token>. That token keeps one fresh
+      // server session instead of reusing the previous tab's sessionStorage id.
+      (function () {
+        try {
+          var token = new URLSearchParams(window.location.search).get("new_session");
+          if (!token) return;
+          var key = "neloura-fresh:" + token;
+          var bound = sessionStorage.getItem(key);
+          if (bound) {
+            sessionStorage.setItem("sid", bound);
+            window.__forcedSid = bound;
+            return;
+          }
+          sessionStorage.removeItem("sid");
+          window.__nelouraFreshToken = token;
+          var write = sessionStorage.setItem.bind(sessionStorage);
+          sessionStorage.setItem = function (name, value) {
+            write(name, value);
+            if (name === "sid" && value && window.__nelouraFreshToken) {
+              write("neloura-fresh:" + window.__nelouraFreshToken, value);
+              window.__forcedSid = value;
+            }
+          };
+        } catch (err) {}
+      })();
     </script>
     <title>Neloura</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260818-07">
+    <link rel="stylesheet" href="/static/style.css?v=20261022-02">
     <script src="/static/vendor/openseadragon/openseadragon.min.js?v=20260201-02"></script>
     <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css?v=20260201-02">
     <link rel="stylesheet" href="/static/vendor/codemirror/theme/dracula.min.css?v=20260201-02">
@@ -29,7 +54,7 @@
 
     <script defer src="/static/peak.js?v=20260201-02"></script>
     <script defer src="/static/image-processing.js?v=20260201-02"></script>
-    <script defer src="/static/main.js?v=20260930-06"></script>
+    <script defer src="/static/main.js?v=20261022-05"></script>
     <script defer src="/static/coords_overlay.js?v=20260519-01"></script>
     <script defer src="/static/sed.js?v=20260201-02"></script>
     <script defer src="/static/plotter.js?v=20260529-03"></script>
@@ -37,10 +62,10 @@
     <script defer src="/static/catalogs.js?v=20260612-01"></script>
     <script defer src="/static/catalog_webgl.js?v=20260201-02"></script>
     <script defer src="/static/files.js?v=20260519-05"></script>
-    <script defer src="/static/rgb.js?v=20261001-04"></script>
+    <script defer src="/static/rgb.js?v=20261102-01"></script>
     <script defer src="/static/hdu_opener.js?v=20260201-02"></script>
     <script defer src="/static/mast.js?v=20260201-02"></script>
-    <script defer src="/static/canvas.js?v=20261001-05"></script>
+    <script defer src="/static/canvas.js?v=20261012-04"></script>
     <script>
       (function(){
         fetch('/settings/me').then(r=>r.json()).then(me=>{
@@ -52,9 +77,9 @@
     </script>
     <script defer src="/static/settings.js?v=20260201-02"></script>
     <script defer src="/static/save.js?v=20260529-01"></script>
-    <script defer src="/static/toolbar.js?v=20260818-09"></script>
+    <script defer src="/static/toolbar.js?v=20261022-01"></script>
     <!-- plot3d removed -->
-    <script defer src="/static/wcs.js?v=20260201-02"></script>
+    <script defer src="/static/wcs.js?v=20261012-05"></script>
 
     <script src="/static/catalog_viewer.js?v=20260201-02"></script>
     <script src="/static/vendor/codemirror/codemirror.min.js?v=20260201-02"></script>
@@ -75,6 +100,16 @@
         <button id="zoom-in-button" type="button" title="Zoom in" onclick="zoomIn()" aria-label="Zoom In">+</button>
         <button id="zoom-out-button" type="button" title="Zoom out" onclick="zoomOut()" aria-label="Zoom Out">-</button>
         <button id="reset-button" type="button" title="Reset view" onclick="resetView()" aria-label="Reset View">R</button>
+        <button id="rotate-view-button" type="button" title="Set rotation angle" onclick="rotateView(event)" aria-label="Set rotation angle">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <g transform="rotate(-16 11 13.2)">
+                    <rect x="4.6" y="9.1" width="12.4" height="8.4" rx="1.3"></rect>
+                    <path d="M7.4 13.4h3.4" stroke-width="1.4"></path>
+                </g>
+                <path d="M16.1 5.1a5.4 5.4 0 0 1 3.8 3.5"></path>
+                <path d="M15.2 4.7l1.15 1.55 1.7-.55"></path>
+            </svg>
+        </button>
         <div class="dropdown">
             <button id="catalog-button">Catalogs</button>
             <div id="catalog-dropdown" class="dropdown-content">
