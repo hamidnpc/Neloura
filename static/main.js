@@ -2091,6 +2091,7 @@ function renderCatalogOverlayControls() {
     const activeName = window.currentCatalogName || window.activeCatalog || '';
     const activeShort = activeName ? (String(activeName).split(/[/\\]/).pop() || activeName) : '';
     const nLoaded = Array.isArray(loadedCats) ? loadedCats.length : 0;
+    titleLabel.dataset.role = 'catalog-overlay-title';
     titleLabel.textContent = nLoaded > 1 ? `Catalogs · ${nLoaded} loaded` : `Catalogs · ${activeShort}`;
     titleLabel.style.fontSize = '13px';
     titleLabel.style.fontWeight = '600';
@@ -11864,8 +11865,15 @@ function loadFitsData() {
         }
     } catch (_) {}
 
-    // No URL-specified file: show welcome screen
-    createWelcomeScreen();
+    // No URL-specified file: show welcome screen, unless an RGB link is about to open.
+    let rgbDeepLink = false;
+    try { rgbDeepLink = !!new URLSearchParams(window.location.search || '').get('rgb_files'); } catch (_) { rgbDeepLink = false; }
+    if (rgbDeepLink) {
+        try { window.__DISABLE_AUTO_FILE_BROWSER = true; } catch (_) {}
+        hideWelcomeUi();
+    } else {
+        createWelcomeScreen();
+    }
 }
 
 // -------------------------
@@ -12554,6 +12562,51 @@ function loadOverviewAtQuality(quality) {
 
 
 
+function cdMatrixFromHeader(header, get) {
+    const read = (name) => {
+        try {
+            if (typeof get === 'function') {
+                return get.length >= 2 ? get(header, name) : get(name);
+            }
+        } catch (_) { /* fall through to a direct lookup */ }
+        if (!header || typeof header !== 'object') return undefined;
+        if (Object.prototype.hasOwnProperty.call(header, name)) return header[name];
+        const upper = name.toUpperCase();
+        if (Object.prototype.hasOwnProperty.call(header, upper)) return header[upper];
+        const lower = name.toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(header, lower)) return header[lower];
+        return undefined;
+    };
+    const finite = (value) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    };
+    const cd11 = finite(read('CD1_1'));
+    const cd22 = finite(read('CD2_2'));
+    if (cd11 !== null && cd22 !== null) {
+        return {
+            cd11: cd11,
+            cd12: finite(read('CD1_2')) || 0,
+            cd21: finite(read('CD2_1')) || 0,
+            cd22: cd22
+        };
+    }
+    // JWST i2d headers have no CD matrix. The RA axis sign lives in PC1_1 (-1),
+    // so CD = PC * CDELT. Using CDELT alone flips east and west.
+    const pc11 = finite(read('PC1_1'));
+    const pc22 = finite(read('PC2_2'));
+    const cdelt1 = finite(read('CDELT1'));
+    const cdelt2 = finite(read('CDELT2'));
+    const d1 = cdelt1 === null ? 1 : cdelt1;
+    const d2 = cdelt2 === null ? 1 : cdelt2;
+    return {
+        cd11: (pc11 === null ? 1 : pc11) * d1,
+        cd12: (finite(read('PC1_2')) || 0) * d1,
+        cd21: (finite(read('PC2_1')) || 0) * d2,
+        cd22: (pc22 === null ? 1 : pc22) * d2
+    };
+}
+
 function parseWCS(header) {
     if (!header) {
         console.error("No FITS header provided to parseWCS.");
@@ -12581,10 +12634,7 @@ function parseWCS(header) {
         crval2: getProperty(header, 'CRVAL2'),
         crpix1: getProperty(header, 'CRPIX1'),
         crpix2: getProperty(header, 'CRPIX2'),
-        cd11: getProperty(header, 'CD1_1') || getProperty(header, 'CDELT1') || 1,
-        cd12: getProperty(header, 'CD1_2') || 0,
-        cd21: getProperty(header, 'CD2_1') || 0,
-        cd22: getProperty(header, 'CD2_2') || getProperty(header, 'CDELT2') || 1,
+        ...cdMatrixFromHeader(header, getProperty),
         ctype1: getProperty(header, 'CTYPE1') || '',
         ctype2: getProperty(header, 'CTYPE2') || '',
         naxis1: getProperty(header, 'NAXIS1'),
@@ -16943,12 +16993,11 @@ function pixelsToWorldFromHeader(header, x, y) {
         let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
         let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
         if (cd11 === undefined || cd22 === undefined) {
-            const cdelt1 = Number(get('CDELT1') ?? 1);
-            const cdelt2 = Number(get('CDELT2') ?? 1);
-            cd11 = Number(cd11 ?? cdelt1);
-            cd12 = Number(cd12 ?? 0);
-            cd21 = Number(cd21 ?? 0);
-            cd22 = Number(cd22 ?? cdelt2);
+            const built = cdMatrixFromHeader(header, get);
+            cd11 = built.cd11;
+            cd12 = built.cd12;
+            cd21 = built.cd21;
+            cd22 = built.cd22;
         } else {
             cd11 = Number(cd11); cd12 = Number(cd12 || 0);
             cd21 = Number(cd21 || 0); cd22 = Number(cd22);
@@ -17011,12 +17060,11 @@ function worldToPixelFromHeader(header, raDeg, decDeg) {
         let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
         let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
         if (cd11 === undefined || cd22 === undefined) {
-            const cdelt1 = Number(get('CDELT1') ?? 1);
-            const cdelt2 = Number(get('CDELT2') ?? 1);
-            cd11 = Number(cd11 ?? cdelt1);
-            cd12 = Number(cd12 ?? 0);
-            cd21 = Number(cd21 ?? 0);
-            cd22 = Number(cd22 ?? cdelt2);
+            const built = cdMatrixFromHeader(header, get);
+            cd11 = built.cd11;
+            cd12 = built.cd12;
+            cd21 = built.cd21;
+            cd22 = built.cd22;
         } else {
             cd11 = Number(cd11); cd12 = Number(cd12 || 0);
             cd21 = Number(cd21 || 0); cd22 = Number(cd22);
@@ -17093,12 +17141,11 @@ function pixelsToWorldFromHeaderForWcsLock(header, x, y) {
         let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
         let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
         if (cd11 === undefined || cd22 === undefined) {
-            const cdelt1 = Number(get('CDELT1') ?? 1);
-            const cdelt2 = Number(get('CDELT2') ?? 1);
-            cd11 = Number(cd11 ?? cdelt1);
-            cd12 = Number(cd12 ?? 0);
-            cd21 = Number(cd21 ?? 0);
-            cd22 = Number(cd22 ?? cdelt2);
+            const built = cdMatrixFromHeader(header, get);
+            cd11 = built.cd11;
+            cd12 = built.cd12;
+            cd21 = built.cd21;
+            cd22 = built.cd22;
         } else {
             cd11 = Number(cd11); cd12 = Number(cd12 || 0);
             cd21 = Number(cd21 || 0); cd22 = Number(cd22);
@@ -17146,12 +17193,11 @@ function worldToPixelFromHeaderForWcsLock(header, raDeg, decDeg) {
         let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
         let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
         if (cd11 === undefined || cd22 === undefined) {
-            const cdelt1 = Number(get('CDELT1') ?? 1);
-            const cdelt2 = Number(get('CDELT2') ?? 1);
-            cd11 = Number(cd11 ?? cdelt1);
-            cd12 = Number(cd12 ?? 0);
-            cd21 = Number(cd21 ?? 0);
-            cd22 = Number(cd22 ?? cdelt2);
+            const built = cdMatrixFromHeader(header, get);
+            cd11 = built.cd11;
+            cd12 = built.cd12;
+            cd21 = built.cd21;
+            cd22 = built.cd22;
         } else {
             cd11 = Number(cd11); cd12 = Number(cd12 || 0);
             cd21 = Number(cd21 || 0); cd22 = Number(cd22);

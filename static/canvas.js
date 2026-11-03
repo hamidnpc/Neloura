@@ -8334,6 +8334,7 @@ function showSimpleRegionPopup(content, anchor) {
                     ${!isRegion ? '<button type="button" id="simple-show-sed-btn" class="srp-btn srp-btn--sed">Show SED</button>' : ''}
                     <button type="button" id="simple-show-properties-btn" class="srp-btn srp-btn--properties">Show Properties</button>
                     <button type="button" id="simple-show-rgb-btn" class="srp-btn srp-btn--rgb">Show RGB</button>
+                    ${isRegion ? '<button type="button" id="simple-open-region-tab-btn" class="srp-btn srp-btn--link" title="Open this image and region in a new tab">Quick link</button>' : ''}
                     ${isRegion ? '<button type="button" id="simple-cutout-region-btn" class="srp-btn srp-btn--cutout">Cutout</button>' : ''}
                     ${isRegion ? '<button type="button" id="simple-zoom-inset-btn" class="srp-btn srp-btn--inset">Zoom inset</button>' : ''}
                     ${isRegion ? '<button type="button" id="simple-other-map-inset-btn" class="srp-btn srp-btn--inset">Swap</button>' : ''}
@@ -8364,6 +8365,7 @@ function showSimpleRegionPopup(content, anchor) {
                 const sedButton = box.querySelector('#simple-show-sed-btn');
                 const propertiesButton = box.querySelector('#simple-show-properties-btn');
                 const rgbButton = box.querySelector('#simple-show-rgb-btn');
+                const openRegionTabButton = box.querySelector('#simple-open-region-tab-btn');
                 const cutoutRegionButton = box.querySelector('#simple-cutout-region-btn');
                 const zoomInsetButton = box.querySelector('#simple-zoom-inset-btn');
                 const otherMapInsetButton = box.querySelector('#simple-other-map-inset-btn');
@@ -8711,6 +8713,17 @@ function showSimpleRegionPopup(content, anchor) {
                     };
                 }
 
+                if (openRegionTabButton) {
+                    openRegionTabButton.onclick = (e) => {
+                        e.stopPropagation();
+                        const shape = linkedShape
+                            || (content.region_id != null
+                                ? (regionDrawingState.shapes || []).find((item) => String(item.id) === String(content.region_id))
+                                : null);
+                        openRegionInNewTab(shape);
+                    };
+                }
+
                 if (cutoutRegionButton) {
                     cutoutRegionButton.onclick = async (e) => {
                         e.stopPropagation();
@@ -9049,6 +9062,130 @@ function computeRegionPopupContent(shape) {
     }
 
     return content;
+}
+
+function regionSharePayload(shape) {
+    if (!shape || typeof shape !== 'object') return null;
+    let copy;
+    try { copy = JSON.parse(JSON.stringify(shape)); } catch (_) { return null; }
+    ['isPreview', 'createdAt', '__proto__', 'constructor', 'prototype'].forEach((key) => {
+        try { delete copy[key]; } catch (_) {}
+    });
+    Object.keys(copy).forEach((key) => {
+        if (key.charAt(0) === '_') delete copy[key];
+    });
+    if (!copy.type) return null;
+    return copy;
+}
+
+function buildRegionShareUrl(shape) {
+    const payload = regionSharePayload(shape);
+    if (!payload) return null;
+    const here = new URL(window.location.href);
+    let path = here.pathname || '/';
+    if (path.indexOf('/open/') === 0 || path.indexOf('/imager/') === 0) path = '/';
+    const url = new URL(path, here.origin);
+    let rgb = null;
+    try {
+        rgb = (typeof window.getRgbShareSpec === 'function') ? window.getRgbShareSpec() : null;
+    } catch (_) { rgb = null; }
+    if (rgb && Array.isArray(rgb.files) && rgb.files.length) {
+        url.searchParams.set('rgb_files', JSON.stringify(rgb.files));
+        if (rgb.title) url.searchParams.set('rgb_title', String(rgb.title));
+    } else {
+        const file = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
+        if (!file) return null;
+        url.searchParams.set('file', String(file));
+        const hdu = Number(window.currentHduIndex);
+        if (Number.isFinite(hdu)) url.searchParams.set('hdu', String(hdu));
+    }
+    url.searchParams.set('region', JSON.stringify(payload));
+    return url.toString();
+}
+
+function openRegionInNewTab(shape) {
+    const href = buildRegionShareUrl(shape);
+    if (!href) {
+        if (typeof window.showNotification === 'function') {
+            window.showNotification('Open the image before sharing this region', 3500, 'warning');
+        }
+        return;
+    }
+    const opened = window.open(href, '_blank', 'noopener');
+    if (!opened && typeof window.showNotification === 'function') {
+        window.showNotification('The browser blocked the new tab', 3500, 'warning');
+    }
+}
+
+function applyRegionDeepLink() {
+    if (window.__regionDeepLinkApplied) return true;
+    let raw = '';
+    try { raw = new URLSearchParams(window.location.search || '').get('region') || ''; } catch (_) { raw = ''; }
+    if (!raw) {
+        window.__regionDeepLinkApplied = true;
+        return true;
+    }
+    let shape = null;
+    try { shape = JSON.parse(raw); } catch (_) { shape = null; }
+    if (!shape || !shape.type) {
+        window.__regionDeepLinkApplied = true;
+        return true;
+    }
+    if (rgbRegionDeepLinkPending()) return false;
+    const viewer = (typeof getActiveOsdViewer === 'function') ? getActiveOsdViewer() : (window.tiledViewer || window.viewer);
+    const ready = !!(viewer && typeof viewer.isOpen === 'function' && viewer.isOpen()
+        && viewer.world && typeof viewer.world.getItemCount === 'function' && viewer.world.getItemCount() > 0);
+    if (!ready) return false;
+    if (!shape.id) shape.id = `region-link-${Date.now()}`;
+    shape.isPreview = false;
+    _restoreRegionsFromSerialized([shape]);
+    try { regionDrawingState.selectedShapeId = shape.id; } catch (_) {}
+    try { renderRegionOverlay(); } catch (_) {}
+    window.__regionDeepLinkApplied = true;
+    const fit = () => { try { _fitViewerToRegionShapes([shape]); } catch (_) {} };
+    setTimeout(fit, 60);
+    setTimeout(fit, 400);
+    return true;
+}
+
+function rgbRegionDeepLinkPending() {
+    let raw = '';
+    try { raw = new URLSearchParams(window.location.search || '').get('rgb_files') || ''; } catch (_) { raw = ''; }
+    if (!raw) return false;
+    return !window.__rgbDeepLinkReady;
+}
+
+function scheduleRegionDeepLink() {
+    let raw = '';
+    try { raw = new URLSearchParams(window.location.search || '').get('region') || ''; } catch (_) { raw = ''; }
+    if (!raw) return;
+    const attempt = () => {
+        try { return applyRegionDeepLink(); } catch (_) { return false; }
+    };
+    if (attempt()) return;
+    const onReady = () => { if (attempt()) document.removeEventListener('viewer:open', onReady); };
+    document.addEventListener('viewer:open', onReady);
+    document.addEventListener('fits:imageLoaded', onReady);
+    document.addEventListener('rgb:ready', onReady);
+    let tries = 0;
+    const limit = rgbRegionDeepLinkPending() ? 240 : 80;
+    const timer = setInterval(() => {
+        tries += 1;
+        if (attempt() || tries > limit) {
+            clearInterval(timer);
+            document.removeEventListener('viewer:open', onReady);
+            document.removeEventListener('rgb:ready', onReady);
+        }
+    }, 250);
+}
+
+try { window.openRegionInNewTab = openRegionInNewTab; } catch (_) {}
+try { window.buildRegionShareUrl = buildRegionShareUrl; } catch (_) {}
+try { window.applyRegionDeepLink = applyRegionDeepLink; } catch (_) {}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', scheduleRegionDeepLink);
+} else {
+    scheduleRegionDeepLink();
 }
 
 function showRegionPopup(shape, options) {

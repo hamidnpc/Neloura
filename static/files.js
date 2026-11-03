@@ -132,6 +132,9 @@ function loadFitsFile(filepath) {
                 showNotification(false);
                 return;
             }
+            if (Number.isFinite(Number(data.hdu))) {
+                window.currentHduIndex = Number(data.hdu);
+            }
             
             // Clear any existing error messages
             window.loadingError = null;

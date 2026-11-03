@@ -687,9 +687,12 @@
             notify(true, `Loading ${channel.toUpperCase()} channel...`);
             loadingNoticeVisible = true;
             const channelState = state.channels[channel] || {};
-            const useAutoHdu = !!(options && options.preferAutoHdu && !channelState.hdu_user_set);
-            await ensureHduSelectOptions(channel, filepath, undefined);
-            const requestedHdu = useAutoHdu ? undefined : readRequestedHdu(channel);
+            const explicitHdu = (options && Number.isFinite(Number(options.hdu)))
+                ? Math.max(0, Math.floor(Number(options.hdu)))
+                : undefined;
+            const useAutoHdu = explicitHdu == null && !!(options && options.preferAutoHdu && !channelState.hdu_user_set);
+            await ensureHduSelectOptions(channel, filepath, explicitHdu);
+            const requestedHdu = explicitHdu != null ? explicitHdu : (useAutoHdu ? undefined : readRequestedHdu(channel));
             const postSetChannel = async (hduOverride) => {
                 const payload = {
                     channel,
@@ -698,6 +701,9 @@
                     scaling_function: state.channels[channel].scaling_function,
                     replace_incompatible: true
                 };
+                if (options && options.invert_colormap) payload.invert_colormap = true;
+                if (options && Number.isFinite(Number(options.min_value))) payload.min_value = Number(options.min_value);
+                if (options && Number.isFinite(Number(options.max_value))) payload.max_value = Number(options.max_value);
                 if (Number.isFinite(hduOverride)) payload.hdu = hduOverride;
                 return request('/rgb/set-channel/', {
                     method: 'POST',
@@ -2165,11 +2171,24 @@
             const parsed = JSON.parse(raw);
             if (!Array.isArray(parsed)) return [];
             return parsed
-                .map((entry) => ({
-                    channel: String(entry && entry.channel || '').toLowerCase(),
-                    filepath: String(entry && entry.filepath || '').trim(),
-                    filter: String(entry && entry.filter || '').trim().toUpperCase()
-                }))
+                .map((entry) => {
+                    const item = {
+                        channel: String(entry && entry.channel || '').toLowerCase(),
+                        filepath: String(entry && entry.filepath || '').trim(),
+                        filter: String(entry && entry.filter || '').trim().toUpperCase()
+                    };
+                    const hdu = Number(entry && entry.hdu);
+                    if (Number.isFinite(hdu)) item.hdu = hdu;
+                    if (entry && entry.color_map) item.color_map = String(entry.color_map);
+                    if (entry && entry.scaling_function) item.scaling_function = String(entry.scaling_function);
+                    if (entry && entry.invert_colormap) item.invert_colormap = true;
+                    if (entry && entry.visible === false) item.visible = false;
+                    const minValue = Number(entry && entry.min_value);
+                    const maxValue = Number(entry && entry.max_value);
+                    if (Number.isFinite(minValue)) item.min_value = minValue;
+                    if (Number.isFinite(maxValue)) item.max_value = maxValue;
+                    return item;
+                })
                 .filter((entry) => entry.filepath && CHANNELS.some((ch) => ch.id === entry.channel));
         } catch (err) {
             console.error('[rgb] invalid rgb_files deep link payload', err);
@@ -2197,17 +2216,91 @@
             for (const entry of files) {
                 const channelInfo = CHANNELS.find((ch) => ch.id === entry.channel);
                 if (channelInfo && state.channels[entry.channel]) {
-                    state.channels[entry.channel].color_map = channelInfo.defaultMap;
+                    state.channels[entry.channel].color_map = entry.color_map || channelInfo.defaultMap;
+                    if (entry.scaling_function) state.channels[entry.channel].scaling_function = entry.scaling_function;
+                    state.channels[entry.channel].invert_colormap = !!entry.invert_colormap;
                 }
-                await setChannelFile(entry.channel, entry.filepath, { preferAutoHdu: true });
+                const hdu = Number(entry.hdu);
+                await setChannelFile(entry.channel, entry.filepath, {
+                    preferAutoHdu: !Number.isFinite(hdu),
+                    hdu: Number.isFinite(hdu) ? hdu : undefined,
+                    invert_colormap: !!entry.invert_colormap,
+                    min_value: entry.min_value,
+                    max_value: entry.max_value
+                });
+                if (entry.visible === false) {
+                    const resp = await request('/rgb/update-channel/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ channel: entry.channel, visible: false })
+                    });
+                    if (resp.ok) {
+                        const info = await resp.json();
+                        syncStateFromInfo(info);
+                        openRgbTiles(info, { preserveView: true });
+                    }
+                }
             }
             if (window.fitsData) window.fitsData.rgb_label = title;
             try { document.title = title; } catch (_) { /* noop */ }
+            await waitForRgbViewerSettle();
             notify(`${title} opened.`, 2200, 'success');
         } catch (err) {
             console.error('[rgb] RGB deep link failed', err);
             notify((err && err.message) || 'Failed to open RGB image from link.', 5000, 'error');
+        } finally {
+            markRgbDeepLinkReady();
         }
+    }
+
+    function waitForRgbViewerSettle() {
+        const viewer = window.tiledViewer;
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
+            try {
+                if (viewer && typeof viewer.addOnceHandler === 'function') viewer.addOnceHandler('open', finish);
+            } catch (_) { /* noop */ }
+            setTimeout(finish, 1200);
+        });
+    }
+
+    function markRgbDeepLinkReady() {
+        window.__rgbDeepLinkReady = true;
+        try { document.dispatchEvent(new CustomEvent('rgb:ready')); } catch (_) { /* noop */ }
+        try {
+            if (typeof window.applyRegionDeepLink === 'function') window.applyRegionDeepLink();
+        } catch (_) { /* noop */ }
+    }
+
+    function getRgbShareSpec() {
+        const active = !!(window.__rgbModeActive || (window.fitsData && window.fitsData.rgb_mode));
+        if (!active) return null;
+        const files = [];
+        CHANNELS.forEach((ch) => {
+            const data = state.channels[ch.id] || {};
+            const filepath = String(data.filepath || '').trim();
+            if (!data.loaded || !filepath) return;
+            const entry = { channel: ch.id, filepath };
+            const hdu = Number(data.hdu);
+            if (Number.isFinite(hdu)) entry.hdu = hdu;
+            if (data.color_map) entry.color_map = String(data.color_map);
+            if (data.scaling_function) entry.scaling_function = String(data.scaling_function);
+            if (data.invert_colormap) entry.invert_colormap = true;
+            if (data.visible === false) entry.visible = false;
+            const minValue = Number(data.initial_display_min);
+            const maxValue = Number(data.initial_display_max);
+            if (Number.isFinite(minValue)) entry.min_value = minValue;
+            if (Number.isFinite(maxValue)) entry.max_value = maxValue;
+            files.push(entry);
+        });
+        if (!files.length) return null;
+        const title = (window.fitsData && window.fitsData.rgb_label) || 'RGB composite';
+        return { title, files };
     }
 
     function init() {
@@ -2227,6 +2320,7 @@
     window.getRgbTileInfo = function () {
         return state.tileInfo || (window.currentTileInfo && window.currentTileInfo.rgb_mode ? window.currentTileInfo : null);
     };
+    window.getRgbShareSpec = getRgbShareSpec;
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {

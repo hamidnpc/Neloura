@@ -1635,6 +1635,172 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
     return candidates[0][1]
 
 
+_GALAXY_FILTER_SKIP_TOKENS = ("mask", "segmentation", "segments", "nebulae", "psf", "bkg", "subtract", "ratio", "ebv")
+_GALAXY_FILTER_LETTER_BANDS = {
+    "u": "F336W",
+    "b": "F438W",
+    "v": "F555W",
+    "i": "F814W",
+    "ha": "HA",
+    "halpha": "HA",
+}
+_GALAXY_FILTER_KEY_PAIRS: list[tuple[str, str]] | None = None
+
+
+def _galaxy_filter_key_pairs() -> list[tuple[str, str]]:
+    global _GALAXY_FILTER_KEY_PAIRS
+    if _GALAXY_FILTER_KEY_PAIRS is not None:
+        return _GALAXY_FILTER_KEY_PAIRS
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for canonical in RGB_OPEN_FILTER_ALIASES:
+        for key in _open_rgb_filter_file_keys(canonical):
+            item = (key, canonical)
+            if item in seen:
+                continue
+            seen.add(item)
+            pairs.append(item)
+    pairs.sort(key=lambda item: len(item[0]), reverse=True)
+    _GALAXY_FILTER_KEY_PAIRS = pairs
+    return pairs
+
+
+def _galaxy_token_from_text(text: str) -> str | None:
+    raw = str(text or "").lower()
+    if not raw.strip():
+        return None
+    # Keep separators. Stripping them first turns ngc0628_12m into ngc062812.
+    for pattern in (r"ngc[\s-]*\d+", r"ic[\s-]*\d+", r"ugc[\s-]*\d+", r"eso[\s-]*\d+", r"(?<![a-z0-9])m\d{2,3}(?!\d)"):
+        match = re.search(pattern, raw)
+        if match:
+            return re.sub(r"[^a-z0-9]", "", match.group(0))
+    compact = _open_rgb_normalize_token(raw)
+    if re.fullmatch(r"\d{3,4}", compact):
+        return f"ngc{int(compact)}"
+    return None
+
+
+def _galaxy_from_relpath(rel: str) -> str | None:
+    parts = [part for part in str(rel or "").replace("\\", "/").split("/") if part]
+    if not parts:
+        return None
+    for part in (parts[-1], *reversed(parts[:-1])):
+        galaxy = _galaxy_token_from_text(part)
+        if galaxy:
+            return galaxy
+    return None
+
+
+def _normalize_files_relpath(filepath: str) -> str:
+    text = str(filepath or "").replace("\\", "/").strip()
+    if not text:
+        return ""
+    base = Path(FILES_DIRECTORY).as_posix().rstrip("/")
+    if text.startswith(base + "/"):
+        text = text[len(base) + 1:]
+    return text.lstrip("/")
+
+
+def _canonical_for_filter_token(token: str) -> str | None:
+    norm = _open_rgb_normalize_token(token)
+    if not norm:
+        return None
+    hits = [canonical for key, canonical in _galaxy_filter_key_pairs() if key == norm]
+    if hits:
+        upper = norm.upper()
+        for canonical in hits:
+            if str(canonical).upper() == upper:
+                return canonical
+        return hits[-1]
+    letter = _GALAXY_FILTER_LETTER_BANDS.get(str(token or "").lower())
+    if letter:
+        return letter
+    if re.fullmatch(r"f\d{3,4}(?:w|m|n|lp)?", norm) or re.fullmatch(r"f\d{3,4}", norm):
+        return norm.upper()
+    return None
+
+
+def _filters_in_filename(filename: str) -> list[str]:
+    found: list[str] = []
+    for token in re.split(r"[^A-Za-z0-9]+", str(filename or "")):
+        canonical = _canonical_for_filter_token(token)
+        if canonical and canonical not in found:
+            found.append(canonical)
+    return found
+
+
+def _filter_sort_wavelength(filter_name: str) -> float:
+    known = RGB_OPEN_FILTER_WAVELENGTHS.get(filter_name)
+    if known is not None:
+        return float(known)
+    match = re.search(r"(\d{3,4})", str(filter_name or ""))
+    if not match:
+        return 9999.0
+    digits = int(match.group(1))
+    if digits >= 1000 or str(filter_name or "").upper().endswith("N") or 100 <= digits <= 500:
+        return digits / 100.0
+    return digits / 1000.0
+
+
+def _galaxy_filter_siblings(filepath: str) -> dict:
+    rel = _normalize_files_relpath(filepath)
+    galaxy = _galaxy_from_relpath(rel)
+    current_filters = _filters_in_filename(Path(rel).name)
+    empty = {"galaxy": galaxy or "", "current": rel, "filters": []}
+    if not galaxy:
+        return empty
+
+    galaxy_keys = _open_rgb_galaxy_variants(galaxy)
+    best: dict[str, tuple] = {}
+    for rec in _open_rgb_file_index():
+        rec_rel = str(rec.get("rel") or "")
+        rel_lower = str(rec.get("rel_lower") or "")
+        if any(token in rel_lower for token in _GALAXY_FILTER_SKIP_TOKENS):
+            continue
+        rel_norm = str(rec.get("rel_norm") or "")
+        name_norm = str(rec.get("name_norm") or "")
+        if not any(key and key in rel_norm for key in galaxy_keys):
+            continue
+        filters = _filters_in_filename(Path(rec_rel).name)
+        if len(filters) != 1:
+            continue
+        filter_name = filters[0]
+        score = len(rec_rel)
+        if any(key and key in name_norm for key in galaxy_keys):
+            score -= 40
+        if any(token in name_norm for token in ("i2d", "anchor", "drz", "sci")):
+            score -= 12
+        if "/uploads/" in f"/{rel_lower}":
+            score += 30
+        previous = best.get(filter_name)
+        if previous is None or score < previous[0]:
+            best[filter_name] = (score, rec_rel, filter_name)
+
+    if len(current_filters) == 1 and rel:
+        best[current_filters[0]] = (-1000, rel, current_filters[0])
+
+    entries = []
+    for _score, rec_rel, filter_name in best.values():
+        entries.append({
+            "filter": filter_name,
+            "label": filter_name,
+            "filepath": rec_rel,
+            "wavelength": _filter_sort_wavelength(filter_name),
+            "current": rec_rel == rel,
+        })
+    if rel and not any(entry["current"] for entry in entries):
+        label = "+".join(current_filters) if current_filters else Path(rel).stem
+        entries.append({
+            "filter": label,
+            "label": label,
+            "filepath": rel,
+            "wavelength": _filter_sort_wavelength(current_filters[0]) if len(current_filters) == 1 else 5000.0,
+            "current": True,
+        })
+    entries.sort(key=lambda entry: (float(entry["wavelength"]), str(entry["label"]).lower(), str(entry["filepath"]).lower()))
+    return {"galaxy": galaxy, "current": rel, "filters": entries}
+
+
 def _open_rgb_resolve_channel_files(parsed_galaxy: str, parsed_filters: list[str]) -> tuple[list[dict[str, str]], list[str]]:
     channel_files: list[dict[str, str]] = []
     missing: list[str] = []
@@ -2073,6 +2239,14 @@ async def open_rgb_options(include_availability: bool = Query(False)):
         "hst_filters": RGB_OPEN_HST_FILTERS,
         "jwst_filters": RGB_OPEN_JWST_FILTERS,
     }
+
+
+@app.get("/api/galaxy-filters")
+async def galaxy_filters(filepath: str = Query(..., description="Currently open FITS path")):
+    """Other filters of the same galaxy, ordered short wavelength to long."""
+    loop = asyncio.get_running_loop()
+    executor = getattr(app.state, "thread_executor", None)
+    return await loop.run_in_executor(executor, _galaxy_filter_siblings, filepath)
 
 
 @app.get("/open-rgb")
@@ -3212,6 +3386,60 @@ async def save_catalog_mapping(request: Request):
     except Exception as e:
         print(f"Error saving catalog mapping: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save catalog mapping: {str(e)}")
+
+
+def _header_has_image(header) -> bool:
+    """True when this HDU header describes a 2D (or higher) image with a real size."""
+    try:
+        naxis = int(header.get("NAXIS", 0) or 0)
+        width = int(header.get("NAXIS1", 0) or 0)
+        height = int(header.get("NAXIS2", 0) or 0)
+    except Exception:
+        return False
+    if naxis < 2 or width <= 0 or height <= 0:
+        return False
+    xtension = str(header.get("XTENSION", "") or "").strip().upper()
+    return xtension != "BINTABLE"
+
+
+def _resolve_image_hdu_index(hdul, requested: int) -> int:
+    """Use the requested HDU when it is an image. Otherwise open the SCI extension."""
+    try:
+        requested = int(requested)
+    except Exception:
+        requested = 0
+    if 0 <= requested < len(hdul) and _header_has_image(hdul[requested].header):
+        return requested
+    fallback = None
+    for index, hdu in enumerate(hdul):
+        header = getattr(hdu, "header", None)
+        if header is None or not _header_has_image(header):
+            continue
+        name = str(header.get("EXTNAME", "") or "").strip().upper()
+        if name == "SCI":
+            return index
+        if fallback is None:
+            fallback = index
+    return fallback if fallback is not None else requested
+
+
+def _safe_max_zoom_level(width, height, tile_size) -> int:
+    try:
+        span = max(int(width or 0), int(height or 0))
+        tile = max(int(tile_size or 1), 1)
+    except Exception:
+        return 0
+    if span <= 1:
+        return 0
+    try:
+        level = int(np.ceil(np.log2(span / tile)))
+    except Exception:
+        return 0
+    if not np.isfinite(level):
+        return 0
+    return max(0, level)
+
+
 class SimpleTileGenerator:
     def __init__(self, fits_file_path, hdu_index=0, image_data=None):
         """Initialize simple tile generator with memory-mapped access."""
@@ -3285,7 +3513,7 @@ class SimpleTileGenerator:
         # NOTE: Percentile calculation is deferred.
         
         # Calculate max zoom level (MUST REMAIN IN __init__)
-        self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+        self.max_level = _safe_max_zoom_level(self.width, self.height, self.tile_size)
         
         # Get WCS if available (MUST REMAIN IN __init__)
         try:
@@ -3341,7 +3569,7 @@ class SimpleTileGenerator:
             self.image_data = data
             self.height, self.width = self.image_data.shape[-2:]
             # Recompute max_level if width/height were unknown
-            self.max_level = max(0, int(np.ceil(np.log2(max(self.width, self.height) / self.tile_size))))
+            self.max_level = _safe_max_zoom_level(self.width, self.height, self.tile_size)
             self._image_data_loaded = True
     
     def _calculate_initial_dynamic_range(self):
@@ -4183,6 +4411,7 @@ class RGBTileGenerator:
         info["rgb_wcs_union"] = bool(frame.get("use_wcs_union"))
         info["rgb_wcs_offset_x"] = float(frame.get("offset_x", 0.0))
         info["rgb_wcs_offset_y"] = float(frame.get("offset_y", 0.0))
+        info["flip_y"] = bool(getattr(base, "_flip_required", False))
         base_channel = frame["base_channel"]
         if base_channel:
             base_meta = self.channel_meta.get(base_channel) or {}
@@ -8714,6 +8943,18 @@ async def rgb_set_channel(request: Request):
         except Exception:
             pass
 
+    # Region cutouts use the session file as the on-screen reference. RGB replaces
+    # that view, so keep the reference pointed at the base channel.
+    try:
+        base_name = rgb_generator._base_channel()
+        base_meta = rgb_generator.channel_meta.get(base_name) or {}
+        base_path = base_meta.get("filepath")
+        if base_path:
+            session_data["current_fits_file"] = str(_resolve_browser_fits_path(base_path))
+            session_data["current_hdu_index"] = int(base_meta.get("hdu") or 0)
+    except Exception:
+        pass
+
     # Pre-warm local files only. On Colab Drive this competes with tile/histogram
     # requests and can make startup much slower.
     if not _is_colab_drive_path(path):
@@ -9462,6 +9703,9 @@ async def load_file(request: Request, filepath: str, hdu: int = Query(DEFAULT_HD
                         status_code=400,
                         content={"error": f"Invalid HDU index: {hdu}. File has {len(hdul)} HDUs."}
                     )
+                # JWST i2d files keep the picture in EXTNAME=SCI. HDU 0 is an empty
+                # primary header, and treating it as the image makes tile setup crash.
+                hdu = _resolve_image_hdu_index(hdul, hdu)
         except Exception as e:
             import traceback
             print("[load_file] Error checking/opening FITS:", e)
@@ -10103,8 +10347,8 @@ async def probe_pixel(
 @app.get("/pixel-to-world/")
 async def pixel_to_world(
     request: Request,
-    x: int = Query(...),
-    y: int = Query(...),
+    x: float = Query(...),
+    y: float = Query(...),
     origin: str = Query("bottom"),
     filepath: str | None = Query(None),
     hdu: int | None = Query(None),
@@ -11079,8 +11323,10 @@ async def fits_preview(
         )
         eff_invert = bool(q_invert_colormap) if q_invert_colormap is not None else False
 
-        # Auto stretch on finite values (robust; avoids NaNs/inf skewing percentiles).
+        # Same 1–99 percentile stretch as before, so faint emission stays visible.
+        # Only non-finite pixels (blank JWST sky) are forced black afterwards.
         finite = small[np.isfinite(small)]
+        invalid = ~np.isfinite(small)
         if finite.size == 0:
             vmin, vmax = 0.0, 1.0
         else:
@@ -11133,6 +11379,9 @@ async def fits_preview(
         img8 = (np.clip(norm, 0.0, 1.0) * 255.0).astype(np.uint8)
         if eff_invert:
             img8 = 255 - img8
+        if np.any(invalid):
+            img8 = np.array(img8, copy=True)
+            img8[invalid] = 0
 
         # Apply colormap LUT (fast, pure-Python colormap functions)
         _resolved_cm = resolve_color_map_key(eff_color_map)
@@ -11536,6 +11785,8 @@ class RegionCutoutRequest(BaseModel):
     galaxy_name: Optional[str] = None
     display_x: Optional[float] = None
     display_y: Optional[float] = None
+    reference_fits_path: Optional[str] = None
+    reference_hdu: Optional[int] = None
 
 def _compute_arcsec_per_pixel(wcs: WCS) -> float:
     try:
@@ -11945,15 +12196,19 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
             # Convert RA/Dec to pixel coordinates.  Prefer displayed pixel coords
             # (origin=top, matching OpenSeadragon) so ALMA SIN / flip_y cannot
             # send the cutout to the mirrored side of the galaxy.
+            reference_file = payload.reference_fits_path or session_data.get("current_fits_file")
+            ref_hdu_index = int(
+                payload.reference_hdu
+                if payload.reference_hdu is not None
+                else (session_data.get("current_hdu_index", 0) or 0)
+            )
             try:
                 ra_deg = float(payload.ra)
                 dec_deg = float(payload.dec)
                 if payload.display_x is not None and payload.display_y is not None:
-                    reference_file = session_data.get("current_fits_file")
                     if reference_file:
                         try:
                             reference_path = _resolve_fits_path(str(reference_file))
-                            ref_hdu_index = int(session_data.get("current_hdu_index", 0) or 0)
                             ra_deg, dec_deg = _world_from_display_pixel(
                                 reference_path,
                                 ref_hdu_index,
@@ -12125,12 +12380,10 @@ async def create_region_cutout(request: Request, payload: RegionCutoutRequest):
                 output_wcs = None
                 region_wcs = wcs
                 cutout_data = None
-                reference_file = session_data.get("current_fits_file")
                 if payload.fits_path and reference_file:
                     try:
                         reference_path = _resolve_fits_path(str(reference_file))
                         if not _fits_paths_equal(reference_path, fits_path):
-                            ref_hdu_index = int(session_data.get("current_hdu_index", 0) or 0)
                             cutout_data, output_wcs, region_wcs = _reproject_source_onto_reference_cutout(
                                 image_data,
                                 wcs,
@@ -15097,6 +15350,97 @@ def plot_data_na(ax, title=""):
 from astropy.nddata.utils import NoOverlapError
 
 
+_RGB_INDEX_LOCK = threading.Lock()
+_RGB_INDEX_MEMORY: dict[str, list[str]] = {}
+_RGB_INDEX_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".ipynb_checkpoints",
+    "uploads", "sample_data", ".config", ".cache",
+}
+_RGB_OTHER_GALAXY_RE = re.compile(
+    r"(?:^|[^a-z0-9])(ngc|ic|ugc|eso|pgc|arp|m)\s*0*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _rgb_index_key(galaxy_tokens: list[str]) -> str:
+    return "|".join(sorted({tok.lower() for tok in galaxy_tokens if tok})) or "all"
+
+
+def _rgb_index_path(key: str) -> Path:
+    root = Path(os.environ.get("NELOURA_RUNTIME_DIR", str(Path.home() / ".neloura")))
+    safe = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:80] or "all"
+    return root / f"rgb_file_index_{safe}.json"
+
+
+def _rgb_dir_is_other_galaxy(dirname: str, galaxy_tokens: list[str]) -> bool:
+    if not galaxy_tokens:
+        return False
+    low = dirname.lower()
+    if any(tok in low for tok in galaxy_tokens):
+        return False
+    return _RGB_OTHER_GALAXY_RE.search(low) is not None
+
+
+def _rgb_walk_fits(base_search_path: str, galaxy_tokens: list[str]) -> list[str]:
+    root = Path(base_search_path)
+    if not root.exists():
+        return []
+    found: list[str] = []
+    visited: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in visited:
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        dirnames[:] = [
+            name for name in dirnames
+            if name.lower() not in _RGB_INDEX_SKIP_DIRS
+            and not name.startswith(".")
+            and not _rgb_dir_is_other_galaxy(name, galaxy_tokens)
+        ]
+        for filename in filenames:
+            if filename.lower().endswith((".fits", ".fits.gz")):
+                found.append(os.path.join(dirpath, filename))
+    return found
+
+
+def _rgb_indexed_fits(base_search_path: str, galaxy_tokens: list[str]) -> list[str]:
+    """Colab-only file list. One walk, then lookups for every RGB filter."""
+    key = _rgb_index_key(galaxy_tokens)
+    with _RGB_INDEX_LOCK:
+        cached = _RGB_INDEX_MEMORY.get(key)
+        if cached is not None:
+            return cached
+        path = _rgb_index_path(key)
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text())
+                files = [item for item in payload.get("files", []) if isinstance(item, str)]
+                if files and payload.get("root") == str(Path(base_search_path).resolve()):
+                    _RGB_INDEX_MEMORY[key] = files
+                    print(f"RGB index: loaded {len(files)} FITS files from {path.name}")
+                    return files
+            except Exception as exc:
+                print(f"RGB index: ignoring unreadable cache {path}: {exc}")
+        print(f"RGB index: scanning {base_search_path} once for {key}")
+        files = _rgb_walk_fits(base_search_path, galaxy_tokens)
+        if not files:
+            print("RGB index: no FITS files found; the next Show RGB will scan again")
+            return files
+        _RGB_INDEX_MEMORY[key] = files
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "root": str(Path(base_search_path).resolve()),
+                "files": files,
+            }))
+        except Exception as exc:
+            print(f"RGB index: could not save cache: {exc}")
+        print(f"RGB index: recorded {len(files)} FITS files")
+        return files
+
+
 def _find_and_extract_cutout_via_glob(
     base_search_path: str,
     filter_identifiers: list[str],
@@ -15105,7 +15449,8 @@ def _find_and_extract_cutout_via_glob(
     cutout_size_arcsec: float,
     display_filter_name: str,
     exclude_patterns: list[str] = None,
-    galaxy_name: str | None = None
+    galaxy_name: str | None = None,
+    preferred_path: str | None = None,
 ):
     """
     Finds a FITS file using glob patterns and extracts cutout data.
@@ -15137,32 +15482,50 @@ def _find_and_extract_cutout_via_glob(
     galaxy_tokens = build_galaxy_tokens(galaxy_name) if galaxy_name else []
 
     matching_files = []
-    for ident in filter_identifiers:
-        ident_lower = ident.lower()
-        patterns = [tmpl.format(base_dir=base_search_path, needle=ident_lower) for tmpl in RGB_FILE_SEARCH_PATTERNS]
-        # Add targeted galaxy+identifier patterns for each token
-        for tok in galaxy_tokens:
-            for tmpl in RGB_TOKEN_EXTEND_TEMPLATES:
-                patterns.append(tmpl.format(base_dir=base_search_path, token=tok, needle=ident_lower))
+    if _NELOURA_IS_COLAB:
+        indexed = _rgb_indexed_fits(base_search_path, galaxy_tokens)
+        for ident in filter_identifiers:
+            ident_lower = ident.lower()
+            for file_path in indexed:
+                filename = os.path.basename(file_path).lower()
+                norm_path = str(file_path).replace("\\", "/").lower()
+                if "/files/uploads/" in norm_path or "/uploads/" in norm_path:
+                    continue
+                if ident_lower not in filename and ident_lower not in norm_path:
+                    continue
+                if any(excl.lower() in filename or excl.lower() in norm_path for excl in exclude_patterns):
+                    continue
+                matching_files.append(file_path)
+        if preferred_path and os.path.isfile(preferred_path):
+            preferred_low = str(preferred_path).replace("\\", "/").lower()
+            if any(ident.lower() in preferred_low for ident in filter_identifiers) and (
+                not galaxy_tokens or any(tok in preferred_low for tok in galaxy_tokens)
+            ):
+                matching_files.insert(0, preferred_path)
+    else:
+        for ident in filter_identifiers:
+            ident_lower = ident.lower()
+            patterns = [tmpl.format(base_dir=base_search_path, needle=ident_lower) for tmpl in RGB_FILE_SEARCH_PATTERNS]
+            for tok in galaxy_tokens:
+                for tmpl in RGB_TOKEN_EXTEND_TEMPLATES:
+                    patterns.append(tmpl.format(base_dir=base_search_path, token=tok, needle=ident_lower))
 
-        for pattern in patterns:
-            found = glob.glob(pattern, recursive=True)
-            if found:
-                filtered_found = []
-                for file_path in found:
-                    filename = os.path.basename(file_path).lower()
-                    norm_path = str(file_path).replace('\\', '/').lower()
-                    # Always exclude anything under uploads directory by path
-                    if '/files/uploads/' in norm_path or '/uploads/' in norm_path:
-                        print(f"Cutout [{display_filter_name}]: Excluding {file_path} (in uploads folder)")
-                        continue
-                    # Exclude by patterns (match against both filename and full path)
-                    should_exclude = any(excl.lower() in filename or excl.lower() in norm_path for excl in exclude_patterns)
-                    if not should_exclude:
-                        filtered_found.append(file_path)
-                    else:
-                        print(f"Cutout [{display_filter_name}]: Excluding {file_path} (matches exclude pattern)")
-                matching_files.extend(filtered_found)
+            for pattern in patterns:
+                found = glob.glob(pattern, recursive=True)
+                if found:
+                    filtered_found = []
+                    for file_path in found:
+                        filename = os.path.basename(file_path).lower()
+                        norm_path = str(file_path).replace('\\', '/').lower()
+                        if '/files/uploads/' in norm_path or '/uploads/' in norm_path:
+                            print(f"Cutout [{display_filter_name}]: Excluding {file_path} (in uploads folder)")
+                            continue
+                        should_exclude = any(excl.lower() in filename or excl.lower() in norm_path for excl in exclude_patterns)
+                        if not should_exclude:
+                            filtered_found.append(file_path)
+                        else:
+                            print(f"Cutout [{display_filter_name}]: Excluding {file_path} (matches exclude pattern)")
+                    matching_files.extend(filtered_found)
 
     # Deduplicate while preserving order
     matching_files = list(dict.fromkeys(matching_files))
@@ -15516,6 +15879,14 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
     all_data_found_flags = {}
     panel_wcs_objects = [None] * len(axes_list)
     used_axes_indices: set[int] = set()
+    current_fits = ""
+    if _NELOURA_IS_COLAB:
+        try:
+            session = getattr(request.state, "session", None)
+            if session is not None:
+                current_fits = str(session.data.get("current_fits_file") or "")
+        except Exception:
+            current_fits = ""
 
     for panel_info in plot_panels_info:
         ax_idx = int(panel_info["ax_idx"]) if panel_info.get("ax_idx") is not None else 0
@@ -15555,7 +15926,7 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
             f_info = panel_info["filters"]["ha"]
             data, wcs_header = _find_and_extract_cutout_via_glob(
                 BASE_FITS_PATH, f_info["id"], ra, dec, CUTOUT_SIZE_ARCSEC, f_info["name"],
-                galaxy_name=target_galaxy_name
+                galaxy_name=target_galaxy_name, preferred_path=current_fits or None
             )
             if data is not None:
                 channel_data["ha"] = data
@@ -15575,7 +15946,8 @@ async def generate_rgb_cutouts(request: Request, ra: float, dec: float, catalog_
                 f_info = panel_info["filters"][band]
                 data, temp_wcs_header = _find_and_extract_cutout_via_glob(
                     BASE_FITS_PATH, f_info["id"], ra, dec, CUTOUT_SIZE_ARCSEC, f_info["name"],
-                    exclude_patterns=exclude_patterns, galaxy_name=target_galaxy_name
+                    exclude_patterns=exclude_patterns, galaxy_name=target_galaxy_name,
+                    preferred_path=current_fits or None
                 )
                 if data is not None:
                     channel_data[band] = data

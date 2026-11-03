@@ -294,6 +294,9 @@
 #simple-region-popup.simple-region-popup .srp-btn--sed {
     background-color: #4caf50;
 }
+#simple-region-popup.simple-region-popup .srp-btn--link {
+    background-color: #0f766e;
+}
 #simple-region-popup.simple-region-popup .srp-btn--cutout {
     background-color: #9c27b0;
 }
@@ -1759,5 +1762,173 @@ color: black !important;
 @media (prefers-reduced-motion: reduce){
     .tm-hdu-card, .tm-hdu-close, .tm-hdu-btn, .tm-hdu-listitem{ transition: none !important; }
     .tm-hdu-stage::before{ animation: none !important; }
+}
+
+.filter-rail {
+    position: fixed;
+    right: calc(16px + var(--neloura-screen-cbar-lane-right, 0px));
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1400;
+    width: 72px;
+    height: min(52vh, 380px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: auto;
+    user-select: none;
+    touch-action: pan-y;
+}
+.filter-rail-galaxy {
+    flex: 0 0 auto;
+    margin-bottom: 8px;
+    max-width: 100%;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(18, 18, 20, 0.72);
+    color: rgba(255, 255, 255, 0.86);
+    font: 600 11px/1.2 'Raleway', sans-serif;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.filter-rail-window {
+    position: relative;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+    border-radius: 18px;
+    background: rgba(10, 10, 12, 0.28);
+}
+.filter-rail-track {
+    position: absolute;
+    left: 50%;
+    top: 12px;
+    bottom: 12px;
+    width: 2px;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 0;
+}
+.filter-rail-scroller {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+.filter-rail-scroller::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+.filter-rail-window::before,
+.filter-rail-window::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 36px;
+    z-index: 2;
+    pointer-events: none;
+}
+.filter-rail-window::before {
+    top: 0;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
+}
+.filter-rail-window::after {
+    bottom: 0;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+}
+.filter-rail-strip {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 0;
+}
+.filter-rail-item {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    background: rgba(20, 20, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    flex: 0 0 auto;
+    padding: 0;
+}
+.filter-rail-item.is-current {
+    border-color: rgba(124, 58, 237, 0.95);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25), 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+.filter-rail-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    background: #111;
+}
+.filter-rail-item.is-loading img {
+    opacity: 0;
+}
+.filter-rail-spinner {
+    position: absolute;
+    left: 50%;
+    top: 42%;
+    width: 16px;
+    height: 16px;
+    margin-left: -8px;
+    margin-top: -8px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.22);
+    border-top-color: rgba(255, 255, 255, 0.92);
+    animation: filter-rail-spin 0.7s linear infinite;
+    pointer-events: none;
+}
+@keyframes filter-rail-spin {
+    to { transform: rotate(360deg); }
+}
+.filter-rail-tip {
+    position: fixed;
+    z-index: 80000;
+    max-width: min(68vw, 720px);
+    transform: translateY(-50%);
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: rgba(14, 14, 16, 0.94);
+    color: #fff;
+    font: 500 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    text-align: left;
+    white-space: normal;
+    word-break: break-all;
+    pointer-events: none;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.filter-rail-tip[hidden] {
+    display: none;
+}
+.filter-rail-item span {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 3px 4px 4px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.78), transparent);
+    color: #fff;
+    font: 600 10px/1 'Raleway', sans-serif;
+    text-align: center;
+    letter-spacing: 0.02em;
+}
+@media (prefers-reduced-motion: reduce) {
+    .filter-rail-scroller { scroll-behavior: auto; }
+    .filter-rail-spinner { animation: none; }
 }
     

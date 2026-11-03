@@ -464,12 +464,19 @@ function pixelsToWorldFromHeader(header, x, y) {
       let cd11 = get('CD1_1'); let cd12 = get('CD1_2');
       let cd21 = get('CD2_1'); let cd22 = get('CD2_2');
       if (cd11 === undefined || cd22 === undefined) {
+        const built = (typeof cdMatrixFromHeader === 'function')
+          ? cdMatrixFromHeader(header, get)
+          : null;
+        const pc11 = Number(get('PC1_1') ?? 1);
+        const pc12 = Number(get('PC1_2') ?? 0);
+        const pc21 = Number(get('PC2_1') ?? 0);
+        const pc22 = Number(get('PC2_2') ?? 1);
         const cdelt1 = Number(get('CDELT1') ?? 1);
         const cdelt2 = Number(get('CDELT2') ?? 1);
-        cd11 = Number(cd11 ?? cdelt1);
-        cd12 = Number(cd12 ?? 0);
-        cd21 = Number(cd21 ?? 0);
-        cd22 = Number(cd22 ?? cdelt2);
+        cd11 = built ? built.cd11 : pc11 * cdelt1;
+        cd12 = built ? built.cd12 : pc12 * cdelt1;
+        cd21 = built ? built.cd21 : pc21 * cdelt2;
+        cd22 = built ? built.cd22 : pc22 * cdelt2;
       } else {
         cd11 = Number(cd11); cd12 = Number(cd12 || 0);
         cd21 = Number(cd21 || 0); cd22 = Number(cd22);

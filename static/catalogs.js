@@ -1146,6 +1146,15 @@ function setActiveCatalogForControls(catalogKeyOrName) {
     try { window.currentCatalogName = key; } catch (_) {}
     try { window.activeCatalog = key; } catch (_) {}
     try { activeCatalog = key; } catch (_) {}
+    try {
+        const host = (typeof getTopLevelDocument === 'function') ? getTopLevelDocument() : document;
+        const title = host && host.querySelector('[data-role="catalog-overlay-title"]');
+        if (title) {
+            const shortName = String(key || '').split(/[/\\]/).pop() || String(key || '');
+            const loaded = (typeof getLoadedCatalogOverlays === 'function') ? (getLoadedCatalogOverlays() || []) : [];
+            title.textContent = loaded.length > 1 ? `Catalogs · ${loaded.length} loaded` : `Catalogs · ${shortName}`;
+        }
+    } catch (_) {}
     // try to sync regionStyles from stored catalog style so slider reflects correct opacity
     try {
         const entry = Array.isArray(window.catalogData)
