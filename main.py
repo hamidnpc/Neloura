@@ -1685,7 +1685,7 @@ def _galaxy_from_relpath(rel: str) -> str | None:
     if not parts:
         return None
     for part in (parts[-1], *reversed(parts[:-1])):
-        galaxy = _galaxy_token_from_text(part)
+        galaxy = _name_galaxy_token(part) or _galaxy_token_from_text(part)
         if galaxy:
             return galaxy
     return None
@@ -1753,9 +1753,22 @@ def _filter_sort_wavelength(filter_name: str) -> float:
     return digits / 1000.0
 
 
+def _trailing_ngc_number(text: str) -> str | None:
+    """NGC number written at the end of a name, as in 0sigma_thermal_4254.fits."""
+    tokens = [token for token in re.split(r"[^A-Za-z0-9]+", str(text or "")) if token]
+    if tokens and tokens[-1].lower() == "fits":
+        tokens = tokens[:-1]
+    if len(tokens) >= 2 and re.fullmatch(r"\d{1,2}", tokens[-1]) and re.fullmatch(r"\d{3,4}", tokens[-2]):
+        tokens = tokens[:-1]
+    if not tokens or not re.fullmatch(r"\d{3,4}", tokens[-1]):
+        return None
+    return f"ngc{int(tokens[-1])}"
+
+
 def _name_galaxy_token(filename: str) -> str | None:
     """Galaxy id from a filename. Underscores count, so NGC_3627 is NGC 3627."""
-    return _galaxy_token_from_text(str(filename or "").replace("_", " "))
+    text = str(filename or "").replace("_", " ")
+    return _galaxy_token_from_text(text) or _trailing_ngc_number(filename)
 
 
 def _rel_matches_galaxy(rec_rel: str, rel_norm: str, galaxy: str, galaxy_keys: list[str]) -> bool:
@@ -2355,6 +2368,236 @@ async def galaxy_filters(filepath: str = Query(..., description="Currently open 
     loop = asyncio.get_running_loop()
     executor = getattr(app.state, "thread_executor", None)
     return await loop.run_in_executor(executor, _galaxy_filter_siblings, filepath)
+
+
+@app.get("/api/ned-overview")
+async def ned_overview(name: str = Query(..., description="NED object name, for example NGC 4254")):
+    """One-row NED overview for the galaxy named on the filter rail."""
+    target = " ".join(str(name or "").split())
+    if not target:
+        raise HTTPException(status_code=400, detail="Missing galaxy name")
+    url = "https://ned.ipac.caltech.edu/NED::API/OverviewOfObject?TARGET=" + quote(target)
+
+    def fetch() -> bytes:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Neloura", "Accept": "application/xml, text/xml"},
+            timeout=30,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        return response.content
+
+    loop = asyncio.get_running_loop()
+    executor = getattr(app.state, "thread_executor", None)
+    try:
+        content = await loop.run_in_executor(executor, fetch)
+    except Exception as exc:
+        logger.warning("NED overview failed for %s: %s", target, exc)
+        raise HTTPException(status_code=502, detail="NED could not be reached") from exc
+    return Response(content=content, media_type="application/xml")
+
+
+_GENERIC_OBJECT_NAMES = {
+    "sci", "err", "con", "wht", "var", "primary", "image", "maps",
+    "unknown", "field", "sky", "ext", "data", "flux", "none", "null",
+    "na", "n/a", "mosaic", "cutout", "preview", "hdul", "extension",
+}
+
+
+def _fits_file_for_header(filepath: str) -> Path:
+    if ".." in str(filepath or ""):
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    full_path = Path(filepath)
+    if not full_path.exists() and not str(filepath).startswith(FILES_DIRECTORY):
+        full_path = Path(FILES_DIRECTORY) / filepath
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="FITS file not found")
+    return full_path
+
+
+def _object_card(header) -> str:
+    try:
+        text = str(header.get("OBJECT") or "").strip()
+    except Exception:
+        return ""
+    if not text or text.lower() in _GENERIC_OBJECT_NAMES:
+        return ""
+    return text
+
+
+def _celestial_position(header):
+    ctype1 = str(header.get("CTYPE1") or "").upper()
+    ctype2 = str(header.get("CTYPE2") or "").upper()
+    if "RA" not in ctype1 or "DEC" not in ctype2:
+        return None
+    try:
+        ra = float(header.get("CRVAL1"))
+        dec = float(header.get("CRVAL2"))
+    except (TypeError, ValueError):
+        return None
+    if ra != ra or dec != dec:
+        return None
+    return ra, dec
+
+
+def _galaxy_token_from_object(text: str) -> str | None:
+    token = _galaxy_token_from_text(text)
+    if token:
+        return token
+    match = re.search(r"messier\s*0*(\d{1,3})", str(text or "").lower())
+    if match:
+        return f"m{int(match.group(1))}"
+    return None
+
+
+def _header_name_and_position(path: Path, hdu_index: int):
+    object_name = ""
+    position = None
+    with fits.open(path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
+        order = []
+        for index in (hdu_index, 0):
+            if 0 <= index < len(hdul) and index not in order:
+                order.append(index)
+        for index in range(len(hdul)):
+            if index not in order:
+                order.append(index)
+            if len(order) >= 12:
+                break
+        for index in order:
+            header = hdul[index].header
+            if not object_name:
+                object_name = _object_card(header)
+            if position is None:
+                position = _celestial_position(header)
+            if object_name and position is not None:
+                break
+    return object_name, position
+
+
+def _votable_rows(xml_bytes: bytes) -> list[dict]:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+    for element in root.iter():
+        if element.tag.split("}")[-1] != "PARAM":
+            continue
+        if element.attrib.get("name") == "QUERY_STATUS" and str(element.attrib.get("value") or "").upper() == "ERROR":
+            return []
+    rows = []
+    for table in root.iter():
+        if table.tag.split("}")[-1] != "TABLE":
+            continue
+        fields = [field.attrib.get("name") or "" for field in table.iter() if field.tag.split("}")[-1] == "FIELD"]
+        for tr in table.iter():
+            if tr.tag.split("}")[-1] != "TR":
+                continue
+            cells = [(td.text or "").strip() for td in list(tr) if td.tag.split("}")[-1] == "TD"]
+            if fields and len(cells) >= len(fields):
+                rows.append({name: cells[index] for index, name in enumerate(fields) if name})
+        if rows:
+            break
+    return rows
+
+
+def _ned_fetch_bytes(url: str) -> bytes:
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Neloura", "Accept": "application/xml, text/xml"},
+        timeout=30,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def _galaxy_from_ned_object(object_name: str) -> str:
+    target = " ".join(str(object_name or "").split())
+    if len(target) < 3:
+        return ""
+    xml = _ned_fetch_bytes("https://ned.ipac.caltech.edu/NED::API/OverviewOfObject?TARGET=" + quote(target))
+    rows = _votable_rows(xml)
+    if not rows:
+        return ""
+    row = rows[0]
+    kind = str(row.get("Physical Type") or "").upper()
+    cross = str(row.get("Cross-identifications") or "")
+    asked = _galaxy_token_from_object(target)
+    if asked and (kind.startswith("G") or any(_galaxy_token_from_object(part) == asked for part in cross.split(";"))):
+        return asked
+    for part in cross.split(";"):
+        token = _galaxy_token_from_object(part)
+        if token:
+            return token
+    return ""
+
+
+def _galaxy_from_ned_position(ra: float, dec: float) -> str:
+    url = (
+        "https://ned.ipac.caltech.edu/NED::API/ConeSearchByPosition"
+        f"?LON={ra}d&LAT={dec}&CSYS=Equatorial&EQUINOX=J2000.0&RADIUS=1&MAXREC=15"
+    )
+    rows = _votable_rows(_ned_fetch_bytes(url))
+    galaxies = []
+    for row in rows:
+        name = str(row.get("Object Name") or "")
+        kind = str(row.get("Phys Type") or row.get("Physical Type") or "").upper()
+        token = _galaxy_token_from_object(name)
+        if not token and not kind.startswith("G"):
+            continue
+        if not token:
+            continue
+        try:
+            separation = float(row.get("Separation") or "")
+        except ValueError:
+            continue
+        galaxies.append((separation, token))
+    if not galaxies:
+        return ""
+    galaxies.sort(key=lambda item: item[0])
+    nearest, token = galaxies[0]
+    if nearest > 1:
+        return ""
+    if len(galaxies) > 1 and galaxies[1][0] < nearest * 2 and nearest > 0.05:
+        return ""
+    return token
+
+
+def _ned_identify_file(filepath: str, hdu_index: int) -> str:
+    path = _fits_file_for_header(filepath)
+    object_name, position = _header_name_and_position(path, int(hdu_index))
+    if object_name:
+        try:
+            galaxy = _galaxy_from_ned_object(object_name)
+        except Exception as exc:
+            logger.warning("NED object lookup failed for %s: %s", object_name, exc)
+            galaxy = ""
+        if galaxy:
+            return galaxy
+    if position is None:
+        return ""
+    try:
+        return _galaxy_from_ned_position(position[0], position[1])
+    except Exception as exc:
+        logger.warning("NED position lookup failed: %s", exc)
+        return ""
+
+
+@app.get("/api/ned-identify")
+async def ned_identify(
+    filepath: str = Query(..., description="Open FITS path whose header names no galaxy"),
+    hdu: int = Query(0, description="HDU to read first"),
+):
+    """Resolve a galaxy from the FITS header through NED. Empty when none is clear."""
+    loop = asyncio.get_running_loop()
+    executor = getattr(app.state, "thread_executor", None)
+    try:
+        galaxy = await loop.run_in_executor(executor, _ned_identify_file, filepath, int(hdu))
+    except Exception as exc:
+        logger.warning("NED identify failed for %s: %s", filepath, exc)
+        galaxy = ""
+    return {"galaxy": galaxy or ""}
 
 
 @app.get("/open-rgb")

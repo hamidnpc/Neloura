@@ -12,7 +12,10 @@
         rail: null,
         filters: [],
         others: [],
-        othersOpen: false
+        othersOpen: false,
+        nedCache: new Map(),
+        nedToken: 0,
+        identifyToken: 0
     };
 
     function request(url, options) {
@@ -90,6 +93,7 @@
         rail.style.display = 'none';
         rail.innerHTML = `
             <div class="filter-rail-galaxy"></div>
+            <button type="button" class="filter-rail-ned" hidden title="Galaxy information from NED">Get info</button>
             <div class="filter-rail-window">
                 <div class="filter-rail-track"></div>
                 <div class="filter-rail-scroller">
@@ -100,6 +104,14 @@
         document.body.appendChild(rail);
         const scroller = rail.querySelector('.filter-rail-scroller');
         if (scroller) scroller.addEventListener('scroll', hideFileTip, { passive: true });
+        const nedButton = rail.querySelector('.filter-rail-ned');
+        if (nedButton) {
+            nedButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openNedOverview();
+            });
+        }
         state.rail = rail;
         return rail;
     }
@@ -118,14 +130,17 @@
 
     function renderRail(keepImages, scrollMode) {
         const rail = ensureRail();
-        const canShow = state.filters.length >= 2 || (state.filters.length >= 1 && state.others.length > 0);
-        if (!canShow || rgbMode()) {
+        const filtersVisible = state.filters.length >= 2 || (state.filters.length >= 1 && state.others.length > 0);
+        if ((!filtersVisible && !state.galaxy) || rgbMode()) {
             hideRail();
             return;
         }
+        rail.classList.toggle('filter-rail-name-only', !filtersVisible);
         rail.style.display = 'flex';
         const galaxy = rail.querySelector('.filter-rail-galaxy');
         if (galaxy) galaxy.textContent = String(state.galaxy || '').toUpperCase();
+        const nedButton = rail.querySelector('.filter-rail-ned');
+        if (nedButton) nedButton.hidden = !state.galaxy;
         const strip = stripEl();
         if (!strip) return;
         if (!keepImages) {
@@ -756,14 +771,22 @@
             const data = await response.json();
             const filters = Array.isArray(data.filters) ? data.filters : [];
             const others = Array.isArray(data.others) ? data.others : [];
+            const nextGalaxy = data.galaxy || '';
+            const identifyToken = state.identifyToken + 1;
+            state.identifyToken = identifyToken;
             if (filters.length < 2 && !(filters.length >= 1 && others.length > 0)) {
                 state.items = [];
                 state.filters = [];
                 state.others = [];
+                state.galaxy = nextGalaxy;
+                if (nextGalaxy) {
+                    renderRail(false);
+                    return;
+                }
                 hideRail();
+                resolveGalaxyFromHeader(path, identifyToken);
                 return;
             }
-            const nextGalaxy = data.galaxy || '';
             const wasOpen = state.othersOpen;
             if (state.galaxy && state.galaxy !== nextGalaxy) state.othersOpen = false;
             if (others.some((item) => item.current)) state.othersOpen = true;
@@ -789,6 +812,326 @@
         if (!imageIsOpen()) return;
         refresh(filepath).catch(() => {});
         consumePending().catch(() => {});
+    }
+
+    async function resolveGalaxyFromHeader(path, token) {
+        if (!path || state.galaxy) return;
+        const hdu = Number.isFinite(Number(window.currentHduIndex)) ? Number(window.currentHduIndex) : 0;
+        try {
+            const response = await request(`/api/ned-identify?filepath=${encodeURIComponent(path)}&hdu=${hdu}`);
+            if (!response || !response.ok || token !== state.identifyToken) return;
+            const data = await response.json();
+            const galaxy = data && data.galaxy ? String(data.galaxy) : '';
+            const current = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || '';
+            if (!galaxy || token !== state.identifyToken || state.galaxy) return;
+            if (current && String(current) !== String(path)) return;
+            state.galaxy = galaxy;
+            renderRail(false);
+        } catch (_) { /* the name stays hidden when NED has no clear galaxy */ }
+    }
+
+    function nedQueryName(token) {
+        const match = String(token || '').trim().match(/^(ngc|ic|ugc|eso|m)(\d+)$/i);
+        if (!match) return String(token || '').trim().toUpperCase();
+        return `${match[1].toUpperCase()} ${Number(match[2])}`;
+    }
+
+    function nedNumber(value, digits) {
+        if (value == null || String(value).trim() === '') return '';
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '';
+        return String(Number(number.toFixed(digits)));
+    }
+
+    function nedWithUncertainty(value, uncertainty, digits, unit) {
+        const main = nedNumber(value, digits);
+        if (!main) return '';
+        const error = nedNumber(uncertainty, digits);
+        const body = error ? `${main} ± ${error}` : main;
+        return unit ? `${body} ${unit}` : body;
+    }
+
+    function parseNedOverview(xmlText) {
+        const doc = new DOMParser().parseFromString(String(xmlText || ''), 'application/xml');
+        if (!doc || doc.querySelector('parsererror')) return null;
+        const status = Array.from(doc.getElementsByTagName('*')).find((node) => node.localName === 'PARAM' && node.getAttribute('name') === 'QUERY_STATUS');
+        if (status && String(status.getAttribute('value') || '').toUpperCase() === 'ERROR') return null;
+        const fields = [];
+        const cells = [];
+        Array.from(doc.getElementsByTagName('*')).forEach((node) => {
+            if (node.localName === 'FIELD') fields.push(node.getAttribute('name') || '');
+            else if (node.localName === 'TD') cells.push((node.textContent || '').trim());
+        });
+        if (!fields.length || cells.length < fields.length) return null;
+        const row = {};
+        fields.forEach((name, index) => {
+            if (name) row[name] = cells[index] || '';
+        });
+        return row;
+    }
+
+    function nedTypeLabel(code) {
+        const labels = {
+            G: 'Galaxy',
+            GPair: 'Galaxy pair',
+            GTrpl: 'Galaxy triple',
+            GGroup: 'Galaxy group',
+            GClstr: 'Galaxy cluster',
+            QSO: 'Quasar'
+        };
+        const text = String(code || '').trim();
+        return labels[text] || text;
+    }
+
+    function nedAliases(row, query) {
+        const wanted = query.replace(/\s+/g, '').toUpperCase();
+        return String(row['Cross-identifications'] || '')
+            .split(';')
+            .map((item) => item.trim())
+            .filter((item) => item && item.replace(/\s+/g, '').toUpperCase() !== wanted)
+            .slice(0, 4);
+    }
+
+    function ensureNedPopup() {
+        let popup = document.getElementById('ned-overview-popup');
+        if (popup) return popup;
+        popup = document.createElement('div');
+        popup.id = 'ned-overview-popup';
+        Object.assign(popup.style, {
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            backgroundColor: '#333',
+            border: '1px solid #555',
+            borderRadius: '5px',
+            padding: '15px',
+            zIndex: '60000',
+            width: '420px',
+            boxSizing: 'border-box',
+            boxShadow: '0 4px 8px rgba(0, 0, 0, 0.3)',
+            display: 'flex',
+            flexDirection: 'column',
+            maxHeight: 'calc(100vh - 24px)',
+            overflow: 'hidden'
+        });
+        const title = document.createElement('div');
+        Object.assign(title.style, {
+            margin: '0 0 15px 0',
+            color: '#fff',
+            fontFamily: 'Arial, sans-serif',
+            borderBottom: '1px solid #555',
+            paddingBottom: '10px',
+            cursor: 'grab',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            flexShrink: '0'
+        });
+        const titleText = document.createElement('div');
+        Object.assign(titleText.style, { fontSize: '18px', fontWeight: 'normal' });
+        titleText.textContent = 'NED';
+        const fileNameLabel = document.createElement('div');
+        fileNameLabel.className = 'scaling-popup-filename';
+        Object.assign(fileNameLabel.style, { fontSize: '13px', opacity: '0.8' });
+        title.appendChild(titleText);
+        title.appendChild(fileNameLabel);
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.textContent = '×';
+        Object.assign(closeButton.style, {
+            position: 'absolute',
+            top: '10px',
+            right: '10px',
+            backgroundColor: 'transparent',
+            border: 'none',
+            color: '#aaa',
+            fontSize: '20px',
+            cursor: 'pointer',
+            padding: '0',
+            width: '24px',
+            height: '24px',
+            lineHeight: '24px',
+            textAlign: 'center',
+            borderRadius: '12px'
+        });
+        closeButton.addEventListener('mouseover', () => {
+            closeButton.style.backgroundColor = '#555';
+            closeButton.style.color = '#fff';
+        });
+        closeButton.addEventListener('mouseout', () => {
+            closeButton.style.backgroundColor = 'transparent';
+            closeButton.style.color = '#aaa';
+        });
+        closeButton.addEventListener('click', () => {
+            popup.style.display = 'none';
+        });
+        const body = document.createElement('div');
+        body.className = 'ned-overview-body';
+        Object.assign(body.style, {
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            flex: '1 1 auto',
+            minHeight: '0',
+            maxHeight: 'calc(100vh - 110px)',
+            paddingRight: '4px',
+            color: '#fff',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '14px'
+        });
+        popup.appendChild(title);
+        popup.appendChild(closeButton);
+        popup.appendChild(body);
+        document.body.appendChild(popup);
+        if (typeof enablePopupDrag === 'function') enablePopupDrag(popup, title);
+        return popup;
+    }
+
+    function nedMessage(text) {
+        const node = document.createElement('div');
+        node.textContent = text;
+        node.style.color = '#aaa';
+        node.style.fontSize = '14px';
+        return node;
+    }
+
+    function nedProgress() {
+        const wrap = document.createElement('div');
+        const label = document.createElement('div');
+        label.textContent = 'Loading NED';
+        Object.assign(label.style, { color: '#aaa', fontSize: '14px', marginBottom: '10px', fontFamily: 'Arial, sans-serif' });
+        const track = document.createElement('div');
+        track.className = 'ned-progress-track';
+        const fill = document.createElement('div');
+        fill.className = 'ned-progress-fill';
+        track.appendChild(fill);
+        wrap.appendChild(label);
+        wrap.appendChild(track);
+        return wrap;
+    }
+
+    function nedRow(label, value) {
+        if (!value) return null;
+        const row = document.createElement('div');
+        Object.assign(row.style, {
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: '16px',
+            marginBottom: '8px',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '14px'
+        });
+        const name = document.createElement('div');
+        name.textContent = label;
+        name.style.color = '#aaa';
+        name.style.flex = '0 0 auto';
+        const detail = document.createElement('div');
+        detail.textContent = value;
+        Object.assign(detail.style, {
+            color: '#fff',
+            textAlign: 'right',
+            minWidth: '0',
+            overflowWrap: 'anywhere'
+        });
+        row.appendChild(name);
+        row.appendChild(detail);
+        return row;
+    }
+
+    function renderNedOverview(popup, query, row) {
+        const subtitle = popup.querySelector('.scaling-popup-filename');
+        if (subtitle) subtitle.textContent = query;
+        const body = popup.querySelector('.ned-overview-body');
+        if (!body) return;
+        body.innerHTML = '';
+        if (!row) {
+            body.appendChild(nedMessage('NED has no overview for this name.'));
+            return;
+        }
+        const activity = String(row['Activity Type'] || '').trim();
+        const other = String(row['Other'] || '').trim();
+        const morphology = String(row['Morphology'] || '').trim();
+        const classification = activity || (other && other !== morphology ? other : '');
+        const angular = nedNumber(row['Major Axis'], 0);
+        const band = String(row['Bandpass'] || '').trim();
+        const physical = nedWithUncertainty(row['Physical Major Axis'], '', 1, 'kpc');
+        const size = [physical, angular ? `${angular}″${band ? `, ${band}` : ''}` : ''].filter(Boolean).join(' · ');
+        const extinction = [
+            nedNumber(row['Galactic Extinction (Landolt V)'], 3) ? `A_V ${nedNumber(row['Galactic Extinction (Landolt V)'], 3)}` : '',
+            nedNumber(row['Galactic Extinction (UKIRT K)'], 3) ? `A_K ${nedNumber(row['Galactic Extinction (UKIRT K)'], 3)}` : ''
+        ].filter(Boolean).join(', ');
+        const position = [row['Lon (Equatorial J2000) in sexagesimal'], row['Lat (Equatorial J2000) in sexagesimal']].filter(Boolean).join('  ');
+        const raDeg = nedNumber(row['Lon (Equatorial J2000)'], 6);
+        const decValue = row['Lat (Equatorial J2000)'];
+        const decDeg = nedNumber(decValue, 6);
+        const decText = decDeg && Number(decValue) > 0 ? `+${decDeg}` : decDeg;
+        const positionDeg = raDeg && decText ? `${raDeg}°  ${decText}°` : '';
+        [
+            nedRow('Type', nedTypeLabel(row['Physical Type'])),
+            nedRow('Morphology', morphology),
+            nedRow('Classification', classification),
+            nedRow('Redshift', nedWithUncertainty(row.Redshift, row['Redshift Unc'], 6)),
+            nedRow('Velocity', nedWithUncertainty(row['v (Heliocentric)'], row['v Unc (Heliocentric)'], 0, 'km/s')),
+            nedRow('Distance', nedWithUncertainty(row['Mean Distance'], row['SEM Distance'], 2, 'Mpc')),
+            nedRow('Hubble flow', nedWithUncertainty(row['D (3K CMB)'], row['D Unc (3K CMB)'], 1, 'Mpc')),
+            nedRow('Size', size),
+            nedRow('Extinction', extinction),
+            nedRow('Position', position),
+            nedRow('Degrees', positionDeg),
+            nedRow('Aliases', nedAliases(row, query).join(', '))
+        ].forEach((item) => {
+            if (item) body.appendChild(item);
+        });
+        const note = String(row['Overview Footnote'] || '').trim();
+        if (note) {
+            const footnote = document.createElement('div');
+            footnote.textContent = note;
+            Object.assign(footnote.style, { color: '#aaa', fontSize: '12px', marginTop: '8px', lineHeight: '1.4' });
+            body.appendChild(footnote);
+        }
+        if (!body.childNodes.length) {
+            body.appendChild(nedMessage('NED has no overview for this name.'));
+            return;
+        }
+        const credit = document.createElement('div');
+        credit.textContent = 'NASA/IPAC Extragalactic Database';
+        Object.assign(credit.style, { color: '#777', fontSize: '11px', marginTop: '14px' });
+        body.appendChild(credit);
+    }
+
+    async function openNedOverview() {
+        const query = nedQueryName(state.galaxy);
+        if (!query) return;
+        const popup = ensureNedPopup();
+        popup.style.display = 'flex';
+        const subtitle = popup.querySelector('.scaling-popup-filename');
+        if (subtitle) subtitle.textContent = query;
+        const body = popup.querySelector('.ned-overview-body');
+        const cached = state.nedCache.get(query);
+        if (cached) {
+            renderNedOverview(popup, query, cached);
+            return;
+        }
+        if (body) {
+            body.innerHTML = '';
+            body.appendChild(nedProgress());
+        }
+        const token = state.nedToken + 1;
+        state.nedToken = token;
+        try {
+            const response = await request(`/api/ned-overview?name=${encodeURIComponent(query)}`);
+            if (!response || !response.ok) throw new Error('NED request failed');
+            const row = parseNedOverview(await response.text());
+            if (token !== state.nedToken) return;
+            if (row) state.nedCache.set(query, row);
+            renderNedOverview(popup, query, row);
+        } catch (_) {
+            if (token !== state.nedToken) return;
+            if (body) {
+                body.innerHTML = '';
+                body.appendChild(nedMessage('NED could not be reached.'));
+            }
+        }
     }
 
     window.snapshotNelouraOverlays = snapshotOverlays;

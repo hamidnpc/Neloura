@@ -1779,9 +1779,30 @@ color: black !important;
     user-select: none;
     touch-action: pan-y;
 }
+.filter-rail-ned {
+    flex: 0 0 auto;
+    margin: 0 0 8px;
+    padding: 3px 7px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    background: rgba(18, 18, 20, 0.72);
+    color: rgba(255, 255, 255, 0.92);
+    cursor: pointer;
+    font: 600 9px/1.2 'Raleway', sans-serif;
+    letter-spacing: 0.02em;
+}
+.filter-rail-ned[hidden] {
+    display: none;
+}
+.filter-rail.filter-rail-name-only {
+    height: auto;
+}
+.filter-rail.filter-rail-name-only .filter-rail-window {
+    display: none;
+}
 .filter-rail-galaxy {
     flex: 0 0 auto;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
     max-width: 100%;
     padding: 3px 8px;
     border-radius: 999px;
@@ -1934,6 +1955,23 @@ color: black !important;
 .filter-rail-tip[hidden] {
     display: none;
 }
+.ned-progress-track {
+    height: 6px;
+    border-radius: 999px;
+    background: #222;
+    overflow: hidden;
+}
+.ned-progress-fill {
+    height: 100%;
+    width: 38%;
+    border-radius: 999px;
+    background: #007bff;
+    animation: ned-progress-slide 1.05s ease-in-out infinite;
+}
+@keyframes ned-progress-slide {
+    0% { transform: translateX(-130%); }
+    100% { transform: translateX(340%); }
+}
 .filter-rail-item span {
     position: absolute;
     left: 0;
@@ -1979,6 +2017,7 @@ body.neloura-screen-cbar-right #neloura-side-rails-toggle {
 @media (prefers-reduced-motion: reduce) {
     .filter-rail-scroller { scroll-behavior: auto; }
     .filter-rail-spinner { animation: none; }
+    .ned-progress-fill { animation: none; width: 100%; }
 }
 
 .hdu-bar {
