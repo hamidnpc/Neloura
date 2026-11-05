@@ -4063,6 +4063,103 @@ async function loadCatalogBinaryStream(catalogName, styles = null) {
     }
 }
 
+// Arcseconds per pixel for the image that is open now. Radio and CO headers
+// often have only CDELT (and a negative RA step), so the CD matrix is built
+// from PC * CDELT when CD itself is absent.
+function catalogArcsecPerPixel(wcs) {
+    try {
+        const w = wcs || (window.fitsData && window.fitsData.wcs);
+        if (!w) return null;
+        const num = (value) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : null;
+        };
+        const pick = (...keys) => {
+            for (let i = 0; i < keys.length; i += 1) {
+                const value = num(w[keys[i]]);
+                if (value !== null) return value;
+            }
+            return null;
+        };
+        let cd11 = pick('CD1_1', 'cd11');
+        let cd12 = pick('CD1_2', 'cd12');
+        let cd21 = pick('CD2_1', 'cd21');
+        let cd22 = pick('CD2_2', 'cd22');
+        if (cd11 === null || cd22 === null) {
+            const d1 = pick('CDELT1', 'cdelt1');
+            const d2 = pick('CDELT2', 'cdelt2');
+            const step1 = d1 === null ? 1 : d1;
+            const step2 = d2 === null ? 1 : d2;
+            const pc11 = pick('PC1_1', 'pc11');
+            const pc22 = pick('PC2_2', 'pc22');
+            cd11 = (pc11 === null ? 1 : pc11) * step1;
+            cd12 = (pick('PC1_2', 'pc12') || 0) * step1;
+            cd21 = (pick('PC2_1', 'pc21') || 0) * step2;
+            cd22 = (pc22 === null ? 1 : pc22) * step2;
+        }
+        cd12 = cd12 || 0;
+        cd21 = cd21 || 0;
+        const scaleX = Math.hypot(cd11, cd21);
+        const scaleY = Math.hypot(cd12, cd22);
+        const avg = (scaleX > 0 && scaleY > 0) ? (scaleX + scaleY) / 2 : (scaleX > 0 ? scaleX : scaleY);
+        if (!(avg > 0)) return null;
+        return 3600 * avg;
+    } catch (_) {
+        return null;
+    }
+}
+
+// Marker size is an angle. styles.radius is pixels of whichever image was open
+// when the catalog was styled, so it has to be rebuilt for the current plate scale.
+function catalogMarkerRadius(styles, obj, scale) {
+    let arcsec = null;
+    if (styles && styles.sizeColumn && obj && Object.prototype.hasOwnProperty.call(obj, styles.sizeColumn)) {
+        const size = parseFloat(obj[styles.sizeColumn]);
+        if (Number.isFinite(size) && size > 0) arcsec = size;
+    }
+    if (!(arcsec > 0) && styles && Number(styles.radius_arcsec) > 0) arcsec = Number(styles.radius_arcsec);
+    if (!(arcsec > 0) && obj && Number(obj.radius_arcsec) > 0) arcsec = Number(obj.radius_arcsec);
+    if (!(arcsec > 0)) {
+        const oldScale = Number(styles && styles.arcsec_per_pixel);
+        const oldPx = Number(styles && styles.radius);
+        if (oldScale > 0 && oldPx > 0) arcsec = oldPx * oldScale;
+    }
+    if (arcsec > 0 && scale > 0) return { arcsec: arcsec, pixels: arcsec / scale };
+    const fallback = Number(styles && styles.radius) || Number(obj && obj.radius_pixels) || 5;
+    return { arcsec: arcsec, pixels: fallback > 0 ? fallback : 5 };
+}
+
+function rescaleCatalogOverlayRadii() {
+    const scale = catalogArcsecPerPixel();
+    if (!(scale > 0)) return false;
+    const groups = window.catalogOverlaysByCatalog;
+    if (!groups || typeof groups !== 'object') return false;
+    let changed = false;
+    Object.keys(groups).forEach((key) => {
+        const list = groups[key];
+        if (!Array.isArray(list)) return;
+        const styles = (window.__catalogStylesByName && window.__catalogStylesByName[key]) || null;
+        for (let i = 0; i < list.length; i += 1) {
+            const obj = list[i];
+            if (!obj) continue;
+            const marker = catalogMarkerRadius(styles, obj, scale);
+            if (!(marker.pixels > 0)) continue;
+            if (marker.arcsec > 0) obj.radius_arcsec = marker.arcsec;
+            if (Math.abs(Number(obj.radius_pixels) - marker.pixels) > 0.05) {
+                obj.radius_pixels = marker.pixels;
+                changed = true;
+            }
+        }
+    });
+    if (changed && typeof rebuildCombinedCatalogOverlay === 'function') rebuildCombinedCatalogOverlay();
+    if (changed && typeof canvasAddCatalogOverlay === 'function' && Array.isArray(window.catalogDataForOverlay) && window.catalogDataForOverlay.length) {
+        try { canvasAddCatalogOverlay(window.catalogDataForOverlay); } catch (_) { /* the next view update redraws */ }
+    }
+    return changed;
+}
+window.rescaleCatalogOverlayRadii = rescaleCatalogOverlayRadii;
+window.catalogArcsecPerPixel = catalogArcsecPerPixel;
+
 // Helper function to prepare overlay data with styles
 function prepareCatalogOverlayData(records, styles, catalogKey = null) {
     // Huge catalogs: avoid cloning 900k objects with `{...obj}` (slow + memory heavy).
@@ -4078,9 +4175,8 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
             ? styles.backgroundColor
             : 'rgba(255, 0, 0, 0.3)';
         const borderW = (styles && Number.isFinite(Number(styles.borderWidth))) ? Number(styles.borderWidth) : 2;
-        const radiusPx = (styles && typeof styles.radius === 'number' && isFinite(styles.radius) && styles.radius > 0)
-            ? styles.radius
-            : 5;
+        const sharedRadius = catalogMarkerRadius(styles, null, catalogArcsecPerPixel());
+        const radiusPx = sharedRadius.pixels > 0 ? sharedRadius.pixels : 5;
         const transparentFill = !(styles && styles.backgroundColor && styles.backgroundColor !== 'transparent');
         const colorCoder = (styles && styles.colorCodeColumn)
             ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName, styles)
@@ -4110,6 +4206,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                 x: r.x,
                 y: r.y,
                 radius_pixels: radiusPx,
+                radius_arcsec: sharedRadius.arcsec || null,
                 __row_index: r.__row_index,
                 // bookkeeping
                 index: i,
@@ -4127,21 +4224,7 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
         return out;
     }
 
-    // Derive arcsec/pixel from current WCS if available
-    let arcsecPerPixel = null;
-    try {
-        const w = window?.fitsData?.wcs;
-        if (w) {
-            const cd11 = Number(w.CD1_1 ?? w.cd11 ?? w.CDELT1 ?? w.cdelt1 ?? 0);
-            const cd12 = Number(w.CD1_2 ?? w.cd12 ?? 0);
-            const cd21 = Number(w.CD2_1 ?? w.cd21 ?? 0);
-            const cd22 = Number(w.CD2_2 ?? w.cd22 ?? w.CDELT2 ?? w.cdelt2 ?? 0);
-            const scaleXDeg = Math.sqrt(cd11*cd11 + cd21*cd21);
-            const scaleYDeg = Math.sqrt(cd12*cd12 + cd22*cd22);
-            const avgDeg = (isFinite(scaleXDeg) && isFinite(scaleYDeg) && scaleXDeg>0 && scaleYDeg>0) ? (scaleXDeg + scaleYDeg) / 2 : (isFinite(scaleXDeg) && scaleXDeg>0 ? scaleXDeg : (isFinite(scaleYDeg) && scaleYDeg>0 ? scaleYDeg : 0.0));
-            if (avgDeg > 0) arcsecPerPixel = 3600 * avgDeg;
-        }
-    } catch (_) {}
+    const arcsecPerPixel = catalogArcsecPerPixel();
     const colorCoder = (styles && styles.colorCodeColumn)
         ? buildColorCoder(records, styles.colorCodeColumn, styles.colorMapName, styles)
         : null;
@@ -4215,10 +4298,11 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                 styledObj.opacity = styleOpacity;
                 styledObj.useTransparentFill = styles.backgroundColor === 'transparent';
             }
-            styledObj.radius_pixels = styles.radius || obj.radius_pixels || 5;
+            const marker = catalogMarkerRadius(styles, obj, arcsecPerPixel);
+            styledObj.radius_pixels = marker.pixels;
+            if (marker.arcsec > 0) styledObj.radius_arcsec = marker.arcsec;
             // IMPORTANT: carry shape into each overlay object so canvas renderers don't fall back to circles
             styledObj.shape = resolvedShape;
-            // If a size column (arcsec) was chosen and WCS is known, convert to pixels per-object
             if (styles.sizeColumn && obj.hasOwnProperty(styles.sizeColumn)) {
                 const sizeArcsec = parseFloat(obj[styles.sizeColumn]);
                 if (isFinite(sizeArcsec) && sizeArcsec > 0 && arcsecPerPixel && arcsecPerPixel > 0) {
@@ -4232,9 +4316,10 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
             styledObj.border_width = 2;
             styledObj.opacity = 0.8;
             styledObj.useTransparentFill = true;
-            styledObj.radius_pixels = obj.radius_pixels || 5;
+            const marker = catalogMarkerRadius(null, obj, arcsecPerPixel);
+            styledObj.radius_pixels = marker.pixels;
+            if (marker.arcsec > 0) styledObj.radius_arcsec = marker.arcsec;
             styledObj.shape = normalizeShape(getEffectiveRegionStylesForOverlay()?.shape);
-            // No styles provided, still convert size column if present
             const defaultSizeCol = (window?.catalogMetadata?.sizeColumnName) || null;
             const sizeCol = defaultSizeCol && obj.hasOwnProperty(defaultSizeCol) ? defaultSizeCol : null;
             if (sizeCol) {
@@ -4242,6 +4327,8 @@ function prepareCatalogOverlayData(records, styles, catalogKey = null) {
                 if (isFinite(sizeArcsec) && sizeArcsec > 0 && arcsecPerPixel && arcsecPerPixel > 0) {
                     styledObj.size_arcsec = sizeArcsec;
                     styledObj.size_pixels = sizeArcsec / arcsecPerPixel;
+                    styledObj.radius_arcsec = sizeArcsec;
+                    styledObj.radius_pixels = sizeArcsec / arcsecPerPixel;
                 }
             }
         }

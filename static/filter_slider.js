@@ -20,6 +20,44 @@
         return fetch(url, options || {});
     }
 
+    function arcsecPerPixel() {
+        if (typeof window.catalogArcsecPerPixel === 'function') {
+            const scale = window.catalogArcsecPerPixel();
+            if (scale > 0) return scale;
+        }
+        try {
+            const w = window.fitsData && window.fitsData.wcs;
+            if (!w) return null;
+            const num = (value) => {
+                const n = Number(value);
+                return Number.isFinite(n) ? n : null;
+            };
+            const cd11 = num(w.CD1_1 != null ? w.CD1_1 : w.CDELT1) || 0;
+            const cd12 = num(w.CD1_2) || 0;
+            const cd21 = num(w.CD2_1) || 0;
+            const cd22 = num(w.CD2_2 != null ? w.CD2_2 : w.CDELT2) || 0;
+            const scaleX = Math.hypot(cd11, cd21);
+            const scaleY = Math.hypot(cd12, cd22);
+            const avg = (scaleX > 0 && scaleY > 0) ? (scaleX + scaleY) / 2 : (scaleX > 0 ? scaleX : scaleY);
+            return avg > 0 ? 3600 * avg : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function imageWidthPx() {
+        try {
+            const view = viewer();
+            const item = view && view.world && typeof view.world.getItemAt === 'function' ? view.world.getItemAt(0) : null;
+            if (item && typeof item.getContentSize === 'function') {
+                const size = item.getContentSize();
+                if (size && Number(size.x) > 1) return Number(size.x);
+            }
+        } catch (_) { /* use the header size below */ }
+        const width = Number(window.fitsData && window.fitsData.width);
+        return Number.isFinite(width) && width > 1 ? width : null;
+    }
+
     function viewer() {
         return window.tiledViewer || window.viewer || null;
     }
@@ -474,7 +512,9 @@
                 snap.view = {
                     zoom,
                     ra: world && Number.isFinite(world.ra) ? world.ra : null,
-                    dec: world && Number.isFinite(world.dec) ? world.dec : null
+                    dec: world && Number.isFinite(world.dec) ? world.dec : null,
+                    arcsecPerPixel: arcsecPerPixel(),
+                    imageWidth: imageWidthPx()
                 };
             }
         } catch (_) { /* noop */ }
@@ -503,7 +543,13 @@
         if (!view || !view.viewport || !viewState) return;
         try {
             if (typeof view.viewport.setRotation === 'function') view.viewport.setRotation(0);
-            if (Number.isFinite(viewState.zoom)) view.viewport.zoomTo(viewState.zoom, null, true);
+            let zoom = viewState.zoom;
+            const destScale = arcsecPerPixel();
+            const destWidth = imageWidthPx();
+            if (Number.isFinite(zoom) && viewState.arcsecPerPixel > 0 && viewState.imageWidth > 0 && destScale > 0 && destWidth > 0) {
+                zoom = zoom * (viewState.imageWidth * viewState.arcsecPerPixel) / (destWidth * destScale);
+            }
+            if (Number.isFinite(zoom)) view.viewport.zoomTo(zoom, null, true);
             if (Number.isFinite(viewState.ra) && Number.isFinite(viewState.dec) && typeof OpenSeadragon !== 'undefined') {
                 const pixels = await skyToDisplayPixels([{ ra: viewState.ra, dec: viewState.dec }], filepath, hdu);
                 const pixel = pixels && pixels[0];
@@ -527,12 +573,40 @@
         rememberActiveCatalog(snap.activeCatalog);
         const destFile = window.currentFitsFile || (window.fitsData && window.fitsData.filename) || snap.filepath;
         const destHdu = window.currentHduIndex;
+        const lengthKeys = ['radius', 'radiusX', 'radiusY', 'innerRadius', 'outerRadius', 'width', 'height'];
         try {
             if (snap.regions && snap.regions.length && typeof window.restoreRegionsFromSerialized === 'function') {
+                const before = snap.regions.map((shape) => {
+                    const saved = {};
+                    lengthKeys.forEach((key) => {
+                        const value = Number(shape && shape[key]);
+                        if (value > 0) saved[key] = value;
+                    });
+                    return saved;
+                });
                 const placed = await reprojectRegions(snap.regions, destFile, destHdu);
+                await waitForWcs();
+                const sourceScale = snap.view && Number(snap.view.arcsecPerPixel);
+                const destScale = arcsecPerPixel();
+                if (sourceScale > 0 && destScale > 0 && Math.abs(sourceScale / destScale - 1) > 0.05) {
+                    const ratio = sourceScale / destScale;
+                    placed.forEach((shape, index) => {
+                        const saved = before[index] || {};
+                        lengthKeys.forEach((key) => {
+                            const oldValue = saved[key];
+                            const newValue = Number(shape && shape[key]);
+                            if (!(oldValue > 0) || !(newValue > 0)) return;
+                            if (Math.abs(newValue - oldValue) / oldValue < 0.02) shape[key] = oldValue * ratio;
+                        });
+                    });
+                }
                 window.restoreRegionsFromSerialized(placed);
+            } else {
+                await waitForWcs();
             }
-        } catch (_) { /* noop */ }
+        } catch (_) {
+            try { await waitForWcs(); } catch (__) { /* noop */ }
+        }
         const catalogs = Array.isArray(snap.catalogs) ? snap.catalogs : [];
         for (let i = 0; i < catalogs.length; i += 1) {
             const entry = catalogs[i];
@@ -548,11 +622,13 @@
             } catch (_) { /* keep going through the rest of the catalogs */ }
         }
         try {
+            if (typeof window.rescaleCatalogOverlayRadii === 'function') window.rescaleCatalogOverlayRadii();
+        } catch (_) { /* noop */ }
+        try {
             if (snap.activeCatalog && typeof window.setActiveCatalogForControls === 'function') {
                 window.setActiveCatalogForControls(snap.activeCatalog);
             }
         } catch (_) { /* noop */ }
-        await waitForWcs();
         await restoreView(snap.view, destFile, destHdu);
     }
 

@@ -1750,6 +1750,31 @@ def _filter_sort_wavelength(filter_name: str) -> float:
     return digits / 1000.0
 
 
+def _others_in_reach(rec_rel: str, folder: str) -> bool:
+    """Same folder, or a neighboring folder one directory up."""
+    rec_folder = Path(str(rec_rel or "")).parent.as_posix()
+    if rec_folder == ".":
+        rec_folder = ""
+    if rec_folder == folder:
+        return True
+    parent = Path(folder).parent.as_posix() if folder else ""
+    if parent == ".":
+        parent = ""
+    if rec_folder == parent:
+        return True
+    if parent:
+        prefix = parent + "/"
+        if not str(rec_rel or "").startswith(prefix):
+            return False
+        rest = str(rec_rel)[len(prefix):]
+        current_branch = folder[len(prefix):].split("/", 1)[0] if folder.startswith(prefix) else ""
+    else:
+        rest = str(rec_rel or "")
+        current_branch = folder.split("/", 1)[0] if folder else ""
+    branch = rest.split("/", 1)[0]
+    return bool(branch) and branch != current_branch
+
+
 def _other_file_label(filename: str) -> str:
     """Short caption for a galaxy file that has no recognized filter name."""
     stem = Path(str(filename or "")).stem
@@ -1844,8 +1869,8 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
         })
     entries.sort(key=lambda entry: (float(entry["wavelength"]), str(entry["label"]).lower(), str(entry["filepath"]).lower()))
 
-    # Same-folder files with no recognized filter stay out of the rail until
-    # the user opens Others. Masks and similar products stay excluded.
+    # Unlabeled files in this folder, and in the folders next to it one level up.
+    # Masks and similar products stay excluded.
     shown = {str(entry["filepath"]) for entry in entries}
     folder = Path(rel).parent.as_posix() if rel else ""
     if folder == ".":
@@ -1861,10 +1886,7 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
         rel_norm = str(rec.get("rel_norm") or "")
         if not any(key and key in rel_norm for key in galaxy_keys):
             continue
-        parent = Path(rec_rel).parent.as_posix()
-        if parent == ".":
-            parent = ""
-        if parent != folder:
+        if not _others_in_reach(rec_rel, folder):
             continue
         if _maps_product_label(Path(rec_rel).name) or len(_filters_in_filename(Path(rec_rel).name)) == 1:
             continue
