@@ -1635,7 +1635,7 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
     return candidates[0][1]
 
 
-_GALAXY_FILTER_SKIP_TOKENS = ("mask", "segmentation", "segments", "nebulae", "psf", "ratio", "ebv")
+_GALAXY_FILTER_SKIP_TOKENS = ("segmentation", "segments", "nebulae", "psf", "ratio", "ebv")
 _GALAXY_FILTER_LETTER_BANDS = {
     "u": "F336W",
     "b": "F438W",
@@ -1716,6 +1716,9 @@ def _canonical_for_filter_token(token: str) -> str | None:
     if letter:
         return letter
     if re.fullmatch(r"f\d{3,4}(?:w|m|n|lp)?", norm) or re.fullmatch(r"f\d{3,4}", norm):
+        return norm.upper()
+    # AstroSat UVIT NUV bands: N219M, N242W, N245M, N263M, N274W, N279N.
+    if re.fullmatch(r"n\d{3}(?:w|m|n)?", norm):
         return norm.upper()
     return None
 
