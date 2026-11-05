@@ -2029,6 +2029,51 @@
         }
     }
 
+    function broadcastSideRails() {
+        const hidden = !!window.__nelouraSideRailsHidden;
+        getPaneFrames().forEach((frame) => {
+            try {
+                const w = frame && frame.contentWindow;
+                if (w && typeof w.postMessage === 'function') {
+                    w.postMessage({ type: 'neloura-side-rails', hidden: hidden }, '*');
+                }
+            } catch (_) { /* a pane that is still loading is told again on load */ }
+        });
+    }
+
+    function updateSideRailsToggle() {
+        const btn = document.getElementById('neloura-side-rails-toggle');
+        if (!btn) return;
+        let shown = false;
+        try {
+            const wrap = document.getElementById('multi-panel-container');
+            const grid = document.getElementById('multi-panel-grid');
+            const count = grid ? grid.querySelectorAll('iframe').length : 0;
+            shown = !!(wrap && wrap.style.display !== 'none' && count >= 2);
+        } catch (_) { shown = false; }
+        btn.style.display = shown ? 'flex' : 'none';
+        const hidden = !!window.__nelouraSideRailsHidden;
+        btn.dataset.hidden = hidden ? '1' : '0';
+        btn.textContent = hidden ? '‹' : '›';
+        btn.title = hidden ? 'Show the filter bars' : 'Hide the filter bars';
+    }
+
+    function createSideRailsToggle() {
+        if (isMultiPanelPaneFrame()) return;
+        if (document.getElementById('neloura-side-rails-toggle')) return;
+        const btn = document.createElement('button');
+        btn.id = 'neloura-side-rails-toggle';
+        btn.type = 'button';
+        btn.className = 'mp-interactive';
+        btn.addEventListener('click', () => {
+            window.__nelouraSideRailsHidden = !window.__nelouraSideRailsHidden;
+            updateSideRailsToggle();
+            broadcastSideRails();
+        });
+        document.body.appendChild(btn);
+        updateSideRailsToggle();
+    }
+
     function updateWcsLockVisibility() {
         const btn = document.getElementById('multi-panel-wcs-lock');
         if (!btn) return;
@@ -2048,6 +2093,7 @@
             btn.title = 'Add another panel to enable WCS sync';
         }
         try { updateBlinkVisibility(); } catch (_) { }
+        try { updateSideRailsToggle(); } catch (_) { }
     }
 
     function broadcastWcsLockState(enabled) {
@@ -2120,6 +2166,7 @@
         createClosePanelsFab();
         createWcsLockFab();
         createBlinkFab();
+        createSideRailsToggle();
         updateWcsLockVisibility();
     }
     function createClosePanelsFab() {
@@ -4337,6 +4384,7 @@
                 const w = frame.contentWindow;
                 if (w && typeof w.postMessage === 'function') {
                     w.postMessage({ type: 'neloura-wcs-lock-state', enabled: !!window.__multiPanelWcsLockEnabled }, '*');
+                    w.postMessage({ type: 'neloura-side-rails', hidden: !!window.__nelouraSideRailsHidden }, '*');
                 }
             } catch (_) { }
         } catch (_) { }
@@ -4815,6 +4863,7 @@
                 const w = frame.contentWindow;
                 if (w && typeof w.postMessage === 'function') {
                     w.postMessage({ type: 'neloura-wcs-lock-state', enabled: !!window.__multiPanelWcsLockEnabled }, '*');
+                    w.postMessage({ type: 'neloura-side-rails', hidden: !!window.__nelouraSideRailsHidden }, '*');
                 }
             } catch (_) { }
         } catch (_) { }

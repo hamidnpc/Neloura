@@ -799,4 +799,12 @@
         onReady(filepath);
     });
     document.addEventListener('viewer:open', () => onReady(window.currentFitsFile));
+    window.addEventListener('message', (event) => {
+        const data = event && event.data;
+        if (!data || data.type !== 'neloura-side-rails') return;
+        try {
+            if (event.source !== window.parent) return;
+        } catch (_) { return; }
+        document.body.classList.toggle('neloura-hide-side-rails', !!data.hidden);
+    });
 })();

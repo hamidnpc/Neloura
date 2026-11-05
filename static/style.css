@@ -1949,6 +1949,33 @@ color: black !important;
     overflow: hidden;
     text-overflow: ellipsis;
 }
+body.neloura-hide-side-rails .filter-rail,
+body.neloura-hide-side-rails .hdu-bar {
+    display: none !important;
+}
+#neloura-side-rails-toggle {
+    position: fixed;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 50000;
+    width: 22px;
+    height: 64px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 8px;
+    background: rgba(18, 18, 20, 0.88);
+    color: #fff;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font: 600 16px/1 'Raleway', sans-serif;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+body.neloura-screen-cbar-right #neloura-side-rails-toggle {
+    right: calc(8px + var(--neloura-screen-cbar-lane-right, 0px));
+}
 @media (prefers-reduced-motion: reduce) {
     .filter-rail-scroller { scroll-behavior: auto; }
     .filter-rail-spinner { animation: none; }
