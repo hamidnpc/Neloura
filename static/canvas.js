@@ -3510,7 +3510,8 @@ const REGION_TOOLS = [
     { id: 'circle', cursor: 'crosshair' },
     { id: 'rectangle', cursor: 'crosshair' },
     { id: 'ellipse', cursor: 'crosshair' },
-    { id: 'hexagon', cursor: 'crosshair' }
+    { id: 'hexagon', cursor: 'crosshair' },
+    { id: 'text', cursor: 'text' }
 ];
 
 const regionDrawingState = {
@@ -3590,6 +3591,12 @@ const REGION_SHAPE_BAR_OPTIONS = [
         label: 'Hexagon',
         title: 'Hexagon — drag to size a six-sided region',
         iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4.5h8l4 7-4 7H8l-4-7 4-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path></svg>`
+    },
+    {
+        id: 'text',
+        label: 'Text',
+        title: 'Text — click to place a label',
+        iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6.5h12M12 6.5V18" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>`
     }
 ];
 
@@ -6668,6 +6675,20 @@ function buildRegionShape(type, start, end, isPreview = false) {
         };
     }
 
+    if (type === 'text') {
+        return {
+            type,
+            center: { x: end.x, y: end.y },
+            text: 'Text',
+            label: 'Text',
+            textStyle: 'halo',
+            textColor: '#f8fafc',
+            textBackground: '#1f2937',
+            textSize: 13,
+            isPreview
+        };
+    }
+
     return null;
 }
 
@@ -6691,8 +6712,8 @@ function finalizeRegionShape(endPoint) {
 
     const index = regionDrawingState.counter++;
     shape.id = `region-${Date.now()}-${index}`;
-    // Allow empty labels (user may rename later).
-    shape.label = '';
+    // Allow empty labels (user may rename later). Text keeps the words drawn on the image.
+    if (shape.type !== 'text') shape.label = '';
     shape.createdAt = Date.now();
     regionDrawingState.shapes.push(shape);
     // Do not auto-select new regions (yellow highlight); selection only on explicit click.
@@ -6788,7 +6809,18 @@ function isPointInsideShape(shape, point) {
         return isPixelNearSegment(point, shape.start, shape.end, 5);
     }
 
-    if ((shape.type === 'point' || shape.type === 'text') && shape.center) {
+    if (shape.type === 'text' && shape.center) {
+        const rect = textRegionScreenRect(shape);
+        const screen = imagePointToScreen(point);
+        if (rect && screen) {
+            const pad = 8;
+            return screen.x >= rect.left - pad && screen.x <= rect.right + pad
+                && screen.y >= rect.top - pad && screen.y <= rect.bottom + pad;
+        }
+        return Math.hypot(point.x - shape.center.x, point.y - shape.center.y) <= 12;
+    }
+
+    if (shape.type === 'point' && shape.center) {
         return Math.hypot(point.x - shape.center.x, point.y - shape.center.y) <= 8;
     }
 
@@ -7212,6 +7244,7 @@ function renderRegionOverlay() {
                         if (shape.type === 'circle' && shape.center) return shape.center;
                         if (shape.type === 'ellipse' && shape.center) return shape.center;
                         if (shape.type === 'hexagon' && shape.center) return shape.center;
+                        if (shape.type === 'text' && shape.center) return shape.center;
                         if (shape.type === 'rectangle') {
                             const cx = (Number(shape.x1) + Number(shape.x2)) / 2;
                             const cy = (Number(shape.y1) + Number(shape.y2)) / 2;
@@ -7489,12 +7522,7 @@ function drawRegionShape(ctx, shape, options = {}) {
     }
 
     if (shape.type === 'text') {
-        const center = imagePointToScreen(shape.center);
-        if (center) {
-            ctx.font = '600 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-            ctx.fillStyle = ctx.strokeStyle;
-            ctx.fillText(String(shape.text || shape.label || ''), center.x + 4, center.y - 4);
-        }
+        drawTextRegion(ctx, shape, { highlight, preview: isPreview });
         ctx.restore();
         return;
     }
@@ -7537,8 +7565,149 @@ function getShapeLabelAnchorScreen(shape) {
     return { x: sumX / Math.max(1, cnt), y: minY };
 }
 
+const TEXT_REGION_STYLES = new Set(['halo', 'shadow', 'glow', 'pill', 'glass', 'outline']);
+const TEXT_REGION_FONT_FAMILY = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+function normalizeTextRegionHex(value, fallback) {
+    let hex = String(value || '').trim();
+    if (/^#[0-9a-fA-F]{3}$/.test(hex)) {
+        const x = hex.slice(1);
+        hex = `#${x[0]}${x[0]}${x[1]}${x[1]}${x[2]}${x[2]}`;
+    }
+    return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : fallback;
+}
+
+function textRegionStyleName(shape) {
+    const raw = String((shape && shape.textStyle) || 'halo').toLowerCase();
+    return TEXT_REGION_STYLES.has(raw) ? raw : 'halo';
+}
+
+function textRegionUsesBackground(style) {
+    return style === 'pill' || style === 'glass';
+}
+
+function textRegionFontSize(shape) {
+    const size = Number(shape && shape.textSize);
+    if (!Number.isFinite(size)) return 13;
+    return Math.max(8, Math.min(96, Math.round(size)));
+}
+
+function textRegionFont(shape) {
+    return `600 ${textRegionFontSize(shape)}px ${TEXT_REGION_FONT_FAMILY}`;
+}
+
+function textRegionBackgroundAlpha(shape) {
+    const style = textRegionStyleName(shape);
+    const alpha = Number(shape && shape.textBackgroundAlpha);
+    if (!Number.isFinite(alpha)) return style === 'glass' ? 0.58 : 1;
+    return Math.max(0, Math.min(1, alpha));
+}
+
+function textRegionLayout(ctx, shape) {
+    const raw = String((shape && (shape.text || shape.label)) || '').trim();
+    const text = raw || 'Text';
+    const size = textRegionFontSize(shape);
+    ctx.save();
+    ctx.font = textRegionFont(shape);
+    const width = Math.max(size, ctx.measureText(text).width);
+    ctx.restore();
+    const padX = Math.max(6, Math.round(size * 0.45));
+    const padY = Math.max(3, Math.round(size * 0.3));
+    return {
+        text,
+        placeholder: !raw,
+        size,
+        width: width + padX * 2,
+        height: size + padY * 2,
+        padY
+    };
+}
+
+function textRegionScreenRect(shape) {
+    if (!shape || !shape.center || !regionOverlayCanvas) return null;
+    const center = imagePointToScreen(shape.center);
+    if (!center) return null;
+    const ctx = regionOverlayCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.save();
+    ctx.setTransform(regionOverlayPixelRatio || 1, 0, 0, regionOverlayPixelRatio || 1, 0, 0);
+    const layout = textRegionLayout(ctx, shape);
+    ctx.restore();
+    const left = center.x - layout.width / 2;
+    const top = center.y - layout.height / 2;
+    return {
+        left,
+        top,
+        right: left + layout.width,
+        bottom: top + layout.height,
+        width: layout.width,
+        height: layout.height,
+        center,
+        layout
+    };
+}
+
+function drawTextRegion(ctx, shape, options = {}) {
+    const rect = textRegionScreenRect(shape);
+    if (!rect) return;
+    const style = textRegionStyleName(shape);
+    const fillHex = normalizeTextRegionHex(shape.textColor, '#f8fafc');
+    const bgHex = normalizeTextRegionHex(shape.textBackground, '#1f2937');
+    const bgAlpha = textRegionBackgroundAlpha(shape);
+    const { layout } = rect;
+    ctx.save();
+    ctx.globalAlpha = options.preview ? 0.55 : (layout.placeholder ? 0.72 : 1);
+    ctx.font = textRegionFont(shape);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const radius = Math.max(6, Math.round(layout.size * 0.45));
+    if (style === 'pill' || style === 'glass') {
+        ctx.save();
+        ctx.globalAlpha = (options.preview ? 0.55 : 1) * bgAlpha;
+        ctx.fillStyle = bgHex;
+        canvasRoundRectPath(ctx, rect.left, rect.top, rect.width, rect.height, radius);
+        ctx.fill();
+        ctx.restore();
+        if (style === 'glass') {
+            ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+            ctx.lineWidth = 1;
+            canvasRoundRectPath(ctx, rect.left, rect.top, rect.width, rect.height, radius);
+            ctx.stroke();
+        }
+    } else if (style === 'outline') {
+        ctx.strokeStyle = 'rgba(255,255,255,0.48)';
+        ctx.lineWidth = 1.35;
+        canvasRoundRectPath(ctx, rect.left, rect.top, rect.width, rect.height, radius);
+        ctx.stroke();
+    }
+    const textX = rect.center.x;
+    const textY = rect.center.y;
+    if (style === 'shadow') {
+        ctx.shadowColor = 'rgba(0,0,0,0.92)';
+        ctx.shadowBlur = 5;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+    } else if (style === 'glow') {
+        ctx.shadowColor = fillHex;
+        ctx.shadowBlur = 14;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+    }
+    ctx.fillStyle = fillHex;
+    ctx.fillText(layout.text, textX, textY);
+    if (options.highlight) {
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#FBBF24';
+        ctx.lineWidth = 1.5;
+        canvasRoundRectPath(ctx, rect.left - 2, rect.top - 2, rect.width + 4, rect.height + 4, radius);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
 function drawRegionLabel(ctx, shape, options = {}) {
-    if (!shape || options.preview) return;
+    if (!shape || options.preview || shape.type === 'text') return;
     const raw = typeof shape.label === 'string' ? shape.label.trim() : '';
     if (!raw) return;
     const text = raw;
@@ -7693,7 +7862,7 @@ function translateRegionShapeBy(shape, dx, dy) {
         shape.center.y += dy;
         return;
     }
-    if ((shape.type === 'ellipse' || shape.type === 'hexagon') && shape.center) {
+    if ((shape.type === 'ellipse' || shape.type === 'hexagon' || shape.type === 'text') && shape.center) {
         shape.center.x += dx;
         shape.center.y += dy;
         return;
@@ -7901,6 +8070,11 @@ function classifyRegionPointerAction(shape, p, pixelPoint) {
         return null;
     }
 
+    if (shape.type === 'text' && shape.center) {
+        if (isPointInsideShape(shape, p)) return { action: 'move' };
+        return null;
+    }
+
     return null;
 }
 
@@ -7938,7 +8112,7 @@ function applyToolbarRegionCenterFromImageInputs(shape, xBottomLeft, yBottomLeft
         shape.center.y = cy;
         return true;
     }
-    if (shape.type === 'ellipse' || shape.type === 'hexagon') {
+    if (shape.type === 'ellipse' || shape.type === 'hexagon' || shape.type === 'text') {
         shape.center.x = cx;
         shape.center.y = cy;
         return true;
@@ -8035,11 +8209,36 @@ function fillRegionPopupGeometryInputs(box, content, shape, partialMode) {
 
     const ilab = box.querySelector('#srp-inp-label');
     if (ilab) {
-        const lab = (shape && typeof shape.label === 'string')
-            ? shape.label
-            : (content && typeof content.region_label === 'string' ? content.region_label : '');
+        const lab = (shape && shape.type === 'text')
+            ? String(shape.text || shape.label || '')
+            : ((shape && typeof shape.label === 'string')
+                ? shape.label
+                : (content && typeof content.region_label === 'string' ? content.region_label : ''));
         ilab.value = lab;
     }
+
+    try {
+        const textStyle = box.querySelector('#srp-inp-text-style');
+        const textColor = box.querySelector('#srp-inp-text-color');
+        const textFill = box.querySelector('#srp-inp-text-fill');
+        const textSize = box.querySelector('#srp-inp-text-size');
+        const textAlpha = box.querySelector('#srp-inp-text-alpha');
+        const textAlphaValue = box.querySelector('#srp-text-alpha-value');
+        const fillCell = box.querySelector('#srp-text-fill-cell');
+        const alphaCell = box.querySelector('#srp-text-alpha-cell');
+        if (shape && shape.type === 'text') {
+            const styleName = textRegionStyleName(shape);
+            if (textStyle) textStyle.value = styleName;
+            if (textColor) textColor.value = normalizeTextRegionHex(shape.textColor, '#f8fafc');
+            if (textFill) textFill.value = normalizeTextRegionHex(shape.textBackground, '#1f2937');
+            if (textSize) textSize.value = String(textRegionFontSize(shape));
+            if (textAlpha) textAlpha.value = String(Math.round(textRegionBackgroundAlpha(shape) * 100));
+            if (textAlphaValue && textAlpha) textAlphaValue.textContent = `${textAlpha.value}%`;
+            const showFill = textRegionUsesBackground(styleName);
+            if (fillCell) fillCell.style.display = showFill ? '' : 'none';
+            if (alphaCell) alphaCell.style.display = showFill ? '' : 'none';
+        }
+    } catch (_) {}
 
     // Border appearance (editable regions only)
     try {
@@ -8179,6 +8378,7 @@ function showSimpleRegionPopup(content, anchor) {
         const linkedShape = findLinkedToolbarRegionShape(content);
         const useEditableRegionGeometry = !!(isRegion && linkedShape);
         const hasRotationControl = !!(linkedShape && ['rectangle', 'ellipse', 'hexagon'].includes(linkedShape.type));
+        const isTextRegion = !!(linkedShape && linkedShape.type === 'text');
         // Track which region this popup is showing (so deletes can close it)
         try {
             box.dataset.regionId = (isRegion && content.region_id) ? String(content.region_id) : '';
@@ -8232,9 +8432,44 @@ function showSimpleRegionPopup(content, anchor) {
             if (useEditableRegionGeometry) {
                 html += `
                 <div class="srp-section">
-                    <label class="srp-field-label" for="srp-inp-label">Region label</label>
-                    <input type="text" id="srp-inp-label" class="srp-input" maxlength="160" autocomplete="off" placeholder="e.g. Field A, SNR" />
+                    <label class="srp-field-label" for="srp-inp-label">${isTextRegion ? 'Text' : 'Region label'}</label>
+                    <input type="text" id="srp-inp-label" class="srp-input" maxlength="160" autocomplete="off" placeholder="${isTextRegion ? 'Text on the image' : 'e.g. Field A, SNR'}" />
                 </div>
+                ${isTextRegion ? `
+                <div class="srp-section">
+                    <label class="srp-field-label">Label look</label>
+                    <div class="srp-grid srp-grid--3">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-text-style">Style</label>
+                            <select id="srp-inp-text-style" class="srp-input">
+                                <option value="halo">Plain text</option>
+                                <option value="shadow">Soft shadow</option>
+                                <option value="glow">Soft glow</option>
+                                <option value="pill">Tag (rounded fill)</option>
+                                <option value="glass">Frosted glass</option>
+                                <option value="outline">Outline frame</option>
+                            </select>
+                        </div>
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-text-color">Text color</label>
+                            <input type="color" id="srp-inp-text-color" class="srp-input" style="height: 34px; padding: 0; width: 100%;" />
+                        </div>
+                        <div class="srp-cell" id="srp-text-fill-cell">
+                            <label class="srp-sublabel" for="srp-inp-text-fill">Fill</label>
+                            <input type="color" id="srp-inp-text-fill" class="srp-input" style="height: 34px; padding: 0; width: 100%;" />
+                        </div>
+                    </div>
+                    <div class="srp-grid srp-grid--2" style="margin-top: 8px;">
+                        <div class="srp-cell">
+                            <label class="srp-sublabel" for="srp-inp-text-size">Font size</label>
+                            <input type="number" id="srp-inp-text-size" class="srp-input" min="8" max="96" step="1" />
+                        </div>
+                        <div class="srp-cell" id="srp-text-alpha-cell">
+                            <label class="srp-sublabel" for="srp-inp-text-alpha">Background alpha <span id="srp-text-alpha-value"></span></label>
+                            <input type="range" id="srp-inp-text-alpha" min="0" max="100" step="1" style="width: 100%;" />
+                        </div>
+                    </div>
+                </div>` : `
                 <div class="srp-section">
                     <label class="srp-field-label">Border style</label>
                     <div class="srp-grid srp-grid--3">
@@ -8258,7 +8493,7 @@ function showSimpleRegionPopup(content, anchor) {
                             <input type="number" step="0.5" min="0" max="16" id="srp-inp-border-width" class="srp-input" />
                         </div>
                     </div>
-                </div>
+                </div>`}
                 <div class="srp-section">
                     <label class="srp-field-label">Image position <span class="srp-hint">pixels, bottom-left origin</span></label>
                     <div class="srp-grid ${hasRotationControl ? 'srp-grid--3' : 'srp-grid--2'}">
@@ -8498,7 +8733,7 @@ function showSimpleRegionPopup(content, anchor) {
                         if (linkedShape.type === 'circle') {
                             linkedShape.center.x = px.x;
                             linkedShape.center.y = px.y;
-                        } else if (linkedShape.type === 'ellipse' || linkedShape.type === 'hexagon') {
+                        } else if (linkedShape.type === 'ellipse' || linkedShape.type === 'hexagon' || linkedShape.type === 'text') {
                             linkedShape.center.x = px.x;
                             linkedShape.center.y = px.y;
                         } else if (linkedShape.type === 'rectangle') {
@@ -8549,6 +8784,7 @@ function showSimpleRegionPopup(content, anchor) {
                     if (ilab) {
                         ilab.addEventListener('input', () => {
                             const v = ilab.value;
+                            if (linkedShape.type === 'text') linkedShape.text = v;
                             linkedShape.label = v;
                             content.region_label = v;
                             try {
@@ -8556,6 +8792,69 @@ function showSimpleRegionPopup(content, anchor) {
                             } catch (_) {}
                         });
                         ilab.addEventListener('pointerdown', onGeomInput);
+                    }
+
+                    const textStyle = box.querySelector('#srp-inp-text-style');
+                    const textColor = box.querySelector('#srp-inp-text-color');
+                    const textFill = box.querySelector('#srp-inp-text-fill');
+                    const textSize = box.querySelector('#srp-inp-text-size');
+                    const textAlpha = box.querySelector('#srp-inp-text-alpha');
+                    const textAlphaValue = box.querySelector('#srp-text-alpha-value');
+                    const fillCell = box.querySelector('#srp-text-fill-cell');
+                    const alphaCell = box.querySelector('#srp-text-alpha-cell');
+                    const syncTextFill = () => {
+                        if (!textStyle) return;
+                        const showFill = textRegionUsesBackground(textStyle.value);
+                        if (fillCell) fillCell.style.display = showFill ? '' : 'none';
+                        if (alphaCell) alphaCell.style.display = showFill ? '' : 'none';
+                        if (showFill && textAlpha && !Number.isFinite(Number(linkedShape.textBackgroundAlpha))) {
+                            textAlpha.value = String(Math.round(textRegionBackgroundAlpha(linkedShape) * 100));
+                            if (textAlphaValue) textAlphaValue.textContent = `${textAlpha.value}%`;
+                        }
+                    };
+                    if (textStyle) {
+                        textStyle.addEventListener('change', () => {
+                            linkedShape.textStyle = textRegionStyleName({ textStyle: textStyle.value });
+                            syncTextFill();
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        textStyle.addEventListener('pointerdown', onGeomInput);
+                        syncTextFill();
+                    }
+                    if (textColor) {
+                        textColor.addEventListener('input', () => {
+                            linkedShape.textColor = textColor.value;
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        textColor.addEventListener('pointerdown', onGeomInput);
+                    }
+                    if (textFill) {
+                        textFill.addEventListener('input', () => {
+                            linkedShape.textBackground = textFill.value;
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        textFill.addEventListener('pointerdown', onGeomInput);
+                    }
+                    if (textSize) {
+                        const applyTextSize = (commit) => {
+                            const size = textRegionFontSize({ textSize: textSize.value });
+                            if (commit) textSize.value = String(size);
+                            linkedShape.textSize = size;
+                            try { renderRegionOverlay(); } catch (_) {}
+                        };
+                        textSize.addEventListener('input', () => applyTextSize(false));
+                        textSize.addEventListener('change', () => applyTextSize(true));
+                        textSize.addEventListener('pointerdown', onGeomInput);
+                    }
+                    if (textAlpha) {
+                        textAlpha.addEventListener('input', () => {
+                            const percent = Math.max(0, Math.min(100, Math.round(Number(textAlpha.value) || 0)));
+                            textAlpha.value = String(percent);
+                            if (textAlphaValue) textAlphaValue.textContent = `${percent}%`;
+                            linkedShape.textBackgroundAlpha = percent / 100;
+                            try { renderRegionOverlay(); } catch (_) {}
+                        });
+                        textAlpha.addEventListener('pointerdown', onGeomInput);
                     }
 
                     const borderColor = box.querySelector('#srp-inp-border-color');
@@ -9051,6 +9350,9 @@ function computeRegionPopupContent(shape) {
             x: Number(v.x.toFixed(3)),
             y: Number(v.y.toFixed(3))
         }));
+    } else if (shape.type === 'text') {
+        content.region_label = String(shape.text || shape.label || '');
+        content.radius_pixels = 40;
     }
 
     if (center) {
@@ -9452,7 +9754,8 @@ function regionShapeToDs9(shape) {
     if (!geometries.length) return null;
 
     const metadata = [];
-    if (shape.borderColor) metadata.push(`color=${String(shape.borderColor).trim()}`);
+    const exportColor = shape.type === 'text' ? (shape.textColor || shape.borderColor) : shape.borderColor;
+    if (exportColor) metadata.push(`color=${String(exportColor).trim()}`);
     if (Number.isFinite(Number(shape.borderWidth))) metadata.push(`width=${Math.max(1, Math.round(Number(shape.borderWidth)))}`);
     if (String(shape.borderStyle || '').toLowerCase() !== 'solid') metadata.push('dash=1');
     const rawText = shape.type === 'text' ? (shape.text || shape.label) : shape.label;

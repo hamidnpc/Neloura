@@ -479,6 +479,12 @@
                     iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
   <path d="M8 4.5h8l4 7-4 7H8l-4-7 4-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
 </svg>`
+                },
+                {
+                    id: 'text', label: 'Text', hint: 'Click to place text',
+                    iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M6 6.5h12M12 6.5V18" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+</svg>`
                 }
             ];
             const optionButtons = new Map();
