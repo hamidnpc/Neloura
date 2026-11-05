@@ -4595,6 +4595,7 @@ async function _setRegionMapReplacement(shape, filepathRel, title, sourceRegionD
             colorBar: { vis: false, pos: 'right', unit: '', ticks: 5, labelColor: '#eaeaea', numFmt: 'auto', dec: 2 }
         },
         controlsEl: null,
+        alpha: 1,
         histogramLoaded: false,
         desiredMaxDim: 1024,
         loadedMaxDim: 0,
@@ -4901,6 +4902,68 @@ function _ensureRegionMapReplacementControls(shape, replacement) {
         }
     });
 
+    const alphaButton = button.cloneNode(false);
+    alphaButton.title = 'Transparency of this swapped image';
+    alphaButton.setAttribute('aria-label', 'Swapped image transparency');
+    alphaButton.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" opacity=".85"/>
+    </svg>`;
+    const alphaPanel = document.createElement('div');
+    Object.assign(alphaPanel.style, {
+        position: 'absolute',
+        left: '50%',
+        bottom: '40px',
+        transform: 'translateX(-50%)',
+        display: 'none',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px 10px',
+        borderRadius: '999px',
+        border: '1px solid rgba(255,255,255,0.35)',
+        background: 'rgba(17,24,39,0.92)',
+        color: '#fff',
+        fontSize: '11px',
+        fontFamily: 'system-ui, sans-serif',
+        whiteSpace: 'nowrap',
+        pointerEvents: 'auto',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.45)'
+    });
+    const alphaLabel = document.createElement('span');
+    alphaLabel.textContent = 'Alpha';
+    const alphaSlider = document.createElement('input');
+    alphaSlider.type = 'range';
+    alphaSlider.min = '0';
+    alphaSlider.max = '100';
+    alphaSlider.step = '1';
+    alphaSlider.value = '100';
+    alphaSlider.title = 'Transparency of the swapped image';
+    Object.assign(alphaSlider.style, { width: '110px', margin: '0', cursor: 'pointer' });
+    const alphaValue = document.createElement('span');
+    alphaValue.textContent = '100%';
+    Object.assign(alphaValue.style, { minWidth: '32px', textAlign: 'right' });
+    const applyReplacementAlpha = () => {
+        const percent = Math.max(0, Math.min(100, Math.round(Number(alphaSlider.value) || 0)));
+        alphaSlider.value = String(percent);
+        alphaValue.textContent = `${percent}%`;
+        replacement.alpha = percent / 100;
+        try { renderRegionOverlay(); } catch (_) {}
+    };
+    alphaSlider.addEventListener('input', (event) => {
+        event.stopPropagation();
+        applyReplacementAlpha();
+    });
+    alphaSlider.addEventListener('pointerdown', (event) => event.stopPropagation());
+    alphaButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const open = alphaPanel.style.display === 'flex';
+        alphaPanel.style.display = open ? 'none' : 'flex';
+    });
+    alphaPanel.appendChild(alphaLabel);
+    alphaPanel.appendChild(alphaSlider);
+    alphaPanel.appendChild(alphaValue);
+
     // The replacement uses the same full scaling popup as the main map.  A target
     // adapter keeps every control scoped to this cutout.
     button.addEventListener('click', async (event) => {
@@ -4946,6 +5009,8 @@ function _ensureRegionMapReplacementControls(shape, replacement) {
     });
     root.appendChild(button);
     root.appendChild(convolveButton);
+    root.appendChild(alphaButton);
+    root.appendChild(alphaPanel);
     viewerElement.appendChild(root);
     replacement.controlsEl = root;
     _updateRegionMapReplacementControlPosition(shape, replacement);
@@ -7146,7 +7211,8 @@ function drawRegionMapReplacement(ctx, shape) {
     }
     ctx.closePath();
     ctx.clip();
-    ctx.globalAlpha = 1;
+    const replacementAlpha = Number(replacement.alpha);
+    ctx.globalAlpha = Number.isFinite(replacementAlpha) ? Math.max(0, Math.min(1, replacementAlpha)) : 1;
     ctx.transform(
         (p10.x - p00.x) / sourceW,
         (p10.y - p00.y) / sourceW,
