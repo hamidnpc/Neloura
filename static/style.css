@@ -1945,6 +1945,9 @@ color: black !important;
     font: 600 10px/1 'Raleway', sans-serif;
     text-align: center;
     letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 @media (prefers-reduced-motion: reduce) {
     .filter-rail-scroller { scroll-behavior: auto; }

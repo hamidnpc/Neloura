@@ -1750,29 +1750,37 @@ def _filter_sort_wavelength(filter_name: str) -> float:
     return digits / 1000.0
 
 
-def _others_in_reach(rec_rel: str, folder: str) -> bool:
-    """Same folder, or a neighboring folder one directory up."""
-    rec_folder = Path(str(rec_rel or "")).parent.as_posix()
-    if rec_folder == ".":
-        rec_folder = ""
-    if rec_folder == folder:
+def _name_galaxy_token(filename: str) -> str | None:
+    """Galaxy id from a filename. Underscores count, so NGC_3627 is NGC 3627."""
+    return _galaxy_token_from_text(str(filename or "").replace("_", " "))
+
+
+def _rel_matches_galaxy(rec_rel: str, rel_norm: str, galaxy: str, galaxy_keys: list[str]) -> bool:
+    """True when this file is the open galaxy, in any folder under files/."""
+    keys = {key for key in galaxy_keys if key}
+    name = Path(str(rec_rel or "")).name
+    named = _name_galaxy_token(name)
+    if named and _open_rgb_normalize_token(named) not in keys:
+        return False
+    if any(key and key in _open_rgb_normalize_token(name) for key in keys):
         return True
-    parent = Path(folder).parent.as_posix() if folder else ""
-    if parent == ".":
-        parent = ""
-    if rec_folder == parent:
+    if any(key and key in rel_norm for key in keys) and not named:
         return True
-    if parent:
-        prefix = parent + "/"
-        if not str(rec_rel or "").startswith(prefix):
-            return False
-        rest = str(rec_rel)[len(prefix):]
-        current_branch = folder[len(prefix):].split("/", 1)[0] if folder.startswith(prefix) else ""
-    else:
-        rest = str(rec_rel or "")
-        current_branch = folder.split("/", 1)[0] if folder else ""
-    branch = rest.split("/", 1)[0]
-    return bool(branch) and branch != current_branch
+    match = re.fullmatch(r"ngc(\d+)", _open_rgb_normalize_token(galaxy) or "")
+    number = str(int(match.group(1))) if match else ""
+    padded = f"{int(number):04d}" if number else ""
+    parts = [part for part in str(rec_rel or "").replace("\\", "/").split("/") if part]
+    # A bare catalog number in the filename, or a folder named for this galaxy.
+    for index, part in enumerate(parts):
+        bits = [bit.lower() for bit in re.split(r"[^A-Za-z0-9]+", part) if bit]
+        if number and (number in bits or padded in bits):
+            if index == len(parts) - 1 or _name_galaxy_token(part):
+                return True
+        if index < len(parts) - 1:
+            folder_galaxy = _galaxy_token_from_text(part)
+            if folder_galaxy and _open_rgb_normalize_token(folder_galaxy) in keys and not named:
+                return True
+    return False
 
 
 def _other_file_label(filename: str) -> str:
@@ -1869,12 +1877,10 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
         })
     entries.sort(key=lambda entry: (float(entry["wavelength"]), str(entry["label"]).lower(), str(entry["filepath"]).lower()))
 
-    # Unlabeled files in this folder, and in the folders next to it one level up.
+    # Unlabeled files for this galaxy, from any folder, plus extra copies of a
+    # filter that did not win the rail slot (broad and strict CO maps, for example).
     # Masks and similar products stay excluded.
     shown = {str(entry["filepath"]) for entry in entries}
-    folder = Path(rel).parent.as_posix() if rel else ""
-    if folder == ".":
-        folder = ""
     others = []
     for rec in _open_rgb_file_index():
         rec_rel = str(rec.get("rel") or "")
@@ -1884,11 +1890,9 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
         if any(token in rel_lower for token in _GALAXY_FILTER_SKIP_TOKENS):
             continue
         rel_norm = str(rec.get("rel_norm") or "")
-        if not any(key and key in rel_norm for key in galaxy_keys):
+        if not _rel_matches_galaxy(rec_rel, rel_norm, galaxy, galaxy_keys):
             continue
-        if not _others_in_reach(rec_rel, folder):
-            continue
-        if _maps_product_label(Path(rec_rel).name) or len(_filters_in_filename(Path(rec_rel).name)) == 1:
+        if _maps_product_label(Path(rec_rel).name):
             continue
         others.append({
             "filter": "",
