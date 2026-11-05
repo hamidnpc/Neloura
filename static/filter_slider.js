@@ -9,7 +9,10 @@
         queued: null,
         pending: null,
         blobUrls: [],
-        rail: null
+        rail: null,
+        filters: [],
+        others: [],
+        othersOpen: false
     };
 
     function request(url, options) {
@@ -75,9 +78,10 @@
         windowEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     }
 
-    function renderRail(keepImages) {
+    function renderRail(keepImages, scrollMode) {
         const rail = ensureRail();
-        if (!state.items.length || state.items.length < 2 || rgbMode()) {
+        const canShow = state.filters.length >= 2 || (state.filters.length >= 1 && state.others.length > 0);
+        if (!canShow || rgbMode()) {
             hideRail();
             return;
         }
@@ -89,7 +93,7 @@
         if (!keepImages) {
             revokeBlobs();
             strip.innerHTML = '';
-            state.items.forEach((item, index) => {
+            const appendFile = (item, index) => {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'filter-rail-item';
@@ -116,13 +120,45 @@
                     switchTo(index);
                 });
                 strip.appendChild(button);
-            });
+            };
+            state.filters.forEach((item, index) => appendFile(item, index));
+            if (state.others.length) {
+                const more = document.createElement('button');
+                more.type = 'button';
+                more.className = 'filter-rail-others';
+                if (state.othersOpen) more.classList.add('is-open');
+                more.textContent = 'Others';
+                more.title = state.othersOpen ? 'Hide the other files in this folder' : 'Show the other files in this folder';
+                more.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    state.othersOpen = !state.othersOpen;
+                    state.items = visibleItems();
+                    renderRail(false, state.othersOpen ? 'end' : 'current');
+                });
+                strip.appendChild(more);
+            }
+            if (state.othersOpen) {
+                state.others.forEach((item, index) => appendFile(item, state.filters.length + index));
+            }
             loadThumbs().catch(() => {});
         }
         strip.querySelectorAll('.filter-rail-item').forEach((button, index) => {
             button.classList.toggle('is-current', index === state.index);
         });
-        scrollCurrentIntoView();
+        if (scrollMode === 'end') scrollOthersIntoView();
+        else scrollCurrentIntoView();
+    }
+
+    function visibleItems() {
+        return state.othersOpen ? state.filters.concat(state.others) : state.filters.slice();
+    }
+
+    function scrollOthersIntoView() {
+        const windowEl = state.rail && state.rail.querySelector('.filter-rail-scroller');
+        const button = state.rail && state.rail.querySelector('.filter-rail-others');
+        if (!windowEl || !button) return;
+        windowEl.scrollTo({ top: windowEl.scrollHeight, behavior: 'smooth' });
     }
 
     async function loadThumbs() {
@@ -395,11 +431,8 @@
 
     async function snapshotOverlays(filepath, hdu) {
         const snap = { regions: [], catalogs: [], view: null, activeCatalog: null, sourceFile: filepath, sourceHdu: hdu };
-        try {
-            if (typeof window.listDrawnRegions === 'function') {
-                snap.regions = await annotateRegions(window.listDrawnRegions() || [], filepath, hdu);
-            }
-        } catch (_) { /* noop */ }
+        // Capture catalogs and the view before the first await. An HDU switch
+        // clears catalogs as soon as this function yields.
         try {
             const loaded = (typeof window.getLoadedCatalogOverlays === 'function') ? (window.getLoadedCatalogOverlays() || []) : [];
             const styles = window.__catalogStylesByName || {};
@@ -417,17 +450,29 @@
             }).filter((entry) => entry.key);
             snap.activeCatalog = window.currentCatalogName || window.activeCatalog || null;
         } catch (_) { /* noop */ }
+        let rawRegions = [];
+        try {
+            if (typeof window.listDrawnRegions === 'function') rawRegions = window.listDrawnRegions() || [];
+        } catch (_) { rawRegions = []; }
+        let zoom = null;
+        let imagePoint = null;
         try {
             const view = viewer();
             if (view && view.viewport && typeof view.viewport.getCenter === 'function') {
+                zoom = view.viewport.getZoom();
                 const center = view.viewport.getCenter(true);
-                const imagePoint = view.viewport.viewportToImageCoordinates(center);
-                let world = null;
-                if (imagePoint) {
-                    world = await displayPixelToSky(imagePoint.x, imagePoint.y, filepath, hdu);
-                }
+                imagePoint = view.viewport.viewportToImageCoordinates(center);
+            }
+        } catch (_) { /* noop */ }
+        try {
+            snap.regions = await annotateRegions(rawRegions, filepath, hdu);
+        } catch (_) { /* noop */ }
+        try {
+            let world = null;
+            if (imagePoint) world = await displayPixelToSky(imagePoint.x, imagePoint.y, filepath, hdu);
+            if (zoom != null || world) {
                 snap.view = {
-                    zoom: view.viewport.getZoom(),
+                    zoom,
                     ra: world && Number.isFinite(world.ra) ? world.ra : null,
                     dec: world && Number.isFinite(world.dec) ? world.dec : null
                 };
@@ -534,6 +579,9 @@
         snap.consumed = false;
         state.pending = snap;
         try {
+            document.dispatchEvent(new CustomEvent('fits:fileSwitching', { detail: { filepath: item.filepath } }));
+        } catch (_) { /* noop */ }
+        try {
             window.loadFitsFile(item.filepath);
         } catch (_) {
             state.switching = false;
@@ -577,17 +625,29 @@
             }
             const data = await response.json();
             const filters = Array.isArray(data.filters) ? data.filters : [];
-            if (filters.length < 2) {
+            const others = Array.isArray(data.others) ? data.others : [];
+            if (filters.length < 2 && !(filters.length >= 1 && others.length > 0)) {
                 state.items = [];
+                state.filters = [];
+                state.others = [];
                 hideRail();
                 return;
             }
-            const same = state.galaxy === data.galaxy
-                && state.items.length === filters.length
-                && state.items.every((item, index) => item.filepath === filters[index].filepath);
-            state.galaxy = data.galaxy || '';
-            state.items = filters;
-            const found = filters.findIndex((item) => item.current || item.filepath === path || item.filepath === data.current);
+            const nextGalaxy = data.galaxy || '';
+            const wasOpen = state.othersOpen;
+            if (state.galaxy && state.galaxy !== nextGalaxy) state.othersOpen = false;
+            if (others.some((item) => item.current)) state.othersOpen = true;
+            const same = state.galaxy === nextGalaxy
+                && wasOpen === state.othersOpen
+                && state.filters.length === filters.length
+                && state.filters.every((item, index) => item.filepath === filters[index].filepath)
+                && state.others.length === others.length
+                && state.others.every((item, index) => item.filepath === others[index].filepath);
+            state.galaxy = nextGalaxy;
+            state.filters = filters;
+            state.others = others;
+            state.items = visibleItems();
+            const found = state.items.findIndex((item) => item.current || item.filepath === path || item.filepath === data.current);
             state.index = found >= 0 ? found : 0;
             renderRail(same);
         } catch (_) {
@@ -600,6 +660,9 @@
         refresh(filepath).catch(() => {});
         consumePending().catch(() => {});
     }
+
+    window.snapshotNelouraOverlays = snapshotOverlays;
+    window.restoreNelouraOverlays = restoreOverlays;
 
     window.addEventListener('fits:imageLoaded', (event) => {
         const filepath = event && event.detail && event.detail.filepath;

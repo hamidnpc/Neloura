@@ -1635,7 +1635,7 @@ def _open_rgb_find_file(galaxy: str, filter_name: str) -> str | None:
     return candidates[0][1]
 
 
-_GALAXY_FILTER_SKIP_TOKENS = ("mask", "segmentation", "segments", "nebulae", "psf", "bkg", "subtract", "ratio", "ebv")
+_GALAXY_FILTER_SKIP_TOKENS = ("mask", "segmentation", "segments", "nebulae", "psf", "ratio", "ebv")
 _GALAXY_FILTER_LETTER_BANDS = {
     "u": "F336W",
     "b": "F438W",
@@ -1721,8 +1721,16 @@ def _canonical_for_filter_token(token: str) -> str | None:
 
 
 def _filters_in_filename(filename: str) -> list[str]:
+    tokens = [token for token in re.split(r"[^A-Za-z0-9]+", str(filename or "")) if token]
+    if tokens and tokens[-1].lower() == "fits":
+        tokens = tokens[:-1]
+    while tokens and tokens[-1].isdigit():
+        tokens = tokens[:-1]
     found: list[str] = []
-    for token in re.split(r"[^A-Za-z0-9]+", str(filename or "")):
+    for index, token in enumerate(tokens):
+        # A lone "I" in NGC_4254_I_6CM is not the I band. Only a final _i/_u/_b/_v is.
+        if len(token) == 1 and token.lower() in _GALAXY_FILTER_LETTER_BANDS and index != len(tokens) - 1:
+            continue
         canonical = _canonical_for_filter_token(token)
         if canonical and canonical not in found:
             found.append(canonical)
@@ -1740,6 +1748,26 @@ def _filter_sort_wavelength(filter_name: str) -> float:
     if digits >= 1000 or str(filter_name or "").upper().endswith("N") or 100 <= digits <= 500:
         return digits / 100.0
     return digits / 1000.0
+
+
+def _other_file_label(filename: str) -> str:
+    """Short caption for a galaxy file that has no recognized filter name."""
+    stem = Path(str(filename or "")).stem
+    text = re.sub(r"(?i)(?:ngc|ic|ugc|eso)[_\s-]*\d+", " ", stem)
+    text = re.sub(r"\(\d+\)", " ", text)
+    text = re.sub(r"[_\s]+", " ", text).strip(" -_")
+    return text or stem
+
+
+def _maps_product_label(filename: str) -> str | None:
+    """Short rail label for a DAP/MAPS product such as NGC5248-0.61asec_MAPS.fits."""
+    name = Path(str(filename or "")).name
+    if not re.search(r"(^|[^A-Za-z0-9])maps($|[^A-Za-z0-9])", name, re.IGNORECASE):
+        return None
+    scale = re.search(r"(\d+(?:\.\d+)?)asec", name, re.IGNORECASE)
+    if scale:
+        return f"{scale.group(1)}″"
+    return "MAPS"
 
 
 def _galaxy_filter_siblings(filepath: str) -> dict:
@@ -1762,9 +1790,18 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
         if not any(key and key in rel_norm for key in galaxy_keys):
             continue
         filters = _filters_in_filename(Path(rec_rel).name)
-        if len(filters) != 1:
+        maps_label = _maps_product_label(Path(rec_rel).name)
+        name_lower = Path(rec_rel).name.lower()
+        corrected = ("bkg" in name_lower) or ("subtract" in name_lower)
+        if maps_label:
+            filter_name = maps_label
+            slot = f"maps:{rec_rel}"
+        elif len(filters) != 1:
             continue
-        filter_name = filters[0]
+        else:
+            filter_name = filters[0]
+            # Keep a background-subtracted product beside the plain filter of the same name.
+            slot = f"{filter_name}:corr:{rec_rel}" if corrected else filter_name
         score = len(rec_rel)
         if any(key and key in name_norm for key in galaxy_keys):
             score -= 40
@@ -1772,12 +1809,19 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
             score -= 12
         if "/uploads/" in f"/{rel_lower}":
             score += 30
-        previous = best.get(filter_name)
+        previous = best.get(slot)
         if previous is None or score < previous[0]:
-            best[filter_name] = (score, rec_rel, filter_name)
+            best[slot] = (score, rec_rel, filter_name)
 
-    if len(current_filters) == 1 and rel:
-        best[current_filters[0]] = (-1000, rel, current_filters[0])
+    if rel:
+        current_maps = _maps_product_label(Path(rel).name)
+        if current_maps:
+            best[f"maps:{rel}"] = (-1000, rel, current_maps)
+        elif len(current_filters) == 1:
+            current_name = Path(rel).name.lower()
+            current_corrected = ("bkg" in current_name) or ("subtract" in current_name)
+            current_slot = f"{current_filters[0]}:corr:{rel}" if current_corrected else current_filters[0]
+            best[current_slot] = (-1000, rel, current_filters[0])
 
     entries = []
     for _score, rec_rel, filter_name in best.values():
@@ -1788,7 +1832,8 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
             "wavelength": _filter_sort_wavelength(filter_name),
             "current": rec_rel == rel,
         })
-    if rel and not any(entry["current"] for entry in entries):
+    current_is_other = bool(rel) and not _maps_product_label(Path(rel).name) and len(current_filters) != 1
+    if rel and not current_is_other and not any(entry["current"] for entry in entries):
         label = "+".join(current_filters) if current_filters else Path(rel).stem
         entries.append({
             "filter": label,
@@ -1798,7 +1843,41 @@ def _galaxy_filter_siblings(filepath: str) -> dict:
             "current": True,
         })
     entries.sort(key=lambda entry: (float(entry["wavelength"]), str(entry["label"]).lower(), str(entry["filepath"]).lower()))
-    return {"galaxy": galaxy, "current": rel, "filters": entries}
+
+    # Same-folder files with no recognized filter stay out of the rail until
+    # the user opens Others. Masks and similar products stay excluded.
+    shown = {str(entry["filepath"]) for entry in entries}
+    folder = Path(rel).parent.as_posix() if rel else ""
+    if folder == ".":
+        folder = ""
+    others = []
+    for rec in _open_rgb_file_index():
+        rec_rel = str(rec.get("rel") or "")
+        if not rec_rel or rec_rel in shown:
+            continue
+        rel_lower = str(rec.get("rel_lower") or "")
+        if any(token in rel_lower for token in _GALAXY_FILTER_SKIP_TOKENS):
+            continue
+        rel_norm = str(rec.get("rel_norm") or "")
+        if not any(key and key in rel_norm for key in galaxy_keys):
+            continue
+        parent = Path(rec_rel).parent.as_posix()
+        if parent == ".":
+            parent = ""
+        if parent != folder:
+            continue
+        if _maps_product_label(Path(rec_rel).name) or len(_filters_in_filename(Path(rec_rel).name)) == 1:
+            continue
+        others.append({
+            "filter": "",
+            "label": _other_file_label(Path(rec_rel).name),
+            "filepath": rec_rel,
+            "wavelength": 10000.0,
+            "current": rec_rel == rel,
+            "other": True,
+        })
+    others.sort(key=lambda entry: (str(entry["label"]).lower(), str(entry["filepath"]).lower()))
+    return {"galaxy": galaxy, "current": rel, "filters": entries, "others": others}
 
 
 def _open_rgb_resolve_channel_files(parsed_galaxy: str, parsed_filters: list[str]) -> tuple[list[dict[str, str]], list[str]]:
@@ -5698,63 +5777,22 @@ async def get_fits_hdu_info(filepath: str):
         return hdu_list
 
     try:
-        if _is_colab_drive_path(full_path):
-            try:
-                file_size = full_path.stat().st_size
-            except Exception:
-                file_size = 0
-            hdu_list = _fast_hdu_info_from_fits_headers(full_path)
-            return JSONResponse(content={
-                "hduList": hdu_list,
-                "filename": full_path.name,
-                "fast": True,
-                "partial": False,
-                "file_size": int(file_size),
-            })
-
-        with fits.open(full_path, memmap=True, lazy_load_hdus=True, do_not_scale_image_data=True) as hdul:
-            hdu_list = []
-            # Determine which HDU is likely the main science image
-            recommended_index = -1
-            max_pixels = 0
-            
-            # First pass: find the best candidate for the "recommended" HDU
-            for i, hdu in enumerate(hdul):
-                shape = _image_shape_from_header(hdu.header)
-                if hdu.is_image and shape and len(shape) >= 2:
-                    num_pixels = int(np.prod(shape))
-                    if num_pixels > max_pixels:
-                        max_pixels = num_pixels
-                        recommended_index = i
-
-            # Second pass: gather info for all HDUs
-            for i, hdu in enumerate(hdul):
-                # Basic info
-                info = {
-                    "index": i,
-                    "name": hdu.name or hdu.header.get('EXTNAME', f'HDU {i}'),
-                    "type": "Primary" if isinstance(hdu, fits.PrimaryHDU) else ("Image" if hdu.is_image else "Table"),
-                    "isRecommended": i == recommended_index
-                }
-
-                # Add specific details based on HDU type
-                shape = _image_shape_from_header(hdu.header)
-                if hdu.is_image and shape:
-                    info["dimensions"] = shape
-                    info["dataType"] = _dtype_from_header(hdu.header)
-                    info["bunit"] = hdu.header.get('BUNIT', 'Unknown')
-                    try:
-                        wcs_info = WCS(hdu.header)
-                        info["hasWCS"] = wcs_info.has_celestial
-                    except Exception:
-                        info["hasWCS"] = False
-                elif isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                    info["rows"] = hdu.header.get('NAXIS2', 0)
-                    info["columns"] = hdu.header.get('TFIELDS', 0)
-
-                hdu_list.append(info)
-                
-            return JSONResponse(content={"hduList": hdu_list, "filename": full_path.name})
+        # Header cards only. Building an Astropy WCS for every extension made
+        # a few-hundred-HDU file wait several seconds before any name appeared.
+        loop = asyncio.get_running_loop()
+        executor = getattr(app.state, "thread_executor", None)
+        hdu_list = await loop.run_in_executor(executor, _fast_hdu_info_from_fits_headers, full_path)
+        try:
+            file_size = full_path.stat().st_size
+        except Exception:
+            file_size = 0
+        return JSONResponse(content={
+            "hduList": hdu_list,
+            "filename": full_path.name,
+            "fast": True,
+            "partial": False,
+            "file_size": int(file_size),
+        })
     except Exception as e:
         logger.error(f"Failed to read HDU info for {full_path}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to read HDU info: {str(e)}")
@@ -8498,8 +8536,7 @@ def _fast_tile_info_from_header(fits_file: str, hdu_index: int, session_data: di
                     info["initial_display_max"] = sample_max
 
         try:
-            flip_y, _, _ = analyze_wcs_orientation(header, None)
-            info["flip_y"] = bool(flip_y)
+            info["flip_y"] = _display_flip_y_for_open_hdu(hdul, hdu_index)
         except Exception:
             info["flip_y"] = False
 
@@ -10240,6 +10277,91 @@ def _flip_y_from_header_quiet(header) -> bool:
         return False
 
 
+def _header_has_celestial_wcs(header) -> bool:
+    """True when this HDU can decide its own north-up flip."""
+    if header is None:
+        return False
+    try:
+        ctype1 = str(header.get("CTYPE1", "") or "").upper()
+        ctype2 = str(header.get("CTYPE2", "") or "").upper()
+    except Exception:
+        ctype1 = ctype2 = ""
+    if any(token in ctype1 for token in ("RA", "GLON", "ELON", "HLON")):
+        return True
+    if any(token in ctype2 for token in ("DEC", "GLAT", "ELAT", "HLAT")):
+        return True
+    for key in ("CD1_1", "PC1_1", "CRVAL1"):
+        if key in header:
+            return True
+    return "CDELT1" in header and "CDELT2" in header
+
+
+def _same_pixel_grid(header, other) -> bool:
+    try:
+        width = int(header.get("NAXIS1") or 0)
+        height = int(header.get("NAXIS2") or 0)
+        other_width = int(other.get("NAXIS1") or 0)
+        other_height = int(other.get("NAXIS2") or 0)
+    except Exception:
+        return False
+    return width > 0 and height > 0 and width == other_width and height == other_height
+
+
+def _orientation_header(hdul, hdu_index: int):
+    """
+    JWST ERR, CON, WHT, and variance extensions share the science pixel grid
+    but omit the WCS. Use the SCI header so they stay upright with the science image.
+    """
+    header = hdul[int(hdu_index)].header
+    if _header_has_celestial_wcs(header):
+        return header
+    fallback = None
+    for hdu in hdul:
+        other = getattr(hdu, "header", None)
+        if other is None or not _header_has_celestial_wcs(other) or not _same_pixel_grid(header, other):
+            continue
+        name = str(other.get("EXTNAME", "") or "").strip().upper()
+        if name == "SCI":
+            return other
+        if fallback is None:
+            fallback = other
+    return fallback or header
+
+
+def _display_flip_y_for_open_hdu(hdul, hdu_index: int) -> bool:
+    try:
+        return bool(_flip_y_from_header_quiet(_orientation_header(hdul, hdu_index)))
+    except Exception:
+        return False
+
+
+def _apply_display_flip(generator) -> None:
+    """Mark a tile generator with the same Y flip the science image uses."""
+    if generator is None:
+        return
+    hdul = getattr(generator, "_hdul", None)
+    hdu_index = int(getattr(generator, "hdu_index", 0) or 0)
+    if hdul is not None:
+        flip_y = _display_flip_y_for_open_hdu(hdul, hdu_index)
+    else:
+        header = getattr(generator, "header", None)
+        flip_y = bool(_flip_y_from_header_quiet(header)) if header is not None else False
+    if not flip_y:
+        return
+    setattr(generator, "_flip_required", True)
+    loaded = bool(getattr(generator, "_image_data_loaded", False))
+    applied = bool(getattr(generator, "_flip_applied", False))
+    data = getattr(generator, "image_data", None)
+    if loaded and not applied and data is not None:
+        try:
+            generator.image_data = np.flipud(np.ascontiguousarray(data))
+            generator._flip_applied = True
+            generator.overview_image = None
+            generator.overview_generated = False
+        except Exception:
+            pass
+
+
 @app.get("/probe-pixel/")
 async def probe_pixel(
     request: Request,
@@ -10728,13 +10850,9 @@ async def fits_binary(
                             _apply_display_settings_to_generator(generator_instance, _get_session_display_settings(session_data))
                     except Exception:
                         pass
-                    # Determine if Y-flip is required from header only; defer actual flip to first data access
+                    # ERR/CON have no WCS; borrow the science image flip so they stay upright.
                     try:
-                        header = getattr(generator_instance, "header", None)
-                        if header is not None:
-                            flip_y, _, _ = analyze_wcs_orientation(header, None)
-                            if flip_y:
-                                setattr(generator_instance, "_flip_required", True)
+                        _apply_display_flip(generator_instance)
                     except Exception:
                         pass
                     # Skip heavy warmups on Ceph; frontend will request overview when needed
@@ -10750,10 +10868,8 @@ async def fits_binary(
                                     return hdul[hdu_index].header
                             loop = asyncio.get_running_loop()
                             header = await loop.run_in_executor(app.state.thread_executor, _read_header_sync)
-                        flip_y, _, _ = analyze_wcs_orientation(header, None)
-                        if flip_y:
-                            setattr(generator_instance, "_flip_required", True)
-                            # Invalidate any previous overview so it regenerates after flip at next request
+                        _apply_display_flip(generator_instance)
+                        if getattr(generator_instance, "_flip_required", False):
                             generator_instance.overview_image = None
                             generator_instance.overview_generated = False
                     except Exception as _e:
@@ -11233,7 +11349,7 @@ async def fits_preview(
         crop_x = crop_y = 0
         crop_w, crop_h = w, h
         try:
-            flip_y = bool(_flip_y_from_header_quiet(header))
+            flip_y = _display_flip_y_for_open_hdu(hdul, int(hdu_index or 0))
         except Exception:
             flip_y = False
         if src_w is not None and src_h is not None and float(src_w) > 0 and float(src_h) > 0:

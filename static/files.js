@@ -105,6 +105,7 @@ function formatFileSize(bytes) {
 
 // Load the selected FITS file
 function loadFitsFile(filepath) {
+    try { if (typeof window.prefetchHduBar === 'function') window.prefetchHduBar(filepath); } catch (_) {}
     // Hide welcome elements if they exist
     const welcomeScreen = document.querySelector('.welcome-screen');
     if (welcomeScreen && welcomeScreen.parentNode) {
@@ -846,8 +847,26 @@ function getBitpixDescription(bitpix) {
 
 
 // Modify this part of the loadFitsFile or selectHdu function to correctly handle binary vs JSON responses
+function fitsPathKey(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^files\//, '');
+}
+
 function selectHdu(hduIndex, filepath) {
     console.log(`Selected HDU ${hduIndex} from ${filepath}`);
+
+    const prevFile = window.currentFitsFile;
+    const prevHdu = window.currentHduIndex;
+    const sameFile = !!(
+        prevFile && filepath
+        && fitsPathKey(prevFile) === fitsPathKey(filepath)
+        && Number(prevHdu) !== Number(hduIndex)
+    );
+    // Start this before changing the file. Catalogs and regions are copied
+    // before the first await, then put back on the new HDU the way a filter switch does.
+    const snapPromise = (sameFile && typeof window.snapshotNelouraOverlays === 'function')
+        ? window.snapshotNelouraOverlays(prevFile, prevHdu).catch(() => null)
+        : Promise.resolve(null);
+    if (sameFile) window.__preserveCatalogs = true;
     
     // Show loading progress
     showNotification(true, `Loading HDU ${hduIndex}...`);
@@ -877,8 +896,9 @@ function selectHdu(hduIndex, filepath) {
             // Clear any existing error messages
             window.loadingError = null;
             
-            // Clear any existing catalog
-            if (typeof clearCatalog === 'function') {
+            // A different file starts clean. The same file keeps every catalog;
+            // they are placed on this HDU after the image opens.
+            if (!sameFile && typeof clearCatalog === 'function') {
                 clearCatalog();
             }
             
@@ -925,7 +945,16 @@ function selectHdu(hduIndex, filepath) {
                         if (data.fast_loading) {
                             // Handle fast loading response (which initializes the tiled viewer)
                             if (typeof handleFastLoadingResponse === 'function') {
-                                return handleFastLoadingResponse(data, filepath);
+                                const opened = handleFastLoadingResponse(data, filepath);
+                                return Promise.resolve(opened).then(() => {
+                                    window.__preserveCatalogs = false;
+                                    return snapPromise;
+                                }).then((snap) => {
+                                    if (snap && typeof window.restoreNelouraOverlays === 'function') {
+                                        return window.restoreNelouraOverlays(snap);
+                                    }
+                                    return null;
+                                });
                             } else {
                                 throw new Error('Fast loading handler not available');
                             }
@@ -934,12 +963,18 @@ function selectHdu(hduIndex, filepath) {
                     // If we got here with binary data, it's already been processed by the fallback.
                     return data;
                 })
-                .finally(() => { if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; } });
+                .finally(() => {
+                    window.__preserveCatalogs = false;
+                    if (__fitsBinaryTimeout) { clearTimeout(__fitsBinaryTimeout); __fitsBinaryTimeout = null; }
+                });
         })
         .catch(error => {
             console.error('Error loading FITS file:', error);
             showNotification(false);
             showNotification(`Error: ${error.message || 'Failed to load FITS file'}`, 5000);
+        })
+        .finally(() => {
+            window.__preserveCatalogs = false;
         });
 }
 
