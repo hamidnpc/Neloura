@@ -3,8 +3,8 @@
     'use strict';
 
     // Order after Files; Plotter and Local Coding always visible; others only when image is loaded
-    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'settings', 'rgb', 'local-coding', 'plotter', 'catalog', 'segments', 'regions', 'peak'];
-    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'plotter', 'catalog', 'segments', 'regions', 'peak', 'settings', 'rgb']);
+    const ORDER = ['save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'settings', 'rgb', 'local-coding', 'plotter', 'catalog', 'segments', 'contours', 'regions', 'peak'];
+    const ALWAYS = new Set(['files', 'save', 'histogram', 'zoom-in', 'zoom-out', 'reset', 'rotate', 'plotter', 'catalog', 'segments', 'contours', 'regions', 'peak', 'settings', 'rgb']);
     const WHEN_LOADED = new Set();
 
     // Admin flag (fetched once on init)
@@ -56,6 +56,7 @@
             'settings': 'settings-button',
             'rgb': 'rgb-composer-button'
             , 'segments': 'segments-button'
+            , 'contours': 'contours-button'
             , 'regions': 'region-tools-button'
         };
         const id = ids[type]; if (!id) return null;
@@ -305,6 +306,27 @@
             };
             b.addEventListener('click', (e) => { e.preventDefault(); invokeSegmentsBrowser(); });
             b.__segmentsInvoke = invokeSegmentsBrowser;
+            return b;
+        },
+        'contours': () => {
+            const a = anchorBtn(); if (!a) return null;
+            const b = document.createElement('button');
+            b.id = 'contours-button';
+            b.type = 'button';
+            b.className = a.className || '';
+            b.textContent = 'Contours';
+            b.title = 'Contour a FITS file onto this image';
+            const openContours = () => {
+                const pane = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                if (pane && typeof pane.openContoursPopup === 'function') {
+                    pane.openContoursPopup();
+                    return;
+                }
+                if (typeof window.openContoursPopup === 'function') window.openContoursPopup();
+            };
+            b.addEventListener('click', (e) => { e.preventDefault(); openContours(); });
+            b.__contoursInvoke = openContours;
+            b.dataset.bound = '1';
             return b;
         },
         'peak': () => {
@@ -865,6 +887,7 @@
             'histogram': 'histogram-button',
             'catalog': 'catalog-button',
             'segments': 'segments-button',
+            'contours': 'contours-button',
             'peak': 'peak-finder-button',
             'regions': 'region-tools-button',
             'settings': 'settings-button',
@@ -975,6 +998,17 @@
             segments.dataset.bound = '1';
         }
 
+        const contours = document.getElementById('contours-button');
+        if (contours && !contours.dataset.bound) {
+            const handler = contours.__contoursInvoke || function () {
+                const pane = (typeof window.getActivePaneWindow === 'function') ? window.getActivePaneWindow() : null;
+                if (pane && typeof pane.openContoursPopup === 'function') return pane.openContoursPopup();
+                if (typeof window.openContoursPopup === 'function') window.openContoursPopup();
+            };
+            contours.addEventListener('click', (e) => { e.preventDefault(); handler(); });
+            contours.dataset.bound = '1';
+        }
+
         const peak = document.getElementById('peak-finder-button');
         if (peak && !peak.dataset.bound) {
             peak.addEventListener('click', (e) => {
@@ -1005,6 +1039,7 @@
             'histogram-button',
             'catalog-button',
             'segments-button',
+            'contours-button',
             'region-tools-button',
             'peak-finder-button',
             'settings-button',
@@ -1053,6 +1088,7 @@
             'histogram-button',
             'catalog-button',
             'segments-button',
+            'contours-button',
             'region-tools-button',
             'peak-finder-button',
             'settings-button',

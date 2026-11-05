@@ -17079,6 +17079,79 @@ async def get_peak_finder_status(job_id: str):
 # --- End Peak Finder Background Task Management ---
 
 
+class ContourRequest(BaseModel):
+    action: str
+    source_path: str
+    source_hdu: int | None = None
+    source_slice: int | None = None
+    target_path: str | None = None
+    target_hdu: int | None = None
+    target_slice: int | None = None
+    number: int = 5
+    scale: str = "linear"
+    smooth: int = 1
+    low: float | None = None
+    high: float | None = None
+    levels: list | None = None
+
+
+def _contour_job(payload: ContourRequest):
+    from contour_calc import run_apply, run_generate, run_limits
+
+    source = str(_fits_file_for_header(payload.source_path))
+    action = str(payload.action or "").strip().lower()
+    if action == "limits":
+        return run_limits(
+            source,
+            payload.source_hdu,
+            payload.source_slice,
+            payload.smooth,
+        )
+    if action == "generate":
+        return run_generate(
+            source,
+            payload.source_hdu,
+            payload.source_slice,
+            payload.smooth,
+            payload.number,
+            payload.scale,
+            payload.low,
+            payload.high,
+        )
+    if action == "apply":
+        if not payload.target_path:
+            raise ValueError("Open an image before applying contours.")
+        target = str(_fits_file_for_header(payload.target_path))
+        return run_apply(
+            source,
+            payload.source_hdu,
+            payload.source_slice,
+            target,
+            payload.target_hdu,
+            payload.target_slice,
+            payload.smooth,
+            payload.levels or [],
+        )
+    raise ValueError("Unknown contour action.")
+
+
+@app.post("/api/contours")
+async def api_contours(payload: ContourRequest):
+    """DS9-style contour levels, drawn in the open image's display pixels."""
+    loop = asyncio.get_running_loop()
+    executor = getattr(app.state, "thread_executor", None)
+    try:
+        result = await loop.run_in_executor(executor, _contour_job, payload)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("Contour request failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Contours could not be calculated.") from exc
+    return JSONResponse(content=result)
+
+
 if __name__ == "__main__":
     # Allow running the API with: python main.py
     # Mirrors: uvicorn main:app --host 127.0.0.1 --port 8000 --reload

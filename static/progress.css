@@ -2,7 +2,8 @@
 
 #download-progress-container {
     position: fixed;
-    bottom: 20px;
+    /* Sit above the bottom-right + and × buttons (46px tall, 18px from the edge). */
+    bottom: 78px;
     right: 20px;
     z-index: 10001; /* Higher than notification container */
     display: none; /* Hidden by default */
@@ -31,4 +32,12 @@
     text-align: center;
     font-weight: bold;
     line-height: 1.2;
+}
+
+body.neloura-screen-cbar-right #download-progress-container {
+    right: calc(20px + var(--neloura-screen-cbar-lane-right, var(--neloura-screen-cbar-lane, 0px)));
+}
+
+body.neloura-screen-cbar-bottom #download-progress-container {
+    bottom: calc(78px + var(--neloura-screen-cbar-lane-v-bottom, var(--neloura-screen-cbar-lane-v, 0px)));
 } 
