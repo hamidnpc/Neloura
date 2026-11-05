@@ -494,12 +494,21 @@
         } catch (_) { rawRegions = []; }
         let zoom = null;
         let imagePoint = null;
+        let angW = null;
+        let angH = null;
         try {
             const view = viewer();
             if (view && view.viewport && typeof view.viewport.getCenter === 'function') {
                 zoom = view.viewport.getZoom();
                 const center = view.viewport.getCenter(true);
                 imagePoint = view.viewport.viewportToImageCoordinates(center);
+                const bounds = view.viewport.getBounds(true);
+                const widthPx = imageWidthPx();
+                const scale = arcsecPerPixel();
+                if (bounds && bounds.width > 0 && bounds.height > 0 && widthPx > 0 && scale > 0) {
+                    angW = bounds.width * widthPx * scale;
+                    angH = bounds.height * widthPx * scale;
+                }
             }
         } catch (_) { /* noop */ }
         try {
@@ -514,7 +523,9 @@
                     ra: world && Number.isFinite(world.ra) ? world.ra : null,
                     dec: world && Number.isFinite(world.dec) ? world.dec : null,
                     arcsecPerPixel: arcsecPerPixel(),
-                    imageWidth: imageWidthPx()
+                    imageWidth: imageWidthPx(),
+                    angW: angW,
+                    angH: angH
                 };
             }
         } catch (_) { /* noop */ }
@@ -538,27 +549,70 @@
         return false;
     }
 
+    function viewerShowsCurrentImage() {
+        const expected = Number(window.fitsData && window.fitsData.width);
+        const live = imageWidthPx();
+        return expected > 1 && live > 1 && Math.abs(live - expected) < 2;
+    }
+
     async function restoreView(viewState, filepath, hdu) {
         const view = viewer();
         if (!view || !view.viewport || !viewState) return;
+        let pixel = null;
         try {
-            if (typeof view.viewport.setRotation === 'function') view.viewport.setRotation(0);
-            let zoom = viewState.zoom;
-            const destScale = arcsecPerPixel();
-            const destWidth = imageWidthPx();
-            if (Number.isFinite(zoom) && viewState.arcsecPerPixel > 0 && viewState.imageWidth > 0 && destScale > 0 && destWidth > 0) {
-                zoom = zoom * (viewState.imageWidth * viewState.arcsecPerPixel) / (destWidth * destScale);
-            }
-            if (Number.isFinite(zoom)) view.viewport.zoomTo(zoom, null, true);
             if (Number.isFinite(viewState.ra) && Number.isFinite(viewState.dec) && typeof OpenSeadragon !== 'undefined') {
                 const pixels = await skyToDisplayPixels([{ ra: viewState.ra, dec: viewState.dec }], filepath, hdu);
-                const pixel = pixels && pixels[0];
-                if (pixel && Number.isFinite(pixel.x) && Number.isFinite(pixel.y)) {
-                    const viewportPoint = view.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(pixel.x, pixel.y));
-                    view.viewport.panTo(viewportPoint, true);
-                }
+                pixel = pixels && pixels[0];
             }
-        } catch (_) { /* noop */ }
+        } catch (_) { pixel = null; }
+        const apply = () => {
+            const live = viewer();
+            if (!live || !live.viewport || !viewerShowsCurrentImage()) return false;
+            try {
+                if (typeof live.viewport.setRotation === 'function') live.viewport.setRotation(0);
+                const destScale = arcsecPerPixel();
+                const centerOk = pixel && Number.isFinite(pixel.x) && Number.isFinite(pixel.y);
+                if (centerOk && viewState.angW > 0 && viewState.angH > 0 && destScale > 0
+                    && typeof live.viewport.imageToViewportRectangle === 'function') {
+                    const widthPx = viewState.angW / destScale;
+                    const heightPx = viewState.angH / destScale;
+                    const imageRect = new OpenSeadragon.Rect(
+                        pixel.x - widthPx / 2,
+                        pixel.y - heightPx / 2,
+                        widthPx,
+                        heightPx
+                    );
+                    live.viewport.fitBounds(live.viewport.imageToViewportRectangle(imageRect), true);
+                    return true;
+                }
+                let zoom = viewState.zoom;
+                const destWidth = imageWidthPx();
+                if (Number.isFinite(zoom) && viewState.arcsecPerPixel > 0 && viewState.imageWidth > 0 && destScale > 0 && destWidth > 0) {
+                    zoom = zoom * (destWidth * destScale) / (viewState.imageWidth * viewState.arcsecPerPixel);
+                }
+                if (centerOk) {
+                    const viewportPoint = live.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(pixel.x, pixel.y));
+                    if (Number.isFinite(zoom)) live.viewport.zoomTo(zoom, viewportPoint, true);
+                    live.viewport.panTo(viewportPoint, true);
+                    return true;
+                }
+                if (Number.isFinite(zoom)) live.viewport.zoomTo(zoom, null, true);
+            } catch (_) { /* the next open event tries again */ }
+            return false;
+        };
+        const token = (state.viewToken = (state.viewToken || 0) + 1);
+        const onOpen = () => {
+            if (state.viewToken !== token) return;
+            if (!apply()) return;
+            try { view.removeHandler('open', onOpen); } catch (_) { /* noop */ }
+        };
+        try { view.addHandler('open', onOpen); } catch (_) { /* noop */ }
+        apply();
+        setTimeout(() => {
+            if (state.viewToken !== token) return;
+            apply();
+            try { view.removeHandler('open', onOpen); } catch (_) { /* noop */ }
+        }, 2500);
     }
 
     function rememberActiveCatalog(name) {
