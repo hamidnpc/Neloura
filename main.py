@@ -3063,40 +3063,83 @@ async def ast_inject(request: AstInjectRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+def _pixel_scale_path_allowed(candidate: Path, roots: list[Path]) -> bool:
+    """Allow a file whose path is under files/, kernels/, or psf/.
+
+    Symlinks are kept. The file browser stores paths like
+    PHANGS-JWST/image.fits under files/, and that folder is often a symlink
+    to a data disk. Resolving it first makes the real path look forbidden.
+    """
+    try:
+        logical = candidate.absolute()
+    except Exception:
+        logical = candidate
+    try:
+        resolved = candidate.resolve()
+    except Exception:
+        resolved = logical
+    for root in roots:
+        try:
+            root_abs = root.absolute()
+        except Exception:
+            root_abs = root
+        try:
+            root_resolved = root.resolve()
+        except Exception:
+            root_resolved = root_abs
+        for path in (logical, resolved):
+            for base in (root_abs, root_resolved):
+                try:
+                    if path.is_relative_to(base):
+                        return True
+                except Exception:
+                    continue
+    logical_text = str(logical).replace("\\", "/")
+    resolved_text = str(resolved).replace("\\", "/")
+    return (
+        logical_text.startswith("/content/drive/")
+        or resolved_text.startswith("/content/drive/")
+        or logical_text.startswith("content/drive/")
+    )
+
+
 @app.get("/get-pixel-scale/{filepath:path}")
 async def get_pixel_scale(filepath: str):
     """
     Calculates the pixel scale of a FITS file in arcseconds per pixel.
     """
-    if ".." in filepath:
+    raw = str(filepath or "").replace("\\", "/").strip()
+    if not raw or "\x00" in raw or any(part == ".." for part in raw.split("/")):
         raise HTTPException(status_code=400, detail="Invalid file path.")
 
-    base_files_dir = Path(FILES_DIRECTORY).resolve()
-    base_kernels_dir = Path(KERNELS_DIRECTORY).resolve()
-    base_psf_dir = Path(PSF_DIRECTORY).resolve()
-
-    possible_paths = [
-        Path(filepath),
-        Path(FILES_DIRECTORY) / filepath,
-        Path(KERNELS_DIRECTORY) / filepath,
-        Path(PSF_DIRECTORY) / filepath
+    roots = [
+        Path(FILES_DIRECTORY),
+        Path(KERNELS_DIRECTORY),
+        Path(PSF_DIRECTORY),
     ]
-    
-    full_path = None
-    for path in possible_paths:
-        if path.exists():
-            full_path = path.resolve()
-            break
-            
-    if full_path is None:
-        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    # Browser paths are relative to files/. Check those roots before a bare
+    # project-relative path so a same-named folder outside files/ cannot win.
+    candidates = [root / raw.lstrip("/") for root in roots]
+    candidates.append(Path(raw))
 
-    if not (
-        str(full_path).startswith(str(base_files_dir)) or
-        str(full_path).startswith(str(base_kernels_dir)) or
-        str(full_path).startswith(str(base_psf_dir))
-    ):
-        raise HTTPException(status_code=403, detail="Access to this file path is forbidden.")
+    full_path = None
+    saw_existing_outside = False
+    for candidate in candidates:
+        try:
+            exists = candidate.exists()
+        except OSError:
+            continue
+        if not exists:
+            continue
+        if _pixel_scale_path_allowed(candidate, roots):
+            full_path = candidate
+            break
+        saw_existing_outside = True
+
+    if full_path is None:
+        if saw_existing_outside:
+            raise HTTPException(status_code=403, detail="Access to this file path is forbidden.")
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
 
     try:
         with fits.open(full_path) as hdul:
